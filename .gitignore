@@ -32,6 +32,9 @@ temp/
 *.log
 *.pid
 
+# Upstream source snapshots are local-only provenance inputs.
+upstream/
+
 # Test and certification reports
 tools/**/reports/*
 !tools/**/reports/.gitkeep
