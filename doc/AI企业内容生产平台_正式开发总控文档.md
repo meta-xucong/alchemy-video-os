@@ -245,7 +245,7 @@ infrastructure/compose/docker-compose.local.yml
 
 1. 创建 workspace 和最小 package。
 2. 启动 PostgreSQL 16、Redis 7、MinIO。
-3. 固定本地端口：PostgreSQL `54329`、Redis `6379`、MinIO API `9000`、Console `9001`。
+3. 固定本地宿主端口：PostgreSQL `15432`、Redis `6380`、MinIO API `9002`、Console `9003`。Docker 容器内端口仍为 PostgreSQL `5432`、Redis `6379`、MinIO API `9000`、Console `9001`；依据 ADR-0012，API `3032` 与 Web `3031` 不变。
 4. 创建健康检查和根 README 的启动命令。
 5. 把本地凭据写入 `.env.example`，不写真实凭据。
 

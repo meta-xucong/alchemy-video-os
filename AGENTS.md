@@ -377,6 +377,14 @@ Header: X-Veyra-Internal-Token
 
 ## 12. 编码代理的工作方式
 
+### 12.1 Git 备份治理
+
+- `upstream/` 是本机仅用于溯源和摘取的目录，必须由 `.gitignore` 忽略；不得执行 `git add upstream`，不得作为 submodule 或 gitlink 纳入平台仓库。
+- 章节处于 `IN_PROGRESS` 或 `READY_FOR_AUDIT` 时，只报告工作区差异、测试和审计证据；禁止 `git add`、提交、tag 和推送。
+- 只有审计员确认该章节 Exit Gate 为 `ACCEPTED` 后，才可执行受限 `git add`（排除 `upstream/`、`.env*`、媒体、测试输出和本地卷）、创建 `feat(Cxx): ...` 提交、推送 `origin/main`，并标记 `cxx-accepted`。
+- 提交前必须确认不包含真实 Key、ticket、签名 URL、媒体二进制、认证报告、测试输出或上游完整快照。
+- 发现本地 HEAD、远端或工作区已存在的提交与当前指令不一致时，只报告差异；不得重写历史、强推、重置或擅自同步。
+
 每次开始任务时：
 
 1. 先读取本文件和相关 `doc/` 文档。

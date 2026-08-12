@@ -1,0 +1,27 @@
+{
+  "name": "@alchemy-video/studio-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/serve-local.mjs",
+    "build": "nuxt build",
+    "typecheck": "nuxt typecheck",
+    "test": "node --test tests/base.test.mjs",
+    "postinstall": "nuxt prepare"
+  },
+  "dependencies": {
+    "lucide-vue-next": "^0.511.0",
+    "nuxt": "^3.17.5",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vue-tsc": "^2.2.10"
+  },
+  "allowScripts": {
+    "esbuild@0.27.4": true,
+    "@parcel/watcher@2.5.6": true
+  }
+}

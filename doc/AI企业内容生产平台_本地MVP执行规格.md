@@ -65,10 +65,10 @@ contracts/                人类可读的 OpenAPI、AsyncAPI、JSON Schema 输�
 
 | 服务 | 建议默认端口 | 用途 | 允许替换 |
 | --- | ---: | --- | --- |
-| PostgreSQL 16 | 54329 | 事务数据、outbox、审计 | 否 |
-| Redis 7 | 6379 | BullMQ 队列、SSE 通知扇出 | 否 |
-| MinIO S3 API | 9000 | 本地资产对象存储 | 否 |
-| MinIO Console | 9001 | 仅开发排障 | 是 |
+| PostgreSQL 16 | 15432 | 事务数据、outbox、审计 | 否 |
+| Redis 7 | 6380 | BullMQ 队列、SSE 通知扇出 | 否 |
+| MinIO S3 API | 9002 | 本地资产对象存储 | 否 |
+| MinIO Console | 9003 | 仅开发排障 | 是 |
 | API | 3032 | Web 与后续 CLI 的唯一控制面 | 否 |
 | Web | 3031 | Nuxt 开发服务器 | 否 |
 
@@ -76,9 +76,9 @@ contracts/                人类可读的 OpenAPI、AsyncAPI、JSON Schema 输�
 
 ```dotenv
 NODE_ENV=development
-DATABASE_URL=postgresql://video_local:video_local@127.0.0.1:54329/video_local
-REDIS_URL=redis://127.0.0.1:6379
-S3_ENDPOINT=http://127.0.0.1:9000
+DATABASE_URL=postgresql://video_local:video_local@127.0.0.1:15432/video_local
+REDIS_URL=redis://127.0.0.1:6380
+S3_ENDPOINT=http://127.0.0.1:9002
 S3_REGION=us-east-1
 S3_BUCKET=video-local
 S3_ACCESS_KEY=video_local
@@ -89,6 +89,8 @@ VEYRA_AUTH_ENABLED=false
 ```
 
 `VEYRA_AUTH_ENABLED=false` 是硬性默认值。API 在这个值为 `false` 时不得读取 `VEYRA_INTERNAL_TOKEN`，也不得创建扣费记录。
+
+宿主端口依据 ADR-0012 固定。上述端口只用于浏览器和本机工具访问；Docker 网络内仍使用 PostgreSQL `5432`、Redis `6379`、MinIO API `9000`、Console `9001`。API `3032` 与 Web `3031` 不变。
 
 ## 5. 端到端运行路径
 

@@ -99,6 +99,50 @@
 | 决策 | 当前不操作 VPS、DNS、HTTPS、生产 Sub2API、`video.aiself.vip` 或共享积分真实开关 |
 | 原因 | 先在本地完成可审计的 MVP 和 Provider 契约，减少部署状态污染开发验证 |
 
+## ADR-0011：C01 本机基础设施使用隔离宿主端口（已替代）
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `SUPERSEDED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C01 |
+| 上下文 | Windows 动态保留范围 `54239-54338` 包含原 PostgreSQL 宿主端口 `54329`；已有用户 Docker/WSL relay 使用 `6379`、`9000`、`9001`。这些服务不属于本项目，不能为 C01 停止或重配。 |
+| 决策 | C01 宿主端口固定为 PostgreSQL `54350`、Redis `6380`、MinIO API `9002`、MinIO Console `9003`。Docker 网络内端口保持 PostgreSQL `5432`、Redis `6379`、MinIO API `9000`、Console `9001`。Control API `3032` 与 Studio `3031` 不变。 |
+| 考虑过的方案 | 释放原端口、修改其他项目容器、或对每次启动使用临时端口。 |
+| 选择原因 | 非破坏性重映射不影响其他项目，规避 Windows 端口保留，且为本地开发提供稳定、可复现的连接信息。 |
+| 影响 | Compose、`.env.example`、本地 MVP 规格、README 和 C01 审计记录必须使用新宿主端口；应用容器间连接继续使用服务名和容器内端口。 |
+| 迁移/回滚 | 清理仅带有原 `compose` 项目标签且配置文件指向本仓库的旧 `Created` C01 容器，再使用顶层 Compose name `alchemy-video-local` 创建新容器。若未来端口再次冲突，新增 ADR 后再变更，禁止临时漂移。 |
+| 审计证据 | 用户授权的端口重映射指令；C01 记录中的 Compose 启动、`pg_isready`、`redis-cli ping`、MinIO health 结果。 |
+| 替代原因 | Windows 动态保留范围随后扩展至 `54339-54438`，覆盖了 PostgreSQL 宿主端口 `54350`；见 ADR-0012。 |
+
+## ADR-0012：C01 PostgreSQL 使用 15432 隔离宿主端口
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C01 |
+| 上下文 | ADR-0011 选择的 PostgreSQL 宿主端口 `54350` 后被 Windows 动态排除范围 `54339-54438` 覆盖，Docker 无法绑定。用户已授权以非破坏性方式最终修订 C01 端口，并确认 `15432` 未被占用且不在排除范围。 |
+| 决策 | C01 宿主端口固定为 PostgreSQL `15432`、Redis `6380`、MinIO API `9002`、MinIO Console `9003`。Docker 网络内端口保持 PostgreSQL `5432`、Redis `6379`、MinIO API `9000`、Console `9001`。Control API `3032` 与 Studio `3031` 不变。 |
+| 选择原因 | `15432` 避开当前 Windows 动态端口保留和其他项目容器，同时仅重建本项目 PostgreSQL 容器，不影响已健康的 C01 Redis 和 MinIO。 |
+| 影响 | Compose、`.env.example`、本地 MVP 规格、正式总控文档、README、C01 审计记录和 Compose 来源说明都使用 `15432`；容器间服务地址和容器端口不变。 |
+| 迁移/回滚 | 仅在 Docker 标签确认 `project=alchemy-video-local`、`service=postgres`、配置文件指向本仓库时，删除此前 `Created` 的 PostgreSQL 容器并按新映射重建。保留 Redis、MinIO、命名卷和其他 Compose 项目。后续若需变更端口，必须新增 ADR。 |
+| 审计证据 | C01 记录中的新 Compose config、标签确认、端口监听、`pg_isready`、Redis/MinIO healthcheck、API/Web loopback 验证。 |
+
+## ADR-0013：C01 Studio 使用可验证的本地 Nitro 启动契约
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C01 |
+| 上下文 | 当前 Windows/Node `24.14.1` 与已解析 Nuxt `3.21.11` 组合下，原 `nuxt dev --port 3031` 会监听端口但在 30 秒内不返回 HTTP。正式总控要求 README 标准 `pnpm dev` 路径可重复启动、停止并提供可验证服务，不能把该失败隐藏在审计记录中。 |
+| 决策 | Studio `dev` 脚本使用 `scripts/serve-local.mjs`：每次先构建现有 Nuxt 项目，再以 `HOST=127.0.0.1`、`PORT=3031` 启动其 Nuxt/Nitro Node 产物。根 `pnpm dev` 保持为并行启动 Studio 与 Control API，但不再调用无响应的 `nuxt dev`。 |
+| 选择原因 | 保留 Nuxt 3 页面、客户端 `/api/v1` 边界、端口和 workspace 结构，以最小适配保证标准本地命令可实际响应 HTTP。 |
+| 影响 | README、Studio package scripts、UPSTREAM 记录、回归测试与 C01 验收步骤必须说明本地 Nitro 启动器。此决策仅定义 C01 本机运行契约，不改变未来部署方式、业务路由、Provider、密钥或模块边界。 |
+| 迁移/回滚 | 用 `pathToFileURL` 导入 Windows 绝对产物路径，避免 Node ESM `d:` URL 错误。若未来 Nuxt dev runtime 修复，可经新 ADR 恢复热更新模式；不得在没有可重复 HTTP 验证的情况下改回。 |
+| 审计证据 | C01 记录中两次 `pnpm dev` 的 `curl.exe --noproxy "*"` API/Web HTTP 成功、进程树停止和端口释放证据。 |
+
 ## 新决策模板
 
 ```text
