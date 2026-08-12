@@ -143,6 +143,34 @@
 | 迁移/回滚 | 用 `pathToFileURL` 导入 Windows 绝对产物路径，避免 Node ESM `d:` URL 错误。若未来 Nuxt dev runtime 修复，可经新 ADR 恢复热更新模式；不得在没有可重复 HTTP 验证的情况下改回。 |
 | 审计证据 | C01 记录中两次 `pnpm dev` 的 `curl.exe --noproxy "*"` API/Web HTTP 成功、进程树停止和端口释放证据。 |
 
+## ADR-0014：TaskRun 状态机以领域契约的完整迁移图为准
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C02，以及未来 C04-C09 |
+| 上下文 | `AGENTS.md` 5.2 的简写遗漏了领域契约已经定义的 `DOWNLOADING -> SUCCEEDED`、`FAILED -> QUEUED` 和 `QUEUED -> ABANDONED`。C02 的 Zod、领域和 PostgreSQL enum 已包含相关状态，领域代码已实现三条边，但文档规则、前向迁移和审计状态未形成可复核的一致基线。 |
+| 决策 | `doc/AI企业内容生产平台_领域模型与API事件契约.md` 3.2 的迁移图是 TaskRun 的唯一完整合法边集合；`AGENTS.md` 5.2 同步为完整执行摘要。`DOWNLOADING -> SUCCEEDED` 仅用于本地 Mock 或未启用计费；`FAILED -> QUEUED` 是用户显式重试；`QUEUED -> ABANDONED` 仅表示尚未提交 Provider 的本地取消。 |
+| 选择原因 | 保留无真实 Key 的本地闭环、可审计的显式用户重试和安全的提交前取消，同时保证领域、Zod、数据库和后续 Worker 使用同一状态机。 |
+| 影响 | Zod 和 Drizzle enum 固定 11 个状态；领域迁移矩阵必须逐边测试；部分唯一索引只把 `SUCCEEDED`、`FAILED`、`ABANDONED` 视作已终止运行。C02 用新的前向迁移将已应用的本地数据库收敛到此索引定义，不能重写已有迁移。 |
+| 迁移/回滚 | 新增仅向前的 Drizzle migration，先删除再以相同名称创建 `task_runs_one_active_shot_key`。任何未来状态变动必须新增 ADR、修改领域契约、生成 Zod 导出、创建前向迁移并补齐矩阵测试。 |
+| 审计证据 | C02 的 Zod/领域/迁移一致性测试、空库迁移、现有本地库重放和索引谓词检查。 |
+
+## ADR-0015：浏览器 SSE 与内部事件采用独立契约
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C02，以及未来 C03、C05、C06 |
+| 上下文 | C02 审计发现公开 OpenAPI 曾把 `InternalEventEnvelope` 注册为 `/api/v1/events` 的 SSE payload，生成物因而暴露 `provider_request_id`。内部 outbox/队列需要 Provider 追踪字段，浏览器却不应接收这些字段。 |
+| 决策 | 定义 `PublicWorkspaceEventEnvelope` 作为唯一浏览器 SSE DTO；OpenAPI 和公开 JSON Schema 只导出公开集合。`InternalEventEnvelope` 只由 AsyncAPI、outbox 和队列使用，允许其既有的内部 Provider 尝试事件。仅内部事件不投影到浏览器；公开任务详情中的尝试记录只暴露执行状态和时间，不暴露 Provider、模型、request ID 或原始 payload。公开状态把内部 `PROVIDER_PROCESSING` 归一为 `PROCESSING`，使公开契约不包含 Provider 词汇或身份。 |
+| 选择原因 | 将同一业务变化的公开展示与内部诊断/恢复信息明确分层，避免浏览器、OpenAPI 代码生成器或未来 CLI 获得 Provider 传输细节，同时保留 Worker 恢复所需的内部审计。 |
+| 影响 | C05 必须在 outbox relay 中实现显式内部事件到公开 SSE 投影；C03 的 HTTP handlers 只能序列化公开 DTO。所有公开 OpenAPI 路径及其可达 components 都要回归扫描 `provider_request_id`、`provider`、request/response payload、`object_key`、签名 URL query 和 Veyra 字段。 |
+| 迁移/回滚 | 尚未实现浏览器 SSE handler 或已发布 API，因此无数据迁移。后续新增事件先定义内部事件，再决定是否需要一个字段更少的公开投影；不能复用内部 envelope。 |
+| 审计证据 | Contracts 导出测试、公开 OpenAPI 全文敏感字段拒绝测试、AsyncAPI 内部字段存在性测试和生成物扫描。 |
+
 ## 新决策模板
 
 ```text

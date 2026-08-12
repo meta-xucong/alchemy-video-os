@@ -1,5 +1,27 @@
 {
   "name": "@alchemy-video/domain",
   "version": "0.0.0",
-  "private": true
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "pretypecheck": "pnpm --filter @alchemy-video/contracts build",
+    "typecheck": "tsc --noEmit",
+    "pretest": "pnpm --filter @alchemy-video/contracts build",
+    "test": "tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@alchemy-video/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.8.3"
+  }
 }

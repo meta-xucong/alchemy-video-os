@@ -12,6 +12,9 @@
     "build": "pnpm -r --if-present build",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
+    "contracts:generate": "pnpm --filter @alchemy-video/contracts generate",
+    "db:generate": "pnpm --filter @alchemy-video/persistence db:generate",
+    "db:migrate": "pnpm --filter @alchemy-video/persistence db:migrate",
     "infra:up": "docker compose -f infrastructure/compose/docker-compose.local.yml up -d",
     "infra:down": "docker compose -f infrastructure/compose/docker-compose.local.yml down"
   }

@@ -12,7 +12,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | C00 | 文档、决策和来源基线 | `ACCEPTED` | - | 2026-08-12 | 2026-08-12 | 本目录文档、工具链检查 |
 | C01 | Monorepo 与本地基础设施 | `ACCEPTED` | C00 | 2026-08-12 | 2026-08-13 | ADR-0012/0013、workspace 验证、两次 `pnpm dev` HTTP 启停、Compose 完整重启及全部 healthcheck 证据已由审计员复核通过 |
-| C02 | Contracts、Domain、Persistence | `PENDING` | C01 |  |  |  |
+| C02 | Contracts、Domain、Persistence | `ACCEPTED` | C01 | 2026-08-13 | 2026-08-13 | 审计员已独立复验 contracts/domain/persistence、公开事件边界、迁移、空库和本地库、Compose 健康与来源隔离；等待主线执行受限备份流程 |
 | C03 | Control API 与 Dev Identity | `PENDING` | C02 |  |  |  |
 | C04 | Asset、Project、Shot 工作台 | `PENDING` | C03 |  |  |  |
 | C05 | Outbox、Queue 和 Worker | `PENDING` | C02/C04 |  |  |  |
@@ -151,7 +151,66 @@ Exit Gate 结论：C01.0 上游复用审计证据完整，子关卡为 `ACCEPTED
 
 审计员最终复核：独立执行 `pnpm install --frozen-lockfile`、`pnpm typecheck`、`pnpm test` 和 `pnpm build` 均通过；Compose 配置解析通过，PostgreSQL、Redis、MinIO 均为 `healthy`，容器内健康命令与宿主端口 `15432`、`6380`、`9002`、`9003` 连接均通过。审计端从空闲的 `3031`、`3032` 启动标准 `pnpm dev`，确认 API health JSON 与 Studio HTML 均成功返回；按该审计启动器 PID 递归停止后两个端口均已释放。`upstream/` 命中 `.gitignore`，索引和 submodule 均无上游快照。
 
-当前结论：C01 的来源登记、静态配置、安装、类型检查、测试、构建、标准 `pnpm dev` 双端点 HTTP、停止/重启、Compose config、基础设施完整重启、healthcheck 与端口监听均已由审计员复核，Exit Gate 为 `ACCEPTED`。C02 保持 `PENDING`，直至主线完成受限 Git 提交、推送和 `c01-accepted` 标签；本次审计前未执行这些 Git 操作。
+当前结论：本段 C01 证据所述的来源登记、静态配置、安装、类型检查、测试、构建、标准 `pnpm dev` 双端点 HTTP、停止/重启、Compose config、基础设施完整重启、healthcheck 与端口监听均已由审计员复核，Exit Gate 为 `ACCEPTED`。随后 C01 已完成受限 Git 提交、推送和 `c01-accepted` 标签；C02 的当前状态见以下记录。
+
+### C02：Contracts、Domain、Persistence
+
+状态：ACCEPTED
+实施日期：2026-08-13
+前置条件：C01 `ACCEPTED`；`HEAD`、`origin/main`、轻量标签 `c01-accepted` 均为 `394815b307a2e3f803923b0e99ad1461da867e53`。
+范围：仅实现 Zod DTO、错误码、公开/内部事件、TaskRun 状态机和领域不变量、Drizzle PostgreSQL schema、workspace 范围仓库、前向迁移、OpenAPI/AsyncAPI/JSON Schema 导出及纯领域/契约测试。
+禁止事项：不实现 C03 Control API 身份或路由、不改页面、不创建 Worker/队列/Provider、不读取真实 Key、不接 Veyra 或 VPS。
+来源边界：Huobao 的 `backend/src/db/schema.ts` 仅作为 Drizzle 表声明和 `createdAt`/`updatedAt` 命名模式参考；OpenMontage 的 `tests/contracts/test_phase0_contracts.py` 仅作为 schema contract test 闸门参考。详细迁入/舍弃表位于 `doc/AI企业内容生产平台_C02上游复用矩阵.md`，每个目标 package 另有 `UPSTREAM.md`。
+实现文件：
+
+- `packages/contracts/src/`、`packages/contracts/tests/`、`packages/contracts/UPSTREAM.md`、`contracts/openapi.json`、`contracts/openapi.yaml`、`contracts/asyncapi.json`、`contracts/asyncapi.yaml`、`contracts/platform-contracts.schema.json`
+- `packages/domain/src/`、`packages/domain/tests/`、`packages/domain/UPSTREAM.md`
+- `packages/persistence/src/`、`packages/persistence/tests/`、`packages/persistence/drizzle/`、`packages/persistence/drizzle.config.ts`、`packages/persistence/UPSTREAM.md`
+- `doc/AI企业内容生产平台_C02上游复用矩阵.md`、`README.md`、根 `package.json`、三个 package 的 `package.json`、`pnpm-lock.yaml`
+
+实现结论：
+
+1. Contracts 以 Zod 为唯一源码，覆盖 12 个核心实体、统一成功/失败 envelope、应用错误码、内部/公开事件 envelope、C02 HTTP/SSE DTO，并导出 OpenAPI、AsyncAPI 和 JSON Schema。`TASK_RUN_STATUSES` 与 `TASK_RUN_TERMINAL_STATUSES` 是内部 TaskRun 状态集合的单一代码来源。公开 Asset/TaskRun DTO 不含内部 `object_key` 或 Provider 原始 request/response payload；`PublicWorkspaceEventEnvelope` 是 `/api/v1/events` 唯一公开 SSE DTO，`InternalEventEnvelope` 只由 AsyncAPI、outbox 和队列使用。
+2. Domain 实现完整 TaskRun 状态机和不变量：非法迁移拒绝、input_snapshot 不可变、结果资产不可提前发布或替换、持久化 provider_request_id 后禁止重复 submit、每个 Shot 最多一个非终态运行、同键相同请求回放/不同请求冲突。ADR-0014 已覆盖本地 Mock `DOWNLOADING -> SUCCEEDED`、显式 `FAILED -> QUEUED`、提交前 `QUEUED -> ABANDONED` 和 `BILLING_FAILED -> BILLING_PENDING`；`BILLING_FAILED` 保持可恢复状态。
+3. Persistence 定义 `users`、`workspaces`、`workspace_members`、`projects`、`assets`、`shots`、`reference_bindings`、`task_runs`、`provider_attempts`、`usage_records`、`outbox_events`、`command_deduplications` 共 12 表；金额是 PostgreSQL `numeric(18,8)`；所有 workspace 资源仓库 query 显式带 `workspace_id`。数据库以部分唯一索引拒绝同 Shot 的第二个非终态 TaskRun：仅 `SUCCEEDED`、`FAILED`、`ABANDONED` 允许历史运行与后续运行并存，`BILLING_FAILED` 保持活动以保护只扣费重试。复合外键阻止跨 workspace/project 的资产、Shot、TaskRun、ProviderAttempt、UsageRecord 和 outbox 关联。
+4. 来源复用符合 `doc/AI企业内容生产平台_C02上游复用矩阵.md`：Huobao 仅复用 Drizzle 表声明/时间字段的组织方式；OpenMontage 仅复用 schema contract test 质量门思路。没有迁入短剧模型、MySQL、Provider 调用、任务全局状态、文件系统事实源或任何真实凭据；每个目标 package 都有 `UPSTREAM.md`。
+
+测试命令及实际结果：
+
+1. `$env:PNPM_HOME = (Resolve-Path '.pnpm-store').Path; pnpm install --frozen-lockfile`：通过，7 个 workspace，lockfile 未变化；仅提示现有 Nuxt 相关 peer/build-script warning。
+2. `pnpm contracts:generate`：通过，输出 `contracts/openapi.{json,yaml}`、`contracts/asyncapi.{json,yaml}`、`contracts/platform-contracts.schema.json`。
+3. `pnpm typecheck`：通过，Control API、Studio、contracts、domain、persistence 全部通过。
+4. `pnpm test`：通过，31 项测试通过、1 项 PostgreSQL 索引集成测试在未设置 `DATABASE_URL` 的纯测试路径中按设计跳过：Control API 2、Studio 2、contracts 15、domain 7、persistence 5 通过加 1 跳过。
+5. `pnpm build`：通过，Control API、Studio/Nitro、contracts、domain、persistence 全部构建成功；仅有现有 Nuxt/Node deprecation warning。
+6. `pnpm --filter @alchemy-video/persistence db:generate`：通过，输出 `No schema changes, nothing to migrate`，确认 Drizzle schema 无漂移；此前由 workspace CommonJS 解析发现的 `@alchemy-video/contracts` exports 缺口已通过 `require/default` 条件和构建前置脚本修复。
+7. `$env:DATABASE_URL = 'postgresql://video_local:video_local@127.0.0.1:15432/video_local'; pnpm --filter @alchemy-video/persistence db:migrate`：通过且可重放；本地 `video_local` 的 `drizzle.__drizzle_migrations` 为 4，`task_runs_one_active_shot_key` 实际谓词仅排除 `SUCCEEDED`、`FAILED`、`ABANDONED`。
+8. 在专用空数据库 `video_c02_state_machine_audit` 从零运行同一迁移：通过，结果为 4 份迁移、12 张契约表、`usage_records.amount` 精度 `18:8`、5 条关键 workspace 复合外键和 ADR-0014 索引谓词；审计库随后已删除。
+9. 以 `DATABASE_URL` 显式运行 persistence 测试：6 项全部通过。事务回滚验证允许同一 Shot 保存 `SUCCEEDED`、`FAILED`、`ABANDONED` 三份历史运行，第二个活动 TaskRun 命中 `task_runs_one_active_shot_key` 被拒绝；跨 workspace `Asset -> Project` 仍命中 `assets_workspace_project_fk`。预期拒绝不提交测试数据。
+10. `docker compose -f infrastructure/compose/docker-compose.local.yml config`：通过；`docker compose ... ps`：PostgreSQL、Redis、MinIO 均为 `healthy`。
+11. `git diff --check`：通过；`git ls-files --stage -- upstream` 为空；工作区未暂存。跟踪文件过滤只返回允许纳入版本库的 `.env.example`，未发现 upstream、真实 `.env`、node_modules、构建输出或媒体二进制。
+
+风险和未完成项：
+
+- C02 只定义和验证 DTO、领域、持久化与迁移；C03 才能实现身份和 HTTP handlers，C04/C05/C06 才能接入页面、资产存储、outbox relay、Worker 和 Mock 视频闭环。
+- 迁移已作用于本地 C01 PostgreSQL `video_local`，没有执行生产/VPS/Provider/Veyra 操作；真实 Key、共享积分和外部调用仍未配置。
+- `pnpm install` 与 Nuxt build 保留现有 peer/deprecation warning，不影响本次命令退出状态；不在 C02 擅自升级依赖。
+
+纠偏记录（2026-08-13）：上一次 SSE 中断前将 C02 误标为 `READY_FOR_AUDIT`，但 `AGENTS.md` 5.2 的简写与领域契约 3.2 的完整 TaskRun 图冲突。C02 已恢复为唯一 `IN_PROGRESS`；ADR-0014 已统一两个文档，Zod/领域/Drizzle 一致性、仅向前的第 4 份迁移、空库/本地库和实际索引验证均已完成。
+
+审计驳回记录（2026-08-13）：独立复核发现 `packages/contracts/src/specifications.ts` 曾把 `InternalEventEnvelopeSchema` 注册给 OpenAPI，并让公开 `/api/v1/events` 的 `text/event-stream` 直接引用它。因此生成的 `contracts/openapi.*` 包含 `provider_request_id`，违反浏览器不得接收 Provider 原生或内部数据的边界，也使“仅按内部事件契约出现”的旧表述失实。C02 已立即从 `READY_FOR_AUDIT` 回退为唯一 `IN_PROGRESS`；必须新增安全的公开 SSE envelope、将 AsyncAPI/内部导出分离、全文扫描所有公开路径和重新运行完整门禁。
+
+公开/内部事件纠偏证据（2026-08-13）：
+
+1. ADR-0015 固定 `PublicWorkspaceEventEnvelope` 为浏览器唯一 SSE DTO。`/api/v1/events` 的 OpenAPI `text/event-stream` 仅引用该 schema；OpenAPI 和 `platform-contracts.schema.json` 只注册公开 components，AsyncAPI 单独注册 `InternalEventEnvelope`。
+2. `TaskRunProgressedEventSchema` 使用内部 `TaskRunStatusSchema`，可表达 `PROVIDER_PROCESSING`；`PublicTaskRunProgressedEventSchema` 使用 `PublicTaskRunStatusSchema`，只表达归一化后的 `PROCESSING`。契约测试同时断言内部可解析前者、公开 SSE 拒绝前者。
+3. `TaskRunDetailSchema.attempts` 只使用 `TaskRunAttemptSchema`，明确不含 `provider`、`model`、`provider_request_id`、`request_payload`、`response_payload`。该约束有直接 schema 测试，并由公开导出扫描覆盖。
+4. `pnpm contracts:generate` 后，`@alchemy-video/contracts` 的 typecheck 和 15 项测试全部通过，含 Zod 与 tracked exports 无漂移、公开路径拒绝内部字段、AsyncAPI 保留 `provider_request_id` 的断言。
+5. 对 `contracts/openapi.{json,yaml}` 和 `contracts/platform-contracts.schema.json` 按 JSON 字段名扫描 `provider_request_id`、`provider`、`request_payload`、`response_payload`、`object_key`、`veyra` 及签名 URL query，均为零命中；`InternalEventEnvelope` 也为零命中。对应的 `contracts/asyncapi.{json,yaml}` 则按设计含 `InternalEventEnvelope` 和 `provider_request_id`。
+6. 本轮重新执行 `pnpm install --frozen-lockfile`、根 `pnpm typecheck`、`pnpm test`、`pnpm build`、`db:generate`、本地 PostgreSQL `db:migrate`、带 `DATABASE_URL` 的 persistence 6 项测试、Compose config/healthcheck、`pg_isready`、`redis-cli ping`、MinIO live health 和端口监听检查，全部通过。没有修改 C03、Provider、Veyra、VPS 或真实凭据。
+
+独立审计证据（2026-08-13）：审计员在未采信实现方结果的前提下，重新执行 `pnpm install --frozen-lockfile`、`pnpm contracts:generate`、根 `pnpm typecheck`、`pnpm test`、`pnpm build`、`pnpm --filter @alchemy-video/persistence db:generate`，均通过；根测试为 31 通过、1 个未设置 `DATABASE_URL` 时设计性跳过，显式 `DATABASE_URL` persistence 测试为 6 通过。公开 OpenAPI 和独立 JSON Schema 扫描未发现 `provider_request_id`、`provider`、request/response payload、`object_key` 或 Veyra 字段；`/api/v1/events` 仅引用 `PublicWorkspaceEventEnvelope`，AsyncAPI 保留 `InternalEventEnvelope` 与 `provider_request_id`。本地库可重放 4 份迁移；临时空库从零迁移得到 12 张表、4 条迁移记录、`numeric(18,8)` 和只排除 `SUCCEEDED`、`FAILED`、`ABANDONED` 的活动 TaskRun 索引，审计库已删除。Compose config 通过，PostgreSQL、Redis、MinIO 均为 healthy；`upstream/` 已忽略且 Git 索引为空，`c01-accepted`、`origin/main` 仍指向 `394815b307a2e3f803923b0e99ad1461da867e53`。
+
+Exit Gate 结论：C02 为 `ACCEPTED`。主线现在仅获授权执行受限的 C02 备份流程：审查暂存范围，创建 `feat(C02): ...` 提交，推送 `origin/main`，创建并推送 `c02-accepted`。在该备份由审计员复核前，C03 仍为 `PENDING`，不得开始 C03。
 
 每章完成时追加：
 

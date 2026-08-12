@@ -170,10 +170,16 @@ Worker 负责：
 
 ```text
 CREATED -> QUEUED -> RUNNING -> PROVIDER_PROCESSING -> DOWNLOADING
+DOWNLOADING -> SUCCEEDED (本地 Mock 或未启用计费)
 DOWNLOADING -> BILLING_PENDING -> SUCCEEDED
 BILLING_PENDING -> BILLING_FAILED | RETRY_SCHEDULED
-QUEUED/RUNNING/PROVIDER_PROCESSING/DOWNLOADING -> FAILED | RETRY_SCHEDULED
+QUEUED -> FAILED | RETRY_SCHEDULED | ABANDONED
+RUNNING -> FAILED | RETRY_SCHEDULED
+PROVIDER_PROCESSING -> FAILED | RETRY_SCHEDULED
+DOWNLOADING -> FAILED | RETRY_SCHEDULED
 RETRY_SCHEDULED -> QUEUED
+FAILED -> QUEUED (用户显式重试)
+BILLING_FAILED -> BILLING_PENDING (充值后的显式扣费重试)
 ```
 
 必须保证：
@@ -183,6 +189,7 @@ RETRY_SCHEDULED -> QUEUED
 - 得到 `provider_request_id` 后，Worker 重启只能恢复查询或下载，禁止重复 submit。
 - 成功前不发布可下载结果；成功后结果资产不可被原地替换。
 - `BILLING_FAILED` 后充值重试只能再次扣费，不能重复提交视频任务。
+- `ABANDONED` 仅允许从尚未提交 Provider 的 `QUEUED` 进入；取消后属于终态。
 - 非法状态迁移必须在领域层拒绝，不能只依赖 UI 禁用按钮。
 
 ## 6. API、事件和错误规则
@@ -229,6 +236,8 @@ RETRY_SCHEDULED -> QUEUED
 ```
 
 数据库事务内写入 outbox，事务外投递队列和 SSE。队列按至少一次投递设计，消费端按 `event_id` 去重。SSE 使用 `event_id` 作为 `id`，支持 `Last-Event-ID` 重连。事件字段只能向后兼容新增；删除或改变语义必须升版本。
+
+浏览器 SSE 必须使用 `PublicWorkspaceEventEnvelope`，这是对持久化内部事件的受控投影。公开 SSE 不得含 `provider_request_id`、Provider 名称或模型、Provider request/response payload、`object_key`、签名 URL query、Veyra 字段、追踪或幂等内部元数据；`InternalEventEnvelope` 只用于 outbox、队列和内部 AsyncAPI。
 
 禁止：
 

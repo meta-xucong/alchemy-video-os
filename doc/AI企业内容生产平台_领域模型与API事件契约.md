@@ -109,7 +109,9 @@ stateDiagram-v2
   BILLING_PENDING --> RETRY_SCHEDULED: 扣费服务临时不可用
   QUEUED --> FAILED: 本地不可恢复错误
   RUNNING --> FAILED: 提交失败且不可重试
-  PROVIDER_PROCESSING --> RETRY_SCHEDULED: 可重试错误
+  PROVIDER_PROCESSING --> FAILED: 提供方不可重试拒绝或失败
+  PROVIDER_PROCESSING --> RETRY_SCHEDULED: 提供方可重试错误
+  DOWNLOADING --> FAILED: 下载或产物校验不可恢复失败
   DOWNLOADING --> RETRY_SCHEDULED: 下载临时失败
   RETRY_SCHEDULED --> QUEUED: 到达重试时间
   FAILED --> QUEUED: 用户显式重试
@@ -118,6 +120,8 @@ stateDiagram-v2
 ```
 
 `Shot.status` 采用 `DRAFT | READY | GENERATING | GENERATED | FAILED | ARCHIVED`。`TaskRun.status` 采用 `CREATED | QUEUED | RUNNING | PROVIDER_PROCESSING | DOWNLOADING | BILLING_PENDING | SUCCEEDED | BILLING_FAILED | FAILED | RETRY_SCHEDULED | ABANDONED`。`ProviderAttempt.status` 使用 `CREATED | SUBMITTED | PROCESSING | SUCCEEDED | FAILED | DOWNLOAD_FAILED | ABANDONED`。
+
+ADR-0014 将本图确定为 TaskRun 迁移的唯一完整规则；根目录 `AGENTS.md` 5.2 是同步的执行摘要，不得省略本地 Mock 的 `DOWNLOADING -> SUCCEEDED`、用户显式 `FAILED -> QUEUED` 或取消 `QUEUED -> ABANDONED`。持久化的部分唯一索引只允许 `SUCCEEDED`、`FAILED`、`ABANDONED` 作为可与同 Shot 后续运行并存的终态；`BILLING_FAILED` 仍可恢复，因此不得排除在活动运行之外。
 
 关键不变量：
 
@@ -188,17 +192,19 @@ type InternalEvent<T extends string, D> = {
 };
 ```
 
+内部队列与 outbox 使用上述 `InternalEvent`，可包含 `provider_attempt.submitted` 所需的 `provider_request_id`、`provider` 和 `model`，但不得保存密钥、签名 URL 或完整 Provider payload。浏览器 SSE 是公开投影，不得直接返回内部 envelope；`GET /api/v1/events` 只返回 `PublicWorkspaceEventEnvelope`，其中只允许安全的项目、资产、分镜和 TaskRun 状态数据。公开投影将内部 `PROVIDER_PROCESSING` 归一为 `PROCESSING`，不携带 Provider 身份或传输字段。Control API 在 C05 的 outbox relay/SSE 实现中负责映射；未知或仅内部事件（包括 `provider_attempt.submitted`、`usage.debited`）不得推送给浏览器。
+
 | 事件 | 生产者 | 必备 `data` | 消费者 |
 | --- | --- | --- | --- |
 | `asset.upload.confirmed` | API | `asset_id`, `project_id`, `kind`, `sha256` | UI、后续文档解析 |
 | `shot.updated` | API | `shot_id`, `status`, `revision` | UI、智能体 |
 | `task_run.queued` | API | `task_run_id`, `kind`, `input_snapshot` | worker |
 | `task_run.started` | worker | `task_run_id`, `attempt_no` | UI |
-| `provider_attempt.submitted` | worker | `task_run_id`, `provider_attempt_id`, `provider_request_id`, `provider`, `model` | UI、审计 |
+| `provider_attempt.submitted` | worker | `task_run_id`, `provider_attempt_id`, `provider_request_id`, `provider`, `model` | 内部队列、审计 |
 | `task_run.progressed` | worker | `task_run_id`, `status`, `progress`, `message` | UI |
 | `task_run.succeeded` | worker | `task_run_id`, `result_asset_id`, `sha256` | UI、后续编排 |
 | `task_run.failed` | worker | `task_run_id`, `error_code`, `retryable`, `provider_attempt_id` | UI、告警 |
-| `usage.debited` | billing adapter | `usage_record_id`, `task_run_id`, `amount`, `source`, `replayed` | 审计、未来用量页 |
+| `usage.debited` | billing adapter | `usage_record_id`, `task_run_id`, `amount`, `source`, `replayed` | 内部审计、未来用量页 |
 
 队列至少一次投递；消费端以 `event_id` 去重。SSE 使用 `event_id` 作为 `id`，客户端使用 `Last-Event-ID` 重连。事件版本不就地破坏：新增字段可直接加，语义变化或删字段创建 `version=2` 事件。
 

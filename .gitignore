@@ -41,6 +41,9 @@ tools/**/reports/*
 test-results/
 playwright-report/
 
+# Local long-running task state.
+.codex-longrun/
+
 # Local media
 *.mp4
 *.mov
