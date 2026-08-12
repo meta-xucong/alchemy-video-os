@@ -1,0 +1,54 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.crt
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+dist/
+build/
+.nuxt/
+.output/
+coverage/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Local infrastructure and runtime output
+infrastructure/compose/volumes/
+data/
+tmp/
+temp/
+*.log
+*.pid
+
+# Test and certification reports
+tools/**/reports/*
+!tools/**/reports/.gitkeep
+test-results/
+playwright-report/
+
+# Local media
+*.mp4
+*.mov
+*.webm
+*.wav
+*.png
+*.jpg
+*.jpeg
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
