@@ -185,6 +185,62 @@
 | 迁移/回滚 | 无数据库迁移。若未来加入工作区选择，仍通过身份授权后的显式 workspace 上下文执行，不允许 Web 直连数据层。 |
 | 审计证据 | C03 OpenAPI 导出、API workspace authorization 和项目列表回归测试。 |
 
+## ADR-0017：C04 上传命令回放只固定资产身份，不持久化签名 URL
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C04，以及未来 C06/C10/C12 |
+| 上下文 | `Idempotency-Key` 要求同一命令不得创建第二个 Asset；S3 预签名 URL 却短时有效，并且其 query 不能进入数据库、事件、日志或幂等快照。 |
+| 决策 | 上传申请的幂等快照只保存公开 Asset 元数据。相同 scope、key、请求 hash 回放同一 `asset_id`；当 Asset 仍为 `PENDING_UPLOAD` 时，Control API 在响应阶段重新签发短时上传 URL。确认后的同键回放只返回同一 READY Asset，不再签发上传 URL。 |
+| 选择原因 | 同时满足命令至多创建一个 Asset、浏览器可从中断中恢复上传、签名 URL 不被持久化，以及 READY 二进制不能被后续上传覆盖。 |
+| 影响 | `command_deduplications.response_snapshot` 不得包含 upload/download URL、对象 key 或签名 query。上传 URL 仅作为本次公开 HTTP 响应的短生命周期字段；浏览器完成 PUT 后立即确认且不将 URL 写入状态存储。 |
+| 迁移/回滚 | 无 schema 迁移。未来改为 multipart 或一次性令牌时仍必须把凭据从命令快照、日志和事件中隔离。 |
+| 审计证据 | C04 API/仓储测试覆盖同键回放、READY 后不重签、不同 body 冲突，以及公开契约和日志的敏感字段扫描。 |
+
+## ADR-0018：浏览器仅在受控响应中获得短时预签名 URL
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C04，以及未来 C06/C10/C12 |
+| 上下文 | AGENTS 的“浏览器不得获得签名 URL query”表述与同一文件的“API 生成上传/下载签名 URL”、C04 HTTP 契约和本地 MVP 的浏览器直传要求冲突。 |
+| 决策 | Control API 完成身份、workspace、Asset 状态与 object key 授权后，可在当前 HTTP 响应 body 中交付短时、单对象、单操作预签名 URL。URL 的签名 query 不是可持久化的公开 DTO 字段，不得进入 OpenAPI/JSON Schema、数据库、命令快照、事件、日志、错误消息或浏览器持久化状态。 |
+| 选择原因 | 保留浏览器直传和短期下载能力，避免 API 代理大媒体，同时维持对象 key 与 S3 管理凭据的服务端边界。 |
+| 影响 | `UploadRequestSchema` 和 `AssetDownloadUrlSchema` 只描述本次响应的 URL 字符串；契约导出测试继续拒绝 query 样例和内部 object key。Studio 只能在内存中立即消费 URL，刷新后必须重新向 Control API 申请。 |
+| 迁移/回滚 | 无数据库迁移。若未来需要分片、CDN 或一次性令牌，仍通过 Control API 授权，不可扩大为长期公开对象路径。 |
+| 审计证据 | C04 URL 生命周期、敏感字段/日志扫描、workspace 授权和 MinIO 集成测试。 |
+
+## ADR-0019：C04 命令终态覆盖缺失确认与分镜位置冲突
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C04，以及未来所有 Control API 命令 |
+| 上下文 | `confirm-upload` 若先在 API 层查不到 Asset 就直接返回 404，会绕开 `command_deduplications`；资源后来出现后，同 key 请求可能错误地变为成功。另一个问题是数据库 `shots_project_position_key` 会把重复位置抛成未映射的 PostgreSQL unique violation，而内存仓储此前允许重复。 |
+| 决策 | 所有 C04 写命令先经仓储幂等裁决。`confirm-upload` 在找不到 Asset 时写入 `{kind: NOT_FOUND, status: 404}` 终态；同 key/同 body 永远回放 404，同 key/异 body返回 `409 IDEMPOTENCY_CONFLICT`。同一项目内 `Shot.position` 唯一，冲突显式映射为 `409 SHOT_POSITION_CONFLICT`，并写入 `{kind: POSITION_CONFLICT}` 终态。无效对象确认也写入独立 `INVALID_UPLOAD` 终态；存储不可用仍为可重试 `503`，不固定为终态。 |
+| 选择原因 | 命令幂等必须覆盖业务失败结果，而不是仅覆盖成功。将数据库唯一约束转换为稳定应用错误，使内存和 PostgreSQL 仓储、HTTP 契约与 Studio 可得到相同行为。 |
+| 影响 | `AssetWorkspaceStore` 的确认校验由 Control API 注入纯布尔验证函数，仓储先裁决重放/缺失，再只对首次 PENDING 资产调用验证并在同一命令事务中记录终态。此限制不引入 Provider、Worker、outbox 或事件。 |
+| 迁移/回滚 | 无 schema 迁移，现有 `shots_project_position_key` 继续作为并发最终约束。Drizzle 代码同时在写入前检查并捕获该约束的唯一冲突，避免 500。 |
+| 审计证据 | C04 内存、Control API 与真实 PostgreSQL 测试覆盖 missing-confirm 后资源出现仍回放 404、异 body 409、无效引用/位置冲突的终态重放与跨 workspace 隔离。 |
+
+## ADR-0020：C04 确认上传的声明 MIME 信任边界
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C04；后续 C12 媒体 Runtime |
+| 上下文 | C04 的确认命令校验预签名对象存在、对象存储报告的 MIME、声明的 MIME、大小和 SHA-256，但不在 Control API 中解码图片或提取媒体技术元数据。独立浏览器审计发现原 E2E 错误地把文本字节标为 `image/png`，从而产生破损预览。 |
+| 决策 | C04 保持轻量确认边界：确认路径继续信任已授权上传请求中的声明 MIME 与对象存储 metadata，不增加图片解码或视频探测。E2E 固定使用内嵌的有效 1x1 PNG，并验证下载 MIME、PNG 签名、IHDR 宽高和字节完全一致，作为上传/刷新/预览闭环的有效浏览器夹具。 |
+| 选择原因 | 将深度媒体解析留在 C12 的受控媒体 Runtime，避免 Control API 在 C04 引入格式解码器、临时文件生命周期或视频工具依赖；同时不再让无效伪造夹具掩盖 Studio `<img>` 预览问题。 |
+| 风险 | 恶意或错误客户端仍可能上传与声明 MIME 不匹配的字节，导致其后续浏览器预览失败；C04 将其识别为可信 MIME 限制。C12 必须在媒体质量门中增加图片可解码性、尺寸提取及视频 `ffprobe` 校验，并为不符合项提供明确的 `DOWNLOAD_INVALID` 或后续媒体错误。 |
+| 迁移/回滚 | 无数据库迁移。若 C12 将内容探测前移到确认链路，必须先扩展公开错误契约、异步处理和大文件资源限制，再修改 API 行为。 |
+| 审计证据 | `apps/control-api/tests/c04-http-e2e.mjs` 以真实 PNG PUT 后确认并下载，校验 Content-Type、PNG 签名、IHDR `1x1` 和全量字节；独立浏览器应验证 Preview 的 `naturalWidth`/`naturalHeight` 均大于 0。 |
+
 ## 新决策模板
 
 ```text

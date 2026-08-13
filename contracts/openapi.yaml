@@ -467,7 +467,9 @@ components:
             - PROVIDER_REJECTED
             - PROVIDER_PROTOCOL_INVALID
             - DOWNLOAD_INVALID
+            - STORAGE_UNAVAILABLE
             - IDEMPOTENCY_CONFLICT
+            - SHOT_POSITION_CONFLICT
             - WORKSPACE_FORBIDDEN
             - VALIDATION_FAILED
             - NOT_FOUND
@@ -505,7 +507,9 @@ components:
                 - PROVIDER_REJECTED
                 - PROVIDER_PROTOCOL_INVALID
                 - DOWNLOAD_INVALID
+                - STORAGE_UNAVAILABLE
                 - IDEMPOTENCY_CONFLICT
+                - SHOT_POSITION_CONFLICT
                 - WORKSPACE_FORBIDDEN
                 - VALIDATION_FAILED
                 - NOT_FOUND
@@ -850,6 +854,35 @@ components:
       required:
         - data
         - request_id
+      additionalProperties: false
+    ReferenceBinding:
+      type: object
+      properties:
+        shot_id:
+          type: string
+          pattern: ^sht_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+        asset_id:
+          type: string
+          pattern: ^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+        role:
+          type: string
+          enum:
+            - STYLE
+            - SUBJECT
+            - FIRST_FRAME
+            - LAST_FRAME
+        position:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$
+      required:
+        - shot_id
+        - asset_id
+        - role
+        - position
+        - created_at
       additionalProperties: false
     CurrentIdentitySuccess:
       type: object
@@ -1536,14 +1569,20 @@ components:
             upload_url:
               type: string
               format: uri
+              nullable: true
             headers:
               type: object
               additionalProperties:
                 type: string
+            expires_at:
+              type: string
+              pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$
+              nullable: true
           required:
             - asset_id
             - upload_url
             - headers
+            - expires_at
           additionalProperties: false
         request_id:
           type: string
@@ -1634,6 +1673,7 @@ components:
           type: integer
           exclusiveMinimum: true
           minimum: 0
+          maximum: 26214400
       required:
         - kind
         - filename
@@ -1670,6 +1710,27 @@ components:
         - mime_type
         - byte_size
       additionalProperties: false
+    ReferenceBindingInput:
+      type: object
+      properties:
+        asset_id:
+          type: string
+          pattern: ^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+        role:
+          type: string
+          enum:
+            - STYLE
+            - SUBJECT
+            - FIRST_FRAME
+            - LAST_FRAME
+        position:
+          type: integer
+          minimum: 0
+      required:
+        - asset_id
+        - role
+        - position
+      additionalProperties: false
     CreateShotCommand:
       type: object
       properties:
@@ -1687,6 +1748,31 @@ components:
           type: object
           additionalProperties: {}
           default: {}
+        reference_bindings:
+          type: array
+          items:
+            type: object
+            properties:
+              asset_id:
+                type: string
+                pattern: ^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+              role:
+                type: string
+                enum:
+                  - STYLE
+                  - SUBJECT
+                  - FIRST_FRAME
+                  - LAST_FRAME
+              position:
+                type: integer
+                minimum: 0
+            required:
+              - asset_id
+              - role
+              - position
+            additionalProperties: false
+          maxItems: 8
+          default: []
       required:
         - position
       additionalProperties: false
@@ -1710,14 +1796,34 @@ components:
           enum:
             - DRAFT
             - READY
-            - GENERATING
-            - GENERATED
-            - FAILED
             - ARCHIVED
         selected_asset_id:
           type: string
           pattern: ^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
           nullable: true
+        reference_bindings:
+          type: array
+          items:
+            type: object
+            properties:
+              asset_id:
+                $ref: "#/definitions/UpdateShotCommand/properties/selected_asset_id"
+              role:
+                type: string
+                enum:
+                  - STYLE
+                  - SUBJECT
+                  - FIRST_FRAME
+                  - LAST_FRAME
+              position:
+                type: integer
+                minimum: 0
+            required:
+              - asset_id
+              - role
+              - position
+            additionalProperties: false
+          maxItems: 8
       additionalProperties: false
     CreateTaskRunCommand:
       type: object
@@ -1945,10 +2051,42 @@ components:
                   - created_at
                   - updated_at
                 additionalProperties: false
+            reference_bindings:
+              type: array
+              items:
+                type: object
+                properties:
+                  shot_id:
+                    $ref: "#/definitions/ProjectDetailSuccess/properties/data/properties/shots/item\
+                      s/properties/id"
+                  asset_id:
+                    $ref: "#/definitions/ProjectDetailSuccess/properties/data/properties/shots/item\
+                      s/properties/selected_asset_id"
+                  role:
+                    type: string
+                    enum:
+                      - STYLE
+                      - SUBJECT
+                      - FIRST_FRAME
+                      - LAST_FRAME
+                  position:
+                    type: integer
+                    minimum: 0
+                  created_at:
+                    $ref: "#/definitions/ProjectDetailSuccess/properties/data/properties/project/pr\
+                      operties/created_at"
+                required:
+                  - shot_id
+                  - asset_id
+                  - role
+                  - position
+                  - created_at
+                additionalProperties: false
           required:
             - project
             - shots
             - assets
+            - reference_bindings
           additionalProperties: false
         request_id:
           type: string

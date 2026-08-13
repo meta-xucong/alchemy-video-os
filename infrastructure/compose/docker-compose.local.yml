@@ -35,6 +35,7 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-video_local}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-video_local_secret}
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-http://127.0.0.1:3031,http://localhost:3031}
     ports:
       - "9002:9000"
       - "9003:9001"

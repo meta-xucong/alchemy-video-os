@@ -74,7 +74,7 @@ ID 使用可排序的 ULID 字符串，数据库用 `text` 主键。时间一律
 
 `Asset.kind` 采用 `IMAGE | VIDEO | AUDIO | DOCUMENT | POSTER | THUMBNAIL`；`Asset.origin` 采用 `USER_UPLOAD | GENERATED | DERIVED`。生成视频必须写为 `Asset(kind=VIDEO, origin=GENERATED)`，海报/缩略图写为 `origin=DERIVED`，用户上传文件写为 `origin=USER_UPLOAD`。
 
-`assets.object_key` 由服务端生成，格式为 `workspace_id/project_id/asset_id/variant.ext`，例如用户原文件使用 `original.ext`、生成视频使用 `generated.mp4`、派生海报使用 `poster.jpg`。数据库不存二进制；浏览器只能得到短时预签名 URL。`request_payload` 和 `response_payload` 在写入前必须去掉授权 Header、密钥和签名 URL query。
+`assets.object_key` 由服务端生成，格式为 `workspace_id/project_id/asset_id/variant.ext`，例如用户原文件使用 `original.ext`、生成视频使用 `generated.mp4`、派生海报使用 `poster.jpg`。数据库不存二进制；已授权浏览器只能从 Control API 的单次响应得到短时、单对象、单操作预签名 URL，且不得将该 URL 的 query 写入状态持久化。`request_payload` 和 `response_payload` 在写入前必须去掉授权 Header、密钥和签名 URL query。
 
 ### 3.2 状态机
 
@@ -145,7 +145,7 @@ ADR-0014 将本图确定为 TaskRun 迁移的唯一完整规则；根目录 `AGE
 | `POST /projects` | 创建项目 | `201` + `Project` |
 | `GET /projects/:projectId` | 项目详情 | 项目、分镜、资产摘要 |
 | `PATCH /projects/:projectId` | 重命名/归档 | 更新的 `Project` |
-| `POST /projects/:projectId/assets/upload-requests` | 申请上传 | `asset_id`、`upload_url`、`headers` |
+| `POST /projects/:projectId/assets/upload-requests` | 申请上传 | `asset_id`、短时 `upload_url`、`headers`、`expires_at`；相同幂等键只回放同一 Asset，READY 后 URL 为 `null` |
 | `POST /assets/:assetId/confirm-upload` | 确认上传 | 校验对象存在，置 `READY` |
 | `GET /assets/:assetId/download-url` | 获取播放/下载 URL | 只返回授权资产的短时 URL |
 | `POST /projects/:projectId/shots` | 创建分镜 | `201` + `Shot` |
@@ -154,6 +154,8 @@ ADR-0014 将本图确定为 TaskRun 迁移的唯一完整规则；根目录 `AGE
 | `GET /task-runs/:taskRunId` | 任务详情 | 运行、attempt、产物、错误 |
 | `POST /task-runs/:taskRunId/retry` | 显式重试 | `202` + 新/复用的任务说明 |
 | `GET /events?workspace_id=...` | SSE | 只推送该工作区事件 |
+
+同一 `project_id` 的 `Shot.position` 必须唯一。创建或编辑到已被其他分镜占用的位置返回 `409 SHOT_POSITION_CONFLICT`，该结果与 `NOT_FOUND`、`INVALID_REFERENCE` 一样写入命令去重终态：同 key/同 body 必须重放原结果，同 key/异 body 返回 `409 IDEMPOTENCY_CONFLICT`。`POST /assets/:assetId/confirm-upload` 对不存在资产也必须先写入可回放的 `404 NOT_FOUND`，避免资源后来出现时改变首次命令结果。
 
 创建生成命令的最小请求：
 

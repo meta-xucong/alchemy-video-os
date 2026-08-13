@@ -160,6 +160,12 @@ export const ReferenceBindingSchema = z.object({
   created_at: UtcTimestampSchema,
 });
 
+export const ReferenceBindingInputSchema = ReferenceBindingSchema.pick({
+  asset_id: true,
+  role: true,
+  position: true,
+});
+
 export const VideoGenerationInputSnapshotSchema = z.object({
   model: z.string().min(1),
   prompt: z.string().min(1),
@@ -274,12 +280,14 @@ export const ProjectDetailSchema = z.object({
   project: ProjectSchema,
   shots: z.array(ShotSchema),
   assets: z.array(AssetSchema),
+  reference_bindings: z.array(ReferenceBindingSchema),
 });
 
 export const UploadRequestSchema = z.object({
   asset_id: AssetIdSchema,
-  upload_url: z.string().url(),
+  upload_url: z.string().url().nullable(),
   headers: z.record(z.string()),
+  expires_at: UtcTimestampSchema.nullable(),
 });
 
 export const AssetDownloadUrlSchema = z.object({
@@ -306,7 +314,22 @@ export const CreateUploadRequestCommandSchema = z.object({
   kind: z.enum(["IMAGE", "AUDIO", "DOCUMENT"]),
   filename: z.string().min(1).max(255),
   mime_type: z.string().min(1).max(255),
-  byte_size: z.number().int().positive(),
+  byte_size: z.number().int().positive().max(25 * 1024 * 1024),
+}).superRefine((command, context) => {
+  const mimeType = command.mime_type.toLowerCase();
+  const allowedMimeTypes = {
+    IMAGE: ["image/jpeg", "image/png", "image/webp", "image/gif"],
+    AUDIO: ["audio/mpeg", "audio/ogg", "audio/wav"],
+    DOCUMENT: ["application/pdf", "text/markdown", "text/plain"],
+  } as const;
+
+  if (!allowedMimeTypes[command.kind].includes(mimeType as never)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["mime_type"],
+      message: "mime_type is not allowed for the requested asset kind.",
+    });
+  }
 });
 
 export const ConfirmAssetUploadCommandSchema = z.object({
@@ -318,11 +341,31 @@ export const ConfirmAssetUploadCommandSchema = z.object({
   duration_ms: z.number().int().nonnegative().optional(),
 });
 
+const ReferenceBindingsInputSchema = z.array(ReferenceBindingInputSchema).max(8).superRefine((bindings, context) => {
+  const assetRoleKeys = new Set<string>();
+  const rolePositionKeys = new Set<string>();
+
+  bindings.forEach((binding, index) => {
+    const assetRoleKey = `${binding.asset_id}:${binding.role}`;
+    const rolePositionKey = `${binding.role}:${binding.position}`;
+    if (assetRoleKeys.has(assetRoleKey) || rolePositionKeys.has(rolePositionKey)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [index],
+        message: "Reference bindings must have unique asset-role and role-position pairs.",
+      });
+    }
+    assetRoleKeys.add(assetRoleKey);
+    rolePositionKeys.add(rolePositionKey);
+  });
+});
+
 export const CreateShotCommandSchema = z.object({
   position: z.number().int().nonnegative(),
   prompt: z.string().default(""),
   model: z.string().min(1).nullable().optional(),
   generation_settings: JsonObjectSchema.default({}),
+  reference_bindings: ReferenceBindingsInputSchema.default([]),
 });
 
 export const UpdateShotCommandSchema = z
@@ -331,8 +374,9 @@ export const UpdateShotCommandSchema = z
     prompt: z.string().optional(),
     model: z.string().min(1).nullable().optional(),
     generation_settings: JsonObjectSchema.optional(),
-    status: ShotStatusSchema.optional(),
+    status: z.enum(["DRAFT", "READY", "ARCHIVED"]).optional(),
     selected_asset_id: AssetIdSchema.nullable().optional(),
+    reference_bindings: ReferenceBindingsInputSchema.optional(),
   })
   .refine((command) => Object.keys(command).length > 0, "At least one shot field is required.");
 

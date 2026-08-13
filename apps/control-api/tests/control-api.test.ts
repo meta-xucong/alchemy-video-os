@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { fingerprintRequest } from "@alchemy-video/domain";
+import { createInMemoryAssetWorkspaceStore } from "../src/asset-repository.js";
+import { InMemoryStoragePort, StorageUnavailableError, type StoragePort } from "@alchemy-video/storage-client";
 
 import { createApp } from "../src/app.js";
 import type { IdentityPort } from "../src/identity.js";
@@ -156,8 +159,230 @@ test("workspace authorization and command validation use public error envelopes"
   assert.equal(missingKeyResponse.status, 400);
   assert.equal(missingKey.error.code, "VALIDATION_FAILED");
 
-  const futureRoute = await app.request("http://localhost/api/v1/projects/prj_01J4N8QZ8PCW2N2G6D2XJXJXJX/shots", {
+  const shotsRoute = await app.request("http://localhost/api/v1/projects/prj_01J4N8QZ8PCW2N2G6D2XJXJXJX/shots", {
     method: "POST",
   });
-  assert.equal(futureRoute.status, 404);
+  assert.equal(shotsRoute.status, 400);
+  assert.equal((await readJson(shotsRoute)).error.code, "VALIDATION_FAILED");
+});
+
+test("C04 upload, shot, invalid-reference, and missing-project commands have replayable public behavior", async () => {
+  const store = createInMemoryControlPlaneStore();
+  const assetStore = createInMemoryAssetWorkspaceStore(store);
+  const storage = new InMemoryStoragePort();
+  const app = createApp({ store, assetStore, storage });
+  const createdProject = await createProject(app, "Reference board", "c04-project-1");
+  const project = await readJson(createdProject);
+  const projectId = project.data.id as string;
+
+  const uploadCommand = { kind: "IMAGE", filename: "brand.png", mime_type: "image/png", byte_size: 3, object_key: "browser-must-not-control-this" };
+  const uploadRequest = () =>
+    app.request(`http://localhost/api/v1/projects/${projectId}/assets/upload-requests`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "c04-upload-1" },
+      body: JSON.stringify(uploadCommand),
+    });
+  const firstUpload = await uploadRequest();
+  const firstUploadBody = await readJson(firstUpload);
+  const replayUpload = await uploadRequest();
+  const replayUploadBody = await readJson(replayUpload);
+  assert.equal(firstUpload.status, 201);
+  assert.equal(replayUpload.status, 201);
+  assert.equal(firstUploadBody.data.asset_id, replayUploadBody.data.asset_id);
+  assert.equal("object_key" in firstUploadBody.data, false);
+  assert.match(firstUploadBody.data.upload_url, /^http:\/\/storage\.invalid\/upload\//);
+
+  const assetId = firstUploadBody.data.asset_id as string;
+  const detailBeforeConfirm = await assetStore.findProjectDetail("ws_dev_default", projectId);
+  const asset = detailBeforeConfirm?.assets.find((value) => value.id === assetId);
+  assert.ok(asset);
+  assert.match(asset.objectKey, new RegExp(`^ws_dev_default/${projectId}/${assetId}/original\\.png$`));
+  const bytes = new Uint8Array([1, 2, 3]);
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  storage.putObject({ objectKey: asset.objectKey, mimeType: "image/png", bytes });
+
+  const confirmCommand = { sha256, mime_type: "image/png", byte_size: 3 };
+  const confirm = () =>
+    app.request(`http://localhost/api/v1/assets/${assetId}/confirm-upload`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "c04-confirm-1" },
+      body: JSON.stringify(confirmCommand),
+    });
+  const firstConfirm = await confirm();
+  const replayConfirm = await confirm();
+  assert.equal(firstConfirm.status, 200);
+  assert.equal(replayConfirm.status, 200);
+  assert.equal((await readJson(firstConfirm)).data.status, "READY");
+  assert.equal("object_key" in (await readJson(replayConfirm)).data, false);
+
+  const shotCommand = {
+    position: 0,
+    prompt: "A calm product opening frame",
+    reference_bindings: [{ asset_id: assetId, role: "STYLE", position: 0 }],
+  };
+  const createShot = (body = shotCommand, key = "c04-shot-1") =>
+    app.request(`http://localhost/api/v1/projects/${projectId}/shots`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+      body: JSON.stringify(body),
+    });
+  const firstShot = await createShot();
+  const firstShotBody = await readJson(firstShot);
+  const replayShot = await createShot();
+  const replayShotBody = await readJson(replayShot);
+  assert.equal(firstShot.status, 201);
+  assert.equal(replayShot.status, 201);
+  assert.equal(firstShotBody.data.id, replayShotBody.data.id);
+  const shotConflict = await createShot({ ...shotCommand, prompt: "Different prompt" });
+  assert.equal(shotConflict.status, 409);
+
+  const missingAssetId = "ast_01J4N8QZ8PCW2N2G6D2XJXJXJX";
+  const invalidReferenceCommand = {
+    position: 1,
+    prompt: "Cannot bind a missing asset",
+    reference_bindings: [{ asset_id: missingAssetId, role: "STYLE", position: 0 }],
+  };
+  const invalidReference = () => createShot(invalidReferenceCommand, "c04-invalid-reference-1");
+  assert.equal((await invalidReference()).status, 400);
+  assert.equal((await invalidReference()).status, 400);
+  assert.equal((await createShot({ ...invalidReferenceCommand, prompt: "Different invalid reference" }, "c04-invalid-reference-1")).status, 409);
+
+  const missingProjectId = "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX";
+  const missingProjectCommand = { position: 0, prompt: "Missing project" };
+  const missingProjectShot = (body = missingProjectCommand) =>
+    app.request(`http://localhost/api/v1/projects/${missingProjectId}/shots`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "c04-missing-project-1" },
+      body: JSON.stringify(body),
+    });
+  assert.equal((await missingProjectShot()).status, 404);
+  await store.createProject({
+    scope: "c04-seed-missing-project",
+    idempotencyKey: "c04-seed-missing-project-1",
+    requestHash: fingerprintRequest({ name: "Now present" }),
+    workspaceId: "ws_dev_default",
+    projectId: missingProjectId,
+    name: "Now present",
+  });
+  assert.equal((await missingProjectShot()).status, 404);
+  assert.equal((await missingProjectShot({ ...missingProjectCommand, prompt: "Different missing project command" })).status, 409);
+
+  assert.equal(await assetStore.findAsset("ws_other_workspace", assetId), undefined);
+  assert.equal(await assetStore.findProjectDetail("ws_other_workspace", projectId), undefined);
+});
+
+test("missing asset confirmation is repository-first and shot positions have a public conflict code", async () => {
+  const store = createInMemoryControlPlaneStore();
+  const assetStore = createInMemoryAssetWorkspaceStore(store);
+  const storage = new InMemoryStoragePort();
+  const app = createApp({ store, assetStore, storage });
+  const projectResponse = await createProject(app, "Conflict contract", "c04-conflict-project-1");
+  const projectId = (await readJson(projectResponse)).data.id as string;
+  const assetId = "ast_01J4N8QZ8PCW2N2G6D2XJXJXJZ";
+  const confirmBody = { sha256: "c".repeat(64), mime_type: "image/png", byte_size: 3 };
+  const confirm = (body = confirmBody) =>
+    app.request(`http://localhost/api/v1/assets/${assetId}/confirm-upload`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "c04-missing-confirm-1" },
+      body: JSON.stringify(body),
+    });
+  assert.equal((await confirm()).status, 404);
+  await assetStore.createUploadAsset({
+    scope: "c04-seed-asset",
+    idempotencyKey: "seed-asset-1",
+    requestHash: fingerprintRequest({ filename: "appeared.png" }),
+    workspaceId: "ws_dev_default",
+    projectId,
+    assetId,
+    kind: "IMAGE",
+    objectKey: `ws_dev_default/${projectId}/${assetId}/original.png`,
+    filename: "appeared.png",
+    mimeType: "image/png",
+    byteSize: 3,
+  });
+  assert.equal((await confirm()).status, 404);
+  assert.equal((await confirm({ ...confirmBody, sha256: "d".repeat(64) })).status, 409);
+
+  const invalidUploadResponse = await app.request(`http://localhost/api/v1/projects/${projectId}/assets/upload-requests`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c04-invalid-upload-request-1" },
+    body: JSON.stringify({ kind: "IMAGE", filename: "missing.png", mime_type: "image/png", byte_size: 3 }),
+  });
+  const invalidUploadAssetId = (await readJson(invalidUploadResponse)).data.asset_id as string;
+  const invalidUploadBody = { sha256: "e".repeat(64), mime_type: "image/png", byte_size: 3 };
+  const invalidUploadConfirm = (body = invalidUploadBody) =>
+    app.request(`http://localhost/api/v1/assets/${invalidUploadAssetId}/confirm-upload`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "c04-invalid-upload-confirm-1" },
+      body: JSON.stringify(body),
+    });
+  assert.equal((await invalidUploadConfirm()).status, 400);
+  assert.equal((await invalidUploadConfirm()).status, 400);
+  assert.equal((await invalidUploadConfirm({ ...invalidUploadBody, sha256: "f".repeat(64) })).status, 409);
+
+  const createShot = (position: number, key: string, prompt: string) =>
+    app.request(`http://localhost/api/v1/projects/${projectId}/shots`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+      body: JSON.stringify({ position, prompt }),
+    });
+  assert.equal((await createShot(0, "c04-position-1", "First shot")).status, 201);
+  const positionConflict = await createShot(0, "c04-position-2", "Duplicate shot");
+  const positionConflictBody = await readJson(positionConflict);
+  assert.equal(positionConflict.status, 409);
+  assert.equal(positionConflictBody.error.code, "SHOT_POSITION_CONFLICT");
+  const positionReplay = await createShot(0, "c04-position-2", "Duplicate shot");
+  assert.equal(positionReplay.status, 409);
+  assert.equal((await readJson(positionReplay)).error.code, "SHOT_POSITION_CONFLICT");
+  const positionConflictBodyMismatch = await createShot(0, "c04-position-2", "Different duplicate shot");
+  assert.equal(positionConflictBodyMismatch.status, 409);
+  assert.equal((await readJson(positionConflictBodyMismatch)).error.code, "IDEMPOTENCY_CONFLICT");
+
+  const secondShot = await createShot(1, "c04-position-3", "Second shot");
+  const secondShotId = (await readJson(secondShot)).data.id as string;
+  const patchPosition = (body: Record<string, unknown>) => app.request(`http://localhost/api/v1/shots/${secondShotId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c04-position-update-conflict-1" },
+    body: JSON.stringify(body),
+  });
+  const firstPatchConflict = await patchPosition({ position: 0 });
+  assert.equal(firstPatchConflict.status, 409);
+  assert.equal((await readJson(firstPatchConflict)).error.code, "SHOT_POSITION_CONFLICT");
+  const replayPatchConflict = await patchPosition({ position: 0 });
+  assert.equal(replayPatchConflict.status, 409);
+  assert.equal((await readJson(replayPatchConflict)).error.code, "SHOT_POSITION_CONFLICT");
+  const changedPatchConflict = await patchPosition({ position: 0, prompt: "Different conflict body" });
+  assert.equal(changedPatchConflict.status, 409);
+  assert.equal((await readJson(changedPatchConflict)).error.code, "IDEMPOTENCY_CONFLICT");
+});
+
+test("storage unavailability does not persist a confirm command", async () => {
+  const store = createInMemoryControlPlaneStore();
+  const assetStore = createInMemoryAssetWorkspaceStore(store);
+  const healthyStorage = new InMemoryStoragePort();
+  const unavailableStorage: StoragePort = {
+    createUploadUrl: (input) => healthyStorage.createUploadUrl(input),
+    createDownloadUrl: (input) => healthyStorage.createDownloadUrl(input),
+    async inspectObject() { throw new StorageUnavailableError(); },
+  };
+  const unavailableApp = createApp({ store, assetStore, storage: unavailableStorage });
+  const projectId = (await readJson(await createProject(unavailableApp, "Storage unavailable", "c04-storage-project-1"))).data.id as string;
+  const assetId = (await readJson(await unavailableApp.request(`http://localhost/api/v1/projects/${projectId}/assets/upload-requests`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c04-storage-upload-1" },
+    body: JSON.stringify({ kind: "IMAGE", filename: "available.png", mime_type: "image/png", byte_size: 3 }),
+  }))).data.asset_id as string;
+  const asset = await assetStore.findAsset("ws_dev_default", assetId);
+  assert.ok(asset);
+  const bytes = new Uint8Array([9, 8, 7]);
+  const body = { sha256: createHash("sha256").update(bytes).digest("hex"), mime_type: "image/png", byte_size: 3 };
+  const request = (app: ReturnType<typeof createApp>) => app.request(`http://localhost/api/v1/assets/${assetId}/confirm-upload`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c04-storage-confirm-1" },
+    body: JSON.stringify(body),
+  });
+  assert.equal((await request(unavailableApp)).status, 503);
+  healthyStorage.putObject({ objectKey: asset.objectKey, mimeType: "image/png", bytes });
+  const healthyApp = createApp({ store, assetStore, storage: healthyStorage });
+  assert.equal((await request(healthyApp)).status, 200);
 });

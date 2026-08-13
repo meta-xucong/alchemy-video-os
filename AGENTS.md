@@ -130,7 +130,7 @@ Credit Adapter -> CreditPort，仅可访问 Sub2API Veyra 内部 API
 
 ### 4.2 Control API 是唯一控制面
 
-浏览器和未来 CLI 使用 `/api/v1/*`。服务间使用受保护的 `/internal/v1/*` 或队列事件。浏览器不得获得内部 API 地址、Provider 原生响应、内部对象 key、签名 URL query、Veyra Token 或任何 API Key。
+浏览器和未来 CLI 使用 `/api/v1/*`。服务间使用受保护的 `/internal/v1/*` 或队列事件。浏览器不得获得内部 API 地址、Provider 原生响应、内部对象 key、Veyra Token 或任何 API Key。唯一例外是 Control API 向已授权浏览器返回的短时、单对象、单操作预签名上传/下载 URL；其签名 query 不得进入公开契约生成物、数据库、事件、日志、错误消息或浏览器持久化状态。
 
 API 负责：
 

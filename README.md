@@ -2,7 +2,7 @@
 
 这是一个学习用途的企业 AI 内容生产平台，目标是把企业资料、脚本、分镜、视频 Provider、媒体 Runtime、质量检查和版本化资产组织成可审计的模块化系统。
 
-当前仓库的 C01（本地 monorepo 和 PostgreSQL/Redis/MinIO 基础设施）与 C02（Contracts、Domain、Persistence）均已由审计员确认并备份。C03（Control API 与 Dev Identity）已由审计确认 `ACCEPTED`，本轮仅执行其受限备份：固定本地身份、工作区授权、项目读写和幂等均已就绪；不接入资产/分镜、Worker、Provider、Storage、Veyra、VPS 或域名。默认使用 Mock Provider，不调用真实视频 API，不启用 Sub2API 共享积分。
+当前仓库的 C01（本地 monorepo 和 PostgreSQL/Redis/MinIO 基础设施）、C02（Contracts、Domain、Persistence）、C03（Control API 与 Dev Identity）和 C04（Asset、Project、Shot 工作台）均已审计确认。C04 已通过有效 1x1 PNG 的真实 Studio UI 创建、上传、刷新和 Preview 解码复验，并提供服务端 object key、短时预签名上传/确认/下载、workspace 范围 Asset/Shot/ReferenceBinding 以及 Studio 工作台；C04 的受限 Git 备份正在执行，完成远端 ref 复核前不会启动 C05。它不接入 C05 Worker/SSE、Provider、Veyra、VPS 或域名。默认使用 Mock Provider，不调用真实视频 API，不启用 Sub2API 共享积分。
 
 ## 开始阅读
 
@@ -18,15 +18,17 @@
 - C01.0 上游复用审计：已通过
 - C01 Monorepo 与本地基础设施：`ACCEPTED`
 - C02 Contracts、Domain、Persistence：`ACCEPTED`（`c02-accepted` 已备份复核）
-- C03 Control API 与 Dev Identity：`ACCEPTED`（仅本轮受限备份获授权）
-- 当前应用能力：开发身份、默认工作区、项目创建/列表/详情/更新与命令幂等
+- C03 Control API 与 Dev Identity：`ACCEPTED`（已完成备份复核）
+- C04 Asset、Project、Shot 工作台：`ACCEPTED`（已授权受限 Git 备份，C05 仍锁定）
+- C05 Outbox、Queue 和 Worker：`PENDING`
+- 当前应用能力：开发身份、默认工作区、项目创建/列表/详情/更新、Asset 预签名上传/确认/下载、Shot/ReferenceBinding 与命令幂等
 - 真实视频 Key：不配置
 - Veyra/共享积分：关闭
 - VPS、域名和生产部署：延期
 
 每个章节完成后必须在章节审计记录中写入测试命令、证据路径和 Exit Gate 结论。
 
-C01 与 C02 均已完成受限备份。C03 已获审计裁定，本轮仅执行其受限备份；C04/C05 及后续保持 `PENDING`，不得提前实现资产、分镜、队列、Worker 或 SSE。
+C01、C02、C03 均已完成受限备份。C04 已通过审计，主线现在只能执行 C04 的受限提交、推送和 `c04-accepted` 标签；远端复核完成前，禁止启动 C05。
 
 ## C01 Local Start
 

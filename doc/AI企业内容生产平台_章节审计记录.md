@@ -13,8 +13,8 @@
 | C00 | 文档、决策和来源基线 | `ACCEPTED` | - | 2026-08-12 | 2026-08-12 | 本目录文档、工具链检查 |
 | C01 | Monorepo 与本地基础设施 | `ACCEPTED` | C00 | 2026-08-12 | 2026-08-13 | ADR-0012/0013、workspace 验证、两次 `pnpm dev` HTTP 启停、Compose 完整重启及全部 healthcheck 证据已由审计员复核通过 |
 | C02 | Contracts、Domain、Persistence | `ACCEPTED` | C01 | 2026-08-13 | 2026-08-13 | 审计员已独立复验 contracts/domain/persistence、公开事件边界、迁移、空库和本地库、Compose 健康与来源隔离；已备份至 `origin/main` 和 `c02-accepted` |
-| C03 | Control API 与 Dev Identity | `ACCEPTED` | C02 | 2026-08-13 | 2026-08-13 | 审计员独立复验 Dev Identity、workspace 授权、幂等、PostgreSQL 集成、原子契约导出和 Studio 运行时代理；仅待受限 Git 备份 `c03-accepted`，C04/C05 继续 `PENDING` |
-| C04 | Asset、Project、Shot 工作台 | `PENDING` | C03 |  |  |  |
+| C03 | Control API 与 Dev Identity | `ACCEPTED` | C02 | 2026-08-13 | 2026-08-13 | 审计员独立复验 Dev Identity、workspace 授权、幂等、PostgreSQL 集成、原子契约导出和 Studio 运行时代理；已备份至 `origin/main` 与 `c03-accepted` |
+| C04 | Asset、Project、Shot 工作台 | `ACCEPTED` | C03 | 2026-08-13 | 2026-08-13 | 审计员已独立复验受权上传/确认/下载、服务端 object key、项目/分镜/引用授权、真实 MinIO、公开 HTTP 与 Studio UI E2E；现仅授权受限 Git 备份 |
 | C05 | Outbox、Queue 和 Worker | `PENDING` | C02/C04 |  |  |  |
 | C06 | Mock 视频生成闭环 | `PENDING` | C05 |  |  |  |
 | C07 | SUB2API 离线 Adapter | `PENDING` | C06 |  |  |  |
@@ -254,6 +254,52 @@ Studio 运行时代理回归与受控验证（2026-08-13）：Studio 测试入�
 审计员独立复核（2026-08-13）：在不采信实现方结论的前提下，审计端重新执行 `pnpm contracts:generate`、带本地 PostgreSQL `DATABASE_URL` 的根 `pnpm typecheck`、`pnpm test`（41 通过、0 跳过、0 失败）、`pnpm build`、`db:generate`、`db:migrate`、Compose config/health 和 contracts 并发导出回归（16/16）。审计端还在同一无密钥环境中启动 Control API `3032` 与 Studio Nitro `3031`：`/api/v1/health`、`/api/v1/me`、Studio `/`、Studio `/api/v1/health` 均为 `200`；固定开发身份为 `usr_dev_owner`/`ws_dev_default`；同一创建键重放同一 `prj_`，变更 body 为 `409 IDEMPOTENCY_CONFLICT`。审计生成的项目与 command deduplication 记录已精确删除，审计启动进程已停止。`upstream/` 仍被忽略，Git 索引和 submodule 均无上游快照，C01/C02 远端备份 refs 保持不变。
 
 Exit Gate 结论：`ACCEPTED`。C03 的 Dev Identity、公开控制面、workspace 授权、命令幂等、数据库持久化、公开边界、契约生成安全和 Studio 最小 API client 均符合正式开发总控文档 8.1-8.5 与 AGENTS.md。现仅授权主线执行受限 `feat(C03)` 提交、推送 `origin/main` 和 `c03-accepted` 标签；完成远端复核前不得启动 C04/C05。
+
+### C04：Asset、Project、Shot 工作台
+
+状态：ACCEPTED
+实施日期：2026-08-13
+前置条件：C03 `ACCEPTED`，并已完成备份复核，`origin/main` 与带注释标签 `c03-accepted` 解引用均为 `1a59dcf81e568f6fae801cb962f8134067624161`。
+范围：服务端生成 object key、短时预签名上传/确认/下载、workspace 授权的 Asset/Shot/ReferenceBinding、公开 `/api/v1` DTO 及 Studio 工作台。
+禁止事项：未实现 C05 outbox、队列、Worker 或 SSE；未实现视频 Provider、Veyra、VPS、域名、部署或真实凭据。
+
+来源与迁入边界：
+
+1. `huobao-drama` 固定 `f04d705603bd0257bcec6b8f44fd04ea3ea9b795`：复用 Nuxt 单一 API composable、媒体预览失败回退与上传中局部状态语义，以及 Hono 路由/仓储分层惯例。薄适配位于 `apps/studio-web/app/composables/useAssetMedia.ts`、`useControlApi.ts`、`app/pages/index.vue`、`apps/control-api/src/asset-repository.ts`。未迁入短剧数据、MySQL、静态路径、进程内任务、Provider 或凭据。
+2. `OpenMontage` 固定 `4eab34c5cfcccaa4f1970554928feccce73ee930`：复用 Asset 明确技术元数据与 schema contract gate 思路。薄适配位于 `packages/contracts/src/resources.ts`、`packages/storage-client/` 和 `packages/persistence/`。未迁入 `project_dir`、`events.jsonl`、Backlot、Python runtime 或文件系统事实源。
+3. `upstream/` 仍受 `.gitignore` 忽略，`git ls-files --stage -- upstream` 无条目；没有 submodule、gitlink、上游快照、真实 `.env`、媒体或测试输出进入索引。详细矩阵和目标模块记录见 `doc/AI企业内容生产平台_C04上游复用矩阵.md`、`apps/control-api/UPSTREAM.md`、`apps/studio-web/UPSTREAM.md`、`packages/persistence/UPSTREAM.md`、`packages/storage-client/UPSTREAM.md`。
+
+契约与实现：
+
+1. Contracts 定义上传申请/确认、下载 URL、Shot/ReferenceBinding DTO，公开错误新增 `SHOT_POSITION_CONFLICT`。浏览器仅在当前授权响应中获得短时 presigned URL；object key、签名 query、Provider/Veyra 字段不进入公开持久 DTO、事件、日志、错误或幂等快照。
+2. StoragePort 由服务器生成 `workspace/project/asset/original.ext` object key。S3/MinIO `PutObject` 预签名并要求 `If-None-Match: *`，Studio 原样发出该 header；已确认对象不能被旧 URL 或重新签发的 URL 覆盖。MinIO `PutBucketCors` 的确定性 `NotImplemented/501` 只记录安全诊断，并依赖 Compose 固定的全局 CORS 配置；任何其他初始化错误仍返回 `STORAGE_UNAVAILABLE`。
+3. Asset/Shot 仓储所有 workspace 资源查询显式带 `workspace_id`。确认缺失 Asset、无效上传、无效引用、重复 Shot position 和资源不存在更新均为可回放命令终态；同 key/异 body 是 `409 IDEMPOTENCY_CONFLICT`。存储不可用为 `503 STORAGE_UNAVAILABLE`，事务回滚而不持久化命令。重复 position 统一为 `409 SHOT_POSITION_CONFLICT`，Drizzle 先串行检查并保留/捕获 `shots_project_position_key` 作为并发最终防线，避免泄漏为 500。
+4. Studio 只经相对 `/api/v1` 访问 Control API；上传 URL 和预览 URL 只保存在组件内存，刷新后须重新申请。页面提供项目选择/创建、图片上传确认下载预览、Shot 创建编辑与 ReferenceBinding 控件；没有直接 MinIO、Provider、Veyra 或数据库调用。
+
+测试命令及实际结果：
+
+1. 无 `.env`、无 `.env.local`、无 `apps/control-api/.env` 条件下，`pnpm install --frozen-lockfile`：通过，7 个 workspace，lockfile 最新。
+2. `pnpm contracts:generate`：通过；生成 OpenAPI/AsyncAPI/JSON Schema，contracts 并发原子写入回归随根测试通过。
+3. `$env:DATABASE_URL = 'postgresql://video_local:video_local@127.0.0.1:15432/video_local'; pnpm typecheck`：通过，Studio、contracts、domain、persistence、storage-client、Control API 均通过。
+4. 同一 `DATABASE_URL` 下 `pnpm test`：通过。Studio 4/4、contracts 17/17、domain 7/7、storage-client 单元 3/3（真实 MinIO 测试在无 S3 环境变量的根测试中按设计跳过）、persistence 8/8（包含 PostgreSQL C04 集成）、Control API 10/10；无失败。
+5. 同一 `DATABASE_URL` 下 `pnpm build`：通过，Nuxt/Nitro、Control API 与所有 packages 构建成功；仅有既有 Nuxt/Node deprecation warning。
+6. `pnpm --filter @alchemy-video/persistence db:generate`：`No schema changes, nothing to migrate`；带 `DATABASE_URL` 的 `db:migrate`：通过并可重放。
+7. 真实 MinIO：设置仅本地假值 `S3_ENDPOINT=http://127.0.0.1:9002`、`S3_REGION=us-east-1`、`S3_BUCKET=video-local`、`S3_ACCESS_KEY=video_local`、`S3_SECRET_KEY=video_local_secret` 后执行 `pnpm --filter @alchemy-video/storage-client test:minio`：1/1 通过。预检允许 `http://127.0.0.1:3031`、`Content-Type`、`If-None-Match`；首次 PUT 200，旧 URL 和新签 URL 覆盖均为 412，SHA-256/内容不变。固定 MinIO 返回 `NotImplemented/501` 的 bucket CORS 命令仅输出 name/code/http status 安全诊断，Compose global CORS 已实际生效。
+8. `pnpm --filter @alchemy-video/control-api test:e2e`：通过。监督脚本先拒绝占用的 `3031/3032`，再以进程环境注入本地 mock 配置，直接启动一次性的 API `tsx` 进程和 Studio Nitro 进程，验证 API/Studio/Studio proxy HTTP 200，并仅经公开 HTTP 依次执行 create project、upload request、带 `If-None-Match` PUT、confirm、download 字节校验、create/update Shot、ReferenceBinding 和 Studio proxy detail。`finally` 精确结束子进程树并删除本轮 project/MinIO object；结束后 `.env`、`.env.local`、`apps/control-api/.env` 全不存在，3031/3032 无 listener。
+9. `pnpm --filter @alchemy-video/control-api test:studio-ui-e2e`：通过。现有本地 Python Playwright 测试工具只作为测试 harness，不是产品 Runtime 依赖；在同一受控环境中通过真实 Studio UI 创建项目、使用浏览器 file input 上传内嵌有效 1x1 PNG、等待 Asset `READY`、刷新页面、点击 Preview，并断言 `<img>` `complete=true`、`naturalWidth=1`、`naturalHeight=1`。`finally` 删除 1 个测试项目和 1 个 MinIO object、fixture、screenshot，并释放 API `3032` 和 Studio `3031`。独立复核确认没有 `C04 Studio UI E2E %` 或 `C04 public HTTP E2E` 的项目/Asset 记录、没有 C04 fixture/screenshot、没有临时 `.env`，且两个端口均可绑定。旧 `--serve-browser-audit` 的遗留 `tsx watch` 树经命令行与父链确认后已精确终止；新的监督器不再调用 `pnpm ... dev`。
+10. `docker compose -f infrastructure/compose/docker-compose.local.yml config --quiet`：通过；`docker compose ... ps` 显示 postgres、redis、minio 均为 healthy。`pg_isready`、`redis-cli ping`、MinIO live health 及宿主端口 `15432/6380/9002/9003` 连接均通过。
+
+风险与未完成项：
+
+- C04 没有图片内容解码、尺寸/方向提取或视频 `ffprobe`；当前上传确认只验证对象 MIME、大小和 SHA-256，媒体深度检查留给后续媒体 Runtime 章节。
+- ADR-0020 明确 C04 采用可信 MIME 限制：确认路径不解码用户声明为图片的内容，因此恶意或错误 MIME 仍可能导致预览失败。C04 E2E 使用有效 1x1 PNG，校验下载 MIME、PNG 签名、IHDR 尺寸和字节；真实 Studio UI 复验已断言 Preview 的 `naturalWidth=1`、`naturalHeight=1`。C12 负责引入深度内容探测与媒体质量错误。
+- 预签名 URL 是短时响应字段，用户刷新或过期后需重新请求；非 `PENDING_UPLOAD` Asset 不会重签上传 URL。没有真实 Provider、外部 Key、信用扣费、Worker 或事件投递。
+
+Git 备份治理：工作区包含 C04 代码、生成契约和文档的未暂存差异；`git diff --check` 通过。审计员已在 `ACCEPTED` 后仅授权主线执行受限 `git add`、`feat(C04): ...` 提交、推送 `origin/main` 和带注释标签 `c04-accepted`。提交前仍必须排除 `upstream/`、真实 `.env`、媒体二进制、fixture、screenshot、测试输出和本地卷；完成远端 ref 复核前，C05 保持 `PENDING`。
+
+审计纠偏完成（2026-08-13）：旧 E2E 曾把普通文本伪装为 `image/png`，Studio 预览的 `naturalWidth=0`。现已替换为内嵌有效 1x1 PNG，移除 `C04_E2E_AUDIT_HOLD_MS`，并加入下载 MIME、PNG 签名、IHDR 尺寸、字节不变和真实浏览器 Preview 解码断言。旧 `--serve-browser-audit` 进程树在最终扫描中被识别为历史 C04 子树后精确终止；新的 E2E 直接监督一次性 API/Studio 服务，并在正常 UI/HTTP 两条路径中均证明端口、数据库、MinIO object、fixture、screenshot 和临时配置被清理。
+
+审计员独立复核（2026-08-13）：审计端重新执行冻结依赖安装、`pnpm contracts:generate`、带本地 PostgreSQL `DATABASE_URL` 的 `pnpm typecheck`、`pnpm test`（Studio 4、contracts 17、domain 7、storage-client 3、persistence 8、Control API 10 均通过；真实 MinIO 用例在根测试中按设计跳过）、`pnpm build`、Drizzle generate/migrate、真实 MinIO `test:minio`（1/1）、公开 HTTP E2E 与 Python Playwright Studio UI E2E。Compose 配置、PostgreSQL `pg_isready`、Redis `PING`、MinIO live health 和宿主端口均通过。最终扫描确认无 `3031/3032` listener、无 C04 测试 project/object/fixture/screenshot 或临时 `.env` 残留；`git diff --check` 通过，索引未包含 `upstream/`、上游快照、submodule/gitlink、真实凭据、媒体或测试输出。C04 的对象键仅由服务端生成并未进入公开 Asset DTO；所有 Asset/Shot/ReferenceBinding 查询先按 `workspace_id` 范围约束，命令幂等和 ReferenceBinding READY/同项目约束由持久化事务实现；Shot 编辑不创建 TaskRun。结论：C04 Exit Gate 为 `ACCEPTED`。仅允许接下来的受限备份；在 `origin/main` 和 `c04-accepted` 远端 refs 独立复核前不得启动 C05。
 
 每章完成时追加：
 

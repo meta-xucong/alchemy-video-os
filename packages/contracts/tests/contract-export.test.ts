@@ -8,6 +8,7 @@ import {
   ApplicationErrorCodeSchema,
   ApiFailureEnvelopeSchema,
   AssetSchema,
+  CreateShotCommandSchema,
   CreateTaskRunCommandSchema,
   HealthSuccessEnvelopeSchema,
   InternalEventEnvelopeSchema,
@@ -36,6 +37,7 @@ test("failure envelopes always include details", () => {
 
 test("the exported application error code set includes internal failures", () => {
   assert.equal(ApplicationErrorCodeSchema.parse("INTERNAL_ERROR"), "INTERNAL_ERROR");
+  assert.equal(ApplicationErrorCodeSchema.parse("SHOT_POSITION_CONFLICT"), "SHOT_POSITION_CONFLICT");
 });
 
 test("the C03 health response distinguishes the API process and database dependency", () => {
@@ -116,6 +118,25 @@ test("video generation retains the provider-facing field names", () => {
   });
 
   assert.equal(command.reference_asset_ids[0], "ast_01J4N8QZ8PCW2N2G6D2XJXJXJX");
+});
+
+test("C04 upload and shot commands restrict public media inputs and reference bindings", () => {
+  assert.doesNotThrow(() =>
+    CreateShotCommandSchema.parse({
+      position: 0,
+      reference_bindings: [
+        { asset_id: "ast_01J4N8QZ8PCW2N2G6D2XJXJXJX", role: "STYLE", position: 0 },
+      ],
+    }),
+  );
+  assert.throws(() =>
+    CreateUploadRequestCommandSchema.parse({
+      kind: "IMAGE",
+      filename: "not-an-image.pdf",
+      mime_type: "application/pdf",
+      byte_size: 1024,
+    }),
+  );
 });
 
 test("TaskRun contracts expose the ADR-0014 status and terminal sets", () => {

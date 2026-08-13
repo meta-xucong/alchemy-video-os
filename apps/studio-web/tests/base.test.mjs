@@ -32,18 +32,29 @@ test("studio health screen uses the public control API boundary", () => {
 
   assert.match(composable, /\$fetch<HealthStatus>\("\/api\/v1\/health"\)/);
   assert.match(page, /useControlApi/);
-  assert.match(page, /Refresh control API status/);
+  assert.match(page, /Refresh workbench/);
 });
 
-test("studio C03 surface reads identity and projects through the public API", () => {
+test("studio C03 and C04 surfaces stay on the public control API boundary", () => {
   const composable = read("app/composables/useControlApi.ts");
   const page = read("app/pages/index.vue");
+  const assetMedia = read("app/composables/useAssetMedia.ts");
 
   assert.match(composable, /\/api\/v1\/me/);
   assert.match(composable, /\/api\/v1\/projects/);
+  assert.match(composable, /assets\/upload-requests/);
+  assert.match(composable, /confirm-upload/);
+  assert.match(composable, /download-url/);
+  assert.match(composable, /\/shots/);
   assert.match(composable, /Idempotency-Key/);
   assert.match(page, /currentIdentity/);
   assert.match(page, /Create project/);
+  assert.match(page, /Choose reference image/);
+  assert.match(page, /confirmAssetUpload/);
+  assert.match(page, /createShot/);
+  assert.match(page, /updateShot/);
+  assert.match(page, /fetch\(request\.data\.upload_url/);
+  assert.match(assetMedia, /thumbFallback/);
   assert.doesNotMatch(composable, /\/internal\//);
-  assert.doesNotMatch(composable, /provider|veyra|minio/i);
+  assert.doesNotMatch(`${composable}\n${page}\n${assetMedia}`, /\b(?:object_key|provider|veyra|minio|bullmq|outbox|task_run|sse)\b/i);
 });

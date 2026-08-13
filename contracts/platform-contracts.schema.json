@@ -19,7 +19,9 @@
             "PROVIDER_REJECTED",
             "PROVIDER_PROTOCOL_INVALID",
             "DOWNLOAD_INVALID",
+            "STORAGE_UNAVAILABLE",
             "IDEMPOTENCY_CONFLICT",
+            "SHOT_POSITION_CONFLICT",
             "WORKSPACE_FORBIDDEN",
             "VALIDATION_FAILED",
             "NOT_FOUND",
@@ -65,7 +67,9 @@
                 "PROVIDER_REJECTED",
                 "PROVIDER_PROTOCOL_INVALID",
                 "DOWNLOAD_INVALID",
+                "STORAGE_UNAVAILABLE",
                 "IDEMPOTENCY_CONFLICT",
+                "SHOT_POSITION_CONFLICT",
                 "WORKSPACE_FORBIDDEN",
                 "VALIDATION_FAILED",
                 "NOT_FOUND",
@@ -581,6 +585,44 @@
       "required": [
         "data",
         "request_id"
+      ],
+      "additionalProperties": false
+    },
+    "ReferenceBinding": {
+      "type": "object",
+      "properties": {
+        "shot_id": {
+          "type": "string",
+          "pattern": "^sht_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+        },
+        "asset_id": {
+          "type": "string",
+          "pattern": "^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "STYLE",
+            "SUBJECT",
+            "FIRST_FRAME",
+            "LAST_FRAME"
+          ]
+        },
+        "position": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "created_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        }
+      },
+      "required": [
+        "shot_id",
+        "asset_id",
+        "role",
+        "position",
+        "created_at"
       ],
       "additionalProperties": false
     },
@@ -1560,20 +1602,39 @@
               "pattern": "^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
             },
             "upload_url": {
-              "type": "string",
-              "format": "uri"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uri"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "headers": {
               "type": "object",
               "additionalProperties": {
                 "type": "string"
               }
+            },
+            "expires_at": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
             "asset_id",
             "upload_url",
-            "headers"
+            "headers",
+            "expires_at"
           ],
           "additionalProperties": false
         },
@@ -1693,7 +1754,8 @@
         },
         "byte_size": {
           "type": "integer",
-          "exclusiveMinimum": 0
+          "exclusiveMinimum": 0,
+          "maximum": 26214400
         }
       },
       "required": [
@@ -1740,6 +1802,34 @@
       ],
       "additionalProperties": false
     },
+    "ReferenceBindingInput": {
+      "type": "object",
+      "properties": {
+        "asset_id": {
+          "type": "string",
+          "pattern": "^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "STYLE",
+            "SUBJECT",
+            "FIRST_FRAME",
+            "LAST_FRAME"
+          ]
+        },
+        "position": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "asset_id",
+        "role",
+        "position"
+      ],
+      "additionalProperties": false
+    },
     "CreateShotCommand": {
       "type": "object",
       "properties": {
@@ -1766,6 +1856,39 @@
           "type": "object",
           "additionalProperties": {},
           "default": {}
+        },
+        "reference_bindings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "asset_id": {
+                "type": "string",
+                "pattern": "^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "STYLE",
+                  "SUBJECT",
+                  "FIRST_FRAME",
+                  "LAST_FRAME"
+                ]
+              },
+              "position": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "asset_id",
+              "role",
+              "position"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 8,
+          "default": []
         }
       },
       "required": [
@@ -1803,9 +1926,6 @@
           "enum": [
             "DRAFT",
             "READY",
-            "GENERATING",
-            "GENERATED",
-            "FAILED",
             "ARCHIVED"
           ]
         },
@@ -1819,6 +1939,37 @@
               "type": "null"
             }
           ]
+        },
+        "reference_bindings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "asset_id": {
+                "$ref": "#/definitions/UpdateShotCommand/properties/selected_asset_id/anyOf/0"
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "STYLE",
+                  "SUBJECT",
+                  "FIRST_FRAME",
+                  "LAST_FRAME"
+                ]
+              },
+              "position": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "asset_id",
+              "role",
+              "position"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 8
         }
       },
       "additionalProperties": false
@@ -2141,12 +2292,51 @@
                 ],
                 "additionalProperties": false
               }
+            },
+            "reference_bindings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "shot_id": {
+                    "$ref": "#/definitions/ProjectDetailSuccess/properties/data/properties/shots/items/properties/id"
+                  },
+                  "asset_id": {
+                    "$ref": "#/definitions/ProjectDetailSuccess/properties/data/properties/shots/items/properties/selected_asset_id/anyOf/0"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "STYLE",
+                      "SUBJECT",
+                      "FIRST_FRAME",
+                      "LAST_FRAME"
+                    ]
+                  },
+                  "position": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "created_at": {
+                    "$ref": "#/definitions/ProjectDetailSuccess/properties/data/properties/project/properties/created_at"
+                  }
+                },
+                "required": [
+                  "shot_id",
+                  "asset_id",
+                  "role",
+                  "position",
+                  "created_at"
+                ],
+                "additionalProperties": false
+              }
             }
           },
           "required": [
             "project",
             "shots",
-            "assets"
+            "assets",
+            "reference_bindings"
           ],
           "additionalProperties": false
         },
