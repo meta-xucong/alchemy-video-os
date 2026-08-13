@@ -1,6 +1,7 @@
 import { InternalTaskRunQueueMessageSchema, type InternalTaskRunQueueMessage } from "@alchemy-video/contracts";
 import type { InternalEventQueuePort } from "@alchemy-video/task-queue";
 import type { PersistedOutboxEvent, TaskRunEventResult, TaskRunStore } from "@alchemy-video/persistence";
+import type { MockVideoTaskExecutor } from "./execution-service.js";
 
 const failureReason = (error: unknown) =>
   (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/g, " ").slice(0, 500);
@@ -63,8 +64,9 @@ export const createTaskRunQueueMessage = (outbox: PersistedOutboxEvent): Interna
 
 export class TaskRunEventConsumer {
   constructor(
-    private readonly store: Pick<TaskRunStore, "processEvent" | "releaseConsumerEvent">,
+    private readonly store: Pick<TaskRunStore, "processEvent" | "releaseConsumerEvent" | "finalizeTaskRunExecutionFailure">,
     private readonly input: { consumerName: string; workerId: string; leaseMs: number },
+    private readonly executor?: Pick<MockVideoTaskExecutor, "execute">,
   ) {}
 
   async process(input: InternalTaskRunQueueMessage): Promise<TaskRunEventResult> {
@@ -77,6 +79,9 @@ export class TaskRunEventConsumer {
     });
     if (result === "RETRY" || result === "BUSY") {
       throw new Error(`Internal event ${input.event_id} requires another delivery attempt.`);
+    }
+    if ((result === "PROCESSED" || result === "DUPLICATE") && this.executor) {
+      await this.executor.execute({ workspaceId: input.workspace_id, taskRunId: input.task_run_id });
     }
     return result;
   }
@@ -92,4 +97,31 @@ export class TaskRunEventConsumer {
       now: new Date(),
     });
   }
+
+  async finalizeExecutionFailure(input: { workspace_id: string; task_run_id: string; reason: string }) {
+    await this.store.finalizeTaskRunExecutionFailure({
+      workspaceId: input.workspace_id,
+      taskRunId: input.task_run_id,
+      code: "PROVIDER_UNAVAILABLE",
+      message: "Mock video execution exhausted its recoverable delivery attempts.",
+      now: new Date(),
+    });
+  }
 }
+
+export const recoverC06TaskRuns = async (executor: Pick<MockVideoTaskExecutor, "recover">, input: {
+  limit?: number;
+  maxAttempts?: number;
+  onFailure?: (failure: { workspaceId: string; taskRunId: string; reason: string }) => void;
+  finalizeFailure?: (failure: { workspaceId: string; taskRunId: string; reason: string }) => Promise<void>;
+} = {}) => {
+  const results = await executor.recover({ limit: input.limit ?? 100, maxAttempts: input.maxAttempts ?? 3 });
+  for (const result of results) {
+    if (result.failure) {
+      const failure = { workspaceId: result.workspaceId, taskRunId: result.taskRunId, reason: result.failure };
+      input.onFailure?.(failure);
+      await input.finalizeFailure?.(failure);
+    }
+  }
+  return results;
+};

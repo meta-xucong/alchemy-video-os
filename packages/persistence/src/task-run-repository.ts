@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 
 import {
   InternalEventEnvelopeSchema,
@@ -12,8 +12,9 @@ import {
 import { assertTaskRunTransition, createPrefixedId, fingerprintRequest } from "@alchemy-video/domain";
 
 import type { PlatformDatabase } from "./db.js";
-import { assets, commandDeduplications, eventConsumptions, outboxEvents, shots, taskRuns } from "./schema.js";
-import { shotScope, taskRunScope } from "./workspace-repositories.js";
+import type { ControlAsset } from "./asset-workspace-repository.js";
+import { assets, commandDeduplications, eventConsumptions, outboxEvents, providerAttempts, shots, taskRuns } from "./schema.js";
+import { assetScope, shotScope, taskRunScope } from "./workspace-repositories.js";
 
 export type ControlTaskRun = {
   id: string;
@@ -83,11 +84,43 @@ export type TaskRunEventProcessingInput = {
   leaseMs: number;
 };
 
+export type ControlProviderAttempt = {
+  id: string;
+  taskRunId: string;
+  provider: string;
+  model: string;
+  providerRequestId: string | null;
+  status: "CREATED" | "SUBMITTED" | "PROCESSING" | "SUCCEEDED" | "FAILED" | "DOWNLOAD_FAILED" | "ABANDONED";
+  requestPayload: Record<string, unknown>;
+  responsePayload: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type GeneratedAssetDraft = {
+  id: string;
+  objectKey: string;
+  taskRunId: string;
+};
+
 export interface TaskRunStore {
   createTaskRun(input: CreateTaskRunInput): Promise<TaskRunCommandExecution>;
   retryTaskRun(input: RetryTaskRunInput): Promise<TaskRunCommandExecution>;
   findTaskRun(workspaceId: string, taskRunId: string): Promise<ControlTaskRun | undefined>;
-  listTaskRunAttempts(workspaceId: string, taskRunId: string): Promise<[]>;
+  listProjectTaskRuns(workspaceId: string, projectId: string): Promise<ControlTaskRun[]>;
+  listRecoverableVideoTaskRuns(input: { limit: number }): Promise<ControlTaskRun[]>;
+  findTaskRunResultAsset(workspaceId: string, assetId: string): Promise<ControlAsset | undefined>;
+  findGeneratedAssetDraft(workspaceId: string, taskRunId: string): Promise<GeneratedAssetDraft | undefined>;
+  listTaskRunAttempts(workspaceId: string, taskRunId: string): Promise<ControlProviderAttempt[]>;
+  ensureProviderAttempt(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; provider: string; model: string; now: Date }): Promise<ControlProviderAttempt | undefined>;
+  recordProviderSubmission(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; providerRequestId: string; now: Date }): Promise<ControlTaskRun | undefined>;
+  recordProviderProcessing(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; now: Date }): Promise<ControlTaskRun | undefined>;
+  beginDownload(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; now: Date }): Promise<ControlTaskRun | undefined>;
+  recordDownloadRetryableFailure(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; code: string; now: Date }): Promise<void>;
+  ensureGeneratedAsset(input: { workspaceId: string; taskRunId: string; assetId: string; objectKey: string; now: Date }): Promise<GeneratedAssetDraft | undefined>;
+  completeGeneratedTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; assetId: string; sha256: string; byteSize: number; width: number; height: number; durationMs: number; now: Date }): Promise<ControlTaskRun | undefined>;
+  finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; code: string; message: string; now: Date }): Promise<ControlTaskRun | undefined>;
+  failTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId?: string; failureStage?: "PROVIDER" | "DOWNLOAD"; code: string; message: string; retryable: boolean; now: Date }): Promise<ControlTaskRun | undefined>;
   listWorkspaceEvents(input: { workspaceId: string; afterEventId?: string; limit: number }): Promise<InternalEventEnvelope[]>;
   claimOutboxEvents(input: { relayId: string; now: Date; leaseMs: number; limit: number; workspaceId?: string }): Promise<PersistedOutboxEvent[]>;
   markOutboxPublished(input: { eventId: string; workspaceId: string; relayId: string; now: Date }): Promise<void>;
@@ -125,6 +158,19 @@ const toControlTaskRun = (value: typeof taskRuns.$inferSelect): ControlTaskRun =
   resultAssetId: value.resultAssetId,
   error: value.error as ControlTaskRun["error"],
   retryAt: value.retryAt,
+  createdAt: timestamp(value.createdAt),
+  updatedAt: timestamp(value.updatedAt),
+});
+
+const toControlProviderAttempt = (value: typeof providerAttempts.$inferSelect): ControlProviderAttempt => ({
+  id: value.id,
+  taskRunId: value.taskRunId,
+  provider: value.provider,
+  model: value.model,
+  providerRequestId: value.providerRequestId,
+  status: value.status,
+  requestPayload: value.requestPayload,
+  responsePayload: value.responsePayload,
   createdAt: timestamp(value.createdAt),
   updatedAt: timestamp(value.updatedAt),
 });
@@ -182,6 +228,39 @@ const startedEvent = (input: { source: Extract<InternalEventEnvelope, { event_ty
     data: { task_run_id: input.source.data.task_run_id, attempt_no: input.attemptNo },
   });
 
+type QueuedTaskRunEvent = Extract<InternalEventEnvelope, { event_type: "task_run.queued" }>;
+
+const executionEvent = (
+  source: QueuedTaskRunEvent,
+  input:
+    | { type: "provider_attempt.submitted"; now: string; taskRunId: string; providerAttemptId: string; providerRequestId: string; provider: string; model: string }
+    | { type: "task_run.progressed"; now: string; taskRunId: string; status: TaskRunStatus; progress: number; message: string }
+    | { type: "task_run.succeeded"; now: string; taskRunId: string; resultAssetId: string; sha256: string }
+    | { type: "task_run.failed"; now: string; taskRunId: string; errorCode: string; retryable: boolean; providerAttemptId?: string },
+) => InternalEventEnvelopeSchema.parse({
+  contract_version: "1.0",
+  message_id: createPrefixedId("msg"),
+  event_id: createPrefixedId("evt"),
+  event_type: input.type,
+  occurred_at: input.now,
+  trace_id: source.trace_id,
+  correlation_id: source.correlation_id,
+  causation_id: source.message_id,
+  idempotency_key: source.idempotency_key,
+  producer: "provider-worker",
+  workspace_id: source.workspace_id,
+  ...(source.project_id === undefined ? {} : { project_id: source.project_id }),
+  aggregate: source.aggregate,
+  version: 1,
+  data: input.type === "provider_attempt.submitted"
+    ? { task_run_id: input.taskRunId, provider_attempt_id: input.providerAttemptId, provider_request_id: input.providerRequestId, provider: input.provider, model: input.model }
+    : input.type === "task_run.progressed"
+      ? { task_run_id: input.taskRunId, status: input.status, progress: input.progress, message: input.message }
+      : input.type === "task_run.succeeded"
+        ? { task_run_id: input.taskRunId, result_asset_id: input.resultAssetId, sha256: input.sha256 }
+        : { task_run_id: input.taskRunId, error_code: input.errorCode, retryable: input.retryable, ...(input.providerAttemptId ? { provider_attempt_id: input.providerAttemptId } : {}) },
+});
+
 const insertOutboxEvent = async (
   transaction: QueryExecutor,
   event: InternalEventEnvelope,
@@ -196,6 +275,19 @@ const insertOutboxEvent = async (
     payload: event,
     occurredAt: event.occurred_at,
   });
+
+const queuedSourceForTaskRun = async (executor: QueryExecutor, workspaceId: string, taskRunId: string): Promise<QueuedTaskRunEvent | undefined> => {
+  const rows = await executor
+    .select({ payload: outboxEvents.payload })
+    .from(outboxEvents)
+    .where(and(eq(outboxEvents.workspaceId, workspaceId), eq(outboxEvents.aggregateType, "task_run"), eq(outboxEvents.aggregateId, taskRunId)));
+  return rows
+    .map((row) => InternalEventEnvelopeSchema.safeParse(row.payload))
+    .find((parsed): parsed is { success: true; data: QueuedTaskRunEvent } => parsed.success && parsed.data.event_type === "task_run.queued")?.data;
+};
+
+const lockTaskRun = (executor: QueryExecutor, workspaceId: string, taskRunId: string) =>
+  executor.execute(sql`select pg_advisory_xact_lock(hashtext(${workspaceId} || ':' || ${taskRunId}))`);
 
 export class DrizzleTaskRunRepository implements TaskRunStore {
   constructor(private readonly db: PlatformDatabase) {}
@@ -230,6 +322,9 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
         .where(and(eq(taskRuns.workspaceId, input.workspaceId), eq(taskRuns.shotId, input.shotId), sql`${taskRuns.status} not in (${terminalStatusSql})`))
         .limit(1);
       if (active) return this.storeCommandOutcome(transaction, input.scope, input.idempotencyKey, { kind: "ACTIVE_CONFLICT" });
+      if (!["READY", "GENERATED", "FAILED"].includes(shot.status)) {
+        return this.storeCommandOutcome(transaction, input.scope, input.idempotencyKey, { kind: "STATE_INVALID" });
+      }
 
       const now = new Date().toISOString();
       let created: typeof taskRuns.$inferSelect | undefined;
@@ -256,6 +351,10 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
       }
 
       const taskRun = toControlTaskRun(created!);
+      await transaction
+        .update(shots)
+        .set({ status: "GENERATING", revision: shot.revision + 1, updatedAt: now })
+        .where(shotScope(input.workspaceId, shot.id));
       const event = queuedEvent({
         event: input.event,
         idempotencyKey: input.idempotencyKey,
@@ -293,7 +392,23 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
         .set({ status: "QUEUED", error: null, retryAt: null, updatedAt: now })
         .where(taskRunScope(input.workspaceId, input.taskRunId))
         .returning();
+      await transaction
+        .update(providerAttempts)
+        .set({ status: "ABANDONED", updatedAt: now })
+        .where(and(
+          eq(providerAttempts.workspaceId, input.workspaceId),
+          eq(providerAttempts.taskRunId, input.taskRunId),
+          isNull(providerAttempts.providerRequestId),
+          sql`${providerAttempts.status} not in ('FAILED', 'DOWNLOAD_FAILED', 'ABANDONED')`,
+        ));
       const taskRun = toControlTaskRun(retried);
+      const [shot] = await transaction.select().from(shots).where(shotScope(input.workspaceId, taskRun.shotId)).limit(1);
+      if (shot) {
+        await transaction
+          .update(shots)
+          .set({ status: "GENERATING", revision: shot.revision + 1, updatedAt: now })
+          .where(shotScope(input.workspaceId, shot.id));
+      }
       const event = queuedEvent({
         event: input.event,
         idempotencyKey: input.idempotencyKey,
@@ -314,8 +429,330 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
     return taskRun ? toControlTaskRun(taskRun) : undefined;
   }
 
-  async listTaskRunAttempts(_workspaceId: string, _taskRunId: string): Promise<[]> {
-    return [];
+  async listProjectTaskRuns(workspaceId: string, projectId: string) {
+    const rows = await this.db.select().from(taskRuns).where(and(eq(taskRuns.workspaceId, workspaceId), eq(taskRuns.projectId, projectId))).orderBy(asc(taskRuns.createdAt));
+    return rows.map(toControlTaskRun);
+  }
+
+  async listRecoverableVideoTaskRuns(input: { limit: number }) {
+    const rows = await this.db
+      .select()
+      .from(taskRuns)
+      .where(and(
+        eq(taskRuns.kind, "VIDEO_GENERATION"),
+        inArray(taskRuns.status, ["RUNNING", "PROVIDER_PROCESSING", "DOWNLOADING"]),
+      ))
+      .orderBy(asc(taskRuns.updatedAt), asc(taskRuns.id))
+      .limit(input.limit);
+    return rows.map(toControlTaskRun);
+  }
+
+  async findTaskRunResultAsset(workspaceId: string, assetId: string) {
+    const [asset] = await this.db.select().from(assets).where(assetScope(workspaceId, assetId)).limit(1);
+    if (!asset) return undefined;
+    return {
+      id: asset.id,
+      workspaceId: asset.workspaceId,
+      projectId: asset.projectId,
+      kind: asset.kind,
+      origin: asset.origin,
+      status: asset.status,
+      objectKey: asset.objectKey,
+      sha256: asset.sha256,
+      mimeType: asset.mimeType,
+      byteSize: asset.byteSize,
+      width: asset.width,
+      height: asset.height,
+      durationMs: asset.durationMs,
+      metadata: asset.metadata,
+      createdAt: timestamp(asset.createdAt),
+      updatedAt: timestamp(asset.updatedAt),
+    };
+  }
+
+  async findGeneratedAssetDraft(workspaceId: string, taskRunId: string) {
+    const [taskRun] = await this.db
+      .select({ projectId: taskRuns.projectId })
+      .from(taskRuns)
+      .where(taskRunScope(workspaceId, taskRunId))
+      .limit(1);
+    if (!taskRun) return undefined;
+    const [asset] = await this.db
+      .select({ id: assets.id, objectKey: assets.objectKey })
+      .from(assets)
+      .where(and(
+        eq(assets.workspaceId, workspaceId),
+        eq(assets.projectId, taskRun.projectId),
+        eq(assets.kind, "VIDEO"),
+        eq(assets.origin, "GENERATED"),
+        eq(assets.status, "PENDING_UPLOAD"),
+        sql`${assets.metadata} ->> 'task_run_id' = ${taskRunId}`,
+      ))
+      .limit(1);
+    return asset ? { id: asset.id, objectKey: asset.objectKey, taskRunId } : undefined;
+  }
+
+  async listTaskRunAttempts(workspaceId: string, taskRunId: string) {
+    const rows = await this.db.select().from(providerAttempts).where(and(eq(providerAttempts.workspaceId, workspaceId), eq(providerAttempts.taskRunId, taskRunId))).orderBy(asc(providerAttempts.createdAt));
+    return rows.map(toControlProviderAttempt);
+  }
+
+  async ensureProviderAttempt(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; provider: string; model: string; now: Date }) {
+    return this.db.transaction(async (transaction) => {
+      await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
+      const [taskRun] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
+      if (!taskRun || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(taskRun.status)) return undefined;
+      // A persisted Provider request is a durable submit boundary. Prefer it over
+      // any later unsubmitted row, which may have been left by an interrupted run.
+      const [submitted] = await transaction
+        .select()
+        .from(providerAttempts)
+        .where(and(
+          eq(providerAttempts.workspaceId, input.workspaceId),
+          eq(providerAttempts.taskRunId, input.taskRunId),
+          isNotNull(providerAttempts.providerRequestId),
+        ))
+        .orderBy(sql`${providerAttempts.createdAt} desc`)
+        .limit(1);
+      if (submitted) return toControlProviderAttempt(submitted);
+      const [existing] = await transaction.select().from(providerAttempts).where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.taskRunId, input.taskRunId))).orderBy(sql`${providerAttempts.createdAt} desc`).limit(1);
+      if (existing && !["FAILED", "DOWNLOAD_FAILED", "ABANDONED"].includes(existing.status)) return toControlProviderAttempt(existing);
+      const [created] = await transaction.insert(providerAttempts).values({
+        id: input.providerAttemptId,
+        workspaceId: input.workspaceId,
+        taskRunId: input.taskRunId,
+        provider: input.provider,
+        model: input.model,
+        status: "CREATED",
+        requestPayload: {},
+        responsePayload: {},
+        createdAt: input.now.toISOString(),
+        updatedAt: input.now.toISOString(),
+      }).returning();
+      return created ? toControlProviderAttempt(created) : undefined;
+    });
+  }
+
+  async recordProviderSubmission(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; providerRequestId: string; now: Date }) {
+    return this.db.transaction(async (transaction) => {
+      await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
+      const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
+      const [attempt] = await transaction.select().from(providerAttempts).where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.id, input.providerAttemptId), eq(providerAttempts.taskRunId, input.taskRunId))).limit(1);
+      if (!current || !attempt) return undefined;
+      if (attempt.providerRequestId && attempt.providerRequestId !== input.providerRequestId) throw new Error("PROVIDER_RESUBMIT_FORBIDDEN");
+      if (!attempt.providerRequestId) {
+        await transaction.update(providerAttempts).set({ providerRequestId: input.providerRequestId, status: "SUBMITTED", updatedAt: input.now.toISOString() }).where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.id, input.providerAttemptId)));
+        if (current.status === "RUNNING") {
+          assertTaskRunTransition(current.status, "PROVIDER_PROCESSING");
+          await transaction.update(taskRuns).set({ status: "PROVIDER_PROCESSING", updatedAt: input.now.toISOString() }).where(taskRunScope(input.workspaceId, input.taskRunId));
+          const source = await queuedSourceForTaskRun(transaction, input.workspaceId, input.taskRunId);
+          if (source) {
+            await insertOutboxEvent(transaction, executionEvent(source, { type: "provider_attempt.submitted", now: input.now.toISOString(), taskRunId: input.taskRunId, providerAttemptId: input.providerAttemptId, providerRequestId: input.providerRequestId, provider: attempt.provider, model: attempt.model }));
+          }
+        }
+      }
+      const [updated] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
+      return updated ? toControlTaskRun(updated) : undefined;
+    });
+  }
+
+  async recordProviderProcessing(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; now: Date }) {
+    return this.db.transaction(async (transaction) => {
+      await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
+      const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
+      const [attempt] = await transaction.select().from(providerAttempts).where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.id, input.providerAttemptId), eq(providerAttempts.taskRunId, input.taskRunId))).limit(1);
+      if (!current || !attempt) return undefined;
+      let updatedTaskRun = current;
+      if (current.status === "RUNNING") {
+        assertTaskRunTransition(current.status, "PROVIDER_PROCESSING");
+        const [transitioned] = await transaction
+          .update(taskRuns)
+          .set({ status: "PROVIDER_PROCESSING", updatedAt: input.now.toISOString() })
+          .where(taskRunScope(input.workspaceId, input.taskRunId))
+          .returning();
+        if (transitioned) updatedTaskRun = transitioned;
+      }
+      await transaction.update(providerAttempts).set({ status: "PROCESSING", updatedAt: input.now.toISOString() }).where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.id, input.providerAttemptId)));
+      const source = await queuedSourceForTaskRun(transaction, input.workspaceId, input.taskRunId);
+      if (source && current.status === "RUNNING") {
+        await insertOutboxEvent(transaction, executionEvent(source, { type: "task_run.progressed", now: input.now.toISOString(), taskRunId: input.taskRunId, status: "PROVIDER_PROCESSING", progress: 45, message: "Mock video is processing." }));
+      }
+      return toControlTaskRun(updatedTaskRun);
+    });
+  }
+
+  async beginDownload(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; now: Date }) {
+    return this.db.transaction(async (transaction) => {
+      await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
+      const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
+      const [attempt] = await transaction.select().from(providerAttempts).where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.id, input.providerAttemptId), eq(providerAttempts.taskRunId, input.taskRunId))).limit(1);
+      if (!current || !attempt) return undefined;
+      if (current.status !== "DOWNLOADING") {
+        assertTaskRunTransition(current.status, "DOWNLOADING");
+        await transaction.update(taskRuns).set({ status: "DOWNLOADING", updatedAt: input.now.toISOString() }).where(taskRunScope(input.workspaceId, input.taskRunId));
+      }
+      await transaction.update(providerAttempts).set({ status: "SUCCEEDED", updatedAt: input.now.toISOString() }).where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.id, input.providerAttemptId)));
+      const source = await queuedSourceForTaskRun(transaction, input.workspaceId, input.taskRunId);
+      if (source) await insertOutboxEvent(transaction, executionEvent(source, { type: "task_run.progressed", now: input.now.toISOString(), taskRunId: input.taskRunId, status: "DOWNLOADING", progress: 75, message: "Mock video is downloading." }));
+      const [updated] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
+      return updated ? toControlTaskRun(updated) : undefined;
+    });
+  }
+
+  async recordDownloadRetryableFailure(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; code: string; now: Date }) {
+    await this.db.transaction(async (transaction) => {
+      await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
+      const [current] = await transaction.select({ status: taskRuns.status }).from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
+      const [attempt] = await transaction
+        .select({ providerRequestId: providerAttempts.providerRequestId })
+        .from(providerAttempts)
+        .where(and(
+          eq(providerAttempts.workspaceId, input.workspaceId),
+          eq(providerAttempts.id, input.providerAttemptId),
+          eq(providerAttempts.taskRunId, input.taskRunId),
+        ))
+        .limit(1);
+      if (!current || current.status !== "DOWNLOADING" || !attempt?.providerRequestId) return;
+      await transaction
+        .update(providerAttempts)
+        .set({ status: "DOWNLOAD_FAILED", responsePayload: { code: input.code }, updatedAt: input.now.toISOString() })
+        .where(and(
+          eq(providerAttempts.workspaceId, input.workspaceId),
+          eq(providerAttempts.id, input.providerAttemptId),
+          eq(providerAttempts.taskRunId, input.taskRunId),
+        ));
+    });
+  }
+
+  async ensureGeneratedAsset(input: { workspaceId: string; taskRunId: string; assetId: string; objectKey: string; now: Date }) {
+    return this.db.transaction(async (transaction) => {
+      await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
+      const [taskRun] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
+      if (!taskRun) return undefined;
+      const [existing] = await transaction
+        .select({ id: assets.id, objectKey: assets.objectKey, kind: assets.kind, origin: assets.origin, metadata: assets.metadata })
+        .from(assets)
+        .where(and(eq(assets.workspaceId, input.workspaceId), eq(assets.projectId, taskRun.projectId), eq(assets.id, input.assetId)))
+        .limit(1);
+      if (existing) {
+        if (existing.kind !== "VIDEO" || existing.origin !== "GENERATED" || existing.metadata.task_run_id !== input.taskRunId) return undefined;
+        return { id: existing.id, objectKey: existing.objectKey, taskRunId: input.taskRunId };
+      }
+      const [created] = await transaction.insert(assets).values({ id: input.assetId, workspaceId: input.workspaceId, projectId: taskRun.projectId, kind: "VIDEO", origin: "GENERATED", status: "PENDING_UPLOAD", objectKey: input.objectKey, metadata: { task_run_id: input.taskRunId, generated_by: "mock" }, createdAt: input.now.toISOString(), updatedAt: input.now.toISOString() }).returning({ id: assets.id, objectKey: assets.objectKey });
+      return created ? { id: created.id, objectKey: created.objectKey, taskRunId: input.taskRunId } : undefined;
+    });
+  }
+
+  async completeGeneratedTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; assetId: string; sha256: string; byteSize: number; width: number; height: number; durationMs: number; now: Date }) {
+    return this.db.transaction(async (transaction) => {
+      await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
+      const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
+      const [asset] = await transaction.select().from(assets).where(assetScope(input.workspaceId, input.assetId)).limit(1);
+      if (!current || !asset) return undefined;
+      if (current.status === "SUCCEEDED") return toControlTaskRun(current);
+      assertTaskRunTransition(current.status, "SUCCEEDED");
+      const [updated] = await transaction.update(assets).set({ status: "READY", sha256: input.sha256, mimeType: "video/mp4", byteSize: input.byteSize, width: input.width, height: input.height, durationMs: input.durationMs, updatedAt: input.now.toISOString() }).where(and(assetScope(input.workspaceId, input.assetId), eq(assets.status, "PENDING_UPLOAD"))).returning();
+      if (!updated && asset.status !== "READY") return undefined;
+      const [task] = await transaction.update(taskRuns).set({ status: "SUCCEEDED", resultAssetId: input.assetId, error: null, updatedAt: input.now.toISOString() }).where(taskRunScope(input.workspaceId, input.taskRunId)).returning();
+      await transaction.update(shots).set({ status: "GENERATED", selectedAssetId: input.assetId, revision: sql`${shots.revision} + 1`, updatedAt: input.now.toISOString() }).where(shotScope(input.workspaceId, current.shotId));
+      const source = await queuedSourceForTaskRun(transaction, input.workspaceId, input.taskRunId);
+      if (source && task) await insertOutboxEvent(transaction, executionEvent(source, { type: "task_run.succeeded", now: input.now.toISOString(), taskRunId: input.taskRunId, resultAssetId: input.assetId, sha256: input.sha256 }));
+      return task ? toControlTaskRun(task) : undefined;
+    });
+  }
+
+  async finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; code: string; message: string; now: Date }) {
+    return this.db.transaction(async (transaction) => {
+      await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
+      const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
+      if (!current || current.kind !== "VIDEO_GENERATION" || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(current.status)) return current ? toControlTaskRun(current) : undefined;
+      assertTaskRunTransition(current.status, "FAILED");
+      const [submittedAttempt] = await transaction
+        .select({ id: providerAttempts.id, providerRequestId: providerAttempts.providerRequestId })
+        .from(providerAttempts)
+        .where(and(
+          eq(providerAttempts.workspaceId, input.workspaceId),
+          eq(providerAttempts.taskRunId, input.taskRunId),
+          isNotNull(providerAttempts.providerRequestId),
+        ))
+        .orderBy(sql`${providerAttempts.createdAt} desc`)
+        .limit(1);
+      const [latestAttempt] = submittedAttempt
+        ? [undefined]
+        : await transaction
+          .select({ id: providerAttempts.id, providerRequestId: providerAttempts.providerRequestId })
+          .from(providerAttempts)
+          .where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.taskRunId, input.taskRunId)))
+          .orderBy(sql`${providerAttempts.createdAt} desc`)
+          .limit(1);
+      const attempt = submittedAttempt ?? latestAttempt;
+      if (attempt) {
+        await transaction
+          .update(providerAttempts)
+          .set({
+            status: current.status === "DOWNLOADING" && attempt.providerRequestId ? "DOWNLOAD_FAILED" : "FAILED",
+            responsePayload: { code: input.code },
+            updatedAt: input.now.toISOString(),
+          })
+          .where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.id, attempt.id), eq(providerAttempts.taskRunId, input.taskRunId)));
+      }
+      const [failed] = await transaction
+        .update(taskRuns)
+        .set({ status: "FAILED", error: { code: input.code, message: input.message, retryable: true }, updatedAt: input.now.toISOString() })
+        .where(taskRunScope(input.workspaceId, input.taskRunId))
+        .returning();
+      await transaction
+        .update(shots)
+        .set({ status: "FAILED", revision: sql`${shots.revision} + 1`, updatedAt: input.now.toISOString() })
+        .where(shotScope(input.workspaceId, current.shotId));
+      const source = await queuedSourceForTaskRun(transaction, input.workspaceId, input.taskRunId);
+      if (source) {
+        await insertOutboxEvent(transaction, executionEvent(source, {
+          type: "task_run.failed",
+          now: input.now.toISOString(),
+          taskRunId: input.taskRunId,
+          errorCode: input.code,
+          retryable: true,
+          ...(attempt ? { providerAttemptId: attempt.id } : {}),
+        }));
+      }
+      return failed ? toControlTaskRun(failed) : undefined;
+    });
+  }
+
+  async failTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId?: string; failureStage?: "PROVIDER" | "DOWNLOAD"; code: string; message: string; retryable: boolean; now: Date }) {
+    return this.db.transaction(async (transaction) => {
+      await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
+      const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
+      if (!current) return undefined;
+      if (current.status === "FAILED") return toControlTaskRun(current);
+      if (current.status === "SUCCEEDED") return toControlTaskRun(current);
+      assertTaskRunTransition(current.status, "FAILED");
+      if (input.providerAttemptId) {
+        const [attempt] = await transaction
+          .select({ providerRequestId: providerAttempts.providerRequestId })
+          .from(providerAttempts)
+          .where(and(
+            eq(providerAttempts.workspaceId, input.workspaceId),
+            eq(providerAttempts.id, input.providerAttemptId),
+            eq(providerAttempts.taskRunId, input.taskRunId),
+          ))
+          .limit(1);
+        await transaction
+          .update(providerAttempts)
+          .set({
+            status: input.failureStage === "DOWNLOAD" && attempt?.providerRequestId ? "DOWNLOAD_FAILED" : "FAILED",
+            responsePayload: { code: input.code },
+            updatedAt: input.now.toISOString(),
+          })
+          .where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.id, input.providerAttemptId), eq(providerAttempts.taskRunId, input.taskRunId)));
+      }
+      const [failed] = await transaction.update(taskRuns).set({ status: "FAILED", error: { code: input.code, message: input.message, retryable: input.retryable }, updatedAt: input.now.toISOString() }).where(taskRunScope(input.workspaceId, input.taskRunId)).returning();
+      await transaction.update(shots).set({ status: "FAILED", revision: sql`${shots.revision} + 1`, updatedAt: input.now.toISOString() }).where(shotScope(input.workspaceId, current.shotId));
+      const source = await queuedSourceForTaskRun(transaction, input.workspaceId, input.taskRunId);
+      if (source) await insertOutboxEvent(transaction, executionEvent(source, { type: "task_run.failed", now: input.now.toISOString(), taskRunId: input.taskRunId, errorCode: input.code, retryable: input.retryable, ...(input.providerAttemptId ? { providerAttemptId: input.providerAttemptId } : {}) }));
+      return failed ? toControlTaskRun(failed) : undefined;
+    });
   }
 
   async listWorkspaceEvents(input: { workspaceId: string; afterEventId?: string; limit: number }) {

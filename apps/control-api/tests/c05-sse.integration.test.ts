@@ -74,6 +74,14 @@ test("C05 SSE replays PostgreSQL events by Last-Event-ID without exposing intern
       generationSettings: {},
       referenceBindings: [],
     })).kind, "NEW");
+    assert.equal((await assets.updateShot({
+      scope: `${scope}:shot-ready`,
+      idempotencyKey: "shot-ready",
+      requestHash: fingerprintRequest({ status: "READY" }),
+      workspaceId,
+      shotId,
+      status: "READY",
+    })).kind, "NEW");
     const created = await tasks.createTaskRun({
       scope: `${scope}:task`,
       idempotencyKey: "task-create",

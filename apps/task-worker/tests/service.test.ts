@@ -124,9 +124,10 @@ test("OutboxRelay constructs the complete versioned TaskRun queue message from a
 
 test("TaskRunEventConsumer retries a busy delivery and dead-letters within the same workspace", async () => {
   const released: Array<Parameters<TaskRunStore["releaseConsumerEvent"]>[0]> = [];
-  const store: Pick<TaskRunStore, "processEvent" | "releaseConsumerEvent"> = {
+  const store: Pick<TaskRunStore, "processEvent" | "releaseConsumerEvent" | "finalizeTaskRunExecutionFailure"> = {
     async processEvent() { return "BUSY"; },
     async releaseConsumerEvent(input) { released.push(input); },
+    async finalizeTaskRunExecutionFailure() { return undefined; },
   };
   const consumer = new TaskRunEventConsumer(store, {
     consumerName: "task-run-transition",
@@ -147,4 +148,57 @@ test("TaskRunEventConsumer retries a busy delivery and dead-letters within the s
   assert.equal(released[0]?.reason, "final delivery failure");
   assert.equal(released[0]?.deadLetter, true);
   assert.ok(released[0]?.now instanceof Date);
+});
+
+test("TaskRunEventConsumer invokes the executor for a duplicate durable delivery", async () => {
+  let executions = 0;
+  const store: Pick<TaskRunStore, "processEvent" | "releaseConsumerEvent" | "finalizeTaskRunExecutionFailure"> = {
+    async processEvent() { return "DUPLICATE"; },
+    async releaseConsumerEvent() {},
+    async finalizeTaskRunExecutionFailure() { return undefined; },
+  };
+  const consumer = new TaskRunEventConsumer(store, {
+    consumerName: "task-run-transition",
+    workerId: "worker-c06-duplicate-test",
+    leaseMs: 100,
+  }, {
+    async execute() {
+      executions += 1;
+      return undefined;
+    },
+  });
+
+  assert.equal(await consumer.process(queueMessage()), "DUPLICATE");
+  assert.equal(executions, 1);
+});
+
+test("TaskRunEventConsumer finalizes exhausted C06 execution without relying on a consumer lease", async () => {
+  const finalized: Array<Parameters<TaskRunStore["finalizeTaskRunExecutionFailure"]>[0]> = [];
+  const store: Pick<TaskRunStore, "processEvent" | "releaseConsumerEvent" | "finalizeTaskRunExecutionFailure"> = {
+    async processEvent() { return "DUPLICATE"; },
+    async releaseConsumerEvent() {},
+    async finalizeTaskRunExecutionFailure(input) {
+      finalized.push(input);
+      return undefined;
+    },
+  };
+  const consumer = new TaskRunEventConsumer(store, {
+    consumerName: "task-run-transition",
+    workerId: "worker-c06-exhausted-test",
+    leaseMs: 100,
+  });
+
+  await consumer.finalizeExecutionFailure({
+    workspace_id: queuedEvent.workspace_id,
+    task_run_id: queuedEvent.data.task_run_id,
+    reason: "three controlled retries exhausted",
+  });
+  assert.deepEqual(finalized, [{
+    workspaceId: queuedEvent.workspace_id,
+    taskRunId: queuedEvent.data.task_run_id,
+    code: "PROVIDER_UNAVAILABLE",
+    message: "Mock video execution exhausted its recoverable delivery attempts.",
+    now: finalized[0]?.now,
+  }]);
+  assert.ok(finalized[0]?.now instanceof Date);
 });

@@ -15,8 +15,8 @@
 | C02 | Contracts、Domain、Persistence | `ACCEPTED` | C01 | 2026-08-13 | 2026-08-13 | 审计员已独立复验 contracts/domain/persistence、公开事件边界、迁移、空库和本地库、Compose 健康与来源隔离；已备份至 `origin/main` 和 `c02-accepted` |
 | C03 | Control API 与 Dev Identity | `ACCEPTED` | C02 | 2026-08-13 | 2026-08-13 | 审计员独立复验 Dev Identity、workspace 授权、幂等、PostgreSQL 集成、原子契约导出和 Studio 运行时代理；已备份至 `origin/main` 与 `c03-accepted` |
 | C04 | Asset、Project、Shot 工作台 | `ACCEPTED` | C03 | 2026-08-13 | 2026-08-13 | 审计员已独立复验并完成远端备份：`origin/main`、`c04-accepted^{}` 与本地 HEAD 均为 `20965c3c4577bf479f9fd143c6e0b5793f6c7795` |
-| C05 | Outbox、Queue 和 Worker | `READY_FOR_AUDIT` | C02/C04 | 2026-08-13 | 2026-08-13 | 已补齐版本化 `InternalTaskRunQueueMessage`、outbox/job/payload workspace 权威校验、消费账本 `(workspace_id,event_id,consumer_name)` 复合完整性与 PostgreSQL/BullMQ 回归；等待独立审计，不得 Git 或进入 C06。 |
-| C06 | Mock 视频生成闭环 | `PENDING` | C05 |  |  |  |
+| C05 | Outbox、Queue 和 Worker | `ACCEPTED` | C02/C04 | 2026-08-13 | 2026-08-13 | 审计员已独立复验并完成 `c05-accepted` 远端备份；`origin/main` 与 tag peeled ref 指向 `da788e085ebd2fba019a3fbdadd3c0636b809be4`。 |
+| C06 | Mock 视频生成闭环 | `ACCEPTED` | C05 | 2026-08-13 | 2026-08-14 | 审计员已独立复跑共享锁、Worker、Studio E2E、根门禁、数据库迁移与本地基础设施健康检查；仅授权受限 `feat(C06)` 备份，完成远端 tag 复核前 C07 及以后保持 `PENDING`。 |
 | C07 | SUB2API 离线 Adapter | `PENDING` | C06 |  |  |  |
 | C08 | 真实 Provider 能力认证 | `PENDING` | C07 |  |  |  |
 | C09 | Veyra 身份和共享积分 | `PENDING` | C08 |  |  |  |
@@ -370,6 +370,70 @@ C04 备份复核（2026-08-13）：`feat(C04): asset project and shot workbench`
 剩余风险：C05 Worker 只推进到 `RUNNING`，不会创建 ProviderAttempt、提交/轮询 Provider、下载 MP4 或计费；这些以及公开 generation/TaskRun HTTP API 严格属于 C06。C05 已通过独立审计；完成 `c05-accepted` 远端备份复核前不得进入 C06。
 
 Exit Gate 结论：`ACCEPTED`。
+
+### C06：Mock 视频生成闭环
+
+状态：`ACCEPTED`
+实施日期：2026-08-13
+前置条件：C05 `ACCEPTED`；审计端已复核 `origin/main` 与 `c05-accepted^{}` 指向 `da788e085ebd2fba019a3fbdadd3c0636b809be4`，annotated tag object 为 `95a3fc4e8e194294b2e1eb588177478e4ae76a96`。C07 及以后保持 `PENDING`。
+实现工作区：C06 工作区差异，未执行 Git add、提交、推送或 tag。
+
+范围和实现：
+
+1. `packages/provider-video/` 新增独立 `VideoProviderPort`、确定性 `MockVideoProvider`、临时 MP4 fixture 生成和 `ffprobe`/MIME/大小/SHA-256 验证。Mock `submit` 返回 `mock_{task_run_id}`，第一次查询为 `PROCESSING`，第二次为 `SUCCEEDED`；`MOCK_VIDEO_OUTCOME=failed` 返回稳定 `PROVIDER_REJECTED`。
+2. `apps/task-worker/src/execution-service.ts` 在 C05 `QUEUED -> RUNNING` 后持久化 ProviderAttempt，提交后保存 request ID，执行轮询、流式下载、媒体验证、workspace-scoped 生成 Asset 和不可覆盖对象写入。重启/重复投递复用已持久化 attempt 或 `PENDING_UPLOAD` generated Asset，不重复 submit，不原地替换成功对象。
+3. `apps/control-api` 新增公开 generation、TaskRun detail、retry 路由；Project detail 增加公开 TaskRun 摘要以支持刷新恢复。公开序列化不含 Provider request/response payload、Provider request ID、内部 object key、签名 query 或 Veyra 字段。
+4. `apps/studio-web` 新增生成状态、失败重试、任务事件和 `<video controls>` 预览；视频元素不嵌套在按钮内，页面只访问 `/api/v1` 和公开 SSE。
+5. Worker 支持 `TASK_QUEUE_NAME`/`TASK_DEAD_LETTER_QUEUE_NAME`，受控 E2E 使用随机隔离队列，避免消费默认队列中的既有工作区事件。
+
+来源复用和舍弃：
+
+- 仅复用 Huobao 固定 commit `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 的 bundled ffmpeg/ffprobe 可执行性探测、VideoGenerationRecord/VideoProviderAdapter 字段意图、submit/poll 后台职责划分和媒体预览交互意图。
+- 平台改为 `packages/provider-video`、PostgreSQL ProviderAttempt、C05 durable Worker、MinIO immutable write 和公开 DTO；舍弃 Huobao 的直接 Provider HTTP、MySQL、进程内轮询 timer、全局 AIConfig、Key 和本地媒体目录。
+- Seedance、markitdown、OpenMontage、sub2api-video-mcp、SUB2API、Veyra、真实 Provider、计费、VPS、域名均未在 C06 迁入或调用。详细路径、符号、薄适配和不可复用原因见 `doc/AI企业内容生产平台_C06上游复用矩阵.md`、`packages/provider-video/UPSTREAM.md` 和 `apps/task-worker/UPSTREAM.md`。固定上游快照仍仅存在本机 `upstream/`，未进入索引、submodule 或 gitlink。
+
+契约和审计证据：
+
+1. `pnpm install --frozen-lockfile --store-dir .pnpm-store`：通过；`pnpm contracts:generate`：通过；生成的 OpenAPI/JSON Schema/AsyncAPI 无漂移，公开边界测试仍拒绝 Provider/object key/内部 payload 字段。
+2. 带 `DATABASE_URL=postgresql://video_local:video_local@127.0.0.1:15432/video_local`、`REDIS_URL=redis://127.0.0.1:6380`、本地 MinIO S3 变量和 `VIDEO_PROVIDER=mock` 运行：根 `pnpm typecheck` 通过，根 `pnpm test` 74/74 通过，根 `pnpm build` 通过。分包结果为 contracts 20、Studio 4、storage 4、provider 2、queue 1、domain 7、persistence 12、Control API 15、Worker 9。
+3. `pnpm --filter @alchemy-video/persistence db:generate` 报告 `No schema changes`；`db:migrate` 通过。C06 使用既有 task_runs/provider_attempts/assets schema，无新增真实 Provider 或计费迁移。
+4. `pnpm --filter @alchemy-video/storage-client test:minio`：通过；真实 OPTIONS/CORS、首次写入、确认资产后旧 URL/重签 URL 覆盖拒绝和原对象内容不变均通过。固定 MinIO 的 `PutBucketCors` 501 只保留 name/code/http status 诊断，Compose global CORS 提供实际行为。
+5. `pnpm --filter @alchemy-video/control-api test:c06-e2e`：通过。受控无密钥监督器启动 API `3032`、随机 BullMQ Worker、Studio `3031`，创建项目、上传有效 1x1 PNG、创建/ready 分镜、生成 Mock MP4、刷新页面、点击 Preview；浏览器解码结果为 `videoWidth=160`、`videoHeight=90`、`duration=1s`。
+6. C06 Worker PostgreSQL/Redis/BullMQ/MinIO 集成证明生成 Asset READY、SHA-256/ffprobe 校验、Mock failure 无结果资产、Worker 重启不重复 submit、已上传 draft 恢复不替换对象。固定 MP4 由运行时临时生成，不进入 Git。
+
+清理和隔离：
+
+- C06 UI E2E `finally` 删除本轮 1 个项目、2 个 MinIO 对象，obliterate 仅随机 C06 队列，删除 PNG fixture，停止 API/Worker/Studio 子进程并确认 3031/3032 可重新绑定。
+- 最终检查无 C06 fixture/screenshot、无 `.env`/`.env.local`，Compose PostgreSQL/Redis/MinIO 均保持 healthy；未停止、重配或修改任何非 C06 Docker/WSL 服务。
+- `git diff --check` 通过（仅 Git 的 CRLF warning）；`git ls-files --stage -- upstream` 无条目，未创建 submodule/gitlink；用户已有 `.env.example` 改动保持未暂存。
+
+未完成项：真实 SUB2API/Seedance/Grok Provider、Veyra/共享积分、MarkItDown、OpenMontage、部署和 Codex/CLI 入口均未实现，严格留给后续章节；C07 及以后不得在 C06 审计 `ACCEPTED` 前开始。
+风险：C06 Mock 只证明平台任务、存储、恢复和浏览器播放闭环，不证明真实模型质量或 Provider 协议兼容性；声明 MIME 的深度内容探测仍按 ADR-0020 留给 C12；Node/Nuxt 构建保留既有 DEP0155 弃用警告，不影响退出状态。
+已撤销的前次 `READY_FOR_AUDIT` 候选（历史记录，非当前状态，2026-08-13）：`TaskRunEventConsumer.process` 的消费事务可在执行器前完成，因此 Worker 现在在 BullMQ ready、processor 未启动时扫描可恢复视频任务，对每项最多执行三次；连续失败独立以 `workspace_id + task_run_id` 写可公开读取和 retry 的 `FAILED`，不依赖已完成 lease。仓储优先复用任意已持久化 `provider_request_id`，不会让较晚无 request ID 的 Attempt 掩盖它。验证已完成：两次临时 MinIO 写失败后第三次启动扫描成功、无历史 job 的扫描耗尽后公开 retry、BullMQ attempts 耗尽后公开 retry，以及所有恢复路径 submit 仅一次。
+
+本轮完整门禁（2026-08-13）：
+
+1. `pnpm install --frozen-lockfile --store-dir .pnpm-store`、`pnpm contracts:generate`、`pnpm --filter @alchemy-video/persistence db:generate`（`No schema changes`）和 `db:migrate` 均通过。
+2. 在本地 PostgreSQL `15432`、Redis `6380`、MinIO `9002` 环境中，根 `pnpm typecheck` 通过，根 `pnpm test` 通过 `82/82`，根 `pnpm build` 通过。Worker 实际集成 `17/17`，包含三次启动扫描、BullMQ 耗尽、公开 retry 和已提交 Attempt 遮蔽回归；持久化 PostgreSQL 测试 `12/12`。
+3. `pnpm --filter @alchemy-video/storage-client test:minio` 通过 `1/1`：浏览器 CORS PUT、首次条件写和覆盖拒绝正常。固定 MinIO 的 bucket CORS API `501 NotImplemented` 仅输出不含凭据的诊断；Compose global CORS 提供真实行为。
+4. `pnpm --filter @alchemy-video/control-api test:c06-e2e` 通过：受控 API、隔离队列 Worker 和 Studio 完成有效 PNG 上传、Mock MP4 生成、刷新和播放，解码为 `160x90`、`1s`；`finally` 删除 `1` 个项目、`2` 个 MinIO 对象、隔离队列和临时夹具，并释放 `3031/3032`。
+5. `docker compose ... config/ps` 与 loopback 检查通过：PostgreSQL、Redis、MinIO 均 healthy；最终无 `3031/3032` listener、无运行时 `.env`、无 C06 fixture/screenshot，`upstream/` 不在索引且未创建 gitlink/submodule。未停止或修改其他 Docker/WSL 服务。
+
+来源和边界：C06 仅复用已登记 Huobao 的媒体工具/Provider 职责分离意图；本轮恢复、持久化 Attempt 优先级和队列终态化为平台薄适配，记录于 `doc/AI企业内容生产平台_C06上游复用矩阵.md`、`packages/provider-video/UPSTREAM.md`、`apps/task-worker/UPSTREAM.md` 和来源登记。未接入 SUB2API、Seedance、Grok、Veyra、真实 Key、VPS 或 C07 代码。
+审计人：Codex（等待独立复审）
+审计新增阻断已纠正（2026-08-14）：`apps/control-api/tests/c06-local-e2e.mjs` 现以随机 UUID 隔离两组 BullMQ 队列和浏览器命令键。失败阶段启动 `MOCK_VIDEO_OUTCOME=failed` Worker，`apps/control-api/tests/c06-studio-ui-e2e.py --mode failure` 通过 Studio 创建项目、上传内嵌有效 1x1 PNG、创建/ready 分镜和生成，明确断言 `.task-status.failed` 显示 `FAILED` 与公开错误 `Mock video generation was configured to fail.`，且 `Retry failed task` 按钮可用。监督器随后终止该受控失败 Worker，使用独立成功 Mock Worker 与另一随机队列；`--mode retry` 在同一 Studio 项目点击该 Retry 控件，等待同一 TaskRun `SUCCEEDED`、刷新并解码 `<video>` 为 `160x90`、`1s`。真实 PostgreSQL 额外断言失败和成功均为同一 TaskRun、恰好一个 ProviderAttempt/一个持久化 `provider_request_id`，且 retry 后 request ID 不变，证明没有再次 submit。每轮 `finally` 删除唯一项目、两个 MinIO 对象、两组随机队列、所有带随机种子的 command deduplication、PNG fixture，并终止 API/两个 Worker/Studio 子进程；最终 3031/3032 无 listener、无运行时 `.env`/`.env.local`、无 C06 fixture/screenshot。没有真实 Key、外部 Provider/Veyra/网络调用。
+
+本轮重新验证（2026-08-14）：`pnpm install --frozen-lockfile --store-dir .pnpm-store`、`pnpm contracts:generate`、`pnpm --filter @alchemy-video/persistence db:generate`（`No schema changes`）和 `db:migrate` 全部通过；带本地 PostgreSQL `15432`、Redis `6380`、MinIO `9002` 与 `VIDEO_PROVIDER=mock` 的根 `pnpm typecheck`、`pnpm test`（`82/82`）和 `pnpm build` 全部通过。`pnpm --filter @alchemy-video/storage-client test:minio` 为 `1/1`；Compose config/ps、PostgreSQL/Redis 端口及 MinIO `/minio/health/live` 为 healthy/`200`。`pnpm --filter @alchemy-video/control-api test:c06-e2e` 最终通过，输出 `visible provider failure, retry control, 160x90, 1s` 和完整 cleanup。`git diff --check` 仅有 CRLF warning；`upstream/` 未入索引且无 gitlink/submodule。用户既有 `.env.example` 改动未触及、未暂存，明确排除未来 C06 备份。
+
+独立审计退回（2026-08-14，历史发现）：审计端曾将 `pnpm --filter @alchemy-video/control-api test:c06-e2e` 与 `pnpm --filter @alchemy-video/task-worker test` 放入两个进程并行运行，Worker suite 得到 `15/17`。C05 durable BullMQ 终态 TaskRun 回归在 `worker.integration.test.ts:196` 预期 `QUEUED` 却得到 `FAILED`；C06 executor interruption/retry 回归在 `worker.integration.test.ts:479` 等待 `SUCCEEDED` 超时。根因不是随机 BullMQ queue 本身，而是生产设计中正确的 C06 启动恢复会扫描共享 PostgreSQL 的全部非终态 VIDEO_GENERATION TaskRun，因而可处理另一进程刚创建的集成测试任务。
+
+测试隔离纠正（2026-08-14）：未改变生产 Worker 的全局恢复语义。`packages/persistence/tests/support/c06-e2e-isolation.mjs` 提供仅测试使用的 PostgreSQL 会话 advisory lock；`apps/control-api/tests/c06-local-e2e.mjs` 与 `apps/task-worker/tests/worker.integration.test.ts` 均通过同一辅助函数取得并在 finally/after 释放该锁。E2E 取得锁后仍只读检查所有未发布 outbox 与非终态 TaskRun，发现任一遗留状态即在启动 API/Worker/Studio 前拒绝执行；Worker suite 只取得互斥锁，允许其自身创建临时任务。`pnpm --filter @alchemy-video/control-api test:c06-e2e-isolation` 已证明竞争在 100ms 超时、释放后下一监督器可以取得锁。此锁不由任何生产模块导入，且不改变 Provider、TaskRun、队列、状态机或数据库 schema。
+
+串行复证（2026-08-14）：E2E cleanup 后连续两次 Worker suite 均为 `17/17`，再提取共享锁辅助后 Worker 仍为 `17/17`；此前两个失败用例均通过。受控 E2E 在锁与 idle guard 下通过，显示浏览器 FAILED/error/retry，恢复同一 request ID 后播放 `160x90`、`1s`，并清理 `1` 项目、`2` 对象、两随机队列、夹具、子进程和 `3031/3032`。随后 `pnpm contracts:generate`、根 `pnpm typecheck`、根 `pnpm test`（`82/82`）和根 `pnpm build` 均通过。
+
+独立审计复跑（2026-08-14）：审计员已独立验证共享锁竞争/释放回归、Worker `17/17`、Studio 浏览器失败可见 -> UI retry -> `160x90`/`1s` 播放 E2E、根 `pnpm typecheck`、根 `pnpm test`（`82/82`）、根 `pnpm build`、`pnpm contracts:generate`、`db:generate` 无漂移、`db:migrate`、Compose 与 PostgreSQL/Redis/MinIO 健康。审计同时确认无 C06 残留、`upstream/` 未入索引且暂存区为空；生产 C06 runtime 未导入测试锁、真实 Provider、Veyra 或 C07 行为。
+
+Exit Gate 结论：`ACCEPTED`。仅授权主线受限暂存 C06 范围（明确排除用户已有 `.env.example`、`upstream/`、`.env*`、媒体、测试输出与本地卷），创建 `feat(C06): ...` 提交、推送 `origin/main` 并创建/推送 `c06-accepted`。审计端完成远端 refs 复核前不得启动 C07。
 
 每章完成时追加：
 

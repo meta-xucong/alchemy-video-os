@@ -135,6 +135,7 @@ export interface AssetWorkspaceStore {
   } | undefined>;
   findAsset(workspaceId: string, assetId: string): Promise<ControlAsset | undefined>;
   findShot(workspaceId: string, shotId: string): Promise<ControlShot | undefined>;
+  setShotGenerationState(input: { workspaceId: string; shotId: string; status: Extract<ShotStatus, "GENERATING" | "GENERATED" | "FAILED">; selectedAssetId?: string | null }): Promise<ControlShot | undefined>;
   createUploadAsset(input: AssetCommandInput): Promise<AssetCommandExecution<ControlAsset> | AssetCommandConflict | AssetCommandNotFound>;
   confirmAssetUpload(input: ConfirmAssetInput): Promise<AssetCommandExecution<ControlAsset> | AssetCommandConflict | AssetCommandNotFound | AssetCommandInvalidUpload>;
   createShot(input: CreateShotInput): Promise<AssetCommandExecution<ControlShot> | AssetCommandConflict | AssetCommandNotFound | { kind: "INVALID_REFERENCE" } | AssetCommandPositionConflict>;
@@ -283,6 +284,22 @@ export class DrizzleAssetWorkspaceRepository implements AssetWorkspaceStore {
 
   async findShot(workspaceId: string, shotId: string) {
     return (await this.db.select().from(shots).where(shotScope(workspaceId, shotId)).limit(1))[0];
+  }
+
+  async setShotGenerationState(input: { workspaceId: string; shotId: string; status: Extract<ShotStatus, "GENERATING" | "GENERATED" | "FAILED">; selectedAssetId?: string | null }) {
+    const [current] = await this.db.select().from(shots).where(shotScope(input.workspaceId, input.shotId)).limit(1);
+    if (!current) return undefined;
+    const [updated] = await this.db
+      .update(shots)
+      .set({
+        status: input.status,
+        ...(input.selectedAssetId === undefined ? {} : { selectedAssetId: input.selectedAssetId }),
+        revision: current.revision + 1,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(shotScope(input.workspaceId, input.shotId))
+      .returning();
+    return updated;
   }
 
   async createUploadAsset(input: AssetCommandInput) {

@@ -284,6 +284,47 @@
 | 迁移/回滚 | 不重写 C05 已有 migration。若升级中发现没有对应 outbox 的历史消费记录，迁移必须失败而不是猜测工作区；本地 C05 账本由外键保证不存在该类孤儿记录。未来改变账本身份或消费者名称需新增 ADR、迁移与 PostgreSQL 回归。 |
 | 审计证据 | schema/migration contract test、真实 PostgreSQL 复合外键拒绝错 workspace insert、错工作区 process/release 不触碰正确账本行、stale lease 回收和真实 BullMQ Worker 重启/重复投递回归。 |
 
+## ADR-0024：C06 Mock 视频执行和媒体校验边界
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C06；C07/C12 只能在后续章节扩展 |
+| 上下文 | C05 已提供可恢复的 `QUEUED -> RUNNING` 传递层，但尚未创建 ProviderAttempt、调用视频端口、验证视频或写入生成资产。C06 必须在没有真实 API Key、没有网络请求和没有提交媒体二进制的前提下验证可播放 MP4 闭环。 |
+| 决策 | 新建独立 `packages/provider-video`，只导出 `VideoProviderPort`、确定性 `MockVideoProvider` 与服务器侧 MP4 验证器。Mock `submit` 产生稳定的 `mock_{task_run_id}`，首次 `getStatus` 返回处理中、下一次返回成功，`MOCK_VIDEO_OUTCOME=failed` 走失败路径。Worker 仅经该端口执行提交、轮询和下载；提交后立即持久化 `provider_request_id`，重启时只轮询/下载而不得再次提交。 |
+| 媒体完整性 | 不提交 MP4 fixture 或其他媒体二进制到 Git。测试和本机 Mock 运行时用受控静态 ffmpeg 生成临时、确定性的短 MP4；下载字节先写受限临时文件，必须通过 MIME、非空大小、SHA-256 与 `ffprobe` 视频流校验，才以服务端对象 key 和 `If-None-Match: *` 写入 MinIO。临时文件在成功和失败路径均删除。 |
+| 公开边界 | Provider 名称、模型、`provider_request_id`、原生 payload、object key 和签名 query 只能留在 Worker/Persistence 内部记录。公开 TaskRun、SSE 与 Studio 只使用既有脱敏 DTO、公开状态和受控下载响应。 |
+| 选择原因 | 保留 C05 的 durable outbox/queue/restart 语义，同时将外部 Provider transport、媒体二进制和浏览器显示拆成独立端口，令 C06 可以完全离线验证而不为 C07 引入任何 SUB2API 实现。 |
+| 迁移/回滚 | C06 可在现有 `provider_attempts`、`task_runs` 与 `assets` 表上完成，不为 Mock 修改真实 Provider 或信用配置。若未来更换 fixture 生成方式、增加真实 adapter 或把 ffprobe 下沉 C12，必须新增 ADR、保持 `VideoProviderPort` 和生成资产不可覆盖不变。 |
+| 审计证据 | Provider 无网络单测、Worker 重启不重复 submit、PostgreSQL/Redis/MinIO 集成、SHA-256/ffprobe 输出、公开脱敏扫描、Studio 上传到播放 E2E、临时文件和端口清理记录。 |
+
+## ADR-0025：项目详情以公开 TaskRun 摘要支持刷新恢复
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C06 |
+| 上下文 | C06 的 TaskRun 详情可按 ID 查询，但 Studio 页面刷新后不能依赖浏览器内存保存任务 ID，也不能直接读取数据库或 ProviderAttempt。项目详情是已有的工作区授权读模型，适合承载该项目的公开任务时间线。 |
+| 决策 | `GET /api/v1/projects/:project_id` 的 `ProjectDetail` 兼容性新增 `task_runs: TaskRun[]`，按 `workspace_id + project_id + created_at` 查询并只经 `TaskRunSchema` 序列化。TaskRun 详情仍用于尝试和产物；项目详情不包含 attempts、Provider、模型、`provider_request_id`、原生 payload、object key 或签名 URL。 |
+| 选择原因 | 让刷新/重新打开 Studio 后仍可从 Control API 恢复公开状态、错误和结果资产关联，同时不引入前端持久化任务事实或额外未审计的公开 list endpoint。 |
+| 迁移/回滚 | 仅为现有公开 JSON 的向后兼容新增字段，无数据库迁移。未来分页需求必须新增明确查询契约，不能让浏览器通过内部 API 或 Storage 列表补齐。 |
+| 审计证据 | Zod/OpenAPI 导出、公开字段脱敏扫描、workspace-scoped API tests、Studio refresh/播放 E2E。 |
+
+## ADR-0026：C06 Worker ready 后的受控全局恢复扫描
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C06；不改变 C05 的队列消费语义 |
+| 上下文 | C05 的消费事务可以先将 `task_run.queued` 标为已消费并把 TaskRun 推进到 `RUNNING`，随后 C06 执行器才在事务外提交、查询和下载 Mock 视频。进程在两者之间退出时，没有新的队列事实可自动触发执行，任务会停留在可恢复的非终态。 |
+| 决策 | `apps/task-worker` 先创建 `autoStart=false` 的 BullMQ consumer 并 `waitUntilReady()`，此时 Redis 连接已就绪但 processor 尚未领取 job；随后串行扫描最多 100 个 `VIDEO_GENERATION`、状态为 `RUNNING`、`PROVIDER_PROCESSING` 或 `DOWNLOADING` 的 TaskRun，并对每一项最多执行 3 次，最后才显式启动 consumer。扫描中的可重试错误在同一 TaskRun 上重试；仅第三次仍失败时才写入失败事实。此扫描是受控 Worker 的全局后台操作，不是浏览器或公开 API；扫描发现后，执行器对每一项都使用该 TaskRun 返回的 `workspace_id` 进行读取和更新。后续 BullMQ 的重复 delivery 仍可调用执行器：已成功 TaskRun 是无副作用 no-op，而先前消费事务完成后执行器异常的 `RUNNING` TaskRun 由重复 delivery 继续执行。BullMQ attempts 耗尽时，C06 以 queue message 的 `workspace_id + task_run_id` 独立收敛 TaskRun 为公开可见、可重试的 `FAILED`，不依赖已完成的 C05 consumer lease。C06 本地 MVP 只运行一个 Worker replica；若未来扩展为多个 Worker，必须先新增持久化 execution lease/claim，不能假设 Attempt 的 CREATED 状态可防并发 submit。 |
+| 已提交请求恢复 | 任何一个属于该 `workspace_id + task_run_id` 的 Attempt 一旦存在非空 `provider_request_id`，都构成永久 submit 边界。仓储必须优先选择最近的已提交 Attempt，不得让创建时间更晚但无 request ID 的 Attempt 掩盖它。下载、ffprobe 或结果资产写入在 `DOWNLOADING` 阶段失败时，Attempt 记为 `DOWNLOAD_FAILED` 并保留 request ID；可重试的传输/存储错误保持 TaskRun `DOWNLOADING` 并抛回 BullMQ 或启动扫描重试，终态的媒体/协议错误才置 TaskRun `FAILED` 等待显式 retry。显式 retry 先由 C05 推进 `QUEUED -> RUNNING`；已有 request ID 时执行器再合法推进为 `PROVIDER_PROCESSING`，随后查询/下载而不 submit。没有 request ID 的 Attempt 才可安全创建/提交新的请求。 |
+| 选择原因 | 保留 C05 “至少一次队列投递、完成消费后不重复推进”的事实边界，同时补齐 C06 的执行器崩溃窗口，不依赖 Redis 未持久化状态、不向浏览器暴露内部恢复接口，也不提前接入真实 Provider。 |
+| 审计证据 | PostgreSQL/Redis/MinIO 集成模拟“消费已完成、执行器未运行、Worker 重启”；断言只扫描允许 kind/status、前两次临时存储失败而第三次成功时 submit 仅一次。无历史 BullMQ job 的连续失败扫描在第三次后必须写公开 `FAILED`，经公开 retry 后只下载且不 submit。另有真实 BullMQ 三次耗尽、已提交 Attempt 后出现较晚空 Attempt、公开失败读取和 retry 恢复回归。 |
+
 ## 新决策模板
 
 ```text

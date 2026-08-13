@@ -307,6 +307,13 @@ h2 {
   object-fit: cover;
 }
 
+video.asset-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  cursor: default;
+}
+
 .asset-copy,
 .shot-copy {
   display: grid;
@@ -368,6 +375,85 @@ h2 {
   min-height: 58px;
   padding: 8px 10px;
   text-align: left;
+}
+
+.shot-item {
+  display: grid;
+  gap: 6px;
+}
+
+.shot-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.task-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 6px 8px;
+  color: #315060;
+  background: #edf4f7;
+  border: 1px solid #d7e4ea;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.task-status span:first-child {
+  font-weight: 700;
+}
+
+.task-status span:nth-child(2) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-status.failed {
+  color: #9d3427;
+  background: #fff3f1;
+  border-color: #f0ccc5;
+}
+
+.task-status.succeeded {
+  color: #1a6b3d;
+  background: #eff8f1;
+  border-color: #cfe6d4;
+}
+
+.task-status .icon-button {
+  width: 30px;
+  height: 30px;
+  margin-left: auto;
+}
+
+.event-list {
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.event-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid #e5eaee;
+  font-size: 13px;
+}
+
+.event-list li:first-child {
+  border-top: 0;
+}
+
+.event-list span {
+  color: #5c6670;
+  font-size: 12px;
 }
 
 .shot-edit:hover,

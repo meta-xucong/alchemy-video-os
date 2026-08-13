@@ -401,6 +401,11 @@ test("C05 SSE replays only persisted safe public workspace events", async () => 
     body: JSON.stringify({ position: 0, prompt: "Queue only, no Provider." }),
   });
   const shotId = (await readJson(shotResponse)).data.id as string;
+  await app.request(`http://localhost/api/v1/shots/${shotId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c05-shot-ready-1" },
+    body: JSON.stringify({ status: "READY" }),
+  });
   const command = {
     model: "mock-video-v1",
     prompt: "A local C05 task is only queued.",

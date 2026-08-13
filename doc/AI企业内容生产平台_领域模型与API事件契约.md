@@ -128,6 +128,9 @@ ADR-0014 将本图确定为 TaskRun 迁移的唯一完整规则；根目录 `AGE
 - 只有 `Shot.status=READY|GENERATED|FAILED` 可创建新的 `TaskRun`；创建后 `Shot` 立即进入 `GENERATING`。同一分镜允许历史任务并存，但最多一个处于非终态。
 - `TaskRun.input_snapshot` 创建后不可更新，重试同一运行时只复用该快照；用户改分镜后须新建运行。
 - `provider_request_id` 一旦存在，worker 只能查询、下载或恢复，禁止再次 `submit`。
+- Worker ready 后由受控后台进程执行一次全局恢复扫描，只选择 `VIDEO_GENERATION` 且为 `RUNNING`、`PROVIDER_PROCESSING`、`DOWNLOADING` 的 TaskRun；`QUEUED`、其他 kind 和终态不得被该扫描执行。C06 先让 BullMQ 连接 ready 但不启动 processor，完成每项最多三次的扫描恢复后才领取历史 queue job，避免同一实例双 submit。三次短暂错误都耗尽时，Worker 必须按该 TaskRun 的 `workspace_id + task_run_id` 写入可公开读取、可显式 retry 的失败终态，不能依赖已完成 C05 consumer lease。该全局发现不属于浏览器或公开 API，扫描返回每个 TaskRun 后的所有读取和更新都必须使用其 `workspace_id` 范围；多 Worker 扩容必须先增加持久化 execution lease/claim。
+- BullMQ 重复 delivery 不能因为 C05 的消费账本已完成而跳过执行器：`DUPLICATE` delivery 仍须按其 `workspace_id` 调用执行器，使消费事务后发生的执行器中断可在同一进程重试恢复。已 `SUCCEEDED` 的 TaskRun 必须成为无副作用 no-op，因此重复 delivery 不得产生第二次 submit 或替换结果对象。
+- 已持久化 `provider_request_id` 的下载、ffprobe 或结果资产写入失败，Attempt 必须保留为 `DOWNLOAD_FAILED`；可重试的传输/对象存储错误保持 TaskRun `DOWNLOADING` 并交给 BullMQ 或启动扫描恢复，终态媒体/协议错误则由用户显式 `FAILED -> QUEUED` 重试恢复查询/下载。同一 TaskRun 不得因此再次 `submit` 或替换已成功写入的结果对象。
 - 成功前不写 `result_asset_id`；成功后 `result_asset_id` 不可替换。用户选择新版时更新 `Shot.selected_asset_id`。
 - `BILLING_PENDING` 表示视频已成功验证并已保存或待发布；余额不足进入 `BILLING_FAILED`，充值后的显式重试只回到 `BILLING_PENDING`，不得再次提交提供方任务。
 - `usage_records` 仅在扣费调用返回成功时创建；`replayed=true` 仍记录一次本地审计，但 `idempotency_key` 设唯一约束。
@@ -143,7 +146,7 @@ ADR-0014 将本图确定为 TaskRun 迁移的唯一完整规则；根目录 `AGE
 | `GET /workspaces` | 工作区列表 | 当前可访问工作区 |
 | `GET /projects` | 项目列表 | 当前工作区中的 `Project[]` |
 | `POST /projects` | 创建项目 | `201` + `Project` |
-| `GET /projects/:projectId` | 项目详情 | 项目、分镜、资产摘要 |
+| `GET /projects/:projectId` | 项目详情 | 项目、分镜、资产摘要和该项目的公开 `TaskRun` 摘要；不含 ProviderAttempt 内部字段 |
 | `PATCH /projects/:projectId` | 重命名/归档 | 更新的 `Project` |
 | `POST /projects/:projectId/assets/upload-requests` | 申请上传 | `asset_id`、短时 `upload_url`、`headers`、`expires_at`；相同幂等键只回放同一 Asset，READY 后 URL 为 `null` |
 | `POST /assets/:assetId/confirm-upload` | 确认上传 | 校验对象存在，置 `READY` |
@@ -240,6 +243,7 @@ interface CreditPort {
 4. 下载到本地临时文件后检查 MIME、非空尺寸、`ffprobe` 可读性和 SHA-256；全部通过才上传对象存储并事务性置成功。
 5. 积分扣费仅位于 `BILLING_PENDING`，且 idempotency key 只由 `billing_rule_key + task_run_id` 构成；详见共享积分规范。
 6. 扣费成功事件、usage record 和最终状态必须在同一数据库事务内写出，确保重放不会重复扣费。
+7. C05 消费事务完成但执行器尚未来得及运行时，C06 Worker 在 ready 后扫描持久化的可恢复视频 TaskRun，并逐项等待完成；预期执行失败应写入 TaskRun 失败事实，意外恢复错误必须以脱敏的结构化 worker 日志记录，供下一次受控扫描继续恢复。
 
 ## 8. 合约测试
 

@@ -2084,11 +2084,100 @@ components:
                   - position
                   - created_at
                 additionalProperties: false
+            task_runs:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    pattern: ^tsk_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+                  workspace_id:
+                    $ref: "#/definitions/ProjectDetailSuccess/properties/data/properties/project/pr\
+                      operties/workspace_id"
+                  project_id:
+                    $ref: "#/definitions/ProjectDetailSuccess/properties/data/properties/project/pr\
+                      operties/id"
+                  shot_id:
+                    $ref: "#/definitions/ProjectDetailSuccess/properties/data/properties/shots/item\
+                      s/properties/id"
+                  kind:
+                    type: string
+                    enum:
+                      - VIDEO_GENERATION
+                      - DOCUMENT_CONVERSION
+                      - RENDER
+                      - QC
+                  status:
+                    type: string
+                    enum:
+                      - CREATED
+                      - QUEUED
+                      - RUNNING
+                      - PROCESSING
+                      - DOWNLOADING
+                      - BILLING_PENDING
+                      - SUCCEEDED
+                      - BILLING_FAILED
+                      - FAILED
+                      - RETRY_SCHEDULED
+                      - ABANDONED
+                  input_snapshot:
+                    $ref: "#/definitions/ProjectDetailSuccess/properties/data/properties/shots/item\
+                      s/properties/generation_settings"
+                  result_asset_id:
+                    allOf:
+                      - $ref: "#/definitions/ProjectDetailSuccess/properties/data/properties/shots/item\
+                          s/properties/selected_asset_id"
+                    nullable: true
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        minLength: 1
+                      message:
+                        type: string
+                        minLength: 1
+                      retryable:
+                        type: boolean
+                    required:
+                      - code
+                      - message
+                      - retryable
+                    additionalProperties: false
+                    nullable: true
+                  retry_at:
+                    allOf:
+                      - $ref: "#/definitions/ProjectDetailSuccess/properties/data/properties/project/pr\
+                          operties/created_at"
+                    nullable: true
+                  created_at:
+                    $ref: "#/definitions/ProjectDetailSuccess/properties/data/properties/project/pr\
+                      operties/created_at"
+                  updated_at:
+                    $ref: "#/definitions/ProjectDetailSuccess/properties/data/properties/project/pr\
+                      operties/created_at"
+                required:
+                  - id
+                  - workspace_id
+                  - project_id
+                  - shot_id
+                  - kind
+                  - status
+                  - input_snapshot
+                  - result_asset_id
+                  - error
+                  - retry_at
+                  - created_at
+                  - updated_at
+                additionalProperties: false
           required:
             - project
             - shots
             - assets
             - reference_bindings
+            - task_runs
           additionalProperties: false
         request_id:
           type: string

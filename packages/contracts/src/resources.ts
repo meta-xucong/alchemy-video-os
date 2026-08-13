@@ -299,6 +299,7 @@ export const ProjectDetailSchema = z.object({
   shots: z.array(ShotSchema),
   assets: z.array(AssetSchema),
   reference_bindings: z.array(ReferenceBindingSchema),
+  task_runs: z.array(TaskRunSchema),
 });
 
 export const UploadRequestSchema = z.object({

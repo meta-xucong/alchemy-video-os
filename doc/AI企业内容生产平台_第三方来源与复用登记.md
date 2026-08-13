@@ -60,3 +60,12 @@
 - [ ] 迁入代码没有把外部全局状态带进 Domain。
 - [ ] 复用的变量字段有 mapper 或 serializer 边界。
 - [ ] 上游升级必须重新跑回归测试并更新登记，不允许无记录覆盖。
+
+## 7. C06 复用登记
+
+| 来源仓库 | 固定 commit | 本地目标路径 | 迁入/借鉴符号 | 平台改动与舍弃原因 | 回归测试 |
+| --- | --- | --- | --- | --- |
+| huobao-drama | `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` | `packages/provider-video/src/media-validator.ts` | `backend/src/utils/ffmpeg.ts` 的 `probeBinary` / `checkFfmpegSuite` 思路 | 采用静态工具先探测、失败关闭；改为独立验证端口，舍弃 `fluent-ffmpeg`、全局路径配置、静态媒体处理与本地业务状态。 | provider/media 单测、C06 MinIO/Worker E2E |
+| huobao-drama | `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` | `packages/provider-video/src/port.ts`、`apps/task-worker/src/execution-service.ts` | `backend/src/services/adapters/types.ts` 的 `VideoGenerationRecord` / `VideoProviderAdapter` 字段意图，`generation.ts` 的 submit/poll 职责切分 | 保留 `model`、`prompt`、提交/查询/下载阶段；改为平台 `VideoProviderPort`、持久化 ProviderAttempt 与 workspace-scoped TaskRun。舍弃直接 Provider HTTP、MySQL、进程内轮询、配置/密钥读取。 | Mock 无网络、重启恢复、公开脱敏测试 |
+
+`AI企业内容生产平台_C06上游复用矩阵.md` 是本章逐文件和测试位置的完整记录。任何 C06 实际迁入的代码会在目标模块 `UPSTREAM.md` 追加修改点。

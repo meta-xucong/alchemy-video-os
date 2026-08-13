@@ -38,6 +38,7 @@ export interface StoragePort {
     expiresInSeconds?: number;
   }): Promise<SignedUpload>;
   inspectObject(input: { objectKey: string }): Promise<ObjectInspection | undefined>;
+  putObject(input: { objectKey: string; mimeType: string; bytes: Uint8Array; ifNoneMatch?: "*" }): Promise<void>;
   createDownloadUrl(input: { objectKey: string; expiresInSeconds?: number }): Promise<SignedDownload>;
 }
 
@@ -126,6 +127,12 @@ export const createAssetObjectKey = (input: {
   return `${input.workspaceId}/${input.projectId}/${input.assetId}/original.${extension}`;
 };
 
+export const createGeneratedVideoObjectKey = (input: {
+  workspaceId: string;
+  projectId: string;
+  assetId: string;
+}) => `${input.workspaceId}/${input.projectId}/${input.assetId}/generated.mp4`;
+
 const asAsyncIterable = (body: unknown): AsyncIterable<Uint8Array> => {
   if (!body || typeof (body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] !== "function") {
     throw new StorageUnavailableError("Object storage returned an unreadable object body.");
@@ -186,6 +193,25 @@ export class S3StoragePort implements StoragePort {
         return undefined;
       }
       throw new StorageUnavailableError("Object storage is unavailable.", storageDiagnostic(error));
+    }
+  }
+
+  async putObject(input: { objectKey: string; mimeType: string; bytes: Uint8Array; ifNoneMatch?: "*" }) {
+    await this.ensureBucket();
+    try {
+      await this.client.send(new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: input.objectKey,
+        Body: input.bytes,
+        ContentType: input.mimeType,
+        ...(input.ifNoneMatch === "*" ? { IfNoneMatch: "*" } : {}),
+      }));
+    } catch (error) {
+      const diagnostic = storageDiagnostic(error);
+      if (diagnostic.httpStatusCode === 412 || diagnostic.name === "PreconditionFailed" || diagnostic.code === "PreconditionFailed") {
+        throw new StorageObjectAlreadyExistsError();
+      }
+      throw new StorageUnavailableError("Object storage is unavailable.", diagnostic);
     }
   }
 
@@ -294,7 +320,7 @@ export class InMemoryStoragePort implements StoragePort {
     };
   }
 
-  putObject(input: { objectKey: string; mimeType: string; bytes: Uint8Array; ifNoneMatch?: "*" }) {
+  async putObject(input: { objectKey: string; mimeType: string; bytes: Uint8Array; ifNoneMatch?: "*" }) {
     if (input.ifNoneMatch === "*" && this.objects.has(input.objectKey)) {
       throw new StorageObjectAlreadyExistsError();
     }

@@ -82,8 +82,10 @@
 
           <ul v-if="detail.assets.length" class="asset-list">
             <li v-for="asset in detail.assets" :key="asset.id" class="asset-item">
-              <button class="asset-preview" type="button" :title="mediaLabel(asset)" :disabled="asset.status !== 'READY'" @click="previewAsset(asset.id)">
+              <video v-if="previewUrls[asset.id] && asset.kind === 'VIDEO'" class="asset-preview" :src="previewUrls[asset.id]" controls preload="metadata"></video>
+              <button v-else class="asset-preview" type="button" :title="mediaLabel(asset)" :disabled="asset.status !== 'READY'" @click="previewAsset(asset.id)">
                 <img v-if="previewUrls[asset.id]" :src="previewUrls[asset.id]" :alt="mediaLabel(asset)" />
+                <Video v-else-if="asset.kind === 'VIDEO'" :size="22" />
                 <Image v-else :size="22" />
               </button>
               <div class="asset-copy">
@@ -112,11 +114,11 @@
             <textarea id="shot-prompt" v-model="shotPrompt" rows="4" maxlength="5000" placeholder="Describe the intended frame and motion."></textarea>
             <div class="reference-picker">
               <span>Reference assets</span>
-              <label v-for="asset in readyAssets" :key="asset.id" class="reference-option">
+              <label v-for="asset in readyReferenceAssets" :key="asset.id" class="reference-option">
                 <input v-model="selectedReferenceIds" type="checkbox" :value="asset.id" />
                 <span>{{ String(asset.metadata.filename ?? asset.id) }}</span>
               </label>
-              <p v-if="!readyAssets.length" class="status-detail">Upload and confirm an image before adding it as a reference.</p>
+              <p v-if="!readyReferenceAssets.length" class="status-detail">Upload and confirm an image before adding it as a reference.</p>
             </div>
             <button class="command-button" type="submit" :disabled="savingShot || !shotPrompt.trim()">
               <Clapperboard :size="16" />
@@ -135,10 +137,44 @@
                 </span>
                 <Pencil :size="16" />
               </button>
+              <div class="shot-actions">
+                <button v-if="shot.status === 'DRAFT'" class="icon-button" type="button" title="Mark shot ready" :disabled="runningShotId === shot.id" @click="markShotReady(shot.id)">
+                  <Check :size="16" />
+                </button>
+                <button v-if="canGenerate(shot)" class="icon-button" type="button" title="Generate mock video" :disabled="runningShotId === shot.id" @click="generateShot(shot.id)">
+                  <Clapperboard :size="16" />
+                </button>
+                <button v-if="taskForShot(shot.id)?.status === 'FAILED'" class="icon-button" type="button" title="Retry failed task" :disabled="runningShotId === shot.id" @click="retryTask(taskForShot(shot.id)!.id)">
+                  <RotateCcw :size="16" />
+                </button>
+              </div>
+              <div v-if="taskForShot(shot.id)" class="task-status" :class="taskForShot(shot.id)?.status.toLowerCase()">
+                <span>{{ taskForShot(shot.id)?.status }}</span>
+                <span v-if="taskForShot(shot.id)?.error">{{ taskForShot(shot.id)?.error?.message }}</span>
+                <button v-if="taskForShot(shot.id)?.result_asset_id" class="icon-button" type="button" title="Preview generated video" @click="previewAsset(taskForShot(shot.id)!.result_asset_id!)">
+                  <Play :size="16" />
+                </button>
+              </div>
             </li>
           </ul>
           <p v-else class="status-detail">Create a shot from the current project references.</p>
         </section>
+      </section>
+
+      <section v-if="taskEvents.length" class="project-panel event-panel" aria-labelledby="events-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Task activity</p>
+            <h2 id="events-title">Generation events</h2>
+          </div>
+          <span class="counter">{{ taskEvents.length }}</span>
+        </div>
+        <ul class="event-list">
+          <li v-for="event in taskEvents" :key="event.id">
+            <strong>{{ event.type }}</strong>
+            <span>{{ event.occurredAt }}</span>
+          </li>
+        </ul>
       </section>
     </template>
 
@@ -147,12 +183,12 @@
 </template>
 
 <script setup lang="ts">
-import { Clapperboard, CircleDot, Eye, FolderKanban, Image, ImagePlus, Pencil, Plus, RefreshCw, Upload } from "lucide-vue-next";
+import { Check, Clapperboard, CircleDot, Eye, FolderKanban, Image, ImagePlus, Pencil, Play, Plus, RefreshCw, RotateCcw, Upload, Video } from "lucide-vue-next";
 
-import type { Asset, ProjectDetailResponse, ReferenceBindingInput } from "../composables/useControlApi";
+import type { Asset, ProjectDetailResponse, ReferenceBindingInput, Shot, TaskRun } from "../composables/useControlApi";
 import { mediaLabel, thumbFallback } from "../composables/useAssetMedia";
 
-const { health, currentIdentity, projects: fetchProjects, project, createProject, createUploadRequest, confirmAssetUpload, assetDownloadUrl, createShot, updateShot } = useControlApi();
+const { health, currentIdentity, projects: fetchProjects, project, createProject, createUploadRequest, confirmAssetUpload, assetDownloadUrl, createShot, updateShot, createGeneration, retryTaskRun } = useControlApi();
 const healthState = ref<"idle" | "ok" | "error">("idle");
 const statusDetail = ref("Waiting for the local control API.");
 const loading = ref(false);
@@ -172,8 +208,11 @@ const shotPrompt = ref("");
 const selectedReferenceIds = ref<string[]>([]);
 const editingShotId = ref<string>();
 const savingShot = ref(false);
+const runningShotId = ref<string>();
+const taskEvents = ref<Array<{ id: string; type: string; occurredAt: string }>>([]);
+let eventSource: EventSource | undefined;
 
-const readyAssets = computed(() => detail.value?.assets.filter((asset) => asset.status === "READY") ?? []);
+const readyReferenceAssets = computed(() => detail.value?.assets.filter((asset) => asset.status === "READY" && asset.kind === "IMAGE") ?? []);
 const statusTitle = computed(() => healthState.value === "ok" ? "Control API is available" : healthState.value === "error" ? "Control API is unavailable" : "Control API has not been checked");
 
 const commandKey = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
@@ -199,6 +238,7 @@ async function loadWorkspace() {
     projects.value = projectList.data;
     if (!selectedProjectId.value && projects.value[0]) selectedProjectId.value = projects.value[0].id;
     if (selectedProjectId.value) detail.value = (await project(selectedProjectId.value)).data;
+    startEventStream(identity.data.workspaces[0]?.id);
   } catch {
     workspaceError.value = "Workspace data is unavailable. Start the local Control API and retry.";
   }
@@ -222,6 +262,21 @@ async function selectProject(projectId: string) {
   } catch {
     workspaceError.value = "Project details could not be loaded.";
   }
+}
+
+function startEventStream(workspaceId: string | undefined) {
+  eventSource?.close();
+  eventSource = undefined;
+  if (!workspaceId || !import.meta.client) return;
+  const source = new EventSource(`/api/v1/events?workspace_id=${encodeURIComponent(workspaceId)}`);
+  for (const eventType of ["task_run.queued", "task_run.started", "task_run.progressed", "task_run.succeeded", "task_run.failed"]) {
+    source.addEventListener(eventType, (message) => {
+      const payload = JSON.parse((message as MessageEvent<string>).data) as { event_id: string; event_type: string; occurred_at: string };
+      taskEvents.value = [{ id: payload.event_id, type: payload.event_type, occurredAt: payload.occurred_at }, ...taskEvents.value.filter((item) => item.id !== payload.event_id)].slice(0, 12);
+      if (selectedProjectId.value) void selectProject(selectedProjectId.value);
+    });
+  }
+  eventSource = source;
 }
 
 async function submitProject() {
@@ -291,6 +346,56 @@ function bindingsFor(ids: string[]): ReferenceBindingInput[] {
   return ids.map((asset_id, position) => ({ asset_id, role: position === 0 ? "STYLE" : "SUBJECT", position }));
 }
 
+function taskForShot(shotId: string): TaskRun | undefined {
+  return detail.value?.task_runs.filter((taskRun) => taskRun.shot_id === shotId).at(-1);
+}
+
+function canGenerate(shot: Shot) {
+  return ["READY", "GENERATED", "FAILED"].includes(shot.status);
+}
+
+async function markShotReady(shotId: string) {
+  runningShotId.value = shotId;
+  shotError.value = "";
+  try {
+    await updateShot(shotId, { status: "READY" }, commandKey("studio-shot-ready"));
+    if (selectedProjectId.value) await selectProject(selectedProjectId.value);
+  } catch {
+    shotError.value = "The shot could not be marked ready.";
+  } finally {
+    runningShotId.value = undefined;
+  }
+}
+
+async function generateShot(shotId: string) {
+  const shot = detail.value?.shots.find((item) => item.id === shotId);
+  if (!shot) return;
+  runningShotId.value = shotId;
+  shotError.value = "";
+  try {
+    const references = detail.value?.reference_bindings.filter((binding) => binding.shot_id === shotId).map((binding) => binding.asset_id) ?? [];
+    await createGeneration(shotId, { model: "mock-video-v1", prompt: shot.prompt || "Offline mock video.", duration: 1, resolution: "160x90", ratio: "16:9", reference_asset_ids: references }, commandKey("studio-generation"));
+    if (selectedProjectId.value) await selectProject(selectedProjectId.value);
+  } catch {
+    shotError.value = "The video task could not be queued. Mark the shot ready and retry.";
+  } finally {
+    runningShotId.value = undefined;
+  }
+}
+
+async function retryTask(taskRunId: string) {
+  runningShotId.value = detail.value?.task_runs.find((item) => item.id === taskRunId)?.shot_id;
+  shotError.value = "";
+  try {
+    await retryTaskRun(taskRunId, commandKey("studio-task-retry"));
+    if (selectedProjectId.value) await selectProject(selectedProjectId.value);
+  } catch {
+    shotError.value = "The failed task could not be retried.";
+  } finally {
+    runningShotId.value = undefined;
+  }
+}
+
 function editShot(shotId: string) {
   const shot = detail.value?.shots.find((item) => item.id === shotId);
   if (!shot) return;
@@ -322,4 +427,5 @@ async function submitShot() {
 }
 
 onMounted(refresh);
+onBeforeUnmount(() => eventSource?.close());
 </script>

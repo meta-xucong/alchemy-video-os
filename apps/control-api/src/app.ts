@@ -4,12 +4,15 @@ import {
   AssetIdSchema,
   ConfirmAssetUploadCommandSchema,
   CreateShotCommandSchema,
+  CreateTaskRunCommandSchema,
   CreateUploadRequestCommandSchema,
   CreateProjectCommandSchema,
   EventIdSchema,
   IdempotencyKeySchema,
   ProjectIdSchema,
   ShotIdSchema,
+  TaskRunIdSchema,
+  RetryTaskRunCommandSchema,
   UpdateProjectCommandSchema,
   UpdateShotCommandSchema,
   WorkspaceIdSchema,
@@ -27,7 +30,7 @@ import { errorHandler, requestLogger } from "./middleware/logger.js";
 import { createInMemoryControlPlaneStore } from "./repository.js";
 import { createInMemoryAssetWorkspaceStore } from "./asset-repository.js";
 import { createInMemoryTaskRunStore } from "./task-run-repository.js";
-import { serializeAsset, serializeProject, serializeProjectDetail, serializeShot, serializeUser, serializeWorkspace } from "./serializers.js";
+import { serializeAsset, serializeProject, serializeProjectDetail, serializeShot, serializeTaskRun, serializeTaskRunAttempt, serializeUser, serializeWorkspace } from "./serializers.js";
 
 type CreateAppOptions = {
   identity?: IdentityPort;
@@ -38,7 +41,7 @@ type CreateAppOptions = {
   buildVersion?: string;
 };
 
-const response = <T>(context: HonoContext, data: T, status: 200 | 201 = 200) =>
+const response = <T>(context: HonoContext, data: T, status: 200 | 201 | 202 = 200) =>
   context.json({ data, request_id: context.get("requestId") }, status);
 
 type HonoContext = Context;
@@ -75,6 +78,12 @@ const parseAssetId = (context: HonoContext) => {
 const parseShotId = (context: HonoContext) => {
   const parsed = ShotIdSchema.safeParse(context.req.param("shot_id"));
   if (!parsed.success) throw validationError("shot_id is invalid.");
+  return parsed.data;
+};
+
+const parseTaskRunId = (context: HonoContext) => {
+  const parsed = TaskRunIdSchema.safeParse(context.req.param("task_run_id"));
+  if (!parsed.success) throw validationError("task_run_id is invalid.");
   return parsed.data;
 };
 
@@ -130,6 +139,8 @@ const invalidReference = () => new ControlApiError(400, "VALIDATION_FAILED", "Re
 const storageUnavailable = () => new ControlApiError(503, "STORAGE_UNAVAILABLE", "Object storage is unavailable.", true);
 const invalidUpload = () => new ControlApiError(400, "DOWNLOAD_INVALID", "Uploaded object metadata does not match the confirmed asset.");
 const shotPositionConflict = () => new ControlApiError(409, "SHOT_POSITION_CONFLICT", "Another shot already uses this project position.");
+const taskRunActiveConflict = () => new ControlApiError(409, "TASK_RUN_ACTIVE_CONFLICT", "The shot already has an active task run.");
+const taskStateInvalid = () => new ControlApiError(400, "TASK_STATE_INVALID", "The task run cannot be retried from its current state.");
 
 const requestedMetadataMatches = (asset: { metadata: Record<string, unknown> }, input: { mimeType: string; byteSize: number }) =>
   asset.metadata.requested_mime_type === input.mimeType && asset.metadata.requested_byte_size === input.byteSize;
@@ -209,9 +220,20 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/api/v1/projects/:project_id", async (context) => {
     const identity = await resolveWorkspaceAccess(context, identityPort, store);
-    const detail = await assetStore.findProjectDetail(identity.workspaceId, parseProjectId(context));
+    const projectId = parseProjectId(context);
+    const detail = await assetStore.findProjectDetail(identity.workspaceId, projectId);
     if (!detail) throw notFound("Project not found.");
-    return response(context, serializeProjectDetail(detail));
+    const taskRuns = await taskStore.listProjectTaskRuns(identity.workspaceId, projectId);
+    const generatedAssets = (await Promise.all(
+      taskRuns.flatMap((taskRun) => taskRun.resultAssetId
+        ? [taskStore.findTaskRunResultAsset(identity.workspaceId, taskRun.resultAssetId)]
+        : []),
+    )).filter((asset): asset is NonNullable<typeof asset> => Boolean(asset));
+    const assetIds = new Set(detail.assets.map((asset) => asset.id));
+    return response(context, serializeProjectDetail({
+      ...detail,
+      assets: [...detail.assets, ...generatedAssets.filter((asset) => !assetIds.has(asset.id))],
+    }, taskRuns));
   });
 
   app.patch("/api/v1/projects/:project_id", async (context) => {
@@ -373,6 +395,79 @@ export function createApp(options: CreateAppOptions = {}) {
     if (execution.kind === "INVALID_REFERENCE") throw invalidReference();
     if (execution.kind === "POSITION_CONFLICT") throw shotPositionConflict();
     return response(context, serializeShot(execution.value), execution.status);
+  });
+
+  app.post("/api/v1/shots/:shot_id/generations", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const shotId = parseShotId(context);
+    const command = await parseBody(context, CreateTaskRunCommandSchema);
+    const idempotencyKey = readIdempotencyKey(context);
+    if (command.model !== "mock-video-v1") {
+      throw validationError("The local C06 runtime only accepts model mock-video-v1.");
+    }
+    const execution = await taskStore.createTaskRun({
+      scope: `${identity.userId}:POST:/api/v1/shots/${shotId}/generations`,
+      idempotencyKey,
+      requestHash: fingerprintRequest(command),
+      workspaceId: identity.workspaceId,
+      taskRunId: createPrefixedId("tsk"),
+      shotId,
+      kind: "VIDEO_GENERATION",
+      inputSnapshot: command,
+      event: {
+        eventId: createPrefixedId("evt"),
+        messageId: createPrefixedId("msg"),
+        traceId: createPrefixedId("trc"),
+        correlationId: createPrefixedId("cor"),
+      },
+    });
+    if (execution.kind === "CONFLICT") throw idempotencyConflict();
+    if (execution.kind === "NOT_FOUND") throw notFound("Shot not found.");
+    if (execution.kind === "INVALID_REFERENCE") throw invalidReference();
+    if (execution.kind === "ACTIVE_CONFLICT") throw taskRunActiveConflict();
+    if (execution.kind === "STATE_INVALID") throw taskStateInvalid();
+    return response(context, serializeTaskRun(execution.value), execution.status);
+  });
+
+  app.get("/api/v1/task-runs/:task_run_id", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const taskRun = await taskStore.findTaskRun(identity.workspaceId, parseTaskRunId(context));
+    if (!taskRun) throw notFound("Task run not found.");
+    const [attempts, resultAsset] = await Promise.all([
+      taskStore.listTaskRunAttempts(identity.workspaceId, taskRun.id),
+      taskRun.resultAssetId ? taskStore.findTaskRunResultAsset(identity.workspaceId, taskRun.resultAssetId) : Promise.resolve(undefined),
+    ]);
+    return response(context, {
+      task_run: serializeTaskRun(taskRun),
+      attempts: attempts.map(serializeTaskRunAttempt),
+      result_asset: resultAsset ? serializeAsset(resultAsset) : null,
+    });
+  });
+
+  app.post("/api/v1/task-runs/:task_run_id/retry", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const taskRunId = parseTaskRunId(context);
+    const command = await parseBody(context, RetryTaskRunCommandSchema);
+    const idempotencyKey = readIdempotencyKey(context);
+    const execution = await taskStore.retryTaskRun({
+      scope: `${identity.userId}:POST:/api/v1/task-runs/${taskRunId}/retry`,
+      idempotencyKey,
+      requestHash: fingerprintRequest(command),
+      workspaceId: identity.workspaceId,
+      taskRunId,
+      event: {
+        eventId: createPrefixedId("evt"),
+        messageId: createPrefixedId("msg"),
+        traceId: createPrefixedId("trc"),
+        correlationId: createPrefixedId("cor"),
+      },
+    });
+    if (execution.kind === "CONFLICT") throw idempotencyConflict();
+    if (execution.kind === "NOT_FOUND") throw notFound("Task run not found.");
+    if (execution.kind === "STATE_INVALID") throw taskStateInvalid();
+    if (execution.kind === "INVALID_REFERENCE") throw invalidReference();
+    if (execution.kind === "ACTIVE_CONFLICT") throw taskRunActiveConflict();
+    return response(context, serializeTaskRun(execution.value), execution.status);
   });
 
   app.get("/api/v1/events", async (context) => {

@@ -89,6 +89,14 @@ test("Drizzle TaskRunRepository persists outbox facts, leases, deduplication, an
         generationSettings: {},
         referenceBindings: [],
       })).kind, "NEW");
+      assert.equal((await assets.updateShot({
+        scope: `${baseScope}:shot-ready:${position}`,
+        idempotencyKey: `shot-ready-${position}`,
+        requestHash: fingerprintRequest({ status: "READY" }),
+        workspaceId: workspaceA,
+        shotId,
+        status: "READY",
+      })).kind, "NEW");
     }
 
     const firstTaskId = createPrefixedId("tsk");

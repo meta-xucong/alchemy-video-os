@@ -7,18 +7,21 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "pretypecheck": "pnpm --filter @alchemy-video/contracts build && pnpm --filter @alchemy-video/domain build && pnpm --filter @alchemy-video/persistence build && pnpm --filter @alchemy-video/task-queue build",
+    "pretypecheck": "pnpm --filter @alchemy-video/contracts build && pnpm --filter @alchemy-video/domain build && pnpm --filter @alchemy-video/persistence build && pnpm --filter @alchemy-video/task-queue build && pnpm --filter @alchemy-video/provider-video build && pnpm --filter @alchemy-video/storage-client build",
     "typecheck": "tsc --noEmit",
-    "pretest": "pnpm --filter @alchemy-video/contracts build && pnpm --filter @alchemy-video/domain build && pnpm --filter @alchemy-video/persistence build && pnpm --filter @alchemy-video/task-queue build",
+    "pretest": "pnpm --filter @alchemy-video/contracts build && pnpm --filter @alchemy-video/domain build && pnpm --filter @alchemy-video/persistence build && pnpm --filter @alchemy-video/task-queue build && pnpm --filter @alchemy-video/provider-video build && pnpm --filter @alchemy-video/storage-client build",
     "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "@alchemy-video/contracts": "workspace:*",
     "@alchemy-video/persistence": "workspace:*",
+    "@alchemy-video/provider-video": "workspace:*",
+    "@alchemy-video/storage-client": "workspace:*",
     "@alchemy-video/task-queue": "workspace:*",
     "dotenv": "^17.4.2"
   },
   "devDependencies": {
+    "@aws-sdk/client-s3": "3.750.0",
     "@alchemy-video/domain": "workspace:*",
     "@types/node": "^24.0.0",
     "drizzle-orm": "^0.45.1",

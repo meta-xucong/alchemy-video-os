@@ -39,6 +39,20 @@ export class InMemoryAssetWorkspaceStore implements AssetWorkspaceStore {
     return shot?.workspaceId === workspaceId ? shot : undefined;
   }
 
+  async setShotGenerationState(input: { workspaceId: string; shotId: string; status: "GENERATING" | "GENERATED" | "FAILED"; selectedAssetId?: string | null }) {
+    const current = await this.findShot(input.workspaceId, input.shotId);
+    if (!current) return undefined;
+    const updated: ControlShot = {
+      ...current,
+      status: input.status,
+      ...(input.selectedAssetId === undefined ? {} : { selectedAssetId: input.selectedAssetId }),
+      revision: current.revision + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    this.shots.set(updated.id, updated);
+    return updated;
+  }
+
   async createUploadAsset(input: AssetCommandInput) {
     const replay = this.replayUploadAsset(input, 201);
     if (replay) return replay;

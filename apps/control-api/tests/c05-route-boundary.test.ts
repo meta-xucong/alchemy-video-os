@@ -3,10 +3,11 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import test from "node:test";
 
-test("C05 registers only the public SSE route and leaves C06 TaskRun routes unimplemented", async () => {
+test("C06 registers the public TaskRun routes after C05's durable SSE boundary", async () => {
   const source = await readFile(resolve(import.meta.dirname, "..", "src", "app.ts"), "utf8");
 
   assert.match(source, /app\.get\("\/api\/v1\/events"/);
-  assert.doesNotMatch(source, /app\.(?:get|post|patch)\("\/api\/v1\/shots\/:shot_id\/generations/);
-  assert.doesNotMatch(source, /app\.(?:get|post|patch)\("\/api\/v1\/task-runs/);
+  assert.match(source, /app\.post\("\/api\/v1\/shots\/:shot_id\/generations/);
+  assert.match(source, /app\.get\("\/api\/v1\/task-runs\/:task_run_id/);
+  assert.match(source, /app\.post\("\/api\/v1\/task-runs\/:task_run_id\/retry/);
 });

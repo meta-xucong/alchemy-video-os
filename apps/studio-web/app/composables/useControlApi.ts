@@ -77,7 +77,7 @@ export type CurrentIdentity = {
 export type ProjectList = { data: Project[]; request_id: string };
 export type ProjectResponse = { data: Project; request_id: string };
 export type ProjectDetailResponse = {
-  data: { project: Project; assets: Asset[]; shots: Shot[]; reference_bindings: ReferenceBinding[] };
+  data: { project: Project; assets: Asset[]; shots: Shot[]; reference_bindings: ReferenceBinding[]; task_runs: TaskRun[] };
   request_id: string;
 };
 export type AssetResponse = { data: Asset; request_id: string };
@@ -87,6 +87,29 @@ export type UploadRequestResponse = {
   request_id: string;
 };
 export type DownloadUrlResponse = { data: { download_url: string; expires_at: string }; request_id: string };
+export type TaskRun = {
+  id: string;
+  workspace_id: string;
+  project_id: string;
+  shot_id: string;
+  kind: "VIDEO_GENERATION" | "DOCUMENT_CONVERSION" | "RENDER" | "QC";
+  status: "CREATED" | "QUEUED" | "RUNNING" | "PROCESSING" | "DOWNLOADING" | "BILLING_PENDING" | "SUCCEEDED" | "BILLING_FAILED" | "FAILED" | "RETRY_SCHEDULED" | "ABANDONED";
+  input_snapshot: Record<string, unknown>;
+  result_asset_id: string | null;
+  error: { code: string; message: string; retryable: boolean } | null;
+  retry_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+export type TaskRunAttempt = {
+  id: string;
+  task_run_id: string;
+  status: "CREATED" | "SUBMITTED" | "PROCESSING" | "SUCCEEDED" | "FAILED" | "DOWNLOAD_FAILED" | "ABANDONED";
+  created_at: string;
+  updated_at: string;
+};
+export type TaskRunDetailResponse = { data: { task_run: TaskRun; attempts: TaskRunAttempt[]; result_asset: Asset | null }; request_id: string };
+export type TaskRunResponse = { data: TaskRun; request_id: string };
 
 const commandHeaders = (idempotencyKey: string) => ({
   "Content-Type": "application/json",
@@ -117,6 +140,7 @@ export function useControlApi() {
     });
 
   const assetDownloadUrl = (assetId: string) => $fetch<DownloadUrlResponse>(`/api/v1/assets/${assetId}/download-url`);
+  const taskRun = (taskRunId: string) => $fetch<TaskRunDetailResponse>(`/api/v1/task-runs/${taskRunId}`);
 
   const createShot = (projectId: string, input: { position: number; prompt: string; reference_bindings: ReferenceBindingInput[] }, idempotencyKey: string) =>
     $fetch<ShotResponse>(`/api/v1/projects/${projectId}/shots`, {
@@ -132,6 +156,20 @@ export function useControlApi() {
       body: input,
     });
 
+  const createGeneration = (shotId: string, input: { model: "mock-video-v1"; prompt: string; duration: number; resolution: string; ratio: string; reference_asset_ids: string[] }, idempotencyKey: string) =>
+    $fetch<TaskRunResponse>(`/api/v1/shots/${shotId}/generations`, {
+      method: "POST",
+      headers: commandHeaders(idempotencyKey),
+      body: input,
+    });
+
+  const retryTaskRun = (taskRunId: string, idempotencyKey: string) =>
+    $fetch<TaskRunResponse>(`/api/v1/task-runs/${taskRunId}/retry`, {
+      method: "POST",
+      headers: commandHeaders(idempotencyKey),
+      body: {},
+    });
+
   return {
     health,
     currentIdentity,
@@ -141,7 +179,10 @@ export function useControlApi() {
     createUploadRequest,
     confirmAssetUpload,
     assetDownloadUrl,
+    taskRun,
     createShot,
     updateShot,
+    createGeneration,
+    retryTaskRun,
   };
 }

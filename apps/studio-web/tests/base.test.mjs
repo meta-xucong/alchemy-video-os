@@ -35,7 +35,7 @@ test("studio health screen uses the public control API boundary", () => {
   assert.match(page, /Refresh workbench/);
 });
 
-test("studio C03 and C04 surfaces stay on the public control API boundary", () => {
+test("studio C03-C06 surfaces stay on the public control API boundary", () => {
   const composable = read("app/composables/useControlApi.ts");
   const page = read("app/pages/index.vue");
   const assetMedia = read("app/composables/useAssetMedia.ts");
@@ -53,8 +53,13 @@ test("studio C03 and C04 surfaces stay on the public control API boundary", () =
   assert.match(page, /confirmAssetUpload/);
   assert.match(page, /createShot/);
   assert.match(page, /updateShot/);
+  assert.match(page, /createGeneration/);
+  assert.match(page, /retryTaskRun/);
+  assert.match(page, /new EventSource\(`\/api\/v1\/events/);
+  assert.match(page, /Generate mock video/);
+  assert.match(page, /Preview generated video/);
   assert.match(page, /fetch\(request\.data\.upload_url/);
   assert.match(assetMedia, /thumbFallback/);
   assert.doesNotMatch(composable, /\/internal\//);
-  assert.doesNotMatch(`${composable}\n${page}\n${assetMedia}`, /\b(?:object_key|provider|veyra|minio|bullmq|outbox|task_run|sse)\b/i);
+  assert.doesNotMatch(`${composable}\n${page}\n${assetMedia}`, /\b(?:object_key|provider_request_id|request_payload|response_payload|veyra|minio|bullmq|outbox)\b/i);
 });

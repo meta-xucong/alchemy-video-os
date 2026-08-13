@@ -2,7 +2,7 @@
 
 这是一个学习用途的企业 AI 内容生产平台，目标是把企业资料、脚本、分镜、视频 Provider、媒体 Runtime、质量检查和版本化资产组织成可审计的模块化系统。
 
-当前仓库的 C01（本地 monorepo 和 PostgreSQL/Redis/MinIO 基础设施）、C02（Contracts、Domain、Persistence）、C03（Control API 与 Dev Identity）、C04（Asset、Project、Shot 工作台）和 C05（Outbox、Queue 和 Worker）均已通过独立审计；C05 尚待受限 Git 备份。C05 不公开 generation 或 TaskRun HTTP 路由；该 API、Mock 视频闭环与 Provider 都属于 C06。默认使用 Mock 配置，不调用真实视频 API，不启用 Sub2API 共享积分。
+当前仓库的 C01（本地 monorepo 和 PostgreSQL/Redis/MinIO 基础设施）、C02（Contracts、Domain、Persistence）、C03（Control API 与 Dev Identity）、C04（Asset、Project、Shot 工作台）、C05（Outbox、Queue 和 Worker）和 C06（Mock 视频生成闭环）均已通过审计。C06 正在执行受限远端备份复核；C07 及以后保持 PENDING。默认使用 Mock 配置，不调用真实视频 API，不启用 Sub2API 共享积分。
 
 ## 开始阅读
 
@@ -20,15 +20,16 @@
 - C02 Contracts、Domain、Persistence：`ACCEPTED`（`c02-accepted` 已备份复核）
 - C03 Control API 与 Dev Identity：`ACCEPTED`（已完成备份复核）
 - C04 Asset、Project、Shot 工作台：`ACCEPTED`（`c04-accepted` 远端备份复核通过）
-- C05 Outbox、Queue 和 Worker：`ACCEPTED`（消费账本工作区范围纠偏已验证，待 `c05-accepted` 受限备份）
-- 当前应用能力：开发身份、默认工作区、项目创建/列表/详情/更新、Asset 预签名上传/确认/下载、Shot/ReferenceBinding 与命令幂等；C05 已实现内部 TaskRun/outbox/Worker 能力和公开 SSE 回放，generation/TaskRun HTTP 路由仍等待 C06
+- C05 Outbox、Queue 和 Worker：`ACCEPTED`（`c05-accepted` 远端备份已复核）
+- C06 Mock 视频生成闭环：`ACCEPTED`；共享测试隔离、Worker `17/17`、Studio failure/retry E2E、根 `82/82`、迁移和基础设施健康均已独立复验，等待 C06 远端备份复核
+- 当前应用能力：开发身份、默认工作区、项目创建/列表/详情/更新、Asset 预签名上传/确认/下载、Shot/ReferenceBinding、Mock TaskRun/outbox/Worker、公开 SSE 回放与 Studio 可播放 MP4；C06 尚未 `ACCEPTED`
 - 真实视频 Key：不配置
 - Veyra/共享积分：关闭
 - VPS、域名和生产部署：延期
 
 每个章节完成后必须在章节审计记录中写入测试命令、证据路径和 Exit Gate 结论。
 
-C01 至 C04 均已完成受限备份。C05 已通过独立审计，仅授权主线执行 C05-only 的受限 `git add`、提交、推送和 `c05-accepted` tag；远端备份复核完成前不得启动 C06。
+C01 至 C05 均已完成受限备份。C06 已 `ACCEPTED`，现仅允许受限备份；C07 或任何后续章节必须等待 C06 远端备份复核完成。既有用户 `.env.example` 改动不属于 C06 暂存范围。
 
 ## C01 Local Start
 

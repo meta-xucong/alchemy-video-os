@@ -58,9 +58,10 @@ test("BullMQ retries a durable internal event and sends the final failure to the
     await waitFor(() => terminal !== undefined);
     assert.equal(attempts, 3);
     assert.deepEqual(terminal, {
-      event_id: eventId,
-      workspace_id: workspaceId,
-      attempts: 3,
+    event_id: eventId,
+    workspace_id: workspaceId,
+    task_run_id: taskRunId,
+    attempts: 3,
       reason: "controlled retryable delivery failure",
     });
   } finally {

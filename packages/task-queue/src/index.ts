@@ -11,6 +11,7 @@ export type InternalEventQueueJob = InternalTaskRunQueueMessage;
 export type DeadLetterQueueJob = {
   event_id: string;
   workspace_id: string;
+  task_run_id: string;
   attempts: number;
   reason: string;
 };
@@ -27,6 +28,7 @@ export type InternalEventWorkerOptions = {
   concurrency?: number;
   queueName?: string;
   deadLetterQueueName?: string;
+  autoStart?: boolean;
 };
 
 const toConnectionOptions = (redisUrl: string): ConnectionOptions => {
@@ -73,6 +75,7 @@ export class BullMqInternalEventQueue implements InternalEventQueuePort {
 
 export type InternalEventWorkerHandle = {
   close(): Promise<void>;
+  start(): void;
   waitUntilReady(): Promise<void>;
 };
 
@@ -84,7 +87,7 @@ export const createBullMqInternalEventWorker = (input: InternalEventWorkerOption
   const worker = new Worker<InternalEventQueueJob>(
     queueName,
     async (job) => input.processor(InternalTaskRunQueueMessageSchema.parse(job.data)),
-    { connection, concurrency: input.concurrency ?? 1 },
+    { connection, concurrency: input.concurrency ?? 1, autorun: input.autoStart ?? true },
   );
 
   worker.on("failed", (job: Job<InternalEventQueueJob> | undefined, error) => {
@@ -97,6 +100,7 @@ export const createBullMqInternalEventWorker = (input: InternalEventWorkerOption
     const payload: DeadLetterQueueJob = {
       event_id: message.data.event_id,
       workspace_id: message.data.workspace_id,
+      task_run_id: message.data.task_run_id,
       attempts: job.attemptsMade,
       reason: safeReason(error),
     };
@@ -112,6 +116,11 @@ export const createBullMqInternalEventWorker = (input: InternalEventWorkerOption
     close: async () => {
       await worker.close();
       await deadLetterQueue.close();
+    },
+    start: () => {
+      void worker.run().catch((error) => {
+        console.error(JSON.stringify({ event: "queue.worker.run.failed", reason: safeReason(error) }));
+      });
     },
     waitUntilReady: () => worker.waitUntilReady(),
   };
