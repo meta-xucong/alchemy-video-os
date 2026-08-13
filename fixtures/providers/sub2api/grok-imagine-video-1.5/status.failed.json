@@ -1,0 +1,8 @@
+{
+  "id": "req_fixture_001",
+  "status": "failed",
+  "error": {
+    "code": "synthetic_rejection",
+    "message": "Synthetic fixture rejection."
+  }
+}

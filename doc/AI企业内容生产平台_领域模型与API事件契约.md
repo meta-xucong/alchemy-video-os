@@ -131,9 +131,16 @@ ADR-0014 将本图确定为 TaskRun 迁移的唯一完整规则；根目录 `AGE
 - Worker ready 后由受控后台进程执行一次全局恢复扫描，只选择 `VIDEO_GENERATION` 且为 `RUNNING`、`PROVIDER_PROCESSING`、`DOWNLOADING` 的 TaskRun；`QUEUED`、其他 kind 和终态不得被该扫描执行。C06 先让 BullMQ 连接 ready 但不启动 processor，完成每项最多三次的扫描恢复后才领取历史 queue job，避免同一实例双 submit。三次短暂错误都耗尽时，Worker 必须按该 TaskRun 的 `workspace_id + task_run_id` 写入可公开读取、可显式 retry 的失败终态，不能依赖已完成 C05 consumer lease。该全局发现不属于浏览器或公开 API，扫描返回每个 TaskRun 后的所有读取和更新都必须使用其 `workspace_id` 范围；多 Worker 扩容必须先增加持久化 execution lease/claim。
 - BullMQ 重复 delivery 不能因为 C05 的消费账本已完成而跳过执行器：`DUPLICATE` delivery 仍须按其 `workspace_id` 调用执行器，使消费事务后发生的执行器中断可在同一进程重试恢复。已 `SUCCEEDED` 的 TaskRun 必须成为无副作用 no-op，因此重复 delivery 不得产生第二次 submit 或替换结果对象。
 - 已持久化 `provider_request_id` 的下载、ffprobe 或结果资产写入失败，Attempt 必须保留为 `DOWNLOAD_FAILED`；可重试的传输/对象存储错误保持 TaskRun `DOWNLOADING` 并交给 BullMQ 或启动扫描恢复，终态媒体/协议错误则由用户显式 `FAILED -> QUEUED` 重试恢复查询/下载。同一 TaskRun 不得因此再次 `submit` 或替换已成功写入的结果对象。
+- 已持久化 `provider_request_id` 后，轮询得到可重试的 Provider 失败（例如 `429`、`503` 映射的 `PROVIDER_UNAVAILABLE`）由当前 BullMQ delivery 或启动扫描的有限重试接管：TaskRun 保持 `PROVIDER_PROCESSING`，Attempt 保持已提交/处理中，且不发布 `task_run.failed`。这不是未实现调度器的 `RETRY_SCHEDULED` 旁路；delivery 耗尽后才由既有 C06 终态收敛写入公开可见、可显式 retry 的 `FAILED`。未来 C08 若持久化 `next_poll_at` 并重新入队，才使用 `PROVIDER_PROCESSING -> RETRY_SCHEDULED -> QUEUED` 的延迟调度分支。
 - 成功前不写 `result_asset_id`；成功后 `result_asset_id` 不可替换。用户选择新版时更新 `Shot.selected_asset_id`。
 - `BILLING_PENDING` 表示视频已成功验证并已保存或待发布；余额不足进入 `BILLING_FAILED`，充值后的显式重试只回到 `BILLING_PENDING`，不得再次提交提供方任务。
 - `usage_records` 仅在扣费调用返回成功时创建；`replayed=true` 仍记录一次本地审计，但 `idempotency_key` 设唯一约束。
+
+### 3.3 内部 VideoProviderPort 下载与失败边界
+
+`VideoProviderPort` 是 Worker 与视频适配器之间的内部端口，不是公开 HTTP DTO。`download()` 返回 `{ stream, mimeType, contentLength? }`：`mimeType` 必须来自下载响应的实际 `Content-Type`，`contentLength` 仅在上游给出可解析的 `Content-Length` 时返回。Worker 在写入对象存储前必须使用该 MIME 校验字节、SHA-256、声明/实际大小和 `ffprobe`；缺失 MIME、非 `video/mp4`、非法长度或长度不匹配均是不可重试的 `DOWNLOAD_INVALID`，不得假定为 `video/mp4`。
+
+适配器可以抛出内部 `VideoProviderFailure`，其字段为稳定应用错误 `code`、`retryable` 和阶段 `PROVIDER | DOWNLOAD`。查询也可用 `ProviderStatus.FAILED` 表达归一化失败：`429`、`503` 必须是 `PROVIDER_UNAVAILABLE/retryable=true`，拒绝是 `PROVIDER_REJECTED/retryable=false`。Worker 必须按该类型和状态保留拒绝、暂不可用和下载无效的语义，且只把安全摘要写入 TaskRun；不得泄露 Provider payload、对象 key、签名 URL 或凭据。结构非法继续使用 `VideoProviderProtocolError`：提交/查询阶段映射 `PROVIDER_PROTOCOL_INVALID`，下载阶段映射 `DOWNLOAD_INVALID`。本边界不改变任何 `/api/v1` 请求、响应或公开事件 schema。
 
 ## 4. HTTP 资源契约
 
@@ -220,8 +227,14 @@ type InternalEvent<T extends string, D> = {
 interface VideoProviderPort {
   submit(input: VideoGenerationInput): Promise<ProviderSubmission>;
   getStatus(input: { providerRequestId: string }): Promise<ProviderStatus>;
-  download(input: { providerRequestId: string }): Promise<ReadableStream>;
+  download(input: { providerRequestId: string }): Promise<ProviderDownload>;
 }
+
+type ProviderDownload = {
+  stream: ReadableStream<Uint8Array>;
+  mimeType: string;
+  contentLength?: number;
+};
 
 interface IdentityPort {
   resolve(request: Request): Promise<Identity>;

@@ -298,7 +298,13 @@ WORKSPACE_FORBIDDEN
 interface VideoProviderPort {
   submit(input: VideoGenerationInput): Promise<ProviderSubmission>;
   getStatus(input: { providerRequestId: string }): Promise<ProviderStatus>;
-  download(input: { providerRequestId: string }): Promise<ReadableStream>;
+  download(input: { providerRequestId: string }): Promise<ProviderDownload>;
+}
+
+interface ProviderDownload {
+  stream: ReadableStream<Uint8Array>;
+  mimeType: string;
+  contentLength?: number;
 }
 ```
 
@@ -307,6 +313,7 @@ interface VideoProviderPort {
 - 只从 Worker 服务端环境读取视频 API Key。
 - 支持提交、持久化 request ID、轮询恢复、流式下载和媒体校验。
 - 将上游字段映射为平台 DTO，将状态和错误归一化。
+- 从下载响应携带实际 MIME 和可解析长度；Worker 必须据此校验字节、SHA-256 和 `ffprobe`，不得为真实适配器默认 `video/mp4`。
 - 对未知响应结构返回 `PROVIDER_PROTOCOL_INVALID`，不要猜测成功。
 - 在未完成能力认证前，profile 只可作为禁用配置，不能从前端模型列表公开。
 - 默认 `VIDEO_PROVIDER=mock`；真实调用必须由显式配置和用户授权触发。

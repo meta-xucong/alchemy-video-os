@@ -64,7 +64,11 @@ export class MockVideoProvider implements VideoProviderPort {
     if (this.outcome === "failed") {
       throw new VideoProviderProtocolError("A failed mock request cannot be downloaded.");
     }
-    return streamFromBytes(this.fixtureBytes.slice());
+    return {
+      stream: streamFromBytes(this.fixtureBytes.slice()),
+      mimeType: "video/mp4",
+      contentLength: this.fixtureBytes.byteLength,
+    };
   }
 
   private assertRequestId(providerRequestId: string) {

@@ -69,3 +69,12 @@
 | huobao-drama | `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` | `packages/provider-video/src/port.ts`、`apps/task-worker/src/execution-service.ts` | `backend/src/services/adapters/types.ts` 的 `VideoGenerationRecord` / `VideoProviderAdapter` 字段意图，`generation.ts` 的 submit/poll 职责切分 | 保留 `model`、`prompt`、提交/查询/下载阶段；改为平台 `VideoProviderPort`、持久化 ProviderAttempt 与 workspace-scoped TaskRun。舍弃直接 Provider HTTP、MySQL、进程内轮询、配置/密钥读取。 | Mock 无网络、重启恢复、公开脱敏测试 |
 
 `AI企业内容生产平台_C06上游复用矩阵.md` 是本章逐文件和测试位置的完整记录。任何 C06 实际迁入的代码会在目标模块 `UPSTREAM.md` 追加修改点。
+
+## 8. C07 复用登记
+
+| 来源仓库 | 固定 commit | 本地目标路径 | 迁入/借鉴符号 | 平台改动与舍弃原因 | 回归测试 |
+| --- | --- | --- | --- | --- | --- |
+| sub2api-video-mcp | `3f2d885b79630f50b9cf4ae62251596cc37bbd18` | `packages/provider-video/src/sub2api/{adapter,capabilities,errors,mapper,transport}.ts` | 视频协议路径 `POST /videos/generations`、`GET /videos/{id}`、`GET /videos/{id}/content`；`model`、`prompt`、`duration`、`resolution`、`ratio`、`image.image_url`、`id`/`request_id`、`status`/`state` 字段语义、下载 Content-Type/Content-Length 传播，以及 disabled profile/snapshot 边界 | 仅按文档化协议做 injected transport 的离线薄适配和内部 disabled registry/snapshot；未迁入 MCP server、工具注册、进程内轮询、HTTP 客户端、环境 Key、公开模型列表、认证或任何任务事实。真实 transport 与 profile 认证留给 C08。 | CONTRACT-001 至 008、metadata/invalid MIME/404 断言、registry disabled/no-public-list assertions、global-fetch guard、无网络 fake transport |
+| huobao-drama | `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` | `packages/provider-video/src/sub2api/` | `backend/src/services/adapters/types.ts` 的 `VideoGenerationRecord` / `VideoProviderAdapter` 适配职责；`backend/src/services/generation.ts` 的 submit/poll 阶段划分 | 只借鉴 adapter 边界，复用平台既有 `VideoProviderPort`；下载 metadata 与 typed failure 是平台内部薄适配；舍弃 `AIConfig`、MySQL、全局 registry、直接 Provider HTTP、定时器、短剧业务与密钥配置。 | `sub2api-*.test.ts` 22/22、task-worker C07 cross-package 5 cases、typecheck |
+
+`AI企业内容生产平台_C07上游复用矩阵.md` 是 C07 的逐文件实施与审计记录。C07 未从 `upstream/` 复制源码；该目录仍只供本机溯源且不得进入 Git 索引。

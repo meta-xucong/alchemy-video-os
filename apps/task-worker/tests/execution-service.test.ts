@@ -3,8 +3,9 @@ import test from "node:test";
 
 import { createPrefixedId } from "@alchemy-video/domain";
 import { StorageUnavailableError, createInMemoryStoragePort, type StoragePort } from "@alchemy-video/storage-client";
-import { MockVideoProvider, createMockMp4Fixture } from "@alchemy-video/provider-video";
+import { MockVideoProvider, Sub2ApiVideoProvider, createMockMp4Fixture } from "@alchemy-video/provider-video";
 import type { VideoProviderPort } from "@alchemy-video/provider-video";
+import type { Sub2ApiTransport, Sub2ApiTransportResponse } from "@alchemy-video/provider-video";
 
 import { InMemoryTaskRunStore } from "../../control-api/src/task-run-repository.js";
 import { InMemoryAssetWorkspaceStore } from "../../control-api/src/asset-repository.js";
@@ -19,6 +20,19 @@ const streamFromBytes = (bytes: Uint8Array) => new ReadableStream<Uint8Array>({
     controller.close();
   },
 });
+
+class C07FakeTransport implements Sub2ApiTransport {
+  readonly requests: Array<{ method: "GET" | "POST"; path: string; body?: unknown }> = [];
+
+  constructor(private readonly responses: Sub2ApiTransportResponse[]) {}
+
+  async request(input: Parameters<Sub2ApiTransport["request"]>[0]) {
+    this.requests.push(structuredClone(input));
+    const response = this.responses.shift();
+    if (!response) throw new Error("C07 fake transport received an unexpected request.");
+    return response;
+  }
+}
 
 class FailFirstDownloadProvider implements VideoProviderPort {
   private failedDownload = false;
@@ -40,7 +54,8 @@ class FailFirstDownloadProvider implements VideoProviderPort {
   download(input: Parameters<VideoProviderPort["download"]>[0]) {
     if (!this.failedDownload) {
       this.failedDownload = true;
-      return Promise.resolve(streamFromBytes(new Uint8Array([0, 1, 2])));
+      const bytes = new Uint8Array([0, 1, 2]);
+      return Promise.resolve({ stream: streamFromBytes(bytes), mimeType: "video/mp4", contentLength: bytes.byteLength });
     }
     return this.provider.download(input);
   }
@@ -277,4 +292,166 @@ test("C06 keeps a pre-download provider protocol error out of the download recov
   const [attempt] = await store.listTaskRunAttempts(workspaceId, taskRunId);
   assert.equal(attempt?.status, "FAILED");
   assert.ok(attempt?.providerRequestId);
+});
+
+test("C07 rejected submit is preserved as non-retryable PROVIDER_REJECTED by C06", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask();
+  const transport = new C07FakeTransport([{
+    status: 400,
+    json: { message: "Synthetic provider rejection." },
+  }]);
+  const provider = new Sub2ApiVideoProvider(transport);
+  const result = await new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort()).execute({ workspaceId, taskRunId });
+
+  assert.equal(result?.status, "FAILED");
+  assert.deepEqual(result?.error, {
+    code: "PROVIDER_REJECTED",
+    message: "Synthetic provider rejection.",
+    retryable: false,
+  });
+  assert.deepEqual(transport.requests.map((request) => request.method), ["POST"]);
+});
+
+test("C07 temporary polling 429 and 503 stay processing and recover without resubmission", async () => {
+  const fixture = await createMockMp4Fixture();
+  const cases = [
+    { temporaryStatus: 429, responsesBeforeRecovery: [{ status: 429 }] },
+    { temporaryStatus: 503, responsesBeforeRecovery: [{ status: 200, json: { status: "processing" } }, { status: 503 }] },
+  ];
+  for (const { temporaryStatus, responsesBeforeRecovery } of cases) {
+    const { store, workspaceId, taskRunId } = await prepareTask();
+    const providerRequestId = `req_c07_poll_${temporaryStatus}`;
+    const transport = new C07FakeTransport([
+      { status: 202, json: { id: providerRequestId } },
+      ...responsesBeforeRecovery,
+      { status: 200, json: { status: "succeeded" } },
+      { status: 200, headers: { "content-type": "video/mp4", "content-length": String(fixture.byteLength) }, stream: streamFromBytes(fixture) },
+    ]);
+    const executor = new MockVideoTaskExecutor(store, new Sub2ApiVideoProvider(transport), createInMemoryStoragePort());
+
+    await assert.rejects(executor.execute({ workspaceId, taskRunId }), /temporarily unavailable/);
+    const afterTemporaryFailure = await store.findTaskRun(workspaceId, taskRunId);
+    assert.equal(afterTemporaryFailure?.status, "PROVIDER_PROCESSING");
+    assert.equal(afterTemporaryFailure?.error, null);
+    const [attempt] = await store.listTaskRunAttempts(workspaceId, taskRunId);
+    assert.equal(attempt?.providerRequestId, providerRequestId);
+    assert.equal(attempt?.status, "PROCESSING");
+    assert.equal(
+      (await store.listWorkspaceEvents({ workspaceId, limit: 30 })).some((item) => item.event_type === "task_run.failed"),
+      false,
+    );
+
+    const recovered = await executor.execute({ workspaceId, taskRunId });
+    assert.equal(recovered?.status, "SUCCEEDED");
+    assert.equal(transport.requests.filter((request) => request.method === "POST").length, 1);
+  }
+});
+
+test("C07 download 404 becomes DOWNLOAD_INVALID and retry reuses the persisted request", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask();
+  const fixture = await createMockMp4Fixture();
+  const transport = new C07FakeTransport([
+    { status: 202, json: { id: "req_c07_download_404" } },
+    { status: 200, json: { status: "succeeded" } },
+    { status: 404 },
+    { status: 200, json: { status: "succeeded" } },
+    { status: 200, headers: { "content-type": "video/mp4", "content-length": String(fixture.byteLength) }, stream: streamFromBytes(fixture) },
+  ]);
+  const provider = new Sub2ApiVideoProvider(transport);
+  const storage = createInMemoryStoragePort();
+  const executor = new MockVideoTaskExecutor(store, provider, storage);
+
+  const failed = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(failed?.status, "FAILED");
+  assert.deepEqual(failed?.error, {
+    code: "DOWNLOAD_INVALID",
+    message: "The SUB2API video download was rejected.",
+    retryable: false,
+  });
+  assert.equal(transport.requests.filter((request) => request.method === "POST").length, 1);
+
+  const retry = await store.retryTaskRun({
+    scope: "c07:download-404-retry",
+    idempotencyKey: "download-404-retry",
+    requestHash: "e".repeat(64),
+    workspaceId,
+    taskRunId,
+    event: event(),
+  });
+  assert.equal(retry.kind, "NEW");
+  const queued = (await store.listWorkspaceEvents({ workspaceId, limit: 30 }))
+    .filter((item) => item.event_type === "task_run.queued")
+    .at(-1);
+  assert.ok(queued && queued.event_type === "task_run.queued");
+  if (!queued || queued.event_type !== "task_run.queued") throw new Error("retry event missing");
+  await store.processEvent({
+    message: { contract_version: "1.0", event_id: queued.event_id, workspace_id: workspaceId, task_run_id: taskRunId, attempt_no: 1, correlation_id: queued.correlation_id, input_snapshot: queued.data.input_snapshot },
+    consumerName: "c07-download-404-retry",
+    workerId: "c07-worker",
+    now: new Date(),
+    leaseMs: 100,
+  });
+  const recovered = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(recovered?.status, "SUCCEEDED");
+  assert.equal(transport.requests.filter((request) => request.method === "POST").length, 1);
+});
+
+test("C07 wrong download MIME is non-retryable and cannot be mistaken for MP4", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask();
+  const transport = new C07FakeTransport([
+    { status: 202, json: { id: "req_c07_wrong_mime" } },
+    { status: 200, json: { status: "succeeded" } },
+    { status: 200, headers: { "content-type": "application/octet-stream" }, stream: streamFromBytes(new Uint8Array([0, 1, 2])) },
+  ]);
+  const result = await new MockVideoTaskExecutor(store, new Sub2ApiVideoProvider(transport), createInMemoryStoragePort()).execute({ workspaceId, taskRunId });
+
+  assert.equal(result?.status, "FAILED");
+  assert.equal(result?.error?.code, "DOWNLOAD_INVALID");
+  assert.equal(result?.error?.retryable, false);
+  assert.equal(transport.requests.filter((request) => request.method === "POST").length, 1);
+});
+
+test("C07 download length mismatch is DOWNLOAD_INVALID before media persistence", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask();
+  const fixture = await createMockMp4Fixture();
+  const transport = new C07FakeTransport([
+    { status: 202, json: { id: "req_c07_length_mismatch" } },
+    { status: 200, json: { status: "succeeded" } },
+    {
+      status: 200,
+      headers: { "content-type": "video/mp4", "content-length": String(fixture.byteLength + 1) },
+      stream: streamFromBytes(fixture),
+    },
+  ]);
+  const storage = createInMemoryStoragePort();
+  const result = await new MockVideoTaskExecutor(store, new Sub2ApiVideoProvider(transport), storage).execute({ workspaceId, taskRunId });
+
+  assert.equal(result?.status, "FAILED");
+  assert.equal(result?.error?.code, "DOWNLOAD_INVALID");
+  assert.equal(result?.error?.retryable, false);
+  assert.equal(await store.findGeneratedAssetDraft(workspaceId, taskRunId), undefined);
+});
+
+test("C07 temporary download 503 remains recoverable without resubmission", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask();
+  const fixture = await createMockMp4Fixture();
+  const transport = new C07FakeTransport([
+    { status: 202, json: { id: "req_c07_download_503" } },
+    { status: 200, json: { status: "processing" } },
+    { status: 200, json: { status: "succeeded" } },
+    { status: 503, json: { message: "Synthetic temporary outage." } },
+    { status: 200, json: { status: "succeeded" } },
+    { status: 200, headers: { "content-type": "video/mp4", "content-length": String(fixture.byteLength) }, stream: streamFromBytes(fixture) },
+  ]);
+  const provider = new Sub2ApiVideoProvider(transport);
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort());
+
+  await assert.rejects(executor.execute({ workspaceId, taskRunId }), /temporarily unavailable/);
+  const [attempt] = await store.listTaskRunAttempts(workspaceId, taskRunId);
+  assert.equal(attempt?.providerRequestId, "req_c07_download_503");
+  assert.equal(attempt?.status, "DOWNLOAD_FAILED");
+
+  const recovered = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(recovered?.status, "SUCCEEDED");
+  assert.equal(transport.requests.filter((request) => request.method === "POST").length, 1);
 });

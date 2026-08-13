@@ -2,7 +2,7 @@
 
 这是一个学习用途的企业 AI 内容生产平台，目标是把企业资料、脚本、分镜、视频 Provider、媒体 Runtime、质量检查和版本化资产组织成可审计的模块化系统。
 
-当前仓库的 C01（本地 monorepo 和 PostgreSQL/Redis/MinIO 基础设施）、C02（Contracts、Domain、Persistence）、C03（Control API 与 Dev Identity）、C04（Asset、Project、Shot 工作台）、C05（Outbox、Queue 和 Worker）和 C06（Mock 视频生成闭环）均已通过审计。C06 正在执行受限远端备份复核；C07 及以后保持 PENDING。默认使用 Mock 配置，不调用真实视频 API，不启用 Sub2API 共享积分。
+当前仓库的 C01（本地 monorepo 和 PostgreSQL/Redis/MinIO 基础设施）、C02（Contracts、Domain、Persistence）、C03（Control API 与 Dev Identity）、C04（Asset、Project、Shot 工作台）、C05（Outbox、Queue 和 Worker）、C06（Mock 视频生成闭环）和 C07（SUB2API 离线 Adapter）均已通过审计。C07 正在进行受限远端备份复核；C08 及以后保持 `PENDING`。默认使用 Mock 配置，不调用真实视频 API，不读取 Key，不启用 Sub2API 共享积分。
 
 ## 开始阅读
 
@@ -21,15 +21,16 @@
 - C03 Control API 与 Dev Identity：`ACCEPTED`（已完成备份复核）
 - C04 Asset、Project、Shot 工作台：`ACCEPTED`（`c04-accepted` 远端备份复核通过）
 - C05 Outbox、Queue 和 Worker：`ACCEPTED`（`c05-accepted` 远端备份已复核）
-- C06 Mock 视频生成闭环：`ACCEPTED`；共享测试隔离、Worker `17/17`、Studio failure/retry E2E、根 `82/82`、迁移和基础设施健康均已独立复验，等待 C06 远端备份复核
-- 当前应用能力：开发身份、默认工作区、项目创建/列表/详情/更新、Asset 预签名上传/确认/下载、Shot/ReferenceBinding、Mock TaskRun/outbox/Worker、公开 SSE 回放与 Studio 可播放 MP4；C06 尚未 `ACCEPTED`
+- C06 Mock 视频生成闭环：`ACCEPTED`；共享测试隔离、Worker `17/17`、Studio failure/retry E2E、根 `82/82`、迁移和基础设施健康均已独立复验，远端备份已复核
+- C07 SUB2API 离线 Adapter：`ACCEPTED`；离线复证通过下载 MIME/长度 metadata、分阶段 typed failure 与 C06 校验回归、轮询 `429/503` 保持 `PROVIDER_PROCESSING` 并只查询恢复、Provider `23/23`、本机 Worker `23/23`、根门禁与本机基础设施健康；仍只使用 injected transport、合成 fixture 和 disabled capability snapshot，未接入真实 HTTP/Key/Worker/API/Studio；等待受限远端备份复核
+- 当前应用能力：开发身份、默认工作区、项目创建/列表/详情/更新、Asset 预签名上传/确认/下载、Shot/ReferenceBinding、Mock TaskRun/outbox/Worker、公开 SSE 回放与 Studio 可播放 MP4；真实 SUB2API Adapter 不在运行时装配
 - 真实视频 Key：不配置
 - Veyra/共享积分：关闭
 - VPS、域名和生产部署：延期
 
 每个章节完成后必须在章节审计记录中写入测试命令、证据路径和 Exit Gate 结论。
 
-C01 至 C05 均已完成受限备份。C06 已 `ACCEPTED`，现仅允许受限备份；C07 或任何后续章节必须等待 C06 远端备份复核完成。既有用户 `.env.example` 改动不属于 C06 暂存范围。
+C01 至 C06 均已完成受限备份；C06 `c06-accepted^{}` 与 `origin/main` 已复核为 `1e192c71cfda4636ef457eadc50ad4acafc895b3`。C07 已获审计接受，仅允许受限 Git 备份；在 `origin/main` 和 `c07-accepted^{}` 被独立复核前，C08 或任何后续章节不得开始。既有用户 `.env.example` 改动不属于 C07 暂存范围。
 
 ## C01 Local Start
 

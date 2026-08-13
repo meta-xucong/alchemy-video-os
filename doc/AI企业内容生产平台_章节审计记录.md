@@ -16,8 +16,8 @@
 | C03 | Control API 与 Dev Identity | `ACCEPTED` | C02 | 2026-08-13 | 2026-08-13 | 审计员独立复验 Dev Identity、workspace 授权、幂等、PostgreSQL 集成、原子契约导出和 Studio 运行时代理；已备份至 `origin/main` 与 `c03-accepted` |
 | C04 | Asset、Project、Shot 工作台 | `ACCEPTED` | C03 | 2026-08-13 | 2026-08-13 | 审计员已独立复验并完成远端备份：`origin/main`、`c04-accepted^{}` 与本地 HEAD 均为 `20965c3c4577bf479f9fd143c6e0b5793f6c7795` |
 | C05 | Outbox、Queue 和 Worker | `ACCEPTED` | C02/C04 | 2026-08-13 | 2026-08-13 | 审计员已独立复验并完成 `c05-accepted` 远端备份；`origin/main` 与 tag peeled ref 指向 `da788e085ebd2fba019a3fbdadd3c0636b809be4`。 |
-| C06 | Mock 视频生成闭环 | `ACCEPTED` | C05 | 2026-08-13 | 2026-08-14 | 审计员已独立复跑共享锁、Worker、Studio E2E、根门禁、数据库迁移与本地基础设施健康检查；仅授权受限 `feat(C06)` 备份，完成远端 tag 复核前 C07 及以后保持 `PENDING`。 |
-| C07 | SUB2API 离线 Adapter | `PENDING` | C06 |  |  |  |
+| C06 | Mock 视频生成闭环 | `ACCEPTED` | C05 | 2026-08-13 | 2026-08-14 | 审计员已独立复跑共享锁、Worker、Studio E2E、根门禁、数据库迁移与本地基础设施健康检查；`origin/main` 与 `c06-accepted^{}` 已复核为 `1e192c71cfda4636ef457eadc50ad4acafc895b3`。 |
+| C07 | SUB2API 离线 Adapter | `ACCEPTED` | C06 | 2026-08-14 | 2026-08-14 | 离线 Provider `23/23`、本机服务 Worker `23/23`、冻结安装、契约生成、根门禁、迁移、本机基础设施健康、来源与离线边界均已复验；仅授权 C07 受限备份，远端 ref 复核前禁止 C08 |
 | C08 | 真实 Provider 能力认证 | `PENDING` | C07 |  |  |  |
 | C09 | Veyra 身份和共享积分 | `PENDING` | C08 |  |  |  |
 | C10 | MarkItDown 企业资料链路 | `PENDING` | C06 |  |  |  |
@@ -433,7 +433,32 @@ Exit Gate 结论：`ACCEPTED`。
 
 独立审计复跑（2026-08-14）：审计员已独立验证共享锁竞争/释放回归、Worker `17/17`、Studio 浏览器失败可见 -> UI retry -> `160x90`/`1s` 播放 E2E、根 `pnpm typecheck`、根 `pnpm test`（`82/82`）、根 `pnpm build`、`pnpm contracts:generate`、`db:generate` 无漂移、`db:migrate`、Compose 与 PostgreSQL/Redis/MinIO 健康。审计同时确认无 C06 残留、`upstream/` 未入索引且暂存区为空；生产 C06 runtime 未导入测试锁、真实 Provider、Veyra 或 C07 行为。
 
-Exit Gate 结论：`ACCEPTED`。仅授权主线受限暂存 C06 范围（明确排除用户已有 `.env.example`、`upstream/`、`.env*`、媒体、测试输出与本地卷），创建 `feat(C06): ...` 提交、推送 `origin/main` 并创建/推送 `c06-accepted`。审计端完成远端 refs 复核前不得启动 C07。
+备份复核（2026-08-14）：提交 `1e192c71cfda4636ef457eadc50ad4acafc895b3`（`feat(C06): implement mock video generation loop`）已推送至 `origin/main`；带注释标签 `c06-accepted` 的 tag object 为 `5bfd2e11a23fb68817f449768cad4b87377f6f58`，peeled ref 同样指向该提交。C06 提交未修改用户已有 `.env.example`，不含 `upstream/`、`.env*`、媒体、测试输出、本地卷或 `.codex-longrun/`；提交后唯一未暂存差异仍为该用户文件。
+
+Exit Gate 结论：`ACCEPTED`，远端备份复核通过。现在仅允许 C07 作为唯一 `IN_PROGRESS` 章节开始离线 SUB2API adapter 的契约、mapper 和脱敏 fixture 工作；C08 及以后继续保持 `PENDING`，不得发生真实网络调用、密钥读取、Veyra 或扣费行为。
+
+### C07：SUB2API 离线 Adapter
+
+状态：`ACCEPTED`
+实施日期：2026-08-14
+前置证据：C06 远端备份已由审计独立核验；`origin/main` 与 `c06-accepted^{}` 均为 `1e192c71cfda4636ef457eadc50ad4acafc895b3`。C01-C05 accepted tags 保持不变，工作区已有用户 `.env.example` 改动不属于 C07。
+范围：只实现 `Sub2ApiVideoProvider`、可注入 transport、请求/响应 mapper、错误归一化、脱敏 fixture、内部 capability registry/snapshot 和 `CONTRACT-001` 至 `CONTRACT-008`。registry 只在 provider package 内使用，候选 profile 一律 `enabled: false`，不注册未认证的 Seedance 参数，不暴露浏览器。不得实现 C08 真实认证、真实 HTTP、Key/Veyra/共享积分、C09+、VPS 或部署。
+来源：协议基线为 `sub2api-video-mcp` commit `3f2d885b79630f50b9cf4ae62251596cc37bbd18`；ProviderPort 与 C06 端口实现为平台现有代码；Huobao adapter 职责意图来自 `f04d705603bd0257bcec6b8f44fd04ea3ea9b795`。详细目标文件、符号、舍弃项和测试映射见 `doc/AI企业内容生产平台_C07上游复用矩阵.md`。
+实现：已按 mapper -> injected fake transport -> adapter/errors/capabilities -> fixtures/tests 顺序完成 `packages/provider-video/src/sub2api/{mapper,transport,adapter,errors,capabilities}.ts`、合成 fixture 和离线测试。`Sub2ApiVideoProvider` 构造时强制 injected transport，C07 不提供默认 fetch/HTTP transport、base URL、headers、env/Key 读取或任何 Worker/API/Studio 装配。`referenceImageUrl` 仅为调用端已授权解析后的短生命周期执行参数，不进入 TaskRun、公开 DTO、数据库、事件或日志。
+审计退回（2026-08-14，历史状态）：原 `READY_FOR_AUDIT` 结论曾被撤销，C07 当时回到唯一 `IN_PROGRESS`。`Sub2ApiVideoProvider.download()` 旧端口只返回 stream，丢弃 transport 的 `Content-Type`/`Content-Length`，C06 因而默认按 `video/mp4` 校验，不能证明实际下载 metadata 到达媒体校验。另有 `Sub2ApiProviderFailure`/`Sub2ApiDownloadFailure` 未被 C06 的 provider/download stage mapper 消费，导致上游拒绝或下载 404 降级为可重试 `PROVIDER_UNAVAILABLE`。
+纠正规则：先由 ADR-0027、领域/API 事件契约、C07 认证规范和复用矩阵定义内部 `{ stream, mimeType, contentLength? }` 与 `VideoProviderFailure(code, retryable, stage)`；再同步 Mock、Sub2API adapter 和 C06 executor。C06 必须使用实际 MIME、检查可用长度并继续做 SHA-256/ffprobe；非 `video/mp4` 或缺失 MIME 为不可重试 `DOWNLOAD_INVALID`，禁止默认 MIME。C06 必须按 typed failure 的 stage 保留 `PROVIDER_REJECTED`、`PROVIDER_UNAVAILABLE`、`DOWNLOAD_INVALID` 与 retryable，且只写安全摘要。
+待验证（历史）：injected fake transport 原要求覆盖 rejected submit -> `FAILED/PROVIDER_REJECTED`、download 404 与错误 MIME -> `FAILED/DOWNLOAD_INVALID` 且显式 retry 不重提、暂时 503 保持可恢复并在复用 `provider_request_id` 后完成；随后重跑 provider/worker、contracts generate、根 typecheck/test/build。该轮证据已在后文记录，C07 仍不得真实 HTTP、读取环境/Key、接入 Veyra、装配到 Worker/API/Studio、Git add/commit/push/tag 或启动 C08。
+纠正实现与证据（2026-08-14）：ADR-0027 已落地。`VideoProviderPort.download()` 现在返回 `{ stream, mimeType, contentLength? }`，Mock 固定交付 `video/mp4` 和 fixture 长度，Sub2API adapter 从 injected transport 的响应 header 读取 `Content-Type` 与可解析的非空 `Content-Length`；缺失 MIME、空/非法长度或非 2xx 下载抛出 `VideoProviderFailure(stage=DOWNLOAD)`。`VideoProviderFailure` 的 `code` 收紧为 Provider/下载允许的应用错误集合；Sub2API 拒绝/暂不可用/下载错误保留 `code/retryable/stage`，C06 executor 按阶段保存安全摘要而非降级为通用错误。C06 读取返回 stream 后先核验长度和实际 MIME，再做 SHA-256、ffprobe 与不可覆盖对象写入，不再向真实 adapter 默认 `video/mp4`。
+跨包回归：`apps/task-worker/tests/execution-service.test.ts` 使用 injected `C07FakeTransport`，覆盖 rejected submit -> `FAILED/PROVIDER_REJECTED`，download 404、错误 MIME、长度不一致 -> `FAILED/DOWNLOAD_INVALID` 且写入前无结果 Asset，以及临时下载 503 -> 同一 `provider_request_id` 恢复成功并且仅一次 POST submit。`pnpm --filter @alchemy-video/provider-video typecheck` 通过；此前 Provider 离线 CONTRACT suite `22/22` 与本机 PostgreSQL/Redis/MinIO Worker `22/22` 的基础证据已通过。
+完整门禁：`pnpm install --frozen-lockfile --store-dir .pnpm-store`、`pnpm contracts:generate`、根 `pnpm typecheck`、根 `pnpm test`、根 `pnpm build` 均通过；`pnpm db:generate` 无 schema drift，显式本地 `DATABASE_URL` 的 `pnpm db:migrate` 通过，Persistence `12/12`、BullMQ `1/1`、MinIO 不可覆盖上传 `1/1` 通过，Compose PostgreSQL/Redis/MinIO 均 healthy。首次无 `DATABASE_URL` 的 `pnpm db:migrate` 仅按命令保护性拒绝，未执行迁移；随后显式注入本机连接成功。根测试未注入服务变量时保留既有 integration skips；本轮独立服务门禁已补跑。Nuxt build 仅保留既有 `DEP0155` 警告。
+边界扫描：`packages/provider-video/src/sub2api` 没有 `fetch(`、`process.env`、`dotenv`、Key/认证 header、对象 key 或签名 query。`Sub2ApiVideoProvider` 在 `apps/` 中只用于 Task Worker 测试 fake transport 回归，不存在 API/Worker/Studio 运行时装配；`capabilities.ts` 继续不从 package root、OpenAPI 或 Studio 导出，所有内部候选 profile 保持 disabled。暂存区为空，`upstream/` 不在索引，用户 `.env.example` 保持未暂存。
+独立复核结论（2026-08-14，历史轮次）：Provider `22/22`、带本机 PostgreSQL/Redis/MinIO 的 Worker `22/22`、`pnpm install --frozen-lockfile --store-dir .pnpm-store`、`pnpm contracts:generate`、根 `pnpm typecheck`、根 `pnpm test`、根 `pnpm build`、`pnpm db:generate`/`pnpm db:migrate`、Persistence `12/12`、Compose config/ps 与 PostgreSQL/Redis/MinIO health 均通过。来源登记、`upstream/` 未入索引、无运行时装配、无真实网络或 Key 读取也已独立复核通过。随后发现短暂轮询失败语义缺口，已由 ADR-0028 与跨包回归纠正。
+
+轮询恢复纠正与复证（2026-08-14）：ADR-0028 明确已持久化 `provider_request_id` 的 `getStatus` 临时 `429/503` 是 delivery-recoverable，而不是可公开终态化的 Provider 拒绝。`MockVideoTaskExecutor` 在 `ProviderStatus FAILED` 且 `retryable=true` 时调用 `recordProviderProcessing` 后抛出既有重试错误，不调用 `failTaskRun`；因此 TaskRun 保持 `PROVIDER_PROCESSING`、Attempt 保持 `PROCESSING`，不会写入 `task_run.failed`，BullMQ 或启动恢复只会继续查询/下载。新的跨包测试覆盖首轮查询 `429` 与先返回 `PROCESSING` 后第二轮查询 `503`：两者恢复为 `SUCCEEDED`，并分别断言同一 `provider_request_id` 和一次 POST submit。实际命令通过：`pnpm --filter @alchemy-video/provider-video test`（`23/23`）、无服务变量的 `pnpm --filter @alchemy-video/task-worker test`（`18` 通过、`5` 个既有集成 skip）、带本机 PostgreSQL/Redis/MinIO 环境变量的同一 Worker suite（`23/23`）、`pnpm install --frozen-lockfile --store-dir .pnpm-store`、`pnpm contracts:generate`、根 `pnpm typecheck`、根 `pnpm test`、根 `pnpm build`、`pnpm db:generate`（无 schema drift）、显式 `DATABASE_URL` 的 `pnpm db:migrate`、Compose config/ps、`pg_isready`、Redis `PING` 与 MinIO live health。没有真实 HTTP、Key、运行时 Sub2API 装配、Veyra、Git 或 C08 操作。
+
+剩余风险：真实 Sub2API 在 C08 实测前的响应字段、Content-Type/长度行为仍未认证；C07 只验证离线 mapper/transport 边界，绝不据此开启 profile 或发起外部请求。
+审计人：Codex（独立复审通过）
+Exit Gate 结论：`ACCEPTED`。独立审计已复跑 Provider `23/23`、本机 PostgreSQL/Redis/MinIO Worker `23/23`、冻结安装、contracts generation、根 typecheck/test/build、db generate/migrate、Persistence `12/12`、BullMQ `1/1`、MinIO `1/1` 与 Compose health；来源登记、无上游快照、无真实网络/Key/运行时装配也已复核。历史的 `IN_PROGRESS` 退回与纠正段落仅保留为审计轨迹。现在仅授权 C07 的受限 Git 备份；在 `origin/main` 和 `c07-accepted` 均被独立复核前，不得启动 C08。
 
 每章完成时追加：
 

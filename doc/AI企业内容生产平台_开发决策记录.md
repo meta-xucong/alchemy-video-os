@@ -325,6 +325,33 @@
 | 选择原因 | 保留 C05 “至少一次队列投递、完成消费后不重复推进”的事实边界，同时补齐 C06 的执行器崩溃窗口，不依赖 Redis 未持久化状态、不向浏览器暴露内部恢复接口，也不提前接入真实 Provider。 |
 | 审计证据 | PostgreSQL/Redis/MinIO 集成模拟“消费已完成、执行器未运行、Worker 重启”；断言只扫描允许 kind/status、前两次临时存储失败而第三次成功时 submit 仅一次。无历史 BullMQ job 的连续失败扫描在第三次后必须写公开 `FAILED`，经公开 retry 后只下载且不 submit。另有真实 BullMQ 三次耗尽、已提交 Attempt 后出现较晚空 Attempt、公开失败读取和 retry 恢复回归。 |
 
+## ADR-0027：C07 ProviderPort 下载 metadata 与分阶段失败语义
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-14 |
+| 影响章节 | C06、C07；不改变公开 API |
+| 上下文 | C07 初版 `Sub2ApiVideoProvider.download()` 只返回字节流，丢弃 transport 的 `Content-Type`/`Content-Length`，而 C06 以硬编码 `video/mp4` 调用校验器。初版 Sub2API failure 类型也没有被 C06 的 provider/download stage mapper 识别，使上游拒绝和下载 404 被错误降级成通用可重试 Provider 不可用。 |
+| 决策 | 内部 `VideoProviderPort.download()` 统一返回 `{ stream, mimeType, contentLength? }`；Mock 和每个 adapter 都必须填写实际/确定的 MIME，长度仅在响应给出可解析值时填写。C06 对真实返回 MIME、长度与读入字节一致性做检查，再运行 SHA-256/ffprobe；缺失/非 MP4 MIME、非法或不一致长度归为不可重试 `DOWNLOAD_INVALID`。新增内部 `VideoProviderFailure`，固定包含应用 `code`、`retryable` 和 `stage: PROVIDER | DOWNLOAD`；Sub2API typed failures 继承该类型，C06 按 stage 保留归一化结果。结构响应错误继续使用 `VideoProviderProtocolError`，提交/查询为 `PROVIDER_PROTOCOL_INVALID`、下载为 `DOWNLOAD_INVALID`。 |
+| 选择原因 | 让已验证的下载 HTTP metadata 与校验实际相连，避免把任何外部视频当成 MP4；同时让 Provider 拒绝、临时不可用和下载无效在端口边界被一次归一化，既不泄露上游 payload，也不因不可重试错误发起无效重试或重新 submit。 |
+| 影响 | 这是 `@alchemy-video/provider-video` 与 C06 Worker 的内部兼容性变更。公开 TaskRun 仍只显示已有安全 `code/message/retryable`，不新增 Provider/响应/对象字段；不改数据库 schema、队列、SSE 或 `/api/v1`。所有 VideoProviderPort 实现与测试 double 必须同步。 |
+| 迁移/回滚 | 无数据迁移。未来 adapter 只能在其 transport 实现处读取真实响应 header，不能由 Worker、浏览器或持久化快照猜测 MIME/长度。真实 transport、URL 和 Key 装配留给 C08。 |
+| 审计证据 | C07 injected fake transport 测试 metadata 原样传递；C06 跨包回归覆盖 rejected submit、download 404、错误/缺失 MIME、长度不一致与临时 503 后使用同一 request ID 恢复；provider/worker/root 门禁及脱敏/无网络扫描。 |
+
+## ADR-0028：C07 已提交请求的短暂轮询失败由 C06 delivery 恢复
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-14 |
+| 影响章节 | C06、C07；不改变公开 API、队列 DTO 或数据库 schema |
+| 上下文 | `Sub2ApiVideoProvider.getStatus()` 将 `429`、`503` 归一为 `ProviderStatus.FAILED { code: PROVIDER_UNAVAILABLE, retryable: true }`。C06 初版对所有 status failure 调用 `failTaskRun`，会把短暂轮询故障错误终态化，虽然已持久化的 `provider_request_id` 本应只查询/下载。 |
+| 决策 | 已提交请求的可重试轮询失败不调用 `failTaskRun`：TaskRun 保持 `PROVIDER_PROCESSING`，Attempt 保持 `PROCESSING`，执行器抛出可重试 delivery 错误。BullMQ 重投递或启动扫描重新调用执行器时只查询/下载同一 request ID；仅 delivery/扫描尝试耗尽后，复用既有 C06 `finalizeTaskRunExecutionFailure` 写入公开可见、可显式 retry 的 `FAILED`。 |
+| 与状态机的关系 | `PROVIDER_PROCESSING -> RETRY_SCHEDULED -> QUEUED` 仍是持久化延迟调度的合法路径；本地 C06 尚未持久化 `next_poll_at` 或创建新的 outbox 事件，不能伪造该状态转换。C08 引入认证后的长轮询调度时才可使用该分支。 |
+| 选择原因 | 复用 C05/C06 的至少一次 delivery、duplicate 仍执行和启动恢复机制，避免创建没有消费者的 `RETRY_SCHEDULED` 状态；同时保持提交幂等边界和公开失败可见性。 |
+| 审计证据 | 离线 adapter 覆盖查询 `429/503` 的 typed retryable status；跨包回归覆盖首次查询短暂失败后 TaskRun 仍为 `PROVIDER_PROCESSING`、无失败事件、重试成功且 POST submit 只有一次。 |
+
 ## 新决策模板
 
 ```text

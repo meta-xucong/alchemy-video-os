@@ -78,7 +78,7 @@ CERTIFY_MAX_SUBMISSIONS=0
 | `input.referenceImageUrl` | `image.image_url` | 只传短时、服务端生成的读取 URL |
 | `ProviderSubmission.providerRequestId` | 返回体的 `id` 或 `request_id` | mapper 兼容已认证字段，持久化为内部 `provider_request_id` |
 | `ProviderStatus.phase` | 返回体的 `status` 或 `state` | 归一化为 `PROCESSING | SUCCEEDED | FAILED` |
-| `download()` | `GET /videos/{id}/content` | 流式下载，不将视频加载进内存 |
+| `download()` | `GET /videos/{id}/content` | 返回 `{ stream, mimeType, contentLength? }`；MIME/长度来自响应 metadata，Worker 以实际 MIME、长度、SHA-256 和 ffprobe 校验，不能默认 `video/mp4` |
 
 在获得真实响应前，`id`/`request_id`、`status`/`state` 属于待认证的兼容分支，不能假定其中任一字段是唯一真相。首轮线上认证确认后，把实测字段固定入 `capabilities.ts` 和 fixture。
 
@@ -115,12 +115,14 @@ type VideoProviderProfile = {
 | `CONTRACT-002` | 图生视频提交 | 一个 `referenceImageUrl` | 仅映射为 `image.image_url` |
 | `CONTRACT-003` | 提交响应 | 脱敏成功响应 | 得到非空 `providerRequestId` |
 | `CONTRACT-004` | 处理中查询 | `processing` fixture | 映射为 `PROCESSING`，不下载 |
-| `CONTRACT-005` | 成功查询与下载 | `succeeded` + content metadata | 映射为 `SUCCEEDED`，流式保存且校验通过 |
-| `CONTRACT-006` | 失败查询 | 上游失败 fixture | 生成 `PROVIDER_REJECTED`，保留原生错误摘要 |
-| `CONTRACT-007` | 非法响应 | 无 ID、无状态或非 JSON | `PROVIDER_PROTOCOL_INVALID`，不重试提交 |
+| `CONTRACT-005` | 成功查询与下载 | `succeeded` + content metadata | 映射为 `SUCCEEDED`，返回实际 MIME/可用长度与流；C06 以该 metadata 校验后才保存 |
+| `CONTRACT-006` | 失败查询/提交 | 上游失败 fixture | 生成带 `PROVIDER` 阶段的 `PROVIDER_REJECTED` 或 `PROVIDER_UNAVAILABLE` 安全失败；`GET /videos/{id}` 的 `429/503` 返回 `FAILED { code: PROVIDER_UNAVAILABLE, retryable: true }`，C06 保持已提交 TaskRun 为 `PROVIDER_PROCESSING` 并交给当前 delivery 重试，不重提 |
+| `CONTRACT-007` | 非法响应/下载 | 无 ID、无状态、非 JSON、404 或无效 MIME | 结构响应为 `PROVIDER_PROTOCOL_INVALID`；下载 404/metadata 无效为 `DOWNLOAD_INVALID`，都不重提 |
 | `CONTRACT-008` | 脱敏 | 含 `Authorization`、签名 URL 的 fixture 输入 | 持久化审计中不出现敏感字段 |
 
 下载完成后的最小验证为：响应状态 `2xx`、文件大于零、允许的 `Content-Type`、SHA-256 计算成功、`ffprobe` 能读取视频流。`ffprobe` 失败应标记 `DOWNLOAD_INVALID`，保留临时诊断摘要但删除临时二进制。
+
+本地 C06 的短暂轮询失败语义：在已持久化 `provider_request_id` 后，`429`/`503` 不立即写 `FAILED` 或 `RETRY_SCHEDULED`，而是保持 `PROVIDER_PROCESSING`，由 BullMQ 同一 delivery 的重试或启动扫描的最多三次恢复接管；每次恢复只查询或下载，绝不再次 `POST /videos/generations`。delivery/扫描耗尽后，既有 C06 收敛为公开可见、可显式 retry 的 `FAILED`。C08 引入 `next_poll_at` 和延迟入队后，才使用持久化 `RETRY_SCHEDULED -> QUEUED` 轮询调度。
 
 ## 6. 真实认证用例
 

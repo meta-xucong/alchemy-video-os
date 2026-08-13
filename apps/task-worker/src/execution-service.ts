@@ -3,7 +3,7 @@ import { VideoGenerationInputSnapshotSchema } from "@alchemy-video/contracts";
 import type { TaskRunStore } from "@alchemy-video/persistence";
 import { StorageObjectAlreadyExistsError, createGeneratedVideoObjectKey, type StoragePort } from "@alchemy-video/storage-client";
 import type { VideoProviderPort } from "@alchemy-video/provider-video";
-import { VideoProviderProtocolError, validateMp4Bytes } from "@alchemy-video/provider-video";
+import { VideoProviderFailure, VideoProviderProtocolError, validateMp4Bytes } from "@alchemy-video/provider-video";
 
 const readStream = async (stream: ReadableStream<Uint8Array>) => {
   const reader = stream.getReader();
@@ -29,6 +29,9 @@ const readStream = async (stream: ReadableStream<Uint8Array>) => {
 };
 
 const providerStageError = (error: unknown) => {
+  if (error instanceof VideoProviderFailure) {
+    return { code: error.code, message: error.message, retryable: error.retryable } as const;
+  }
   if (error instanceof VideoProviderProtocolError) {
     return { code: "PROVIDER_PROTOCOL_INVALID", message: error.message, retryable: false } as const;
   }
@@ -40,6 +43,9 @@ const providerStageError = (error: unknown) => {
 };
 
 const downloadStageError = (error: unknown) => {
+  if (error instanceof VideoProviderFailure && error.stage === "DOWNLOAD") {
+    return { code: error.code, message: error.message, retryable: error.retryable } as const;
+  }
   if (error instanceof VideoProviderProtocolError) {
     return { code: "DOWNLOAD_INVALID", message: error.message, retryable: false } as const;
   }
@@ -94,6 +100,15 @@ export class MockVideoTaskExecutor {
 
       const firstStatus = await this.provider.getStatus({ providerRequestId });
       if (firstStatus.state === "FAILED") {
+        if (firstStatus.retryable) {
+          await this.store.recordProviderProcessing({
+            workspaceId: input.workspaceId,
+            taskRunId: taskRun.id,
+            providerAttemptId: attempt.id,
+            now: new Date(),
+          });
+          throw new RetryableTaskExecutionError(firstStatus.message);
+        }
         return this.store.failTaskRun({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, code: firstStatus.code, message: firstStatus.message, retryable: firstStatus.retryable, now: new Date() });
       }
       if (firstStatus.state === "PROCESSING") {
@@ -104,6 +119,15 @@ export class MockVideoTaskExecutor {
         ? firstStatus
         : await this.provider.getStatus({ providerRequestId });
       if (finalStatus.state === "FAILED") {
+        if (finalStatus.retryable) {
+          await this.store.recordProviderProcessing({
+            workspaceId: input.workspaceId,
+            taskRunId: taskRun.id,
+            providerAttemptId: attempt.id,
+            now: new Date(),
+          });
+          throw new RetryableTaskExecutionError(finalStatus.message);
+        }
         return this.store.failTaskRun({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, code: finalStatus.code, message: finalStatus.message, retryable: finalStatus.retryable, now: new Date() });
       }
       if (finalStatus.state !== "SUCCEEDED") {
@@ -125,8 +149,12 @@ export class MockVideoTaskExecutor {
     try {
       const attempt = (await this.store.listTaskRunAttempts(input.workspaceId, input.taskRunId)).find((item) => item.id === input.attemptId);
       if (!attempt?.providerRequestId) throw new VideoProviderProtocolError("Provider request was not persisted before download.");
-      const bytes = await readStream(await this.provider.download({ providerRequestId: attempt.providerRequestId }));
-      const inspection = await validateMp4Bytes(bytes, "video/mp4");
+      const download = await this.provider.download({ providerRequestId: attempt.providerRequestId });
+      const bytes = await readStream(download.stream);
+      if (download.contentLength !== undefined && download.contentLength !== bytes.byteLength) {
+        throw new VideoProviderProtocolError("Downloaded media length does not match Content-Length.");
+      }
+      const inspection = await validateMp4Bytes(bytes, download.mimeType);
       const existingDraft = await this.store.findGeneratedAssetDraft(input.workspaceId, input.taskRunId);
       const taskRun = await this.store.findTaskRun(input.workspaceId, input.taskRunId);
       if (!taskRun) return undefined;
@@ -142,16 +170,16 @@ export class MockVideoTaskExecutor {
 
       const existing = await this.storage.inspectObject({ objectKey: draft.objectKey });
       if (existing) {
-        if (existing.sha256 !== inspection.sha256 || existing.byteSize !== inspection.byteSize || existing.mimeType !== "video/mp4") {
+        if (existing.sha256 !== inspection.sha256 || existing.byteSize !== inspection.byteSize || existing.mimeType !== inspection.mimeType) {
           throw new VideoProviderProtocolError("Generated asset object does not match the validated download.");
         }
       } else {
         try {
-          await this.storage.putObject({ objectKey: draft.objectKey, mimeType: "video/mp4", bytes, ifNoneMatch: "*" });
+          await this.storage.putObject({ objectKey: draft.objectKey, mimeType: inspection.mimeType, bytes, ifNoneMatch: "*" });
         } catch (error) {
           if (!(error instanceof StorageObjectAlreadyExistsError)) throw error;
           const raced = await this.storage.inspectObject({ objectKey: draft.objectKey });
-          if (!raced || raced.sha256 !== inspection.sha256 || raced.byteSize !== inspection.byteSize || raced.mimeType !== "video/mp4") {
+          if (!raced || raced.sha256 !== inspection.sha256 || raced.byteSize !== inspection.byteSize || raced.mimeType !== inspection.mimeType) {
             throw new VideoProviderProtocolError("Generated asset object does not match the validated download.");
           }
         }

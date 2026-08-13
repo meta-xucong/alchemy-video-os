@@ -1,0 +1,10 @@
+{
+  "model": "grok-imagine-video-1.5",
+  "prompt": "A paper kite moving gently above a green field.",
+  "duration": 5,
+  "resolution": "720p",
+  "ratio": "16:9",
+  "image": {
+    "image_url": "https://example.invalid/reference.png"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "provider": "sub2api",
+  "fixture_kind": "synthetic-offline-contract"
+}

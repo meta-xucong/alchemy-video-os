@@ -29,8 +29,10 @@ test("the local Mock provider has deterministic submit, poll, and download behav
   assert.deepEqual(await provider.getStatus(submission), { state: "SUCCEEDED" });
 
   const response = await provider.download(submission);
+  assert.equal(response.mimeType, "video/mp4");
+  assert.equal(response.contentLength, fixture.byteLength);
   const chunks: Uint8Array[] = [];
-  const reader = response.getReader();
+  const reader = response.stream.getReader();
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -38,7 +40,7 @@ test("the local Mock provider has deterministic submit, poll, and download behav
   }
   const bytes = Buffer.concat(chunks);
   assert.deepEqual(bytes, fixture);
-  const inspection = await validateMp4Bytes(bytes, "video/mp4");
+  const inspection = await validateMp4Bytes(bytes, response.mimeType);
   assert.equal(inspection.mimeType, "video/mp4");
   assert.equal(inspection.width, 160);
   assert.equal(inspection.height, 90);

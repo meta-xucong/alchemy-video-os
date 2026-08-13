@@ -407,8 +407,14 @@ PATCH /api/v1/shots/:shotId
 interface VideoProviderPort {
   submit(input: VideoGenerationInput): Promise<ProviderSubmission>;
   getStatus(input: { providerRequestId: string }): Promise<ProviderStatus>;
-  download(input: { providerRequestId: string }): Promise<ReadableStream>;
+  download(input: { providerRequestId: string }): Promise<ProviderDownload>;
 }
+
+type ProviderDownload = {
+  stream: ReadableStream<Uint8Array>;
+  mimeType: string;
+  contentLength?: number;
+};
 ```
 
 Mock 规则：submit 返回 `mock_{taskRunId}`；第一次状态查询为 `PROCESSING`，第二次为 `SUCCEEDED`；成功复制固定 MP4 fixture；`MOCK_VIDEO_OUTCOME=failed` 验证失败路径。
@@ -450,15 +456,15 @@ GET  /videos/{id}/content
 
 ### 12.3 实现步骤
 
-1. 创建 `Sub2ApiVideoProvider` 和可注入的 HTTP transport。
-2. 创建 request/response mapper 和错误归一化。
+1. 创建 `Sub2ApiVideoProvider` 和可注入的 HTTP transport；下载端口必须返回流、实际 MIME 与可用时的长度 metadata。
+2. 创建 request/response mapper 和错误归一化；Provider 失败必须携带内部 `code`、`retryable` 与 `stage`，以便 Worker 不把不可重试拒绝降级为通用暂不可用。已提交 request 的轮询 `429/503` 必须由 C06 delivery 恢复查询且不得终态化或重提。
 3. 迁入脱敏 fixtures，加入 `CONTRACT-001` 至 `CONTRACT-008`。
 4. 确保 API Key 只由 Worker 读取。
 5. 更新 capability registry，但默认 profile 为 disabled。
 
 ### 12.4 测试、审计和 Exit Gate
 
-必须通过：提交、图生字段、处理中、成功下载、失败、非法响应、脱敏和 ffprobe 测试。证据是 fixtures、mapper 测试报告、capability snapshot 和凭据扫描。无网络 CI 通过后，第 7 章 `ACCEPTED`。
+必须通过：提交、图生字段、处理中、成功下载、失败、轮询 `429/503` 恢复查询且单次 submit、非法响应、脱敏和 ffprobe 测试。证据是 fixtures、mapper 测试报告、capability snapshot 和凭据扫描。无网络 CI 通过后，第 7 章 `ACCEPTED`。
 
 ## 13. 第 8 章：真实 Provider 能力认证
 
