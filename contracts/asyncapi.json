@@ -18,6 +18,12 @@
           "payload": {
             "$ref": "#/components/schemas/InternalEventEnvelope"
           }
+        },
+        "taskRunQueued": {
+          "name": "InternalTaskRunQueueMessage",
+          "payload": {
+            "$ref": "#/components/schemas/InternalTaskRunQueueMessage"
+          }
         }
       }
     }
@@ -909,6 +915,52 @@
             "additionalProperties": false
           }
         ]
+      },
+      "InternalTaskRunQueueMessage": {
+        "type": "object",
+        "properties": {
+          "contract_version": {
+            "type": "string",
+            "enum": [
+              "1.0"
+            ]
+          },
+          "event_id": {
+            "type": "string",
+            "pattern": "^evt_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "task_run_id": {
+            "type": "string",
+            "pattern": "^tsk_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "attempt_no": {
+            "type": "integer",
+            "exclusiveMinimum": true,
+            "minimum": 0
+          },
+          "correlation_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "input_snapshot": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "contract_version",
+          "event_id",
+          "workspace_id",
+          "task_run_id",
+          "attempt_no",
+          "correlation_id",
+          "input_snapshot"
+        ],
+        "additionalProperties": false
       }
     }
   }

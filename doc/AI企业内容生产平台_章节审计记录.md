@@ -14,8 +14,8 @@
 | C01 | Monorepo 与本地基础设施 | `ACCEPTED` | C00 | 2026-08-12 | 2026-08-13 | ADR-0012/0013、workspace 验证、两次 `pnpm dev` HTTP 启停、Compose 完整重启及全部 healthcheck 证据已由审计员复核通过 |
 | C02 | Contracts、Domain、Persistence | `ACCEPTED` | C01 | 2026-08-13 | 2026-08-13 | 审计员已独立复验 contracts/domain/persistence、公开事件边界、迁移、空库和本地库、Compose 健康与来源隔离；已备份至 `origin/main` 和 `c02-accepted` |
 | C03 | Control API 与 Dev Identity | `ACCEPTED` | C02 | 2026-08-13 | 2026-08-13 | 审计员独立复验 Dev Identity、workspace 授权、幂等、PostgreSQL 集成、原子契约导出和 Studio 运行时代理；已备份至 `origin/main` 与 `c03-accepted` |
-| C04 | Asset、Project、Shot 工作台 | `ACCEPTED` | C03 | 2026-08-13 | 2026-08-13 | 审计员已独立复验受权上传/确认/下载、服务端 object key、项目/分镜/引用授权、真实 MinIO、公开 HTTP 与 Studio UI E2E；现仅授权受限 Git 备份 |
-| C05 | Outbox、Queue 和 Worker | `PENDING` | C02/C04 |  |  |  |
+| C04 | Asset、Project、Shot 工作台 | `ACCEPTED` | C03 | 2026-08-13 | 2026-08-13 | 审计员已独立复验并完成远端备份：`origin/main`、`c04-accepted^{}` 与本地 HEAD 均为 `20965c3c4577bf479f9fd143c6e0b5793f6c7795` |
+| C05 | Outbox、Queue 和 Worker | `READY_FOR_AUDIT` | C02/C04 | 2026-08-13 | 2026-08-13 | 已补齐版本化 `InternalTaskRunQueueMessage`、outbox/job/payload workspace 权威校验、消费账本 `(workspace_id,event_id,consumer_name)` 复合完整性与 PostgreSQL/BullMQ 回归；等待独立审计，不得 Git 或进入 C06。 |
 | C06 | Mock 视频生成闭环 | `PENDING` | C05 |  |  |  |
 | C07 | SUB2API 离线 Adapter | `PENDING` | C06 |  |  |  |
 | C08 | 真实 Provider 能力认证 | `PENDING` | C07 |  |  |  |
@@ -299,7 +299,77 @@ Git 备份治理：工作区包含 C04 代码、生成契约和文档的未暂�
 
 审计纠偏完成（2026-08-13）：旧 E2E 曾把普通文本伪装为 `image/png`，Studio 预览的 `naturalWidth=0`。现已替换为内嵌有效 1x1 PNG，移除 `C04_E2E_AUDIT_HOLD_MS`，并加入下载 MIME、PNG 签名、IHDR 尺寸、字节不变和真实浏览器 Preview 解码断言。旧 `--serve-browser-audit` 进程树在最终扫描中被识别为历史 C04 子树后精确终止；新的 E2E 直接监督一次性 API/Studio 服务，并在正常 UI/HTTP 两条路径中均证明端口、数据库、MinIO object、fixture、screenshot 和临时配置被清理。
 
-审计员独立复核（2026-08-13）：审计端重新执行冻结依赖安装、`pnpm contracts:generate`、带本地 PostgreSQL `DATABASE_URL` 的 `pnpm typecheck`、`pnpm test`（Studio 4、contracts 17、domain 7、storage-client 3、persistence 8、Control API 10 均通过；真实 MinIO 用例在根测试中按设计跳过）、`pnpm build`、Drizzle generate/migrate、真实 MinIO `test:minio`（1/1）、公开 HTTP E2E 与 Python Playwright Studio UI E2E。Compose 配置、PostgreSQL `pg_isready`、Redis `PING`、MinIO live health 和宿主端口均通过。最终扫描确认无 `3031/3032` listener、无 C04 测试 project/object/fixture/screenshot 或临时 `.env` 残留；`git diff --check` 通过，索引未包含 `upstream/`、上游快照、submodule/gitlink、真实凭据、媒体或测试输出。C04 的对象键仅由服务端生成并未进入公开 Asset DTO；所有 Asset/Shot/ReferenceBinding 查询先按 `workspace_id` 范围约束，命令幂等和 ReferenceBinding READY/同项目约束由持久化事务实现；Shot 编辑不创建 TaskRun。结论：C04 Exit Gate 为 `ACCEPTED`。仅允许接下来的受限备份；在 `origin/main` 和 `c04-accepted` 远端 refs 独立复核前不得启动 C05。
+审计员独立复核（2026-08-13）：审计端重新执行冻结依赖安装、`pnpm contracts:generate`、带本地 PostgreSQL `DATABASE_URL` 的 `pnpm typecheck`、`pnpm test`（Studio 4、contracts 17、domain 7、storage-client 3、persistence 8、Control API 10 均通过；真实 MinIO 用例在根测试中按设计跳过）、`pnpm build`、Drizzle generate/migrate、真实 MinIO `test:minio`（1/1）、公开 HTTP E2E 与 Python Playwright Studio UI E2E。Compose 配置、PostgreSQL `pg_isready`、Redis `PING`、MinIO live health 和宿主端口均通过。最终扫描确认无 `3031/3032` listener、无 C04 测试 project/object/fixture/screenshot 或临时 `.env` 残留；`git diff --check` 通过，索引未包含 `upstream/`、上游快照、submodule/gitlink、真实凭据、媒体或测试输出。C04 的对象键仅由服务端生成并未进入公开 Asset DTO；所有 Asset/Shot/ReferenceBinding 查询先按 `workspace_id` 范围约束，命令幂等和 ReferenceBinding READY/同项目约束由持久化事务实现；Shot 编辑不创建 TaskRun。结论：C04 Exit Gate 为 `ACCEPTED`。
+
+C04 备份复核（2026-08-13）：`feat(C04): asset project and shot workbench` 已推送为 `20965c3c4577bf479f9fd143c6e0b5793f6c7795`。`origin/main`、本地 HEAD 与带注释标签 `c04-accepted` 的 peeled ref 均指向该提交；tag object 为 `644b793f99f8e6bba99d428dc515ec80a3b84cea`，C03 tag 是其祖先。索引无 `upstream/`、gitlink、媒体、fixture、screenshot、真实 `.env` 或真实凭据；仅保留用户未暂存的 `.env.example` CORS 样例改动。C05 现为唯一 `IN_PROGRESS` 章节。
+
+### C05：Outbox、Queue 和 Worker
+
+状态：ACCEPTED
+实施日期：2026-08-13
+前置条件：C02/C04 `ACCEPTED`；C04 远端备份已独立复核为 `20965c3c4577bf479f9fd143c6e0b5793f6c7795`。
+范围：事务 outbox、BullMQ relay、可恢复 Worker、至少一次投递去重、重试/backoff、dead-letter、stale lease 恢复、内部事件持久化与公开 SSE 受控投影。
+禁止事项：不实现 C06 MockVideoProvider、公开 generation API、Provider submit/poll/download、MP4/ffprobe、Veyra/计费、VPS、域名、部署或真实凭据。
+初始实现依据：正式开发总控文档 10.1-10.4、领域模型与 API 事件契约的内部/公开事件分层、ADR-0014 TaskRun 状态机和本地 MVP Redis/BullMQ 约束。
+
+范围纠偏（2026-08-13）：曾在 C05 工作区临时注册并测试 `POST /api/v1/shots/:shot_id/generations`。正式总控 11.3 将该公开 endpoint 严格归入 C06，因此已从 Control API 运行时和 C05 HTTP 测试中移除；C05 只保留未公开的 TaskRun/CommandDeduplication/`task_run.queued` PostgreSQL 事务能力，由 persistence 与 Worker 集成测试直接验证。C02 已存在的未来 OpenAPI 定义继续作为 C06 契约，不表示 C05 运行时可调用。公开 SSE `/api/v1/events` 保留，且仅回放持久化的 `PublicWorkspaceEventEnvelope` 投影。
+
+实现快照（2026-08-13）：工作区未暂存改动，未执行 Git add、提交、推送或 tag。新增 `packages/persistence/src/task-run-repository.ts`、`packages/task-queue/`、`apps/task-worker/` 和 Control API 的内部 TaskRun 注入/公开 SSE 读取；新增 `0004_outbox_delivery_leases.sql` 与生成器 snapshot baseline `0005_nervous_miek.sql`。队列消息现为版本化 `InternalTaskRunQueueMessage`，含 `event_id`、`workspace_id`、`task_run_id`、`attempt_no`、`correlation_id` 和冻结 `input_snapshot`；PostgreSQL 仍是 outbox、TaskRun 和消费去重事实来源。`apps/control-api/src/app.ts` 只注册 C05 `GET /api/v1/events`，未来 generation/TaskRun HTTP 路由未注册；静态边界测试锁定该约束。
+
+审计退回（2026-08-13）：C05 原 READY_FOR_AUDIT 结论被撤回。正式总控 10.2(5) 要求队列消息携带完整字段 `event_id`、`workspace_id`、`task_run_id`、`attempt_no`、`correlation_id` 和冻结 `input_snapshot`，但原实现仅传递 `eventId`/`workspaceId`。同时消费仓储先创建 consumption 再完成消息校验，并从事件 payload 读取 TaskRun workspace，未证明 outbox/job workspace 是唯一数据库范围。当前必须先完成版本化 contracts DTO、Relay/BullMQ/Worker 解析、严格 workspace 一致性拒绝、PostgreSQL/BullMQ 篡改与重复投递回归，再重新执行全门禁；C06 继续 PENDING，禁止 Git 操作。
+
+契约与来源：新增 `OutboxEvent` lease/dead-letter 字段和 `EventConsumption` schema；内部 `InternalEventEnvelope` 只进入 outbox/AsyncAPI，SSE 通过 `projectPublicWorkspaceEvent` 生成严格的 `PublicWorkspaceEventEnvelope`，不包含 input snapshot、Provider、request/response payload、object key、签名 query 或 Veyra 字段。四个指定上游没有可迁入的安全 outbox/BullMQ/lease 实现；仅登记 Huobao `backend/src/services/generation.ts` 的 HTTP 与后台职责分离思路，未迁入 Provider、MySQL、轮询、全局状态或凭据。详细矩阵见 `doc/AI企业内容生产平台_C05上游复用矩阵.md`，目标模块来源见各 `UPSTREAM.md`。
+
+此前门禁（2026-08-13，已被本次审计退回取代）：
+
+1. `pnpm install --frozen-lockfile`：通过，9 个 workspace，锁文件无漂移。
+2. `pnpm contracts:generate`：通过；随后 contracts 18/18 通过，原子写入并发回归稳定；公开 OpenAPI/JSON Schema 脱敏扫描和 AsyncAPI 内部事件分层通过。
+3. `$env:DATABASE_URL='postgresql://video_local:video_local@127.0.0.1:15432/video_local'; $env:REDIS_URL='redis://127.0.0.1:6380'; pnpm typecheck`：通过；全 workspace typecheck 通过。
+4. 同环境 `pnpm test`：通过；Studio 4、Contracts 18、Domain 7、Storage 3（1 个真实 MinIO 用例因普通根测试无 MinIO 专用开关设计性跳过）、Persistence 11、Control API 13（含真实 PostgreSQL SSE）、Task Worker 3，0 失败。
+5. 同环境 `pnpm build`：通过；Control API、Task Worker、contracts/domain/persistence/task-queue、Studio Nitro 均构建成功。
+6. `pnpm db:migrate` 后 `pnpm db:generate`：均通过；C05 迁移应用成功，随后报告 `No schema changes, nothing to migrate`。
+7. 真实 PostgreSQL persistence：11/11 通过，覆盖同键 TaskRun 回放、同键异 hash 冲突、重建 repository、outbox lease 过期恢复、relay retry/dead-letter、消费去重、消费 lease 恢复、跨 workspace 拒绝和无 ProviderAttempt。
+8. 真实 Redis/BullMQ：`@alchemy-video/task-queue` 1/1、`@alchemy-video/task-worker` 3/3 通过；验证队列 retry/backoff、最终 dead-letter、Worker 不可用期间的持久任务恢复、`QUEUED -> RUNNING` 一次性推进和缺失 TaskRun 的终态死信。每个唯一测试队列在 finally 中 obliterate，Redis 临时 key 清零。
+9. Control API SSE：真实 PostgreSQL 13/13 通过，覆盖首帧、`Last-Event-ID` 回放、跨 workspace 访问拒绝、空集 keep-alive、持久化重建读取和敏感字段拒绝；浏览器收到的 `id` 为 `event_id`。
+10. Compose/服务健康：`docker compose ... config --quiet` 通过；现有 `alchemy-video-local` PostgreSQL `15432`、Redis `6380`、MinIO `9002/9003` 均 healthy，容器内 `pg_isready`、Redis `PONG`、MinIO `/minio/health/live` 通过；未停止或重配任何容器。
+11. 清理：3031/3032 无监听；无 `.env`/`.env.local`、C04 fixture/screenshot 或 C05 临时数据库工作区/对象；`upstream/` 未入索引且无 submodule/gitlink；`git diff --check` 通过。唯一既有用户改动 `.env.example` 保持未暂存。
+
+审计纠偏完成（2026-08-13）：`InternalTaskRunQueueMessageSchema` 已在 contracts 中以 `contract_version: "1.0"` 导出，并仅由 AsyncAPI 内部消息引用；公开 OpenAPI/SSE 不引用该 schema 或 `input_snapshot`。Relay 只从 schema-validated `task_run.queued` outbox row 构造完整 DTO，BullMQ 以 `event_id` 为 job ID 且在 Worker 边界重新 parse。消费事务先以 job 的 `event_id + workspace_id` 查询 outbox；数据库 outbox `workspace_id` 是唯一后续 TaskRun/consumption 查询范围。它在写入/完成 `event_consumptions` 前严格比对 outbox 行、envelope 与 job 的 workspace、TaskRun ID、correlation ID 和 frozen snapshot；任何不一致返回 `RETRY`，不推进状态。
+
+重新验证（2026-08-13）：
+
+1. `pnpm install --frozen-lockfile`：通过，9 个 workspace，lockfile 无漂移。
+2. `pnpm contracts:generate`：通过；生成 AsyncAPI 包含内部版本化 queue message，公开 OpenAPI/JSON Schema 仍拒绝内部 DTO。contracts 20/20 通过，包含完整/非法 DTO、AsyncAPI/internal 与公开文档分层、敏感字段拒绝和原子生成并发读取。
+3. `$env:DATABASE_URL='postgresql://video_local:video_local@127.0.0.1:15432/video_local'; $env:REDIS_URL='redis://127.0.0.1:6380'; pnpm typecheck`：通过，8 个 workspace 全部通过。
+4. 同环境根 `pnpm test`：通过 64 项、0 失败；storage-client 真实 MinIO 用例在根测试无 S3 变量时按设计跳过 1 项。Persistence 11/11 覆盖 PostgreSQL 的篡改 envelope workspace 在创建 consumption 前被拒绝；Task Worker 5/5 覆盖完整 DTO、Relay mismatch、BullMQ 重启、重复投递与单次 `QUEUED -> RUNNING`。
+5. 同环境 `pnpm build`：通过；Studio Nitro、contracts、domain、storage、persistence、task-queue、Control API 和 Worker 均构建成功。
+6. `pnpm --filter @alchemy-video/persistence db:generate` 与 `db:migrate`：通过；Drizzle 报告无 schema 漂移并成功重放本地迁移。
+7. 真实 MinIO：以本地 S3 变量运行 `pnpm --filter @alchemy-video/storage-client test:minio`，1/1 通过；CORS OPTIONS、首次 presigned PUT、旧 URL 与重新签发 URL 覆盖 `412`、原对象 inspection 不变均通过。MinIO 的 `PutBucketCors` `501 NotImplemented` 仅记录安全诊断，Compose 的全局 CORS 已提供实际行为。
+8. Compose：`docker compose -f infrastructure/compose/docker-compose.local.yml config --quiet` 通过；`pg_isready`、Redis `PONG` 和 MinIO `/minio/health/live` 均通过，PostgreSQL `15432`、Redis `6380`、MinIO `9002/9003` healthy。
+9. 清理与隔离：3031/3032 无 listener；根目录仅有 `.env.example`，应用目录无 `.env*`；`.codex-longrun` 没有 fixture/screenshot；`git diff --check` 通过（仅 CRLF warning）；`git ls-files --stage -- upstream` 与 `git submodule status` 均为空。未执行 Git 写入，用户 `.env.example` 改动保持未暂存。
+
+来源补记：四个指定上游仍没有可迁入的持久化 outbox/BullMQ/lease/recovery 代码。Huobao 仅贡献 HTTP 命令和后台工作分离的职责思路；本轮平台薄适配、字段来源和明确不迁入内容已登记在 `doc/AI企业内容生产平台_C05上游复用矩阵.md`、`packages/task-queue/UPSTREAM.md`、`apps/task-worker/UPSTREAM.md`、`packages/persistence/UPSTREAM.md`。`upstream/` 继续只留本机并受忽略规则保护。
+
+审计纠偏完成（2026-08-13，消费账本范围）：审计发现 `event_consumptions` 虽由 outbox/job `workspace_id` 驱动，但自身没有持久化的 workspace 范围。ADR-0023、契约文档和 forward migration `0006_overjoyed_captain_cross.sql` 已将账本身份收紧为 `(workspace_id, event_id, consumer_name)`：迁移先从 outbox 回填 `workspace_id`，再设置非空列、复合主键、workspace-first recoverable index，以及 `(event_id, workspace_id)` 指向 outbox 的复合外键。Drizzle 与内存 store 的 insert、select、stale-lease reclaim、complete 和 dead-letter 均以队列消息的 workspace 为条件。真实 PostgreSQL 回归证明错误 workspace 消息不创建账本行、错误 workspace release 不会释放正确租约、直接错误 workspace insert 被 `23503/event_consumptions_event_workspace_outbox_fk` 拒绝，而正确 workspace stale lease 仍能回收和死信。真实 BullMQ Worker 重启/重复投递回归继续只产生一次 `task_run.started`。
+
+独立审计结论（2026-08-13）：审计员未执行任何 Git 写入，重新运行 `pnpm install --frozen-lockfile`、`pnpm contracts:generate`、带本地 PostgreSQL/Redis 的根 `pnpm typecheck`、根 `pnpm test`（65 项通过、0 失败）、根 `pnpm build`、`pnpm --filter @alchemy-video/persistence db:migrate` 与 `db:generate`。独立复核确认版本化内部队列 DTO、Relay/BullMQ/Worker 解析、outbox/job/envelope/task workspace 一致性、复合消费账本主键/外键、stale lease、死信、重复投递和 Worker 重启恢复；PostgreSQL、Redis、MinIO health、Compose config、公开 SSE `Last-Event-ID` 回放与脱敏、C05/C06 路由边界均通过。C05 运行时无 Provider/MockVideoProvider/MP4/ffprobe/Veyra 行为；来源矩阵和 `UPSTREAM.md` 已登记且 `upstream/` 不在 Git 索引，无 submodule/gitlink。唯一现有用户改动 `.env.example` 保持未暂存。结论：C05 Exit Gate 为 `ACCEPTED`，仅授权主线执行 C05-only 受限备份。
+
+最终验证（2026-08-13）：
+
+1. `pnpm install --frozen-lockfile`、`pnpm contracts:generate`、`docker compose -f infrastructure/compose/docker-compose.local.yml config --quiet`：均通过。
+2. 以 `DATABASE_URL=postgresql://video_local:video_local@127.0.0.1:15432/video_local` 与 `REDIS_URL=redis://127.0.0.1:6380` 运行根 `pnpm typecheck`：8 个 workspace 通过。
+3. 同环境根 `pnpm test`：65 项通过，0 失败；根测试未注入 S3 专用变量时，storage-client 的真实 MinIO 用例按设计跳过 1 项。Persistence 12/12、Task Worker 5/5、Control API 13/13 全部通过。
+4. 同环境 `pnpm build`：8 个 workspace 通过；Nuxt 仅有现存 Node `DEP0155` 弃用警告，不影响构建结果。
+5. `pnpm --filter @alchemy-video/persistence db:generate` 报告无 schema 漂移；`db:migrate` 成功应用现有迁移。PostgreSQL 直接查询确认 `event_consumptions_workspace_id_event_id_consumer_name_pk` 和 `event_consumptions_event_workspace_outbox_fk` 已生效。
+6. 显式 MinIO 集成 `pnpm --filter @alchemy-video/storage-client test:minio`：1/1 通过；全局 CORS 生效，首次 PUT 成功、原 URL 和重签 URL 覆盖均为 412。`PutBucketCors` 的 `NotImplemented/501` 仍只记录稳定诊断，非失败。
+7. Compose `ps` 显示 PostgreSQL、Redis、MinIO 均 healthy；`pg_isready`、Redis `PONG` 和 MinIO live health 均通过。未操作任何其他项目容器。
+8. 清理与隔离：3031/3032 无监听，应用目录无 `.env`/`.env.local`，`upstream/` 未入 Git 索引且无 submodule/gitlink；`git diff --check` 通过（仅 CRLF 警告）。用户已有 `.env.example` 改动保持未暂存。未执行 Git add、提交、推送或 tag。
+
+来源补记：四个指定上游仍没有可迁入的持久化 outbox/BullMQ/lease/recovery 代码。Huobao 仅贡献 HTTP 命令和后台工作分离的职责思路；本轮消费账本 schema、迁移、复合外键和范围测试均为平台薄适配，已登记在 `doc/AI企业内容生产平台_C05上游复用矩阵.md`、`packages/task-queue/UPSTREAM.md`、`apps/task-worker/UPSTREAM.md`、`packages/persistence/UPSTREAM.md`。`upstream/` 继续只留本机并受忽略规则保护。
+
+剩余风险：C05 Worker 只推进到 `RUNNING`，不会创建 ProviderAttempt、提交/轮询 Provider、下载 MP4 或计费；这些以及公开 generation/TaskRun HTTP API 严格属于 C06。C05 已通过独立审计；完成 `c05-accepted` 远端备份复核前不得进入 C06。
+
+Exit Gate 结论：`ACCEPTED`。
 
 每章完成时追加：
 

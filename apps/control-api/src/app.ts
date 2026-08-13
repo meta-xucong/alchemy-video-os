@@ -6,14 +6,17 @@ import {
   CreateShotCommandSchema,
   CreateUploadRequestCommandSchema,
   CreateProjectCommandSchema,
+  EventIdSchema,
   IdempotencyKeySchema,
   ProjectIdSchema,
   ShotIdSchema,
   UpdateProjectCommandSchema,
   UpdateShotCommandSchema,
+  WorkspaceIdSchema,
+  projectPublicWorkspaceEvent,
 } from "@alchemy-video/contracts";
 import { fingerprintRequest } from "@alchemy-video/domain";
-import type { AssetWorkspaceStore, ControlPlaneStore } from "@alchemy-video/persistence";
+import type { AssetWorkspaceStore, ControlPlaneStore, TaskRunStore } from "@alchemy-video/persistence";
 import { InMemoryStoragePort, StorageUnavailableError, createAssetObjectKey, type StoragePort } from "@alchemy-video/storage-client";
 import type { z } from "zod";
 
@@ -23,12 +26,14 @@ import { createPrefixedId } from "./ids.js";
 import { errorHandler, requestLogger } from "./middleware/logger.js";
 import { createInMemoryControlPlaneStore } from "./repository.js";
 import { createInMemoryAssetWorkspaceStore } from "./asset-repository.js";
+import { createInMemoryTaskRunStore } from "./task-run-repository.js";
 import { serializeAsset, serializeProject, serializeProjectDetail, serializeShot, serializeUser, serializeWorkspace } from "./serializers.js";
 
 type CreateAppOptions = {
   identity?: IdentityPort;
   store?: ControlPlaneStore;
   assetStore?: AssetWorkspaceStore;
+  taskStore?: TaskRunStore;
   storage?: StoragePort;
   buildVersion?: string;
 };
@@ -70,6 +75,20 @@ const parseAssetId = (context: HonoContext) => {
 const parseShotId = (context: HonoContext) => {
   const parsed = ShotIdSchema.safeParse(context.req.param("shot_id"));
   if (!parsed.success) throw validationError("shot_id is invalid.");
+  return parsed.data;
+};
+
+const parseWorkspaceId = (context: HonoContext) => {
+  const parsed = WorkspaceIdSchema.safeParse(context.req.query("workspace_id"));
+  if (!parsed.success) throw validationError("workspace_id is invalid.");
+  return parsed.data;
+};
+
+const readLastEventId = (context: HonoContext) => {
+  const value = context.req.header("Last-Event-ID");
+  if (!value) return undefined;
+  const parsed = EventIdSchema.safeParse(value);
+  if (!parsed.success) throw validationError("Last-Event-ID is invalid.");
   return parsed.data;
 };
 
@@ -119,6 +138,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const identityPort = options.identity ?? new DevIdentityAdapter();
   const store = options.store ?? createInMemoryControlPlaneStore();
   const assetStore = options.assetStore ?? createInMemoryAssetWorkspaceStore(store);
+  const taskStore = options.taskStore ?? createInMemoryTaskRunStore(assetStore);
   const storage = options.storage ?? new InMemoryStoragePort();
   const buildVersion = options.buildVersion ?? process.env.BUILD_VERSION ?? "local";
   const app = new Hono();
@@ -353,6 +373,75 @@ export function createApp(options: CreateAppOptions = {}) {
     if (execution.kind === "INVALID_REFERENCE") throw invalidReference();
     if (execution.kind === "POSITION_CONFLICT") throw shotPositionConflict();
     return response(context, serializeShot(execution.value), execution.status);
+  });
+
+  app.get("/api/v1/events", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const workspaceId = parseWorkspaceId(context);
+    if (workspaceId !== identity.workspaceId) {
+      throw new ControlApiError(403, "WORKSPACE_FORBIDDEN", "The current identity cannot access this workspace.");
+    }
+    const afterEventId = readLastEventId(context);
+    const encoder = new TextEncoder();
+    let stopStream: () => void = () => undefined;
+    const requestId = context.req.header("X-Request-ID") ?? "sse";
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        let closed = false;
+        let cursor = afterEventId;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let lastHeartbeatAt = 0;
+        const cleanup = () => {
+          if (closed) return;
+          closed = true;
+          if (timer) clearTimeout(timer);
+          context.req.raw.signal.removeEventListener("abort", close);
+        };
+        const close = () => {
+          cleanup();
+          try {
+            controller.close();
+          } catch {
+            // The fetch runtime may already close a stream during reader cancellation.
+          }
+        };
+        stopStream = cleanup;
+        context.req.raw.signal.addEventListener("abort", close, { once: true });
+        const poll = async () => {
+          if (closed) return;
+          try {
+            const events = await taskStore.listWorkspaceEvents({ workspaceId, afterEventId: cursor, limit: 100 });
+            for (const event of events) {
+              cursor = event.event_id;
+              const publicEvent = projectPublicWorkspaceEvent(event);
+              if (!publicEvent) continue;
+              controller.enqueue(encoder.encode(`id: ${publicEvent.event_id}\nevent: ${publicEvent.event_type}\ndata: ${JSON.stringify(publicEvent)}\n\n`));
+            }
+            const now = Date.now();
+            if (events.length === 0 && now - lastHeartbeatAt >= 15_000) {
+              lastHeartbeatAt = now;
+              controller.enqueue(encoder.encode(": keep-alive\n\n"));
+            }
+            timer = setTimeout(() => void poll(), 250);
+          } catch (error) {
+            console.error(JSON.stringify({ event: "sse.read.failed", request_id: requestId, reason: error instanceof Error ? error.message : String(error) }));
+            close();
+          }
+        };
+        void poll();
+      },
+      cancel() {
+        stopStream();
+        stopStream = () => undefined;
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "Content-Type": "text/event-stream; charset=utf-8",
+      },
+    });
   });
 
   return app;

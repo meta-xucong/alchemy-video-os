@@ -34,6 +34,11 @@ export class InMemoryAssetWorkspaceStore implements AssetWorkspaceStore {
     return asset?.workspaceId === workspaceId ? asset : undefined;
   }
 
+  async findShot(workspaceId: string, shotId: string) {
+    const shot = this.shots.get(shotId);
+    return shot?.workspaceId === workspaceId ? shot : undefined;
+  }
+
   async createUploadAsset(input: AssetCommandInput) {
     const replay = this.replayUploadAsset(input, 201);
     if (replay) return replay;

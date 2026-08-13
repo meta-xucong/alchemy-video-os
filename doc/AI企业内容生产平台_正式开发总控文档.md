@@ -376,24 +376,24 @@ PATCH /api/v1/shots/:shotId
 
 ### 10.2 实现步骤
 
-1. Control API 事务内创建 `TaskRun`、`CommandDeduplication` 和 `task_run.queued` outbox。
+1. 在 Control API 的应用层实现事务创建 `TaskRun`、`CommandDeduplication` 和 `task_run.queued` outbox 的能力；不得在 C05 注册 TaskRun/generation 公开 HTTP 路由。
 2. Relay 将 outbox 投递到 BullMQ。
-3. Worker 领取任务并写 `ProviderAttempt(CREATED)`。
-4. 持久化 `provider_request_id` 后再进入轮询。
-5. 任务消息携带 `task_run_id`、`attempt_no`、`correlation_id` 和输入 snapshot。
-6. 实现 retry/backoff、dead-letter 和 stale lease 恢复。
+3. Worker 领取 `task_run.queued`，在事务内持久化 `QUEUED -> RUNNING`、消费去重和 `task_run.started` outbox；重复消息为成功 no-op。
+4. Relay 和 Worker 实现 retry/backoff、dead-letter 与 stale lease 恢复；Redis/BullMQ 仅是传递层，PostgreSQL 是 outbox/消费事实来源。
+5. 任务消息携带 `event_id`、`workspace_id`、`task_run_id`、`attempt_no`、`correlation_id` 和输入 snapshot；Worker 以消息中的 `workspace_id` 约束 event、TaskRun 和消费记录的后续读取/更新。`event_consumptions` 必须持久化 `workspace_id`，以 `(workspace_id, event_id, consumer_name)` 作为账本身份，并以复合外键或可验证的同工作区事务完整性关联 outbox；不能把全局 `event_id` 唯一性作为工作区范围的替代。
+6. ProviderAttempt、`provider_request_id`、提交、轮询和下载移至 C06；C05 不导入或调用任何 Provider。
 
 ### 10.3 测试和验收
 
 - 队列重复投递只产生一次业务推进。
-- Worker 在 submit 前后被中断，重启后行为符合契约。
-- 已有 Provider request ID 时不允许再次 submit。
-- transient 错误重试，业务拒绝进入终态。
+- Relay/Worker 在投递或消费中断后，过期 lease 可恢复且不会重复推进 TaskRun。
+- 队列 transient 错误遵循 retry/backoff；到达上限时持久化 dead-letter，不把 Worker 故障伪装成业务成功。
+- C05 不创建 ProviderAttempt、不会有 Provider request ID，也不会执行 submit；这些验证属于 C06。
 - SSE 能从 outbox/事件记录恢复，不依赖页面内存。
 
 ### 10.4 审计证据和 Exit Gate
 
-证据：Redis/BullMQ 记录、重启恢复测试、死信样例、任务状态时间线和 trace 日志。任务在无人打开网页时也能正确推进后，第 5 章 `ACCEPTED`。
+证据：PostgreSQL outbox/消费记录、Redis/BullMQ retry/dead-letter、Worker 重启恢复测试、TaskRun `QUEUED -> RUNNING` 时间线、SSE Last-Event-ID 回放和公开字段脱敏扫描。任务在无人打开网页时仍能由持久化 relay/Worker 正确推进后，第 5 章 `ACCEPTED`。
 
 ## 11. 第 6 章：Mock 视频生成闭环
 

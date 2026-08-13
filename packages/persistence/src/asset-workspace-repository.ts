@@ -134,6 +134,7 @@ export interface AssetWorkspaceStore {
     referenceBindings: ControlReferenceBinding[];
   } | undefined>;
   findAsset(workspaceId: string, assetId: string): Promise<ControlAsset | undefined>;
+  findShot(workspaceId: string, shotId: string): Promise<ControlShot | undefined>;
   createUploadAsset(input: AssetCommandInput): Promise<AssetCommandExecution<ControlAsset> | AssetCommandConflict | AssetCommandNotFound>;
   confirmAssetUpload(input: ConfirmAssetInput): Promise<AssetCommandExecution<ControlAsset> | AssetCommandConflict | AssetCommandNotFound | AssetCommandInvalidUpload>;
   createShot(input: CreateShotInput): Promise<AssetCommandExecution<ControlShot> | AssetCommandConflict | AssetCommandNotFound | { kind: "INVALID_REFERENCE" } | AssetCommandPositionConflict>;
@@ -278,6 +279,10 @@ export class DrizzleAssetWorkspaceRepository implements AssetWorkspaceStore {
 
   async findAsset(workspaceId: string, assetId: string) {
     return (await this.db.select().from(assets).where(assetScope(workspaceId, assetId)).limit(1))[0];
+  }
+
+  async findShot(workspaceId: string, shotId: string) {
+    return (await this.db.select().from(shots).where(shotScope(workspaceId, shotId)).limit(1))[0];
   }
 
   async createUploadAsset(input: AssetCommandInput) {

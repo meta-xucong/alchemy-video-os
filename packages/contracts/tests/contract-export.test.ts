@@ -12,7 +12,9 @@ import {
   CreateTaskRunCommandSchema,
   HealthSuccessEnvelopeSchema,
   InternalEventEnvelopeSchema,
+  InternalTaskRunQueueMessageSchema,
   PublicWorkspaceEventEnvelopeSchema,
+  projectPublicWorkspaceEvent,
   RequestIdSchema,
   TaskRunAttemptSchema,
   TaskRunDetailSchema,
@@ -176,6 +178,21 @@ test("internal events reject a mismatched event payload", () => {
   );
 });
 
+test("the internal TaskRun queue message is versioned and carries the frozen execution snapshot", () => {
+  const message = {
+    contract_version: "1.0" as const,
+    event_id: "evt_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    workspace_id: "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    task_run_id: "tsk_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    attempt_no: 1,
+    correlation_id: "cor_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    input_snapshot: { model: "mock-video-v1", prompt: "frozen" },
+  };
+  assert.deepEqual(InternalTaskRunQueueMessageSchema.parse(message), message);
+  assert.throws(() => InternalTaskRunQueueMessageSchema.parse({ ...message, workspace_id: "ws_tampered", extra: true }));
+  assert.throws(() => InternalTaskRunQueueMessageSchema.parse({ ...message, input_snapshot: undefined }));
+});
+
 test("public SSE uses a strict safe projection while internal events retain Provider diagnostics", () => {
   const publicProgressEvent = {
     event_id: "evt_01J4N8QZ8PCW2N2G6D2XJXJXJX",
@@ -260,6 +277,55 @@ test("public SSE uses a strict safe projection while internal events retain Prov
   assert.equal(internalProgressEvent.data.status, "PROVIDER_PROCESSING");
 });
 
+test("the public SSE projector removes internal payloads and excludes internal-only events", () => {
+  const queued = InternalEventEnvelopeSchema.parse({
+    contract_version: "1.0",
+    message_id: "msg_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    event_id: "evt_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    event_type: "task_run.queued",
+    occurred_at: "2026-08-13T00:00:00.000Z",
+    trace_id: "trc_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    correlation_id: "cor_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    idempotency_key: "idem_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    producer: "control-api",
+    workspace_id: "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    project_id: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    aggregate: { type: "task_run", id: "tsk_01J4N8QZ8PCW2N2G6D2XJXJXJX" },
+    version: 1,
+    data: {
+      task_run_id: "tsk_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+      kind: "VIDEO_GENERATION",
+      input_snapshot: {
+        model: "provider-internal-model",
+        prompt: "Internal prompt must not reach SSE.",
+        object_key: "internal/object/key",
+      },
+    },
+  });
+  const publicEvent = projectPublicWorkspaceEvent(queued);
+  assert.ok(publicEvent);
+  const serialized = JSON.stringify(publicEvent);
+  assert.equal(publicEvent?.event_id, queued.event_id);
+  assert.equal(publicEvent?.event_type, "task_run.queued");
+  for (const forbidden of ["input_snapshot", "prompt", "model", "object_key", "trace_id", "correlation_id", "idempotency_key", "producer"]) {
+    assert.equal(serialized.includes(forbidden), false, `${forbidden} must not reach the browser projection`);
+  }
+
+  const providerOnly = InternalEventEnvelopeSchema.parse({
+    ...queued,
+    event_id: "evt_01J4N8QZ8PCW2N2G6D2XJXJXJY",
+    event_type: "provider_attempt.submitted",
+    data: {
+      task_run_id: "tsk_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+      provider_attempt_id: "att_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+      provider_request_id: "provider_request_internal",
+      provider: "seedance",
+      model: "seedance-v1",
+    },
+  });
+  assert.equal(projectPublicWorkspaceEvent(providerOnly), undefined);
+});
+
 test("OpenAPI exports only public components and AsyncAPI exports the internal envelope", () => {
   const documents = createContractDocuments();
   const openApiSchemas = documents.openApi.components as { schemas: Record<string, unknown> };
@@ -270,6 +336,8 @@ test("OpenAPI exports only public components and AsyncAPI exports the internal e
   assert.ok(openApiSchemas.schemas.PublicWorkspaceEventEnvelope);
   assert.equal(openApiSchemas.schemas.InternalEventEnvelope, undefined);
   assert.ok(asyncApiSchemas.schemas.InternalEventEnvelope);
+  assert.ok(asyncApiSchemas.schemas.InternalTaskRunQueueMessage);
+  assert.equal(openApiSchemas.schemas.InternalTaskRunQueueMessage, undefined);
   assert.equal(asyncApiSchemas.schemas.PublicWorkspaceEventEnvelope, undefined);
   assert.ok(openApiSchemas.schemas.ProjectSuccess);
   assert.ok(openApiSchemas.schemas.TaskRunSuccess);
@@ -312,6 +380,17 @@ test("AsyncAPI retains internal Provider request IDs for Worker and outbox consu
   };
 
   assert.match(JSON.stringify(asyncApi.components.schemas.InternalEventEnvelope), /provider_request_id/);
+});
+
+test("AsyncAPI exports the versioned TaskRun queue message without exposing it publicly", () => {
+  const documents = createContractDocuments();
+  const asyncApi = documents.asyncApi as { components: { schemas: Record<string, unknown> } };
+  const publicDocuments = `${JSON.stringify(documents.openApi)}${JSON.stringify(documents.jsonSchema)}`;
+
+  for (const field of ["attempt_no", "correlation_id", "input_snapshot"]) {
+    assert.match(JSON.stringify(asyncApi.components.schemas.InternalTaskRunQueueMessage), new RegExp(`"${field}"`));
+  }
+  assert.doesNotMatch(publicDocuments, /InternalTaskRunQueueMessage/);
 });
 
 test("the standalone JSON Schema export does not use OpenAPI nullable extensions", () => {

@@ -53,7 +53,8 @@ const acquireGenerationLock = async (outputDirectory: string) => {
     try {
       return { handle: await open(lockPath, "wx"), lockPath };
     } catch (error: unknown) {
-      if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== "EEXIST") {
+      const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      if (code !== "EEXIST" && code !== "EPERM" && code !== "EBUSY") {
         throw error;
       }
       await waitForLock();

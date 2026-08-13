@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { fingerprintRequest } from "@alchemy-video/domain";
+import { InternalTaskRunQueueMessageSchema } from "@alchemy-video/contracts";
+import { createPrefixedId, fingerprintRequest } from "@alchemy-video/domain";
 import { createInMemoryAssetWorkspaceStore } from "../src/asset-repository.js";
+import { createInMemoryTaskRunStore } from "../src/task-run-repository.js";
 import { InMemoryStoragePort, StorageUnavailableError, type StoragePort } from "@alchemy-video/storage-client";
 
 import { createApp } from "../src/app.js";
@@ -385,4 +387,112 @@ test("storage unavailability does not persist a confirm command", async () => {
   healthyStorage.putObject({ objectKey: asset.objectKey, mimeType: "image/png", bytes });
   const healthyApp = createApp({ store, assetStore, storage: healthyStorage });
   assert.equal((await request(healthyApp)).status, 200);
+});
+
+test("C05 SSE replays only persisted safe public workspace events", async () => {
+  const store = createInMemoryControlPlaneStore();
+  const assetStore = createInMemoryAssetWorkspaceStore(store);
+  const taskStore = createInMemoryTaskRunStore(assetStore);
+  const app = createApp({ store, assetStore, taskStore });
+  const projectId = (await readJson(await createProject(app, "C05 queue project", "c05-project-1"))).data.id as string;
+  const shotResponse = await app.request(`http://localhost/api/v1/projects/${projectId}/shots`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c05-shot-1" },
+    body: JSON.stringify({ position: 0, prompt: "Queue only, no Provider." }),
+  });
+  const shotId = (await readJson(shotResponse)).data.id as string;
+  const command = {
+    model: "mock-video-v1",
+    prompt: "A local C05 task is only queued.",
+    duration: 5,
+    resolution: "720p",
+    ratio: "16:9",
+    reference_asset_ids: [],
+  };
+  const taskRun = await taskStore.createTaskRun({
+    scope: "c05:sse-seed",
+    idempotencyKey: "c05-task-1",
+    requestHash: fingerprintRequest(command),
+    workspaceId: "ws_dev_default",
+    taskRunId: createPrefixedId("tsk"),
+    shotId,
+    kind: "VIDEO_GENERATION",
+    inputSnapshot: command,
+    event: {
+      eventId: createPrefixedId("evt"),
+      messageId: createPrefixedId("msg"),
+      traceId: createPrefixedId("trc"),
+      correlationId: createPrefixedId("cor"),
+    },
+  });
+  assert.equal(taskRun.kind, "NEW");
+
+  const queued = await taskStore.listWorkspaceEvents({ workspaceId: "ws_dev_default", limit: 10 });
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]?.event_type, "task_run.queued");
+  if (!queued[0] || queued[0].event_type !== "task_run.queued") return;
+  assert.equal(await taskStore.processEvent({
+    message: InternalTaskRunQueueMessageSchema.parse({
+      contract_version: queued[0].contract_version,
+      event_id: queued[0].event_id,
+      workspace_id: queued[0].workspace_id,
+      task_run_id: queued[0].data.task_run_id,
+      attempt_no: 1,
+      correlation_id: queued[0].correlation_id,
+      input_snapshot: queued[0].data.input_snapshot,
+    }),
+    consumerName: "test-task-run-transition",
+    workerId: "worker-c05-test",
+    now: new Date(),
+    leaseMs: 1_000,
+  }), "PROCESSED");
+  assert.equal(await taskStore.processEvent({
+    message: InternalTaskRunQueueMessageSchema.parse({
+      contract_version: queued[0].contract_version,
+      event_id: queued[0].event_id,
+      workspace_id: "ws_other_workspace",
+      task_run_id: queued[0].data.task_run_id,
+      attempt_no: 1,
+      correlation_id: queued[0].correlation_id,
+      input_snapshot: queued[0].data.input_snapshot,
+    }),
+    consumerName: "test-task-run-transition",
+    workerId: "worker-c05-tampered",
+    now: new Date(),
+    leaseMs: 1_000,
+  }), "RETRY");
+
+  const readFirstChunk = async (response: Response) => {
+    const reader = response.body?.getReader();
+    assert.ok(reader);
+    const result = await reader.read();
+    await reader.cancel();
+    return new TextDecoder().decode(result.value);
+  };
+  const stream = await app.request("http://localhost/api/v1/events?workspace_id=ws_dev_default");
+  assert.equal(stream.status, 200);
+  assert.match(stream.headers.get("Content-Type") ?? "", /^text\/event-stream/);
+  const firstChunk = await readFirstChunk(stream);
+  assert.match(firstChunk, /^id: evt_/m);
+  assert.match(firstChunk, /event: task_run\.queued/);
+  for (const forbidden of ["input_snapshot", "provider", "object_key", "trace_id", "correlation_id", "idempotency_key", "prompt"]) {
+    assert.equal(firstChunk.includes(forbidden), false, `${forbidden} must not appear in public SSE`);
+  }
+
+  const queuedId = queued[0]!.event_id;
+  const replayStream = await app.request("http://localhost/api/v1/events?workspace_id=ws_dev_default", {
+    headers: { "Last-Event-ID": queuedId },
+  });
+  const replayChunk = await readFirstChunk(replayStream);
+  assert.match(replayChunk, /event: task_run\.started/);
+  assert.equal(replayChunk.includes(queuedId), false);
+
+  const persistedEvents = await taskStore.listWorkspaceEvents({ workspaceId: "ws_dev_default", limit: 10 });
+  const empty = await app.request("http://localhost/api/v1/events?workspace_id=ws_dev_default", {
+    headers: { "Last-Event-ID": persistedEvents.at(-1)!.event_id },
+  });
+  assert.match(await readFirstChunk(empty), /^: keep-alive/m);
+  const forbidden = await app.request("http://localhost/api/v1/events?workspace_id=ws_other_workspace");
+  assert.equal(forbidden.status, 403);
+  assert.equal((await readJson(forbidden)).error.code, "WORKSPACE_FORBIDDEN");
 });

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
 import { ApiErrorSchema, ApiFailureEnvelopeSchema, successEnvelope } from "./errors.js";
-import { InternalEventEnvelopeSchema, PublicWorkspaceEventEnvelopeSchema } from "./events.js";
+import { InternalEventEnvelopeSchema, InternalTaskRunQueueMessageSchema, PublicWorkspaceEventEnvelopeSchema } from "./events.js";
 import {
   AssetSchema,
   AssetDownloadUrlSchema,
@@ -76,6 +76,7 @@ export const publicContractSchemas = {
 
 export const internalContractSchemas = {
   InternalEventEnvelope: InternalEventEnvelopeSchema,
+  InternalTaskRunQueueMessage: InternalTaskRunQueueMessageSchema,
 };
 
 export const openApiSchemas = Object.fromEntries(
@@ -414,6 +415,10 @@ export const createAsyncApiDocument = (): JsonSchema => ({
         internalEvent: {
           name: "InternalEventEnvelope",
           payload: { $ref: "#/components/schemas/InternalEventEnvelope" },
+        },
+        taskRunQueued: {
+          name: "InternalTaskRunQueueMessage",
+          payload: { $ref: "#/components/schemas/InternalTaskRunQueueMessage" },
         },
       },
     },

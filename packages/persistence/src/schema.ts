@@ -303,15 +303,48 @@ export const outboxEvents = pgTable(
     occurredAt: timestamp("occurred_at", { withTimezone: true, mode: "string" }).notNull(),
     publishedAt: timestamp("published_at", { withTimezone: true, mode: "string" }),
     publishAttempts: integer("publish_attempts").default(0).notNull(),
+    availableAt: timestamp("available_at", { withTimezone: true, mode: "string" }).defaultNow().notNull(),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true, mode: "string" }),
+    lastError: text("last_error"),
+    deadLetteredAt: timestamp("dead_lettered_at", { withTimezone: true, mode: "string" }),
     createdAt: createdAt(),
   },
   (table) => [
-    index("outbox_events_pending_idx").on(table.publishedAt, table.createdAt),
+    index("outbox_events_pending_idx").on(table.publishedAt, table.deadLetteredAt, table.availableAt),
     index("outbox_events_workspace_occurred_at_idx").on(table.workspaceId, table.occurredAt),
+    // This composite key lets dependent ledgers prove their event scope in PostgreSQL.
+    uniqueIndex("outbox_events_id_workspace_key").on(table.id, table.workspaceId),
     foreignKey({
       columns: [table.workspaceId, table.projectId],
       foreignColumns: [projects.workspaceId, projects.id],
       name: "outbox_events_workspace_project_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
+export const eventConsumptions = pgTable(
+  "event_consumptions",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    eventId: text("event_id").notNull(),
+    consumerName: varchar("consumer_name", { length: 128 }).notNull(),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true, mode: "string" }),
+    attempts: integer("attempts").default(0).notNull(),
+    lastError: text("last_error"),
+    deadLetteredAt: timestamp("dead_lettered_at", { withTimezone: true, mode: "string" }),
+    completedAt: timestamp("completed_at", { withTimezone: true, mode: "string" }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceId, table.eventId, table.consumerName] }),
+    index("event_consumptions_recoverable_idx").on(table.workspaceId, table.consumerName, table.completedAt, table.deadLetteredAt, table.leaseExpiresAt),
+    foreignKey({
+      columns: [table.eventId, table.workspaceId],
+      foreignColumns: [outboxEvents.id, outboxEvents.workspaceId],
+      name: "event_consumptions_event_workspace_outbox_fk",
     }).onDelete("cascade"),
   ],
 );

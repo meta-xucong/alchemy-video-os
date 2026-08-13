@@ -251,7 +251,25 @@ export const OutboxEventSchema = z.object({
   occurred_at: UtcTimestampSchema,
   published_at: UtcTimestampSchema.nullable(),
   publish_attempts: z.number().int().nonnegative(),
+  available_at: UtcTimestampSchema,
+  lease_owner: z.string().min(1).nullable(),
+  lease_expires_at: UtcTimestampSchema.nullable(),
+  last_error: z.string().min(1).nullable(),
+  dead_lettered_at: UtcTimestampSchema.nullable(),
   created_at: UtcTimestampSchema,
+});
+
+export const EventConsumptionSchema = z.object({
+  event_id: z.string().min(1),
+  consumer_name: z.string().min(1),
+  lease_owner: z.string().min(1).nullable(),
+  lease_expires_at: UtcTimestampSchema.nullable(),
+  attempts: z.number().int().nonnegative(),
+  last_error: z.string().min(1).nullable(),
+  dead_lettered_at: UtcTimestampSchema.nullable(),
+  completed_at: UtcTimestampSchema.nullable(),
+  created_at: UtcTimestampSchema,
+  updated_at: UtcTimestampSchema,
 });
 
 export const CommandDeduplicationSchema = z.object({

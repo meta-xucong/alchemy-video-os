@@ -209,7 +209,7 @@ type InternalEvent<T extends string, D> = {
 | `task_run.failed` | worker | `task_run_id`, `error_code`, `retryable`, `provider_attempt_id` | UI、告警 |
 | `usage.debited` | billing adapter | `usage_record_id`, `task_run_id`, `amount`, `source`, `replayed` | 内部审计、未来用量页 |
 
-队列至少一次投递；消费端以 `event_id` 去重。SSE 使用 `event_id` 作为 `id`，客户端使用 `Last-Event-ID` 重连。事件版本不就地破坏：新增字段可直接加，语义变化或删字段创建 `version=2` 事件。
+队列至少一次投递；`event_id` 是事件事实 ID。消费账本必须把去重和 lease 身份持久化为 `(workspace_id, event_id, consumer_name)`，并以复合外键或等价的事务完整性证明它与同工作区 outbox 行一致；不得只依赖全局 `event_id` 唯一性。Worker 以队列消息的 `workspace_id` 作为 outbox、TaskRun 与消费账本的唯一数据库范围，错误工作区不得读取、领取、回收、完成或死信其他工作区的账本记录。SSE 使用 `event_id` 作为 `id`，客户端使用 `Last-Event-ID` 重连。事件版本不就地破坏：新增字段可直接加，语义变化或删字段创建 `version=2` 事件。
 
 ## 6. 端口（Ports）与适配器
 

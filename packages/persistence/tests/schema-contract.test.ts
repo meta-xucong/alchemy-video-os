@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   assets,
   commandDeduplications,
+  eventConsumptions,
   outboxEvents,
   projects,
   providerAttempts,
@@ -35,6 +36,7 @@ test("the C02 schema contains every contract table", () => {
       usageRecords,
       outboxEvents,
       commandDeduplications,
+      eventConsumptions,
     ].map((table) => table[Symbol.for("drizzle:Name")]),
     [
       "users",
@@ -49,8 +51,48 @@ test("the C02 schema contains every contract table", () => {
       "usage_records",
       "outbox_events",
       "command_deduplications",
+      "event_consumptions",
     ],
   );
+});
+
+test("the C05 forward migration adds durable outbox and consumption leases", async () => {
+  const migration = await readFile(
+    resolve(import.meta.dirname, "..", "drizzle", "0004_outbox_delivery_leases.sql"),
+    "utf8",
+  );
+
+  for (const field of ["available_at", "lease_owner", "lease_expires_at", "dead_lettered_at", "event_consumptions"]) {
+    assert.match(migration, new RegExp(field));
+  }
+  assert.equal(eventConsumptions.attempts.dataType, "number");
+  assert.equal(eventConsumptions.eventId.notNull, true);
+});
+
+test("the C05 consumption ledger persists workspace scope and matches its outbox row", async () => {
+  const migration = await readFile(
+    resolve(import.meta.dirname, "..", "drizzle", "0006_overjoyed_captain_cross.sql"),
+    "utf8",
+  );
+
+  assert.equal(eventConsumptions.workspaceId.notNull, true);
+  assert.match(migration, /UPDATE "event_consumptions" AS consumption/);
+  assert.match(migration, /"workspace_id" = event\."workspace_id"/);
+  assert.match(migration, /event_consumptions_workspace_id_event_id_consumer_name_pk/);
+  assert.match(migration, /event_consumptions_event_workspace_outbox_fk/);
+  assert.match(migration, /FOREIGN KEY \("event_id","workspace_id"\)/);
+  assert.match(migration, /REFERENCES "public"\."outbox_events"\("id","workspace_id"\)/);
+  assert.match(migration, /outbox_events_id_workspace_key/);
+});
+
+test("the C05 generated snapshot baseline has no duplicate outbox DDL", async () => {
+  const baseline = await readFile(
+    resolve(import.meta.dirname, "..", "drizzle", "0005_nervous_miek.sql"),
+    "utf8",
+  );
+
+  assert.match(baseline, /SELECT 1/);
+  assert.doesNotMatch(baseline, /CREATE TABLE|ALTER TABLE|DROP INDEX/i);
 });
 
 test("usage amounts use exact numeric columns and task runs persist JSON snapshots", () => {

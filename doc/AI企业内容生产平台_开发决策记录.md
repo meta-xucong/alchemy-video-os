@@ -241,6 +241,49 @@
 | 迁移/回滚 | 无数据库迁移。若 C12 将内容探测前移到确认链路，必须先扩展公开错误契约、异步处理和大文件资源限制，再修改 API 行为。 |
 | 审计证据 | `apps/control-api/tests/c04-http-e2e.mjs` 以真实 PNG PUT 后确认并下载，校验 Content-Type、PNG 签名、IHDR `1x1` 和全量字节；独立浏览器应验证 Preview 的 `naturalWidth`/`naturalHeight` 均大于 0。 |
 
+## ADR-0021：C05 的持久化 outbox、传递 Worker 与 C06 Provider 边界
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C05、C06 以及后续 Provider 章节 |
+| 上下文 | 总控文档旧版 C05 步骤曾要求 Worker 创建 `ProviderAttempt(CREATED)` 并准备 Provider 轮询；最新章节授权明确禁止 C05 实现 Mock 视频闭环、任何 Provider、Provider 调用或真实凭据。若不先消除该冲突，Worker 的职责和审计范围无法稳定。 |
+| 决策 | C05 只实现持久化 outbox、BullMQ 传递、数据库租约、至少一次消费去重、重试/backoff、dead-letter、stale lease 恢复，以及公开 SSE 的受控投影。C05 在 Control API 的应用层提供同一 PostgreSQL 事务内创建 `TaskRun(status=QUEUED)`、命令幂等快照和 `task_run.queued` 内部事件的能力，但不注册任何 TaskRun 或 generation 公开 HTTP 路由。Worker 对该事件在事务内将运行推进至 `RUNNING`、写入 `task_run.started` outbox 并记录消费完成；重复事件或已推进任务为成功 no-op。C05 不创建 `ProviderAttempt`，不导入或调用 `VideoProviderPort`，也不提交、轮询、下载或生成媒体。C06 才接管 `POST /api/v1/shots/:shot_id/generations`、TaskRun 公开读取/重试路由、`RUNNING` 后的 ProviderAttempt、Mock Provider、`provider_request_id` 和媒体闭环。 |
+| 传递语义 | outbox row 以 `available_at`、`lease_owner`、`lease_expires_at`、`last_error`、`dead_lettered_at` 表达 relay 所有权。Relay 在数据库中领取事件，再以 `event_id` 为 BullMQ job id 投递；队列消息同时携带可信的 `workspace_id`，后续 event、TaskRun、消费和 dead-letter 写操作都以该工作区范围约束。仅在入队成功后标记 `published_at`。Relay 崩溃后的过期租约可重新领取。BullMQ 的 retry/backoff 只能减少传递失败，最终业务去重依赖 PostgreSQL 的 `(workspace_id, event_id, consumer_name)` 消费记录及 TaskRun 事务。 |
+| 公开边界 | outbox payload 必须按 `InternalEventEnvelope` 校验。浏览器 SSE 只读取持久化事件并显式投影为 `PublicWorkspaceEventEnvelope`；未知或仅内部事件不发送，绝不转发 Provider、对象 key、签名 query、请求/响应 payload 或 Veyra 字段。`Last-Event-ID` 只从持久化事件序列恢复。 |
+| 选择原因 | 将可恢复的传输层同易变的 Provider 业务拆开，满足 C05 的无人值守处理和重启恢复目标，同时保留 C06 对 Provider 侧效应的独立审计门。 |
+| 迁移/回滚 | 新增仅向前的 Drizzle migration 扩展 outbox 与消费租约表；不重写 C02 migration。未来改变最大尝试次数、租约或消费者名称必须新增 ADR 和迁移，不得依赖 Redis key 作为事实来源。 |
+| 审计证据 | C05 必须提供 PostgreSQL/Redis 集成测试：事务写入、重复消费只推进一次、租约过期恢复、relay retry/dead-letter、Worker 重启恢复、SSE Last-Event-ID 回放，以及公开 SSE 脱敏扫描。 |
+
+## ADR-0022：C05 队列消息采用完整版本化 TaskRun DTO 并固定 workspace 权威边界
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C05，以及未来 C06 Worker 消费扩展 |
+| 上下文 | 审计发现原 BullMQ job 只携带 `eventId`/`workspaceId`，无法在 Worker 重启、重复投递和诊断时证明任务、尝试、关联链路与冻结输入；消费事务还会在 envelope 校验前建立 consumption，并从 JSON payload 读取 workspace。 |
+| 决策 | contracts 导出严格的 `InternalTaskRunQueueMessage`，版本为 `contract_version=1.0`，固定包含 `event_id`、`workspace_id`、`task_run_id`、`attempt_no`、`correlation_id` 和冻结 `input_snapshot`。Relay 只从已验证的 `task_run.queued` outbox event 构造该 DTO，BullMQ 入队和 Worker processor 两端均解析。数据库消费事务以 outbox row 的 `workspace_id` 与 queue message 的 `workspace_id` 作为唯一范围，并在建立 consumption 前核对 outbox row、event envelope、queue message 的 event/task/correlation/snapshot 全部一致；任一不一致只返回可重试结果，不推进 TaskRun、不完成 consumption。 |
+| 选择原因 | 把可恢复诊断字段和安全边界固化为可生成、可测试的内部契约，避免任意 payload JSON 越过 workspace 范围；保持 PostgreSQL 为 outbox、消费和状态事实来源，Redis 只承担至少一次传递。 |
+| 影响 | `packages/task-queue` 依赖 contracts；AsyncAPI 额外导出内部 queue message，公开 OpenAPI/JSON Schema 不包含该 DTO。内存和 Drizzle repository 使用相同消息校验，错 workspace job 在 BullMQ 重试后不产生 consumption。 |
+| 迁移/回滚 | C05 本地队列消息从旧驼峰最小字段迁移到 `contract_version=1.0` 蛇形 DTO；没有 Provider、Veyra、媒体或公开 generation 路由迁移。未来修改消息字段或语义必须新增版本/ADR，并同步 Relay、Worker、持久化测试和 AsyncAPI。 |
+| 审计证据 | contracts 导出和生成漂移测试；Relay 单测；真实 PostgreSQL workspace/payload 篡改测试；真实 Redis/BullMQ Worker 重启、错 workspace、重复消费和单次 `task_run.started` 推进测试。 |
+
+## ADR-0023：C05 消费账本以工作区复合身份持久化
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C05，以及未来所有内部事件消费者 |
+| 上下文 | 审计发现 `event_consumptions` 仅以 `(event_id, consumer_name)` 记录租约和消费结果。虽然 C05 已按 outbox/job `workspace_id` 读取事件和 TaskRun，但消费账本本身没有可查询的范围列，无法证明错误工作区不会读取、回收、完成或死信另一个工作区的账本记录。 |
+| 决策 | `event_consumptions` 持久化 `workspace_id`，账本身份为 `(workspace_id, event_id, consumer_name)`。`outbox_events` 增加唯一 `(id, workspace_id)` 键，消费账本以 `(event_id, workspace_id)` 复合外键引用该行。消费 insert、select、stale-lease reclaim、完成与 dead-letter 都必须使用队列消息的 `workspace_id`；错误范围消息在创建账本记录或推进 TaskRun 前返回 `RETRY`。 |
+| 选择原因 | 数据库完整性与所有查询条件共同表达工作区边界，避免把全局 `event_id` 唯一性误当作授权或范围控制。该设计还让 PostgreSQL 测试可以直接证明错工作区账本行无法被创建。 |
+| 影响 | 新增仅向前 migration：先用 outbox 回填已有消费记录的 `workspace_id`，再收紧非空列、主键、索引和复合外键。内存 store 以相同三元组作为 Map key。BullMQ 仍只传递版本化 DTO，不成为账本事实来源。 |
+| 迁移/回滚 | 不重写 C05 已有 migration。若升级中发现没有对应 outbox 的历史消费记录，迁移必须失败而不是猜测工作区；本地 C05 账本由外键保证不存在该类孤儿记录。未来改变账本身份或消费者名称需新增 ADR、迁移与 PostgreSQL 回归。 |
+| 审计证据 | schema/migration contract test、真实 PostgreSQL 复合外键拒绝错 workspace insert、错工作区 process/release 不触碰正确账本行、stale lease 回收和真实 BullMQ Worker 重启/重复投递回归。 |
+
 ## 新决策模板
 
 ```text
