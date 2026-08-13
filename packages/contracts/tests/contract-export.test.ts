@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import test from "node:test";
+import { tmpdir } from "node:os";
 
 import {
   ApplicationErrorCodeSchema,
@@ -11,12 +12,14 @@ import {
   HealthSuccessEnvelopeSchema,
   InternalEventEnvelopeSchema,
   PublicWorkspaceEventEnvelopeSchema,
+  RequestIdSchema,
   TaskRunAttemptSchema,
   TaskRunDetailSchema,
   TASK_RUN_STATUSES,
   TASK_RUN_TERMINAL_STATUSES,
   createContractDocuments,
 } from "../src/index.js";
+import { CONTRACT_ARTIFACT_NAMES, writeContractDocuments } from "../src/write-contract-documents.js";
 
 test("failure envelopes always include details", () => {
   const result = ApiFailureEnvelopeSchema.parse({
@@ -35,15 +38,27 @@ test("the exported application error code set includes internal failures", () =>
   assert.equal(ApplicationErrorCodeSchema.parse("INTERNAL_ERROR"), "INTERNAL_ERROR");
 });
 
-test("the C01 health placeholder remains valid until C03 creates request ULIDs", () => {
+test("the C03 health response distinguishes the API process and database dependency", () => {
+  assert.equal(RequestIdSchema.parse("req_01J4N8QZ8PCW2N2G6D2XJXJXJX"), "req_01J4N8QZ8PCW2N2G6D2XJXJXJX");
+  assert.throws(() => RequestIdSchema.parse("local"));
   assert.deepEqual(
     HealthSuccessEnvelopeSchema.parse({
-      data: { service: "control-api", status: "ok" },
-      request_id: "local",
+      data: {
+        service: "control-api",
+        status: "ok",
+        build_version: "local",
+        dependencies: { database: "not_configured" },
+      },
+      request_id: "req_01J4N8QZ8PCW2N2G6D2XJXJXJX",
     }),
     {
-      data: { service: "control-api", status: "ok" },
-      request_id: "local",
+      data: {
+        service: "control-api",
+        status: "ok",
+        build_version: "local",
+        dependencies: { database: "not_configured" },
+      },
+      request_id: "req_01J4N8QZ8PCW2N2G6D2XJXJXJX",
     },
   );
 });
@@ -284,7 +299,7 @@ test("the standalone JSON Schema export does not use OpenAPI nullable extensions
   assert.doesNotMatch(JSON.stringify(document), /"nullable"\s*:/);
 });
 
-test("OpenAPI declares every C02 command before route implementation begins", () => {
+test("OpenAPI declares the C03 control-plane surface before later route implementation begins", () => {
   const openApi = createContractDocuments().openApi as { paths: Record<string, unknown> };
 
   assert.deepEqual(Object.keys(openApi.paths).sort(), [
@@ -317,4 +332,31 @@ test("tracked contract exports have no drift from Zod sources", async () => {
   assert.deepEqual(JSON.parse(openApi), documents.openApi);
   assert.deepEqual(JSON.parse(asyncApi), documents.asyncApi);
   assert.deepEqual(JSON.parse(jsonSchema), documents.jsonSchema);
+});
+
+test("contract generation atomically replaces artifacts during concurrent reads", async () => {
+  const outputDirectory = await mkdtemp(join(tmpdir(), "alchemy-video-contracts-"));
+  const jsonArtifacts = ["openapi.json", "asyncapi.json", "platform-contracts.schema.json"] as const;
+
+  const readJsonArtifacts = async () => {
+    await Promise.all(
+      jsonArtifacts.map(async (name) => {
+        const contents = await readFile(resolve(outputDirectory, name), "utf8");
+        assert.doesNotThrow(() => JSON.parse(contents), `${name} must never be partially written`);
+      }),
+    );
+  };
+
+  try {
+    await writeContractDocuments(outputDirectory);
+    await Promise.all([
+      ...Array.from({ length: 12 }, () => writeContractDocuments(outputDirectory)),
+      ...Array.from({ length: 120 }, () => readJsonArtifacts()),
+    ]);
+
+    await readJsonArtifacts();
+    assert.deepEqual((await readdir(outputDirectory)).sort(), [...CONTRACT_ARTIFACT_NAMES].sort());
+  } finally {
+    await rm(outputDirectory, { recursive: true, force: true });
+  }
 });

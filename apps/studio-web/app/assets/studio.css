@@ -53,7 +53,8 @@ body {
 }
 
 .workspace-heading,
-.status-row {
+.status-row,
+.panel-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -87,6 +88,100 @@ h1 {
   background: #ffffff;
   border: 1px solid #dfe3e8;
   border-radius: 8px;
+}
+
+.project-panel {
+  display: grid;
+  gap: 20px;
+  padding: 20px;
+  background: #ffffff;
+  border: 1px solid #dfe3e8;
+  border-radius: 8px;
+}
+
+.panel-heading {
+  align-items: flex-start;
+}
+
+h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.project-form {
+  display: grid;
+  gap: 8px;
+}
+
+.project-form label {
+  color: #4d5b67;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.project-form-row {
+  display: flex;
+  gap: 8px;
+}
+
+.project-form input {
+  min-width: 0;
+  flex: 1;
+  padding: 9px 10px;
+  color: #202124;
+  background: #ffffff;
+  border: 1px solid #aeb8c2;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.command-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 12px;
+  color: #ffffff;
+  background: #195c86;
+  border: 1px solid #195c86;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.command-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.project-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.project-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #e2e6ea;
+  border-radius: 6px;
+}
+
+.project-status {
+  color: #5c6670;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.error-detail {
+  color: #a33a2b;
 }
 
 .status-title {
@@ -131,6 +226,13 @@ h1 {
 
 .spinning {
   animation: spin 0.8s linear infinite;
+}
+
+@media (max-width: 560px) {
+  .project-form-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 
 @keyframes spin {

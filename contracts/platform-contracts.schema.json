@@ -95,8 +95,7 @@
         },
         "request_id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 255
+          "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
         }
       },
       "required": [
@@ -192,8 +191,65 @@
         },
         "request_id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 255
+          "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
+        }
+      },
+      "required": [
+        "data",
+        "request_id"
+      ],
+      "additionalProperties": false
+    },
+    "ProjectListSuccess": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "workspace_id": {
+                "type": "string",
+                "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ACTIVE",
+                  "ARCHIVED"
+                ]
+              },
+              "created_at": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+              },
+              "updated_at": {
+                "$ref": "#/definitions/ProjectListSuccess/properties/data/items/properties/created_at"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "name",
+              "status",
+              "created_at",
+              "updated_at"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
         }
       },
       "required": [
@@ -487,8 +543,7 @@
         },
         "request_id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 255
+          "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
         }
       },
       "required": [
@@ -520,8 +575,7 @@
         },
         "request_id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 255
+          "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
         }
       },
       "required": [
@@ -615,8 +669,7 @@
         },
         "request_id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 255
+          "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
         }
       },
       "required": [
@@ -638,18 +691,40 @@
             "status": {
               "type": "string",
               "const": "ok"
+            },
+            "build_version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "dependencies": {
+              "type": "object",
+              "properties": {
+                "database": {
+                  "type": "string",
+                  "enum": [
+                    "ok",
+                    "unavailable",
+                    "not_configured"
+                  ]
+                }
+              },
+              "required": [
+                "database"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
             "service",
-            "status"
+            "status",
+            "build_version",
+            "dependencies"
           ],
           "additionalProperties": false
         },
         "request_id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 255
+          "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
         }
       },
       "required": [
@@ -837,8 +912,7 @@
         },
         "request_id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 255
+          "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
         }
       },
       "required": [
@@ -1096,8 +1170,7 @@
         },
         "request_id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 255
+          "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
         }
       },
       "required": [
@@ -1427,8 +1500,7 @@
         },
         "request_id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 255
+          "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
         }
       },
       "required": [
@@ -1507,8 +1579,7 @@
         },
         "request_id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 255
+          "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
         }
       },
       "required": [
@@ -1558,8 +1629,7 @@
         },
         "request_id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 255
+          "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
         }
       },
       "required": [
@@ -2082,8 +2152,7 @@
         },
         "request_id": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 255
+          "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
         }
       },
       "required": [

@@ -2,7 +2,7 @@
 
 这是一个学习用途的企业 AI 内容生产平台，目标是把企业资料、脚本、分镜、视频 Provider、媒体 Runtime、质量检查和版本化资产组织成可审计的模块化系统。
 
-当前仓库的 C01（本地 monorepo 和 PostgreSQL/Redis/MinIO 基础设施）已由审计员确认为 `ACCEPTED`。ADR-0012 将 PostgreSQL 宿主端口定为 `15432`；C02（Contracts、Domain、Persistence）已通过独立审计，等待受限 Git 备份完成。默认使用 Mock Provider，不调用真实视频 API，不启用 Sub2API 共享积分，不操作 VPS 或域名。
+当前仓库的 C01（本地 monorepo 和 PostgreSQL/Redis/MinIO 基础设施）与 C02（Contracts、Domain、Persistence）均已由审计员确认并备份。C03（Control API 与 Dev Identity）已由审计确认 `ACCEPTED`，本轮仅执行其受限备份：固定本地身份、工作区授权、项目读写和幂等均已就绪；不接入资产/分镜、Worker、Provider、Storage、Veyra、VPS 或域名。默认使用 Mock Provider，不调用真实视频 API，不启用 Sub2API 共享积分。
 
 ## 开始阅读
 
@@ -17,15 +17,16 @@
 
 - C01.0 上游复用审计：已通过
 - C01 Monorepo 与本地基础设施：`ACCEPTED`
-- 应用源码：仅有 Control API 健康端点和 Studio 健康状态基座
-- C02 Contracts、Domain、Persistence：`ACCEPTED`（等待 `c02-accepted` 备份复核）
+- C02 Contracts、Domain、Persistence：`ACCEPTED`（`c02-accepted` 已备份复核）
+- C03 Control API 与 Dev Identity：`ACCEPTED`（仅本轮受限备份获授权）
+- 当前应用能力：开发身份、默认工作区、项目创建/列表/详情/更新与命令幂等
 - 真实视频 Key：不配置
 - Veyra/共享积分：关闭
 - VPS、域名和生产部署：延期
 
 每个章节完成后必须在章节审计记录中写入测试命令、证据路径和 Exit Gate 结论。
 
-C01 已通过审计并已备份为 `c01-accepted`。C02 已通过审计；主线现在只可执行 C02 的受限提交、推送和 `c02-accepted` 标签。备份复核前不得进入 C03。
+C01 与 C02 均已完成受限备份。C03 已获审计裁定，本轮仅执行其受限备份；C04/C05 及后续保持 `PENDING`，不得提前实现资产、分镜、队列、Worker 或 SSE。
 
 ## C01 Local Start
 
@@ -33,11 +34,12 @@ ADR-0012 规定宿主机端口为 PostgreSQL `15432`、Redis `6380`、MinIO API 
 
 ```powershell
 pnpm install
+Copy-Item .env.example .env.local
 pnpm infra:up
 pnpm dev
 ```
 
-`pnpm dev` starts the Control API on `3032` and rebuilds then starts the Studio's local Nuxt/Nitro server on `127.0.0.1:3031`. This is the C01 local runtime contract because `nuxt dev` is not responsive on the current Windows/Node 24 combination.
+`pnpm dev` starts the Control API on `3032` and rebuilds then starts the Studio's local Nuxt/Nitro server on `127.0.0.1:3031`. The Control API requires a local `DATABASE_URL` from `.env.local` or its process environment; it does not silently use process-local memory. Studio forwards only public `/api/v1/**` requests. At runtime it reads `CONTROL_API_ORIGIN` from the Studio process, then falls back to Nuxt runtime config and `http://127.0.0.1:3032`; the browser never receives that upstream address. This is the local runtime contract because `nuxt dev` is not responsive on the current Windows/Node 24 combination.
 
 The local dependencies use PostgreSQL on 15432, Redis on 6380, MinIO API on 9002, and the MinIO console on 9003. The API health endpoint is http://127.0.0.1:3032/api/v1/health and the Studio runs at http://127.0.0.1:3031.
 

@@ -7,10 +7,11 @@
     "dev": "node scripts/serve-local.mjs",
     "build": "nuxt build",
     "typecheck": "nuxt typecheck",
-    "test": "node --test tests/base.test.mjs",
+    "test": "node --test tests/*.test.mjs",
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
+    "h3": "^1.15.11",
     "lucide-vue-next": "^0.511.0",
     "nuxt": "^3.17.5",
     "vue": "^3.5.13",

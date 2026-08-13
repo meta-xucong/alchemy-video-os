@@ -44,6 +44,7 @@ export const publicContractSchemas = {
   ApiFailure: ApiFailureEnvelopeSchema,
   Project: ProjectSchema,
   ProjectSuccess: successEnvelope(ProjectSchema),
+  ProjectListSuccess: successEnvelope(z.array(ProjectSchema)),
   Asset: AssetSchema,
   AssetSuccess: successEnvelope(AssetSchema),
   AssetDownloadUrlSuccess: successEnvelope(AssetDownloadUrlSchema),
@@ -113,6 +114,7 @@ export const createOpenApiDocument = (): JsonSchema => ({
         operationId: "getCurrentIdentity",
         responses: {
           "200": response("CurrentIdentitySuccess", "Current identity and workspaces"),
+          "403": response("ApiFailure", "Workspace access denied"),
           "503": response("ApiFailure", "Identity unavailable"),
         },
       },
@@ -120,10 +122,20 @@ export const createOpenApiDocument = (): JsonSchema => ({
     "/api/v1/workspaces": {
       get: {
         operationId: "listWorkspaces",
-        responses: { "200": response("WorkspaceListSuccess", "Accessible workspaces"), },
+        responses: {
+          "200": response("WorkspaceListSuccess", "Accessible workspaces"),
+          "403": response("ApiFailure", "Workspace access denied"),
+        },
       },
     },
     "/api/v1/projects": {
+      get: {
+        operationId: "listProjects",
+        responses: {
+          "200": response("ProjectListSuccess", "Projects in the current workspace"),
+          "403": response("ApiFailure", "Workspace access denied"),
+        },
+      },
       post: {
         operationId: "createProject",
         parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }],
@@ -138,6 +150,7 @@ export const createOpenApiDocument = (): JsonSchema => ({
         responses: {
           "201": response("ProjectSuccess", "Project created"),
           "400": response("ApiFailure", "Validation failed"),
+          "403": response("ApiFailure", "Workspace access denied"),
           "409": response("ApiFailure", "Idempotency conflict"),
         },
       },
@@ -148,6 +161,7 @@ export const createOpenApiDocument = (): JsonSchema => ({
         parameters: [{ $ref: "#/components/parameters/ProjectId" }],
         responses: {
           "200": response("ProjectDetailSuccess", "Project, shots, and assets"),
+          "403": response("ApiFailure", "Workspace access denied"),
           "404": response("ApiFailure", "Project not found"),
         },
       },
@@ -166,6 +180,7 @@ export const createOpenApiDocument = (): JsonSchema => ({
         responses: {
           "200": response("ProjectSuccess", "Project updated"),
           "400": response("ApiFailure", "Validation failed"),
+          "403": response("ApiFailure", "Workspace access denied"),
           "404": response("ApiFailure", "Project not found"),
           "409": response("ApiFailure", "Idempotency conflict"),
         },

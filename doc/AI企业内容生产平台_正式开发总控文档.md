@@ -308,6 +308,7 @@ infrastructure/compose/docker-compose.local.yml
 GET  /api/v1/health
 GET  /api/v1/me
 GET  /api/v1/workspaces
+GET  /api/v1/projects
 POST /api/v1/projects
 GET  /api/v1/projects/:projectId
 PATCH /api/v1/projects/:projectId

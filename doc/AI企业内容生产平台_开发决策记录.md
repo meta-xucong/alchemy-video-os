@@ -171,6 +171,20 @@
 | 迁移/回滚 | 尚未实现浏览器 SSE handler 或已发布 API，因此无数据迁移。后续新增事件先定义内部事件，再决定是否需要一个字段更少的公开投影；不能复用内部 envelope。 |
 | 审计证据 | Contracts 导出测试、公开 OpenAPI 全文敏感字段拒绝测试、AsyncAPI 内部字段存在性测试和生成物扫描。 |
 
+## ADR-0016：C03 将项目列表作为显式工作区控制面读取
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-13 |
+| 影响章节 | C03 |
+| 上下文 | 本地 MVP 执行规格要求项目“新建、重命名、列表、进入项目”，但此前 C03 路由清单和 HTTP 资源表只列出创建、详情和更新。页面若要显示项目，不能绕过 Control API 直接读取数据库。 |
+| 决策 | 在 `/api/v1` 新增 `GET /projects`，返回当前身份默认工作区的 `Project[]`。该路径由相同的 workspace member authorization 保护，并使用 `ProjectListSuccess` 公开 DTO。 |
+| 选择原因 | 用最小公开查询补齐已冻结 MVP 的项目列表能力，保持 Web -> Control API -> Persistence 的依赖方向和工作区隔离。 |
+| 影响 | 更新领域 HTTP 表、C03 路由清单、Zod/OpenAPI/JSON Schema 生成物和 C03 contract tests；不新增资产、分镜、任务、事件或 Provider 行为。 |
+| 迁移/回滚 | 无数据库迁移。若未来加入工作区选择，仍通过身份授权后的显式 workspace 上下文执行，不允许 Web 直连数据层。 |
+| 审计证据 | C03 OpenAPI 导出、API workspace authorization 和项目列表回归测试。 |
+
 ## 新决策模板
 
 ```text

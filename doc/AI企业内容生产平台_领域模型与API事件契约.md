@@ -141,6 +141,7 @@ ADR-0014 将本图确定为 TaskRun 迁移的唯一完整规则；根目录 `AGE
 | `GET /health` | 健康检查 | `ok`、依赖状态、构建版本 |
 | `GET /me` | 当前身份 | 本地返回 `usr_dev_owner` |
 | `GET /workspaces` | 工作区列表 | 当前可访问工作区 |
+| `GET /projects` | 项目列表 | 当前工作区中的 `Project[]` |
 | `POST /projects` | 创建项目 | `201` + `Project` |
 | `GET /projects/:projectId` | 项目详情 | 项目、分镜、资产摘要 |
 | `PATCH /projects/:projectId` | 重命名/归档 | 更新的 `Project` |

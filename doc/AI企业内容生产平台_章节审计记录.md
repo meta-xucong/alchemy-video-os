@@ -12,8 +12,8 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | C00 | 文档、决策和来源基线 | `ACCEPTED` | - | 2026-08-12 | 2026-08-12 | 本目录文档、工具链检查 |
 | C01 | Monorepo 与本地基础设施 | `ACCEPTED` | C00 | 2026-08-12 | 2026-08-13 | ADR-0012/0013、workspace 验证、两次 `pnpm dev` HTTP 启停、Compose 完整重启及全部 healthcheck 证据已由审计员复核通过 |
-| C02 | Contracts、Domain、Persistence | `ACCEPTED` | C01 | 2026-08-13 | 2026-08-13 | 审计员已独立复验 contracts/domain/persistence、公开事件边界、迁移、空库和本地库、Compose 健康与来源隔离；等待主线执行受限备份流程 |
-| C03 | Control API 与 Dev Identity | `PENDING` | C02 |  |  |  |
+| C02 | Contracts、Domain、Persistence | `ACCEPTED` | C01 | 2026-08-13 | 2026-08-13 | 审计员已独立复验 contracts/domain/persistence、公开事件边界、迁移、空库和本地库、Compose 健康与来源隔离；已备份至 `origin/main` 和 `c02-accepted` |
+| C03 | Control API 与 Dev Identity | `ACCEPTED` | C02 | 2026-08-13 | 2026-08-13 | 审计员独立复验 Dev Identity、workspace 授权、幂等、PostgreSQL 集成、原子契约导出和 Studio 运行时代理；仅待受限 Git 备份 `c03-accepted`，C04/C05 继续 `PENDING` |
 | C04 | Asset、Project、Shot 工作台 | `PENDING` | C03 |  |  |  |
 | C05 | Outbox、Queue 和 Worker | `PENDING` | C02/C04 |  |  |  |
 | C06 | Mock 视频生成闭环 | `PENDING` | C05 |  |  |  |
@@ -210,7 +210,50 @@ Exit Gate 结论：C01.0 上游复用审计证据完整，子关卡为 `ACCEPTED
 
 独立审计证据（2026-08-13）：审计员在未采信实现方结果的前提下，重新执行 `pnpm install --frozen-lockfile`、`pnpm contracts:generate`、根 `pnpm typecheck`、`pnpm test`、`pnpm build`、`pnpm --filter @alchemy-video/persistence db:generate`，均通过；根测试为 31 通过、1 个未设置 `DATABASE_URL` 时设计性跳过，显式 `DATABASE_URL` persistence 测试为 6 通过。公开 OpenAPI 和独立 JSON Schema 扫描未发现 `provider_request_id`、`provider`、request/response payload、`object_key` 或 Veyra 字段；`/api/v1/events` 仅引用 `PublicWorkspaceEventEnvelope`，AsyncAPI 保留 `InternalEventEnvelope` 与 `provider_request_id`。本地库可重放 4 份迁移；临时空库从零迁移得到 12 张表、4 条迁移记录、`numeric(18,8)` 和只排除 `SUCCEEDED`、`FAILED`、`ABANDONED` 的活动 TaskRun 索引，审计库已删除。Compose config 通过，PostgreSQL、Redis、MinIO 均为 healthy；`upstream/` 已忽略且 Git 索引为空，`c01-accepted`、`origin/main` 仍指向 `394815b307a2e3f803923b0e99ad1461da867e53`。
 
-Exit Gate 结论：C02 为 `ACCEPTED`。主线现在仅获授权执行受限的 C02 备份流程：审查暂存范围，创建 `feat(C02): ...` 提交，推送 `origin/main`，创建并推送 `c02-accepted`。在该备份由审计员复核前，C03 仍为 `PENDING`，不得开始 C03。
+备份复核（2026-08-13）：`feat(C02): establish contracts domain persistence` 已作为提交 `3ddf3b92eb9c115c1cd714632f545e8fa0928149` 推送到 `origin/main`；带注释标签 `c02-accepted` 的 tag object 为 `a1d371aeeeb5cfc7fa1a29ba26397d4f4f84808b`，解引用后同样指向该提交，远端 refs 已独立核对。提交包含 53 个 C02 范围内的源码、迁移、生成契约、来源记录和文档文件；不含 `upstream/`、真实 `.env`、媒体、测试输出或本地卷。提交后工作区干净，`git diff --check` 通过。
+
+Exit Gate 结论：C02 为 `ACCEPTED` 且备份复核通过。C03 现在可以由主线作为唯一 `IN_PROGRESS` 章节开始；C04/C05 及之后章节继续保持 `PENDING`。
+
+### C03：Control API 与 Dev Identity
+
+状态：ACCEPTED
+实施日期：2026-08-13
+前置条件：C02 `ACCEPTED`；`HEAD`、`origin/main` 和带注释标签 `c02-accepted` 解引用均为 `3ddf3b92eb9c115c1cd714632f545e8fa0928149`。
+范围：`DevIdentityAdapter`、公开 `/api/v1` 的身份/工作区/项目控制面、workspace 授权、命令幂等、统一响应与错误映射，以及 Studio 的最小公开 API client。
+禁止事项：不实现 C04 资产/分镜接口，不实现 C05 outbox/队列/Worker/SSE relay，不接 Provider、Storage、Veyra、VPS、部署或真实凭据。
+当前实施依据：正式开发总控文档 8.1-8.5、领域模型与 API 事件契约 2.2/4/6、ADR-0002/0004/0015 与本地 MVP 执行规格的固定开发身份和工作区隔离规则。
+
+实现快照：工作区未暂存改动，尚未执行 `git add`、提交、推送或 tag。新增 `DevIdentityAdapter` 固定本地 `usr_dev_owner` / `ws_dev_default`；Control API 仅公开 `GET /api/v1/health`、`/me`、`/workspaces`、`/projects`、`POST /projects`、`GET/PATCH /projects/:project_id`。所有项目读取和命令先执行 `workspace_id` 条件和 membership 校验；未实现 C04 asset/shot 或 C05 queue/Worker/SSE。
+
+契约与实现：`RequestIdSchema` 已收紧为 `req_` 加 Crockford ULID，运行时生成同形 ID。公开 OpenAPI 增加受授权的 `GET /api/v1/projects` 和 `ProjectListSuccess`，ADR-0016 记录其必要性。`DrizzleControlPlaneRepository` 与内存测试实现均将 PATCH 不存在项目的 `404 NOT_FOUND` 作为带 HTTP status 的 `command_deduplications` 终态快照；相同 scope/key/body 即使资源后来创建仍重放 `404`，同 key 不同 body 返回 `409 IDEMPOTENCY_CONFLICT`。公开 DTO、日志和错误 envelope 不包含 Provider、存储、Veyra、对象 key 或签名 URL 字段。
+
+来源与边界：Hono 路由注册、middleware 结构、Nuxt app/proxy 和单一 API composable 从固定的 `huobao-drama` commit `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 做薄适配；详细路径、未迁入 MySQL/短剧状态/Provider 调用和回归命令见 `apps/control-api/UPSTREAM.md`、`apps/studio-web/UPSTREAM.md`、`packages/persistence/UPSTREAM.md`。`upstream/` 仍被 `.gitignore` 忽略，未进入 Git 索引。
+
+测试命令及实际结果：
+
+1. `$env:PNPM_HOME = (Resolve-Path '.pnpm-store').Path; pnpm install --frozen-lockfile`：通过，7 个 workspace，lockfile 未变化。
+2. `pnpm contracts:generate`：通过，OpenAPI/AsyncAPI/JSON Schema 生成物无漂移；`RequestIdSchema` 和公开路径的契约测试随根测试通过。
+3. `$env:DATABASE_URL = 'postgresql://video_local:video_local@127.0.0.1:15432/video_local'; pnpm typecheck`：通过，Control API、Studio、contracts、domain、persistence 全部通过。
+4. 同一 `DATABASE_URL` 下的 `pnpm test`：通过 39 项、0 跳过、0 失败。其中 contracts 15、domain 7、persistence 7、Control API 7、Studio 3；persistence 的 PostgreSQL 集成测试覆盖同键创建回放、同键异 body `409`、重新构造 repository 后回放、workspace-scoped 读取，以及不存在 PATCH 的可回放 `404`。
+5. `pnpm build`、`pnpm --filter @alchemy-video/persistence db:generate`、`pnpm --filter @alchemy-video/persistence db:migrate`：均通过；Drizzle 输出 `No schema changes, nothing to migrate`，本地迁移可重放。
+6. `docker compose -f infrastructure/compose/docker-compose.local.yml config --quiet`、`docker compose ... ps`、`pg_isready`、`redis-cli ping`、`curl.exe --noproxy "*" --fail --silent http://127.0.0.1:9002/minio/health/live`：均通过；PostgreSQL `15432`、Redis `6380`、MinIO API/Console `9002/9003` 均 healthy。
+7. 历史运行时冒烟记录：此前曾记录 Studio `/api/v1/health` 为 `200`，但复审发现该验证没有证明 Studio Nitro 与 API 在同一受控生命周期中运行，且当 Nitro 独立运行时，构建期代理会返回 `502` 或 SPA HTML。因此该条中的 Studio proxy 成功表述不作为 C03 验收证据；其余 API 项目幂等验证不受影响。有效的受控双进程证据见下方“Studio 运行时代理纠偏”。
+
+审计纠偏（2026-08-13）：审计在 `pnpm contracts:generate` 后并行运行根 `pnpm test` 时观察到 `Unexpected end of JSON input`。根因是生成器直接截断并写入五个 tracked artifact，读者可能在写入完成前读取 JSON。`packages/contracts/src/write-contract-documents.ts` 现将每份 artifact 先写入同目录唯一临时文件，再以 rename 原子替换目标；同目录 `.contract-generation.lock` 通过独占创建串行化并发生成者，避免 Windows 上多个 rename 争抢。无论读者或写者异常，临时文件和锁均在 finally/错误路径清理。
+
+纠偏回归与重新验证（2026-08-13）：contracts 新增并发测试，先生成初始 artifact，再并发执行 12 次生成与 120 次 JSON 读取，断言 `openapi.json`、`asyncapi.json`、`platform-contracts.schema.json` 始终可解析，最终目录仅含五个 artifact。该测试和生成后的第二次 contracts test 均为 16/16 通过。随后按审计顺序运行 `pnpm contracts:generate`，设置本地 `DATABASE_URL` 后运行根 `pnpm typecheck`、`pnpm test`（40 项通过、0 跳过、0 失败，其中 contracts 16）、`pnpm build`、Drizzle `db:generate`（无 schema 漂移）和 `db:migrate`（可重放），全部通过。
+
+无 `.env.local` 启动证据（2026-08-13）：确认 `.env.local` 不存在。此前此段将 Studio proxy 记为通过，但复审确认旧 Nitro `routeRules` 在构建时固化 `CONTROL_API_ORIGIN`，且先前 handler 位于未被 `srcDir: "app/"` 扫描的仓库根 `server/`，所以不能作为有效证据。该历史表述由下方“Studio 运行时代理纠偏”取代。本轮启动的 API/Nitro 子进程已精确停止，之后端口 `3031/3032` 无 listener；contracts 输出目录无 `.tmp` 或 lock 文件。
+
+Studio 运行时代理纠偏（2026-08-13）：移除 Nitro 构建期 `routeRules` proxy，保留 Vite 开发代理；在 Nuxt 实际扫描目录 `apps/studio-web/app/server/routes/api/v1/[...path].ts` 增加仅服务端的 `/api/v1/**` handler。handler 每个请求读取 Studio 进程的 `CONTROL_API_ORIGIN`，未设置时才回退到私有 `runtimeConfig.controlApiOrigin` 和本地默认值；浏览器继续只调用相对 `/api/v1/**`，不会收到 upstream 地址。`h3` 作为 Studio 直接依赖声明，防止 Node 回归测试依赖 Nuxt 的间接安装。构建产物已确认注册 `/api/v1/**:path` 及对应 handler chunk。
+
+Studio 运行时代理回归与受控验证（2026-08-13）：Studio 测试入口现执行所有 `tests/*.test.mjs`，新增测试启动临时 H3 upstream，设置 `CONTROL_API_ORIGIN` 后通过 proxy 转发 `/api/v1/health?probe=runtime`，断言上游实际收到完整 path/query 且返回 `200`；Studio 测试为 4/4 通过。随后在 `.env.local` 不存在、未提供真实 Key 的同一 Node 监督进程环境中并行启动 Control API `3032` 和 Studio Nitro `3031`，统一注入 `DATABASE_URL`、`CONTROL_API_ORIGIN=http://127.0.0.1:3032`、`LOCAL_AUTH_MODE=dev`、`VIDEO_PROVIDER=mock`、`VEYRA_AUTH_ENABLED=false`、`HOST/PORT`。实测 API `/api/v1/health`、Studio `/`、Studio `/api/v1/health` 全部为 `200`；Studio proxy 返回的 JSON 也明确为 `dependencies.database: "ok"`。监督器 finally 停止两个子进程，之后 `3031/3032` 无 listener。
+
+风险与未完成项：C03 没有 SSO、外部身份、工作区切换、资产/分镜、outbox、Worker、Provider、Storage、Veyra 或部署能力；这些明确属于后续章节。Nuxt 构建只输出既有 Node 依赖的 deprecation warning，所有命令退出状态为零。当前执行环境拒绝用后台包装直接运行 `pnpm dev`，但其实际 Control API 与 Nitro 入口已在同一无密钥环境变量下并行验证；正常本机终端仍以 README 的 `pnpm dev` 作为标准命令。
+
+审计员独立复核（2026-08-13）：在不采信实现方结论的前提下，审计端重新执行 `pnpm contracts:generate`、带本地 PostgreSQL `DATABASE_URL` 的根 `pnpm typecheck`、`pnpm test`（41 通过、0 跳过、0 失败）、`pnpm build`、`db:generate`、`db:migrate`、Compose config/health 和 contracts 并发导出回归（16/16）。审计端还在同一无密钥环境中启动 Control API `3032` 与 Studio Nitro `3031`：`/api/v1/health`、`/api/v1/me`、Studio `/`、Studio `/api/v1/health` 均为 `200`；固定开发身份为 `usr_dev_owner`/`ws_dev_default`；同一创建键重放同一 `prj_`，变更 body 为 `409 IDEMPOTENCY_CONFLICT`。审计生成的项目与 command deduplication 记录已精确删除，审计启动进程已停止。`upstream/` 仍被忽略，Git 索引和 submodule 均无上游快照，C01/C02 远端备份 refs 保持不变。
+
+Exit Gate 结论：`ACCEPTED`。C03 的 Dev Identity、公开控制面、workspace 授权、命令幂等、数据库持久化、公开边界、契约生成安全和 Studio 最小 API client 均符合正式开发总控文档 8.1-8.5 与 AGENTS.md。现仅授权主线执行受限 `feat(C03)` 提交、推送 `origin/main` 和 `c03-accepted` 标签；完成远端复核前不得启动 C04/C05。
 
 每章完成时追加：
 

@@ -14,8 +14,7 @@ export const TaskRunIdSchema = prefixedId("tsk");
 export const ProviderAttemptIdSchema = prefixedId("att");
 export const UsageRecordIdSchema = prefixedId("use");
 export const EventIdSchema = prefixedId("evt");
-// C01 health uses a local placeholder. C03 will generate req_ ULIDs for requests.
-export const RequestIdSchema = z.string().min(1).max(255);
+export const RequestIdSchema = z.string().regex(/^req_[0-9A-HJKMNP-TV-Z]{26}$/);
 
 export const UtcTimestampSchema = z
   .string()

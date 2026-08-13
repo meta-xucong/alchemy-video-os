@@ -6,17 +6,18 @@ import { Hono } from "hono";
 import { createApp } from "../src/app.js";
 import { errorHandler } from "../src/middleware/logger.js";
 
-test("health endpoint returns the local control API identity", async () => {
+test("health endpoint returns the Control API and dependency status", async () => {
   const response = await createApp().request("http://localhost/api/v1/health");
 
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    data: {
-      service: "control-api",
-      status: "ok"
-    },
-    request_id: "local"
+  const body = await response.json();
+  assert.deepEqual(body.data, {
+    service: "control-api",
+    status: "ok",
+    build_version: "local",
+    dependencies: { database: "not_configured" },
   });
+  assert.match(body.request_id, /^req_[0-9A-HJKMNP-TV-Z]{26}$/);
 });
 
 test("error middleware returns the platform error envelope", async () => {
@@ -29,13 +30,12 @@ test("error middleware returns the platform error envelope", async () => {
   const response = await app.request("http://localhost/boom");
 
   assert.equal(response.status, 500);
-  assert.deepEqual(await response.json(), {
-    error: {
-      code: "INTERNAL_ERROR",
-      message: "Unexpected control API error.",
-      retryable: false,
-      details: {}
-    },
-    request_id: "local"
+  const body = await response.json();
+  assert.deepEqual(body.error, {
+    code: "INTERNAL_ERROR",
+    message: "Unexpected control API error.",
+    retryable: false,
+    details: {},
   });
+  assert.match(body.request_id, /^req_[0-9A-HJKMNP-TV-Z]{26}$/);
 });

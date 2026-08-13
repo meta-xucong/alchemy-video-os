@@ -1,4 +1,5 @@
-const controlApiOrigin = process.env.CONTROL_API_ORIGIN ?? "http://127.0.0.1:3032";
+const defaultControlApiOrigin = "http://127.0.0.1:3032";
+const developmentControlApiOrigin = process.env.CONTROL_API_ORIGIN ?? defaultControlApiOrigin;
 
 export default defineNuxtConfig({
   srcDir: "app/",
@@ -16,9 +17,12 @@ export default defineNuxtConfig({
   vite: {
     server: {
       proxy: {
-        "/api/v1": { target: controlApiOrigin, changeOrigin: true }
+        "/api/v1": { target: developmentControlApiOrigin, changeOrigin: true }
       }
     }
+  },
+  runtimeConfig: {
+    controlApiOrigin: defaultControlApiOrigin,
   },
   compatibilityDate: "2025-05-15"
 });

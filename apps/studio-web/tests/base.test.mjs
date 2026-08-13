@@ -14,6 +14,11 @@ test("studio retains the Huobao Nuxt app layout and local API proxy shape", () =
   assert.match(config, /srcDir:\s*"app\//);
   assert.match(config, /ssr:\s*false/);
   assert.match(config, /"\/api\/v1"/);
+  assert.match(config, /runtimeConfig/);
+  assert.match(config, /controlApiOrigin:\s*defaultControlApiOrigin/);
+  assert.doesNotMatch(config, /routeRules/);
+  assert.match(read("app/server/routes/api/v1/[...path].ts"), /resolveControlApiOrigin/);
+  assert.match(read("app/server/routes/api/v1/[...path].ts"), /proxyControlApiRequest/);
   assert.equal(packageJson.scripts.dev, "node scripts/serve-local.mjs");
   assert.match(localServer, /\.output\/server\/index\.mjs/);
   assert.match(localServer, /process\.env\.HOST \?\?= "127\.0\.0\.1"/);
@@ -28,4 +33,17 @@ test("studio health screen uses the public control API boundary", () => {
   assert.match(composable, /\$fetch<HealthStatus>\("\/api\/v1\/health"\)/);
   assert.match(page, /useControlApi/);
   assert.match(page, /Refresh control API status/);
+});
+
+test("studio C03 surface reads identity and projects through the public API", () => {
+  const composable = read("app/composables/useControlApi.ts");
+  const page = read("app/pages/index.vue");
+
+  assert.match(composable, /\/api\/v1\/me/);
+  assert.match(composable, /\/api\/v1\/projects/);
+  assert.match(composable, /Idempotency-Key/);
+  assert.match(page, /currentIdentity/);
+  assert.match(page, /Create project/);
+  assert.doesNotMatch(composable, /\/internal\//);
+  assert.doesNotMatch(composable, /provider|veyra|minio/i);
 });

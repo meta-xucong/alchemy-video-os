@@ -10,6 +10,15 @@ importers:
 
   apps/control-api:
     dependencies:
+      '@alchemy-video/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@alchemy-video/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@alchemy-video/persistence':
+        specifier: workspace:*
+        version: link:../../packages/persistence
       '@hono/node-server':
         specifier: ^1.19.11
         version: 1.19.17(hono@4.13.1)
@@ -19,6 +28,9 @@ importers:
       hono:
         specifier: ^4.12.9
         version: 4.13.1
+      zod:
+        specifier: ^3.24.2
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -32,6 +44,9 @@ importers:
 
   apps/studio-web:
     dependencies:
+      h3:
+        specifier: ^1.15.11
+        version: 1.15.11
       lucide-vue-next:
         specifier: ^0.511.0
         version: 0.511.0(vue@3.5.41(typescript@5.9.3))

@@ -259,6 +259,10 @@ export const CommandDeduplicationSchema = z.object({
 export const HealthSchema = z.object({
   service: z.literal("control-api"),
   status: z.literal("ok"),
+  build_version: z.string().min(1),
+  dependencies: z.object({
+    database: z.enum(["ok", "unavailable", "not_configured"]),
+  }),
 });
 
 export const CurrentIdentitySchema = z.object({

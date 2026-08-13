@@ -7,12 +7,18 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/health.test.ts"
+    "pretypecheck": "pnpm --filter @alchemy-video/contracts build && pnpm --filter @alchemy-video/domain build && pnpm --filter @alchemy-video/persistence build",
+    "pretest": "pnpm --filter @alchemy-video/contracts build && pnpm --filter @alchemy-video/domain build && pnpm --filter @alchemy-video/persistence build",
+    "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
+    "@alchemy-video/contracts": "workspace:*",
+    "@alchemy-video/domain": "workspace:*",
+    "@alchemy-video/persistence": "workspace:*",
     "@hono/node-server": "^1.19.11",
     "dotenv": "^17.4.2",
-    "hono": "^4.12.9"
+    "hono": "^4.12.9",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
