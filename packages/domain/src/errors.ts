@@ -6,7 +6,8 @@ export class DomainInvariantError extends Error {
       | "RESULT_ASSET_IMMUTABLE"
       | "PROVIDER_RESUBMIT_FORBIDDEN"
       | "ACTIVE_TASK_RUN_EXISTS"
-      | "IDEMPOTENCY_CONFLICT",
+      | "IDEMPOTENCY_CONFLICT"
+      | "BILLING_RECEIPT_INVALID",
     message: string,
   ) {
     super(message);

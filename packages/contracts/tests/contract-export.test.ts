@@ -40,6 +40,7 @@ test("failure envelopes always include details", () => {
 test("the exported application error code set includes internal failures", () => {
   assert.equal(ApplicationErrorCodeSchema.parse("INTERNAL_ERROR"), "INTERNAL_ERROR");
   assert.equal(ApplicationErrorCodeSchema.parse("SHOT_POSITION_CONFLICT"), "SHOT_POSITION_CONFLICT");
+  assert.equal(ApplicationErrorCodeSchema.parse("CREDIT_REJECTED"), "CREDIT_REJECTED");
 });
 
 test("the C03 health response distinguishes the API process and database dependency", () => {
@@ -78,6 +79,9 @@ test("public DTO exports omit internal storage and Provider transport fields", (
     "object_key",
     "X-Veyra-Internal-Token",
     "veyra",
+    "credit_provider",
+    "external_user_id",
+    "balance_after",
   ];
 
   for (const document of publicDocuments) {
@@ -355,6 +359,9 @@ test("every public OpenAPI path is free of internal event references and fields"
     "response_payload",
     "object_key",
     "veyra",
+    "credit_provider",
+    "external_user_id",
+    "balance_after",
   ];
 
   assert.deepEqual(

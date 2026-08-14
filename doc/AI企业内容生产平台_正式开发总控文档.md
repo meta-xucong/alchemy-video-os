@@ -471,16 +471,16 @@ GET  /videos/{id}/content
 ### 13.1 进入条件
 
 - 第 7 章 `ACCEPTED`。
-- 用户明确指定 profile、允许的调用次数、额度上限和测试素材。
+- 用户或审计员已记录当前 profile、允许的调用次数、额度上限和测试素材；任何未获记录的 profile、图生或 Seedance 参数保持禁止。
 - Key 存于本地未提交环境，命令显式 `--live`。
 
 ### 13.2 实施步骤
 
-1. 先用 Grok 最短文生视频验证提交/轮询/下载。
-2. 再验证单图生视频。
-3. 验证进程中止后的恢复查询。
-4. 对 Seedance 先实测 model ID、字段、时长、比例和分辨率，禁止猜值。
-5. 生成 capability snapshot 和脱敏认证报告。
+1. 当前受限授权仅用 Grok 最短文生视频验证提交、轮询和下载。
+2. 当前不得验证图生；任何单图生测试必须先取得独立 profile、次数、额度和素材授权。
+3. 验证进程中止、短暂 poll/download 故障后的 GET-only 恢复查询，不得重复提交。
+4. Seedance 的 model ID、字段、时长、比例和分辨率属于另一轮受控认证，禁止猜值或借用本轮额度。
+5. 生成 hash-only 脱敏认证报告；capability snapshot 在独立审计和后续受控变更前保持 disabled。
 
 ### 13.3 Exit Gate
 
@@ -506,6 +506,12 @@ Header: X-Veyra-Internal-Token
 ```
 
 余额预检不是预授权。视频成功下载并验证后进入 `BILLING_PENDING`，以 `billing_rule_key + task_run_id` 扣费。`402` 为 `CREDIT_INSUFFICIENT`，`409` 为 `CREDIT_CONFLICT`；充值重试只能扣费，不能再次 submit 视频。
+
+### 14.2.1 C09-A：离线基础范围
+
+C09-A 只建立可替换的内部 `CreditPort`、`NoopCreditAdapter`、注入式 Veyra transport 契约、精确十进制 mapper 与 usage receipt 幂等准备。adapter 不提供默认 HTTP client，不读取环境变量、Token 或 URL；fake transport/fake server 只在测试进程中使用。
+
+本子阶段不装配 Worker、Control API 或 Studio，不新开公开 DTO、浏览器路由、队列消息或真实扣费。失败 envelope 的结构不变；为完整表达内部 Veyra mapper 的其他拒绝，既有应用错误码枚举可向后兼容地增加 `CREDIT_REJECTED`，但 C09-A 不新增会从公开路由产生该错误的运行时路径。`NoopCreditAdapter` 只表达本地 mock 的“计费不可用”，不得把 debit 伪装为成功；TaskRun 的既有状态图不在 C09-A 改动。`usage_records` 只作为外部扣费 receipt，需按 `(credit_provider, idempotency_key)` 唯一，不能成为余额账本。
 
 ### 14.3 Exit Gate
 

@@ -270,6 +270,7 @@ export const usageRecords = pgTable(
     id: text().primaryKey(),
     workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
     taskRunId: text("task_run_id").notNull(),
+    creditProvider: varchar("credit_provider", { length: 64 }).notNull(),
     externalUserId: text("external_user_id").notNull(),
     amount: numeric({ precision: 18, scale: 8 }).notNull(),
     source: varchar({ length: 128 }).notNull(),
@@ -280,7 +281,7 @@ export const usageRecords = pgTable(
     createdAt: createdAt(),
   },
   (table) => [
-    uniqueIndex("usage_records_idempotency_key_key").on(table.idempotencyKey),
+    uniqueIndex("usage_records_credit_provider_idempotency_key_key").on(table.creditProvider, table.idempotencyKey),
     index("usage_records_workspace_task_run_idx").on(table.workspaceId, table.taskRunId),
     foreignKey({
       columns: [table.workspaceId, table.taskRunId],

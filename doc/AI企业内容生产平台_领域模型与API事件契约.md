@@ -240,13 +240,40 @@ interface IdentityPort {
   resolve(request: Request): Promise<Identity>;
 }
 
+type CreditAccount = {
+  externalUserId: number;
+  email: string;
+  role: string;
+  balance: string;
+  status: string;
+  concurrency: number;
+};
+
+type CreditDebitInput = {
+  externalUserId: number;
+  amount: string;
+  idempotencyKey: string;
+  source: string;
+  referenceId: string;
+};
+
+type CreditDebitResult = {
+  externalUserId: number;
+  amount: string;
+  balanceAfter: string;
+  idempotencyKey: string;
+  replayed: boolean;
+};
+
 interface CreditPort {
   getAccount(input: { externalUserId: number }): Promise<CreditAccount>;
   debit(input: CreditDebitInput): Promise<CreditDebitResult>;
 }
 ```
 
-本地实现为 `DevIdentityAdapter`、`NoopCreditAdapter` 和 `MockVideoProvider`。未来实现为 `VeyraIdentityAdapter`、`VeyraSub2ApiCreditAdapter` 和 `Sub2ApiVideoProvider`。端口返回的错误必须归一化为 `AUTH_UNAVAILABLE`、`AUTH_FORBIDDEN`、`CREDIT_INSUFFICIENT`、`CREDIT_CONFLICT`、`PROVIDER_UNAVAILABLE`、`PROVIDER_REJECTED`、`DOWNLOAD_INVALID` 等应用错误码，页面不认识 HTTP 上游细节。
+本地实现为 `DevIdentityAdapter`、`NoopCreditAdapter` 和 `MockVideoProvider`。未来实现为 `VeyraIdentityAdapter`、`VeyraSub2ApiCreditAdapter` 和 `Sub2ApiVideoProvider`。端口返回的错误必须归一化为 `AUTH_UNAVAILABLE`、`AUTH_FORBIDDEN`、`CREDIT_INSUFFICIENT`、`CREDIT_CONFLICT`、`CREDIT_UNAVAILABLE`、`CREDIT_REJECTED`、`PROVIDER_UNAVAILABLE`、`PROVIDER_REJECTED`、`DOWNLOAD_INVALID` 等应用错误码，页面不认识 HTTP 上游细节。
+
+C09-A 固定 Veyra HTTP 归一化：`402 -> CREDIT_INSUFFICIENT`、`409 -> CREDIT_CONFLICT`、`401/403 -> AUTH_FORBIDDEN`、网络或 `5xx -> CREDIT_UNAVAILABLE`、其余 `4xx -> CREDIT_REJECTED`。`401/403` 是否进行受限重试和如何推进 TaskRun 只属于后续扣费执行流程；本子阶段没有 Worker 装配或状态推进。
 
 ## 7. 数据库事务与恢复规则
 

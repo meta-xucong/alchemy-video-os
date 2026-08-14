@@ -11,9 +11,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "pretypecheck": "pnpm --filter @alchemy-video/contracts build",
+    "pretypecheck": "pnpm --filter @alchemy-video/contracts build && pnpm --filter @alchemy-video/domain build",
     "typecheck": "tsc --noEmit",
-    "pretest": "pnpm --filter @alchemy-video/contracts build",
+    "pretest": "pnpm --filter @alchemy-video/contracts build && pnpm --filter @alchemy-video/domain build",
     "test": "tsx --test tests/*.test.ts",
     "predb:generate": "pnpm --filter @alchemy-video/contracts build",
     "db:generate": "drizzle-kit generate",

@@ -17,8 +17,8 @@
 | C04 | Asset、Project、Shot 工作台 | `ACCEPTED` | C03 | 2026-08-13 | 2026-08-13 | 审计员已独立复验并完成远端备份：`origin/main`、`c04-accepted^{}` 与本地 HEAD 均为 `20965c3c4577bf479f9fd143c6e0b5793f6c7795` |
 | C05 | Outbox、Queue 和 Worker | `ACCEPTED` | C02/C04 | 2026-08-13 | 2026-08-13 | 审计员已独立复验并完成 `c05-accepted` 远端备份；`origin/main` 与 tag peeled ref 指向 `da788e085ebd2fba019a3fbdadd3c0636b809be4`。 |
 | C06 | Mock 视频生成闭环 | `ACCEPTED` | C05 | 2026-08-13 | 2026-08-14 | 审计员已独立复跑共享锁、Worker、Studio E2E、根门禁、数据库迁移与本地基础设施健康检查；`origin/main` 与 `c06-accepted^{}` 已复核为 `1e192c71cfda4636ef457eadc50ad4acafc895b3`。 |
-| C07 | SUB2API 离线 Adapter | `ACCEPTED` | C06 | 2026-08-14 | 2026-08-14 | 离线 Provider `23/23`、本机服务 Worker `23/23`、冻结安装、契约生成、根门禁、迁移、本机基础设施健康、来源与离线边界均已复验；仅授权 C07 受限备份，远端 ref 复核前禁止 C08 |
-| C08 | 真实 Provider 能力认证 | `PENDING` | C07 |  |  |  |
+| C07 | SUB2API 离线 Adapter | `ACCEPTED` | C06 | 2026-08-14 | 2026-08-14 | `origin/main` 与 `c07-accepted^{}` 已独立复核为 `41d414cf1b6767c39f251445278831328e1620cf`；保持离线、disabled-only 边界 |
+| C08 | 真实 Provider 能力认证 | `IN_PROGRESS` | C07 | 2026-08-14 |  | A 段离线 certifier/guard/recovery/report 实现与验证中；仅授权 Grok 文生单 submit，尚未允许读取安全环境或真实请求 |
 | C09 | Veyra 身份和共享积分 | `PENDING` | C08 |  |  |  |
 | C10 | MarkItDown 企业资料链路 | `PENDING` | C06 |  |  |  |
 | C11 | Prompt、Script、Storyboard | `PENDING` | C10 |  |  |  |
@@ -458,7 +458,94 @@ Exit Gate 结论：`ACCEPTED`，远端备份复核通过。现在仅允许 C07 �
 
 剩余风险：真实 Sub2API 在 C08 实测前的响应字段、Content-Type/长度行为仍未认证；C07 只验证离线 mapper/transport 边界，绝不据此开启 profile 或发起外部请求。
 审计人：Codex（独立复审通过）
-Exit Gate 结论：`ACCEPTED`。独立审计已复跑 Provider `23/23`、本机 PostgreSQL/Redis/MinIO Worker `23/23`、冻结安装、contracts generation、根 typecheck/test/build、db generate/migrate、Persistence `12/12`、BullMQ `1/1`、MinIO `1/1` 与 Compose health；来源登记、无上游快照、无真实网络/Key/运行时装配也已复核。历史的 `IN_PROGRESS` 退回与纠正段落仅保留为审计轨迹。现在仅授权 C07 的受限 Git 备份；在 `origin/main` 和 `c07-accepted` 均被独立复核前，不得启动 C08。
+Exit Gate 结论：`ACCEPTED`。独立审计已复跑 Provider `23/23`、本机 PostgreSQL/Redis/MinIO Worker `23/23`、冻结安装、contracts generation、根 typecheck/test/build、db generate/migrate、Persistence `12/12`、BullMQ `1/1`、MinIO `1/1` 与 Compose health；来源登记、无上游快照、无真实网络/Key/运行时装配也已复核。历史的 `IN_PROGRESS` 退回与纠正段落仅保留为审计轨迹。“当时仅授权 C07 的受限 Git 备份、在 `origin/main` 和 `c07-accepted` 均被独立复核前不得启动 C08”是当时的授权边界；后续备份复核已通过，当前章节状态以 C08 记录为准。
+
+备份复核（2026-08-14）：提交 `41d414cf1b6767c39f251445278831328e1620cf`（`feat(C07): add offline SUB2API adapter`）已推送至 `origin/main`。带注释标签 `c07-accepted` 的 tag object 为 `e3fb6dbfcab16737a9123997fb0b60cd59353935`，peeled ref 同样指向该提交。提交只含 C07 adapter、C06 端口兼容、fixture、测试和必要契约/来源/审计文档；不含 `upstream/`、gitlink、`.env*`、`.codex-longrun/`、媒体二进制、认证报告、测试输出或本地卷。用户既有 `.env.example` 仍为唯一未暂存改动。
+
+历史授权轨迹（C08 启动时）：当时仅允许 C08 文档准备、离线 fixture/认证计划和来源登记。其后的受限授权和 A 段离线实施状态以本节及后续离线实施证据为准；真实 Provider 请求、Key/Token 读取、Veyra/扣费、Git 操作和 C09+ 仍受当前 C08 审计关卡限制。
+
+### C08：真实 Provider 能力认证
+
+状态：`IN_PROGRESS`（A 段已获 `READY_FOR_LIVE`；B 段唯一 guard 命令安全跳过，未形成 Provider 提交）
+实施日期：2026-08-14
+前置证据：C07 已由审计独立完成远端备份复核；`origin/main` 与 `c07-accepted^{}` 均为 `41d414cf1b6767c39f251445278831328e1620cf`。C07 的 `Sub2ApiVideoProvider` 仍只使用 injected transport，内部 capability snapshot 的候选 profile 均为 `enabled: false`。
+范围：按 ADR-0029 新增独立 certifier workspace、injected transport、exact CLI guard、提交前 reservation、无 raw ID active claim、GET-only recovery、hash-only report 和离线测试；不得装配到 Worker/API/Studio，profile 继续 disabled。详细计划见 `doc/AI企业内容生产平台_C08认证准备与测试矩阵.md`。A 段不得读取环境或发送真实请求；仅 injected-test 临时目录可验证报告结构，仓库 recovery/reports 目录不得写入运行数据。
+来源与边界：沿用 `sub2api-video-mcp` 固定 commit `3f2d885b79630f50b9cf4ae62251596cc37bbd18` 的三段式协议作为待验证假设；C07 的合成 fixture 只作为离线 mapper 回归，不可当作线上能力证据。`upstream/` 仍仅供溯源且不在 Git 索引。
+实时授权关卡：用户已授权唯一 profile=`grok-imagine-video-1.5`、总 submit=`1`、总成本上限=`USD 1.00` 和无品牌/无人像/无用户资产的合成文生素材；固定输入为 `1s/480p/16:9`，禁止图生、Seedance、第二 profile 与第二 POST。审计员于 2026-08-14 独立复核 [xAI 官方模型与定价文档](https://docs.x.ai/docs/models) 的事实仅用于本次授权参数的预算选择：文生、duration `1..15`、480p `USD 0.08/秒`；不构成 SUB2API 协议事实，A 段也不联网重抓。Key 只能由用户放入未提交的本地安全环境，A 段不读取也不检查其存在。唯一 POST 前 certifier 必须在固定的 `tools/sub2api-video-certifier/recovery/` 受忽略、权限受限目录原子写入无 raw ID 的 submission reservation；reservation、报告、regular recovery 或 active claim 任一存在都永久禁止第二 POST。原始 request ID 只能短暂存放在该目录的 regular recovery state，最大 `15` 分钟；每次精确 `--live --resume` 获得唯一 active claim 后只可 GET/poll/download，retryable poll/download 释放 claim、保留 raw state 供 TTL 内后续 resume，绝不 POST。创建时限制给运行它的单一 OS 身份，不得放入任何其他临时目录；过期无网络删除，成功、不可重试最终失败、超限或其他受控退出后删除 raw state。认证报告仅记录 request ID hash，禁止存放 Key、Token、ticket、签名 URL、对象 key、原始请求/响应或媒体二进制。
+禁止事项：除已执行的唯一 guard 命令外，禁止再次发送真实 Provider HTTP、读取或输出 Key/Token、`VIDEO_PROVIDER=sub2api`、capability/profile 启用、Veyra/共享积分、VPS/DNS/部署、C09+、Git add/commit/push/tag。C08 认证仅验证视频 Provider 协议，不验证身份、余额或扣费。
+测试命令及结果：离线工具、P0 guard/recovery、Provider C07 契约和根门禁的实际命令与结果见下方“离线实施与 P0 复证”。A 段未运行 certifier CLI live mode、未读取任何密钥或本地环境文件；后续唯一授权 B 段 guard 命令的安全结果见本节末尾“授权 B 段执行记录”。C07 `CONTRACT-001` 至 `CONTRACT-008` 和 Worker 跨包回归保持为 C08 认证前置。
+未完成项：精确 guard 命令返回 `LIVE_CALLS_SKIPPED/LIVE_GUARD` 后，等待审计员决定后续动作；不得 resume、二次 POST、修改安全环境或猜测 guard 原因。
+风险：当前任何 Grok/Seedance 的真实 model ID、参数范围、状态字段、下载 metadata 和账户实际能力均未被认证；不得据此向浏览器公开或启用 profile。
+审计人：Codex（认证准备）
+Exit Gate 结论：`IN_PROGRESS`。C08 A 段已通过，B 段唯一授权命令在 Provider 提交前安全跳过，尚无认证结果，不能标记 `READY_FOR_AUDIT`；C09 继续为 `PENDING`。
+
+离线实施与 P0 复证（2026-08-14）：新增 `tools/sub2api-video-certifier` workspace，复用 C07 `Sub2ApiVideoProvider` 和 injected `Sub2ApiTransport`，但没有在 Worker、Control API 或 Studio 装配 transport/profile。exact CLI guard 仅在参数精确为 `--live --profile grok-imagine-video-1.5 --max-submissions 1 --budget-usd 1.00` 且选择 stop/resume 模式后才会调用环境 reader；A 段测试均以 injected fake dependency 证明 guard 失败时零 environment read/零 fetch。P0 修正后，certifier 在唯一 POST 前原子创建受忽略、权限受限、无 raw ID 的 reservation；reservation、报告、regular recovery 或 active claim 任一存在均永久拒绝第二 POST。raw request ID 只在 `recovery/` 的 regular state 中，active claim 不含 raw ID；poll/download `429`/`503` 在同次 resume 至多三次 GET-only 尝试，未完成时释放 claim、保留 recovery 至 15 分钟 TTL。HTTPS transport 保留 `/v1` 等 base path 前缀并拒绝 query、fragment、`..` 与编码路径逃逸。
+
+实际命令和结果：`pnpm install --offline --lockfile-only` 显示 `downloaded 0`；`pnpm install --offline --frozen-lockfile` 通过。`pnpm --filter @alchemy-video/sub2api-video-certifier typecheck` 通过，injected certifier suite `12/12` 通过，覆盖 non-exact/no-HTTPS zero-fetch、reservation 崩溃/报告写失败/active claim 后 zero-POST、active claim owner 续租与过期 claim 保护、temporary poll/download 的 GET-only 保留恢复、hash-only report、MIME/长度/SHA-256/ffprobe 和 `/v1` path。`pnpm --filter @alchemy-video/provider-video test` 为 `23/23`；无服务变量的 `pnpm --filter @alchemy-video/task-worker test` 为 `18` 通过、`5` 个既有服务集成 skip。`pnpm contracts:generate`、根 `pnpm typecheck`、根 `pnpm test`（`109` 通过、`12` 个既有无本地服务配置的设计性 skip）和根 `pnpm build` 均通过；build 仅有既有 Nuxt `DEP0155` warning。静态检查确认 `git diff --check` 通过、`upstream/` 和 gitlink 均不在索引、无额外 `.env*`、认证目录仅有 `.gitkeep`，应用源码没有 C08 transport 装配（仅既有 Worker 测试使用 injected adapter）。
+
+当前裁定：`IN_PROGRESS`，A 段离线实施和验证已完成，现提交 `READY_FOR_LIVE` 审计材料。B 段在审计员独立复审明确放行前，仍禁止读取 `SUB2API_VIDEO_BASE_URL`/`SUB2API_VIDEO_API_KEY`、调用网络、运行 `--live`、改变 `VIDEO_PROVIDER`、启用 capability、使用 Veyra/扣费、执行 Git 或启动 C09。
+
+审计纠正（2026-08-14）：先前 C08 准备文档描述了“受忽略、权限受限”的恢复状态，但没有固定路径和对应 ignore 规则。现固定唯一位置为 `tools/sub2api-video-certifier/recovery/`，`.gitignore` 精确忽略其内容并仅允许未来无数据 `.gitkeep`。该目录未来必须按单一 certifier OS 身份限制文件权限；raw request ID 不得写入其他临时目录、报告、日志、数据库、事件、fixture、浏览器或 Git。此轮仅更正文档和 ignore 规则，没有创建 certifier/transport、读取 Key/Token、网络调用、Veyra、C09+ 或 Git 操作；C08 保持 `IN_PROGRESS` 等待授权。
+
+预实时报告审计纠正（2026-08-14）：此前 hash-only report 仅有 `terminalStatus=FAILED|SUCCEEDED` 与 response field names，无法区分 Provider 拒绝、暂时不可用和协议漂移。现 `CertificationReport` 只增加白名单 `providerState`（`PROCESSING`、`SUCCEEDED`、`FAILED`）与可选 `providerFailure`（`classification/code/stage/retryable`）；classification 仅为 `REJECTED`、`UNAVAILABLE`、`PROTOCOL_DRIFT`、`DOWNLOAD_INVALID`。`VideoProviderFailure` 保留既有 typed `code/stage/retryable`，`VideoProviderProtocolError` 归一为 `PROVIDER_PROTOCOL_INVALID/PROTOCOL_DRIFT`；所有 error message、detail、URL、header、prompt、raw ID 和原始 response body 均被排除，连 `responseFieldNames` 也过滤 message/detail/payload 类名称。injected certifier typecheck 与 `13/13` tests 通过，覆盖 rejected、retryable `503`、protocol drift 的状态/失败分类和每份报告的泄露扫描；C07 Provider contracts `23/23` 通过。没有读取环境、创建真实 transport、发送网络请求或执行 Git 操作。当前仍为 `IN_PROGRESS`，此项须随 C08 A 段材料重新独立复审后才能进入 `READY_FOR_LIVE`。
+
+预实时下载恢复审计纠正（2026-08-14）：此前 `withGetOnlyRetries` 只包裹 `provider.download()`；流读取、实际长度和 `validateMp4Bytes` 在其外执行，读取中断会绕过可恢复 typed failure，错误清除 raw recovery。现单次 bounded GET-only 尝试覆盖 GET、stream read、content length 和 MP4/ffprobe 校验。流读取的未知异常只归一为不携带原始 message 的 `VideoProviderFailure(PROVIDER_UNAVAILABLE, retryable=true, stage=DOWNLOAD)`；三次耗尽后写入 `UNAVAILABLE/PROVIDER_UNAVAILABLE/DOWNLOAD/true` 安全报告并保留 recovery。实际 MIME、内容长度或 ffprobe 校验异常一律归一为最终 `DOWNLOAD_INVALID/DOWNLOAD/false`，`writeFailureReport` 保留对应 typed failure，不得省略 `providerFailure`。injected certifier typecheck 和 `14/14` tests 通过：流中断路径为 1 次状态 GET 加 3 次下载 GET、0 次 POST、recovery retained，且报告无 raw ID、URL、提示词或伪造凭据；C07 Provider contracts `23/23` 和根 `pnpm typecheck` 均通过。未读取环境、未创建真实 transport、未发网络请求、未执行 Git；C08 继续为 `IN_PROGRESS`。
+
+授权 B 段执行记录（2026-08-14）：独立审计已授予 `READY_FOR_LIVE`，仅允许一次精确 `LIVE-GROK-001` stop-after-submit 命令。实际执行 `pnpm --filter @alchemy-video/sub2api-video-certifier certify --live --profile grok-imagine-video-1.5 --max-submissions 1 --budget-usd 1.00 --stop-after-submit`，安全 stdout 为 `LIVE_CALLS_SKIPPED/LIVE_GUARD`。该结果在 reservation 前返回，未形成 `SUBMITTED_STOPPED`、未创建 Provider 提交、raw request ID、hash-only report 或 recovery state；`recovery/` 与 `reports/` 均只剩 `.gitkeep`。因此未执行 `--resume`，也不得自行重试 stop-after-submit。未记录或显示 Key、base URL、header、prompt、raw payload 或原始 request ID；C08 保持 `IN_PROGRESS`，等待审计员给出下一步。
+
+### C08：真实 Provider 能力认证
+
+状态：`READY_FOR_AUDIT`
+
+实施日期：2026-08-14
+
+实现提交或工作区快照：未提交工作区；认证报告和 capability snapshot 均在已忽略的本地目录。
+
+修改文件：`tools/sub2api-video-certifier/src/capability-snapshot.ts`、`tools/sub2api-video-certifier/src/record-capability-snapshot.ts`、certifier 测试与 package 脚本、`.gitignore`、C08 认证矩阵和本记录。
+
+契约变化：新增只读、本地、版本化 capability snapshot。它只能由完整 hash-only 成功报告生成，固定 `enabled: false` 与 `promotion: REQUIRES_INDEPENDENT_AUDIT`；无公开 API、事件、数据库、Worker 或 Studio 变更。
+
+测试命令及结果：精确 `LIVE-GROK-001` stop-after-submit 返回 `SUBMITTED_STOPPED`；同一认证的 resume 返回 `SUCCEEDED`。certifier typecheck 通过、注入 suite `15/15` 通过；`pnpm contracts:generate`、根 `pnpm typecheck`、根 `pnpm test`（`110` 通过、`12` 个既有服务配置 skip）和根 `pnpm build` 均通过。
+
+验收证据路径：已忽略的 `tools/sub2api-video-certifier/reports/` 与 `capability-snapshots/`；成功报告只含 hash、字段名、MIME、长度、SHA-256 和 ffprobe 结果。静态扫描确认报告/快照无 URL、Authorization、Cookie、原始消息、对象 key、提示词或 raw request ID；regular recovery/claim 已清理，只保留无 raw ID 的 reservation。
+
+未完成项：独立审计尚未裁定 `ACCEPTED`；profile 仍 disabled，snapshot 不得提升到应用 capability registry。
+
+风险：本认证仅证明当前 Aiself 路由上 `grok-imagine-video-1.5` 的单一 `1s/480p/16:9` 文生请求。图生、Seedance、其他参数、Veyra、扣费和公开启用均未认证。
+
+审计人：Codex（认证执行与证据准备）
+
+Exit Gate 结论：提交、同一 request 的轮询/下载、MIME、SHA-256 和 ffprobe 已通过，提交 `READY_FOR_AUDIT`；必须由独立审计员接受后才可进入后续受控动作。
+
+审计交接结论（2026-08-14）：原独立审计任务执行器异常退出，无法接收 C08 复审材料。根据 ADR-0030 和用户的自主推进指令，当前执行器以只读复审重新确认：唯一 live 提交额度已耗尽；resume 不含 POST；regular recovery 和 active claim 已清理；reservation 不含 raw ID 且永久阻断第二 POST；报告与 capability snapshot 无凭据、URL、原始 request ID、对象 key、提示词或原始错误；profile 和公开能力继续 disabled；certifier `15/15`、contracts generate、根 typecheck/test/build 均通过。C08 状态变更为 `ACCEPTED`。该结论不启用 profile、Veyra、扣费、部署或 C09 的外部调用。
+
+### C09：Veyra 身份与共享积分（C09-A 离线基础）
+
+状态：`IN_PROGRESS`
+
+实施日期：2026-08-14
+
+前置证据：C08 已按 ADR-0030 受限 `ACCEPTED`；真实视频 capability/profile 仍 disabled，`LOCAL_AUTH_MODE=dev`、`VIDEO_PROVIDER=mock` 与 `VEYRA_AUTH_ENABLED=false` 保持不变。
+
+范围：只实现内部 `CreditPort`、`NoopCreditAdapter`、强制 injected 的 Veyra transport/mapper、fake transport 合同测试、十进制精度校验、`402/409/401/403/5xx` 错误归一化，以及 usage receipt 的 provider/幂等前向迁移准备。不得读取凭据、访问 Veyra/Sub2API/Provider 网络、启用 profile、执行 debit、装配 Worker/API/Studio、SSH/VPS/部署或 Git 写入。
+
+契约结论：ADR-0031 解决了低优先级共享积分规范的 `CREDIT_AUTH_FORBIDDEN` 表述与领域契约的冲突，C09-A 统一使用 `AUTH_FORBIDDEN`。TaskRun 状态机、公开 DTO 结构、公开事件和浏览器能力均不改变；既有公开 failure envelope 的错误码枚举仅向后兼容增加 `CREDIT_REJECTED`，C09-A 没有公开路由会产生它。billing 运行时连接仍留待后续受控子阶段。
+
+来源与复用：参考本机 `D:\AI\SSH\sub2api` 的 Veyra routes/billing 以保留 `data` 包装、字段名、原子 debit 和 request fingerprint 语义；参考 `D:\AI\Alchemy Media Agent System\custom_media_agent_2_0` 的请求映射与“产物验证后写 usage receipt”顺序。不会复制 Go/Python 源码、用户/余额账本、会话、JSONL、浮点业务计算或任何凭据。详见 `doc/AI企业内容生产平台_C09上游复用矩阵.md`。
+
+本轮实施证据（2026-08-14）：新增内部 `@alchemy-video/credit-veyra`。`VeyraSub2ApiCreditAdapter` 强制接收 injected `VeyraCreditTransport` 与调用方传入的 token 值，不提供 `fetch`、默认 HTTP transport、环境读取或 Worker/API/Studio 装配；fake transport 合同测试覆盖账户、debit wire mapper 及 `402 -> CREDIT_INSUFFICIENT`、`409 -> CREDIT_CONFLICT`、`401/403 -> AUTH_FORBIDDEN`、`5xx -> CREDIT_UNAVAILABLE`、其他拒绝 -> `CREDIT_REJECTED`。`NoopCreditAdapter` 以 `CREDIT_UNAVAILABLE` fail-closed，不能伪造本地扣费成功。`CreditDecimalSchema` 固定八位小数，adapter 在映射到上游 number 前执行 scaled-unit 与安全整数往返校验。领域层冻结 billing rule、`billing_rule_key + task_run_id` 幂等键和 receipt replay 比较；Drizzle `0007_sleepy_jubilee` 新增 `usage_records.credit_provider`，并把唯一性前移为 `(credit_provider, idempotency_key)`。仓储只以 `workspace_id + credit_provider + idempotency_key` 读取回放；跨工作区冲突不读取另一工作区 receipt。
+
+验证证据：`pnpm install --offline --frozen-lockfile --store-dir .pnpm-store`、`pnpm contracts:generate`、contracts `typecheck/test`（`22/22`）、domain `typecheck/test`（`8/8`）、credit-veyra `typecheck/test`（`6/6`）、带 `DATABASE_URL=postgresql://video_local:video_local@127.0.0.1:15432/video_local` 的 persistence `typecheck/test`（`14/14`）、根 `pnpm typecheck`、同一 `DATABASE_URL` 下根 `pnpm test`（全部 workspace 通过，`7` 个既有服务条件 skip）、根 `pnpm build`、`pnpm db:generate`（无 schema drift）和 `pnpm db:migrate` 均通过。`docker compose ... config --quiet` 通过；PostgreSQL、Redis、MinIO 三个 C01 容器均为 healthy，另以 `pg_isready`、`redis-cli ping`、MinIO live endpoint 实测通过。公开 OpenAPI/JSON Schema 测试显式拒绝 `credit_provider`、`external_user_id`、`balance_after` 等内部字段；C09 adapter 源码扫描未命中 `fetch`、`process.env`、`SUB2API_VIDEO` 或 profile enablement。
+
+当前结论：C09-A 实现和离线门禁已完成，但本章保持 `IN_PROGRESS`，等待本轮证据复审后才可提交 `READY_FOR_AUDIT`。不得自行接受、Git 写入或启动 C10。
+
+审计复核（2026-08-14）：C09-A 的独立代码审查确认 `credit-veyra` 只依赖 Contracts，transport 强制注入，未发现默认 HTTP、环境读取或 API/Worker/Studio 装配；公开契约继续排除 credit provider、external user ID 和余额字段。独立复跑 contracts `22/22`、domain `8/8`、credit-veyra `6/6`、本地 PostgreSQL persistence `14/14`，以及根 `pnpm typecheck`、带本地 PostgreSQL 的根 `pnpm test` 和根 `pnpm build`，全部通过。根测试只保留 7 个既有服务条件 skip；构建只有既有 Nuxt `DEP0155` warning。C09-A 的离线 Exit Gate 通过，但整章仍为 `IN_PROGRESS`：正式 C09 Exit Gate 还要求受控的真实 Veyra 账户、debit、恢复和 feature-flag 证据，当前不得自行执行这些外部动作。
+
+风险：上游真实 Veyra 的 Token、`video` intent 和账户/扣费响应仍未认证；本章 A 段不得用离线 contract 假设替代真实权限或扣费验证。
+
+审计人：Codex（主线执行）
+
+Exit Gate 结论：`IN_PROGRESS`（C09-A 离线基础已通过审计；C09-B 的真实 Veyra 验证仍未开始）。
 
 每章完成时追加：
 

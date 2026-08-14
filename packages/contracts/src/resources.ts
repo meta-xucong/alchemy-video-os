@@ -14,6 +14,7 @@ import {
   UtcTimestampSchema,
   WorkspaceIdSchema,
 } from "./primitives.js";
+import { CreditProviderSchema } from "./credit.js";
 
 export const UserStatusSchema = z.enum(["ACTIVE", "DISABLED"]);
 export const WorkspaceRoleSchema = z.enum(["OWNER", "ADMIN", "EDITOR", "VIEWER"]);
@@ -229,6 +230,7 @@ export const TaskRunAttemptSchema = ProviderAttemptSummarySchema.omit({
 
 export const UsageRecordSchema = z.object({
   id: UsageRecordIdSchema,
+  credit_provider: CreditProviderSchema,
   task_run_id: TaskRunIdSchema,
   external_user_id: z.string().min(1),
   amount: DecimalStringSchema,

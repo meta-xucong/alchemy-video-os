@@ -1,0 +1,21 @@
+{
+  "name": "@alchemy-video/sub2api-video-certifier",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "certify": "tsx src/main.ts",
+    "record-capability-snapshot": "tsx src/record-capability-snapshot.ts"
+  },
+  "dependencies": {
+    "@alchemy-video/provider-video": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.8.3"
+  }
+}

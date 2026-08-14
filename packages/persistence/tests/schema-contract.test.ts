@@ -98,8 +98,23 @@ test("the C05 generated snapshot baseline has no duplicate outbox DDL", async ()
 test("usage amounts use exact numeric columns and task runs persist JSON snapshots", () => {
   assert.equal(usageRecords.amount.dataType, "string");
   assert.equal(usageRecords.amount.columnType, "PgNumeric");
+  assert.equal(usageRecords.creditProvider.notNull, true);
   assert.equal(taskRuns.inputSnapshot.columnType, "PgJsonb");
   assert.equal(commandDeduplications.responseSnapshot.columnType, "PgJsonb");
+});
+
+test("C09 receipt identity is provider-scoped and migration-safe", async () => {
+  const migration = await readFile(
+    resolve(import.meta.dirname, "..", "drizzle", "0007_sleepy_jubilee.sql"),
+    "utf8",
+  );
+  assert.equal(usageRecords.creditProvider.name, "credit_provider");
+  assert.match(migration, /ADD COLUMN "credit_provider" varchar\(64\) DEFAULT 'veyra_sub2api'/);
+  assert.match(migration, /UPDATE "usage_records" SET "credit_provider" = 'veyra_sub2api'/);
+  assert.match(migration, /ALTER COLUMN "credit_provider" SET NOT NULL/);
+  assert.match(migration, /ALTER COLUMN "credit_provider" DROP DEFAULT/);
+  assert.match(migration, /usage_records_credit_provider_idempotency_key_key/);
+  assert.doesNotMatch(migration, /ADD COLUMN "credit_provider" varchar\(64\) NOT NULL/);
 });
 
 test("TaskRun enum follows the ADR-0014 contract", () => {

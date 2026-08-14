@@ -78,7 +78,7 @@ interface CreditPort {
 }
 ```
 
-`VeyraSub2ApiCreditAdapter` 是唯一允许调用这些 HTTP 路径的模块，位于 `packages/credit-veyra`。它将本系统十进制字符串安全转换为上游数值，收到上游值后再转换回字符串；转换失败或精度超过八位小数时拒绝发起请求。
+`VeyraSub2ApiCreditAdapter` 是唯一允许调用这些 HTTP 路径的模块，位于 `packages/credit-veyra`。它将本系统十进制字符串安全转换为上游数值，收到上游值后再转换回字符串；转换失败、超出安全 JSON number 范围或精度超过八位小数时拒绝发起请求。C09-A 只允许 injected fake transport，不提供默认 HTTP client，不读取环境或 Token。
 
 业务层只引用 `CreditPort`。`VideoProviderPort` 完全不知道用户积分；反过来 credit adapter 也不知道 `prompt`、模型、资产 URL 或上游视频密钥。
 
@@ -154,13 +154,17 @@ sequenceDiagram
 | 200，`replayed=false/true` | 无 | 写 usage，成功 | 否 | 否 |
 | 402 | `CREDIT_INSUFFICIENT` | `BILLING_FAILED`，产物隔离 7 天 | 用户充值后显式重试 | 否 |
 | 409 | `CREDIT_CONFLICT` | `BILLING_FAILED`，高优先级审计 | 否，人工处理 | 否 |
-| 401/403 | `CREDIT_AUTH_FORBIDDEN` | `RETRY_SCHEDULED` 后告警 | 有限重试 | 否 |
+| 401/403 | `AUTH_FORBIDDEN` | `RETRY_SCHEDULED` 后告警 | 有限重试 | 否 |
 | 网络/5xx | `CREDIT_UNAVAILABLE` | `RETRY_SCHEDULED` 指数退避 | 是 | 否 |
 | 4xx 其他 | `CREDIT_REJECTED` | `BILLING_FAILED` | 否 | 否 |
 
 现有 Alchemy 的预检在认证服务暂时不可用时会继续执行；视频平台不采用这一点。视频成本远高于一般本地任务：当真实积分功能已启用而预检不可用，任务停在 `QUEUED` 并重试，禁止向视频提供方提交。预检仍不是预授权，因此最终扣费 `402` 仍须妥善处理。
 
 产物在扣费失败时保留给运维恢复，不向普通用户生成下载 URL。平台不自动退款；若需要退款，必须由 Sub2API 新增显式、可审计的退款端点后再设计。
+
+### 7.1 C09-A 离线边界
+
+本子阶段只验证端口、HTTP 字段、错误映射、金额精度和 receipt 幂等性，不把 adapter 装配至 Worker、Control API 或 Studio，不触发 `BILLING_PENDING` 扣费流程。`NoopCreditAdapter` 必须显式返回本地计费禁用错误，不能返回伪造 debit 成功。真实 Token、HTTP transport、账户查询、票据交换和 debit 都留给独立授权的后续关卡。
 
 ## 8. 使用审计
 

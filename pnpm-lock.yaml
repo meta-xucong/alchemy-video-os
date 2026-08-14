@@ -147,6 +147,22 @@ importers:
         specifier: ^5.8.3
         version: 5.9.3
 
+  packages/credit-veyra:
+    dependencies:
+      '@alchemy-video/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+      tsx:
+        specifier: ^4.21.0
+        version: 4.23.12
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+
   packages/domain:
     dependencies:
       '@alchemy-video/contracts':
@@ -243,6 +259,22 @@ importers:
       bullmq:
         specifier: 6.1.0
         version: 6.1.0(ioredis@5.11.1)(pg@8.23.0)
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+      tsx:
+        specifier: ^4.21.0
+        version: 4.23.12
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+
+  tools/sub2api-video-certifier:
+    dependencies:
+      '@alchemy-video/provider-video':
+        specifier: workspace:*
+        version: link:../../packages/provider-video
     devDependencies:
       '@types/node':
         specifier: ^24.0.0

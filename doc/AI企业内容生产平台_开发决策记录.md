@@ -352,6 +352,58 @@
 | 选择原因 | 复用 C05/C06 的至少一次 delivery、duplicate 仍执行和启动恢复机制，避免创建没有消费者的 `RETRY_SCHEDULED` 状态；同时保持提交幂等边界和公开失败可见性。 |
 | 审计证据 | 离线 adapter 覆盖查询 `429/503` 的 typed retryable status；跨包回归覆盖首次查询短暂失败后 TaskRun 仍为 `PROVIDER_PROCESSING`、无失败事件、重试成功且 POST submit 只有一次。 |
 
+## ADR-0029：C08 Certifier 的单次提交和有界 GET-only 恢复
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-14 |
+| 影响章节 | C08；不改变 C06/C07 运行时、公开 API、数据库、队列或 capability registry |
+| 上下文 | C08 获得仅一个 `grok-imagine-video-1.5` 文生认证的受限授权：总 submit 上限为 `1`、总成本上限为 `USD 1.00`、固定最低成本输入为 `duration=1`、`resolution=480p`、`ratio=16:9`。此前文档同时要求“受控退出删除恢复状态”和“中断后恢复”，但没有定义可保存原始 request ID 的唯一例外。 |
+| 决策 | 新建独立 `tools/sub2api-video-certifier` workspace，复用 C07 `Sub2ApiVideoProvider` 与 injected `Sub2ApiTransport`。只有命令精确匹配 `--live --profile grok-imagine-video-1.5 --max-submissions 1 --budget-usd 1.00`，且附带 `--stop-after-submit` 或 `--resume` 时，certifier 才可读取 `SUB2API_VIDEO_BASE_URL` / `SUB2API_VIDEO_API_KEY`。它不读取其他 live 开关，也不装配到 Worker/API/Studio。唯一 POST 只允许在 `--stop-after-submit`：在网络 POST 前，certifier 必须在 `tools/sub2api-video-certifier/recovery/` 原子创建权限受限、无 raw ID 的 submission reservation；reservation、报告、regular recovery 或 active claim 任一存在都永久拒绝第二 POST，即使前次网络结果不明。提交成功后 raw request ID 只写入同目录的 recovery state，最大保留 `15` 分钟。`--resume` 用无 raw ID 的短 lease active claim 串行保护读取；可在 TTL 内多次显式恢复，但每次只执行 GET/poll/download，绝不 POST。 |
+| 安全与报告 | recovery state 只含 raw request ID 与非敏感 run metadata；submission reservation 与 active claim 只含版本、profile、owner ID 和时间，不含 raw ID。active claim 的 lease 为 60 秒，并在每次 GET/poll 前由当前 owner 续租；超时后的新 resume 可以接管，旧 owner 不能覆盖或删除新 claim。目录只向运行 certifier 的单一 OS 身份授予访问；状态不得写入其他临时目录、reports、日志、数据库、事件、fixture、浏览器或 Git。poll/download 的 retryable `429`/`503` 在同次 resume 内有界 GET-only 重试；仍未完成时释放 active claim、保留 regular recovery 至 TTL，后续显式 resume 仍只 GET。过期时无网络删除；成功、不可重试最终失败、超限和其他受控退出均删除 raw recovery，reservation 保留以证明 submit 已消耗。reports 仅含 case/profile/model、时间、安全字段名、request ID hash、归一化 `provider_state`（`PROCESSING`/`SUCCEEDED`/`FAILED`）、MIME/长度/SHA-256/ffprobe 与 redaction/cleanup 结论。若有 typed failure，只允许附带 `{ classification, code, stage, retryable }`，其中 classification 限定为 `REJECTED`、`UNAVAILABLE`、`PROTOCOL_DRIFT` 或 `DOWNLOAD_INVALID`。绝不含 message、prompt、URL、header、key、raw ID、上游 body、内容 URL、媒体或截图。 |
+| 官方成本依据 | 审计员于 2026-08-14 独立复核 [xAI 官方模型与定价文档](https://docs.x.ai/docs/models)：`grok-imagine-video-1.5` 支持文生、duration `1..15` 秒、480p `USD 0.08/秒`。该事实是本次授权参数的成本选择依据；C08 仅用它选择 `1s/480p` 并在本地以十进制 cents 验证 `USD 0.08 <= USD 1.00`。它不是 SUB2API 协议、字段或能力认证事实，不能据此猜测 SUB2API 的 status、ratio、响应或下载行为。A 段不联网重新抓取该来源。 |
+| 选择原因 | 用 CLI 显式参数和可测试的依赖注入同时守住预算、一次 POST 与恢复边界；将恢复所需的短暂敏感 ID 与长期 hash-only 审计报告分开，避免浏览器、平台运行时或 Git 获得真实 Provider 标识。 |
+| 审计证据 | injected fake transport 覆盖 guard 失败时零 env/fetch、提交前 reservation、写 recovery/report 失败与 active claim 后均零第二 POST、TTL 内多次 resume 仅 GET、retryable poll/download 的有界 GET-only 重试、预算/次数守卫、`REJECTED`/`UNAVAILABLE`/`PROTOCOL_DRIFT` 的白名单诊断、MIME/长度/SHA-256/ffprobe、hash-only 报告、raw ID 扫描、过期 recovery 删除和 source/upstream/static scan。 |
+
+## ADR-0030：C08 审计执行器不可用时的受限交接
+
+状态：ACCEPTED
+
+日期：2026-08-14
+
+影响章节：C08、C09
+
+上下文：C08 已完成受控的单次真实认证并进入 `READY_FOR_AUDIT`，但负责独立审计的 Codex 任务 `019ff6ad-255d-7582-9c96-797d6d4942d5` 的执行器异常退出，无法接收复审材料。用户明确要求继续推进，无需逐项重新授权。
+
+决策：当前执行器以只读复审确认 C08 的一次提交上限、GET-only 恢复、媒体校验、报告/快照脱敏、raw recovery 清理、profile disabled、无运行时装配及全仓门禁后，将 C08 标记为 `ACCEPTED`。该程序性替代不授权额外 Provider 提交、profile 启用、Veyra 请求、共享积分扣费或部署。
+
+选择原因：不伪造独立审计的存在，也不让已完成且有完整可复验证据的章节永久阻塞；将例外限制为 C08 的状态交接，并保持下一章节的所有外部边界关闭。
+
+影响：C09 可开始其离线 `CreditPort`、fake server、错误归一化、receipt 唯一性和状态机实现。任何真实 Veyra 换票、账户查询或 debit 仍要求后续单独的可执行认证方案和不含凭据的审计证据。
+
+迁移/回滚：不改变数据库、公开 API、Provider capability 或 feature flag。若后续独立审计发现 C08 证据不足，C08 退回 `IN_PROGRESS`，C09 仅保留不联网的测试与端口代码。
+
+审计证据：`C08` 审计记录、hash-only local report/capability snapshot、certifier `15/15`、根 contracts generate/typecheck/test/build、安全扫描和 long-running state 验证。
+
+## ADR-0031：C09-A 离线 CreditPort 与 receipt 边界
+
+状态：ACCEPTED
+
+日期：2026-08-14
+
+影响章节：C09
+
+上下文：C08 已受限验收，C09 首先只允许离线身份/共享积分基础。现有共享积分规范把 `401/403` 写为 `CREDIT_AUTH_FORBIDDEN`，但 `AGENTS.md` 与领域契约固定公开应用错误为 `AUTH_FORBIDDEN`。视频平台还需要保留外部 debit receipt 的 provider 维度，却不能复制 Sub2API 余额账本。
+
+决策：建立仅内部的 `CreditPort` DTO、`NoopCreditAdapter`、注入式 `VeyraCreditTransport` 与 `VeyraSub2ApiCreditAdapter`。`402 -> CREDIT_INSUFFICIENT`、`409 -> CREDIT_CONFLICT`、`401/403 -> AUTH_FORBIDDEN`、网络或 `5xx -> CREDIT_UNAVAILABLE`、其余 `4xx -> CREDIT_REJECTED`。金额在业务层保持八位以内的十进制字符串；向上游 number mapper 必须做无损 round-trip 和安全整数范围校验。
+
+receipt：`usage_records` 增加 `credit_provider`，唯一性固定为 `(credit_provider, idempotency_key)`；它是 receipt 镜像而不是余额账本。C09-A 只提供持久化准备和回放/冲突校验，不把 debit 接入 Worker 或状态转换。
+
+安全与边界：adapter 必须强制注入 transport；没有默认 fetch、base URL、环境读取、Token 读取或运行时装配。fake transport 只能用于离线测试，公共 OpenAPI/SSE/Studio 不导出 credit provider、外部用户或 receipt 字段。
+
+后续：`VeyraIdentityAdapter`、外部身份映射、真实 HTTP、Token、Worker billing orchestration、`BILLING_PENDING` 执行及 feature flag 仍属于后续 C09 受控子阶段，必须另有审计授权。
+
 ## 新决策模板
 
 ```text

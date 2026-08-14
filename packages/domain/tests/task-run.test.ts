@@ -7,6 +7,9 @@ import {
   assertProviderSubmitAllowed,
   assertResultAssetNotReplaced,
   assertTaskRunTransition,
+  assertUsageReceiptReplay,
+  createBillingDebitPlan,
+  createUsageReceipt,
   fingerprintRequest,
   isTerminalTaskRunStatus,
   resolveIdempotency,
@@ -135,5 +138,49 @@ test("the same idempotency request replays and a changed body conflicts", () => 
   assert.throws(
     () => resolveIdempotency(deduplication, fingerprintRequest({ name: "Different campaign" })),
     (error: unknown) => error instanceof DomainInvariantError && error.code === "IDEMPOTENCY_CONFLICT",
+  );
+});
+
+test("billing plans freeze debit inputs and receipt replay rejects a changed charge", () => {
+  const plan = createBillingDebitPlan({
+    taskRunId: state.id,
+    externalUserId: 42,
+    billingRule: {
+      creditProvider: "veyra_sub2api",
+      billingRuleKey: "video:mock-v1",
+      chargeAmount: "1.25000000",
+      source: "video:mock-v1",
+    },
+  });
+  assert.deepEqual(plan.debit, {
+    externalUserId: 42,
+    amount: "1.25000000",
+    idempotencyKey: `video:mock-v1:${state.id}`,
+    source: "video:mock-v1",
+    referenceId: state.id,
+  });
+
+  const receipt = createUsageReceipt(plan, {
+    externalUserId: 42,
+    amount: "1.25",
+    balanceAfter: "8.75",
+    idempotencyKey: plan.debit.idempotencyKey,
+    replayed: false,
+  });
+  assert.doesNotThrow(() => assertUsageReceiptReplay(receipt, { ...receipt, replayed: true }));
+  assert.throws(
+    () => assertUsageReceiptReplay(receipt, { ...receipt, source: "video:other" }),
+    (error: unknown) => error instanceof DomainInvariantError && error.code === "IDEMPOTENCY_CONFLICT",
+  );
+  assert.throws(
+    () =>
+      createUsageReceipt(plan, {
+        externalUserId: plan.debit.externalUserId,
+        amount: "1.5",
+        balanceAfter: "8.5",
+        idempotencyKey: plan.debit.idempotencyKey,
+        replayed: false,
+      }),
+    (error: unknown) => error instanceof DomainInvariantError && error.code === "BILLING_RECEIPT_INVALID",
   );
 });

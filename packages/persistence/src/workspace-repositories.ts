@@ -29,6 +29,12 @@ export const providerAttemptScope = (workspaceId: string, providerAttemptId: str
   and(eq(providerAttempts.workspaceId, workspaceId), eq(providerAttempts.id, providerAttemptId));
 export const usageRecordScope = (workspaceId: string, usageRecordId: string) =>
   and(eq(usageRecords.workspaceId, workspaceId), eq(usageRecords.id, usageRecordId));
+export const usageReceiptScope = (workspaceId: string, creditProvider: string, idempotencyKey: string) =>
+  and(
+    eq(usageRecords.workspaceId, workspaceId),
+    eq(usageRecords.creditProvider, creditProvider),
+    eq(usageRecords.idempotencyKey, idempotencyKey),
+  );
 export const outboxEventScope = (workspaceId: string, outboxEventId: string) =>
   and(eq(outboxEvents.workspaceId, workspaceId), eq(outboxEvents.id, outboxEventId));
 

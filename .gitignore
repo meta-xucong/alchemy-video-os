@@ -38,6 +38,12 @@ upstream/
 # Test and certification reports
 tools/**/reports/*
 !tools/**/reports/.gitkeep
+# C08 live-certifier recovery state. Raw provider request IDs must never enter Git.
+tools/sub2api-video-certifier/recovery/*
+!tools/sub2api-video-certifier/recovery/.gitkeep
+# C08 capability evidence is local-only; promotion remains an audited code change.
+tools/sub2api-video-certifier/capability-snapshots/*
+!tools/sub2api-video-certifier/capability-snapshots/.gitkeep
 test-results/
 playwright-report/
 

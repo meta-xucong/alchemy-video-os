@@ -463,6 +463,7 @@ components:
             - CREDIT_INSUFFICIENT
             - CREDIT_CONFLICT
             - CREDIT_UNAVAILABLE
+            - CREDIT_REJECTED
             - PROVIDER_UNAVAILABLE
             - PROVIDER_REJECTED
             - PROVIDER_PROTOCOL_INVALID
@@ -504,6 +505,7 @@ components:
                 - CREDIT_INSUFFICIENT
                 - CREDIT_CONFLICT
                 - CREDIT_UNAVAILABLE
+                - CREDIT_REJECTED
                 - PROVIDER_UNAVAILABLE
                 - PROVIDER_REJECTED
                 - PROVIDER_PROTOCOL_INVALID
