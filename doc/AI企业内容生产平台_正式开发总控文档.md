@@ -513,6 +513,12 @@ C09-A 只建立可替换的内部 `CreditPort`、`NoopCreditAdapter`、注入式
 
 本子阶段不装配 Worker、Control API 或 Studio，不新开公开 DTO、浏览器路由、队列消息或真实扣费。失败 envelope 的结构不变；为完整表达内部 Veyra mapper 的其他拒绝，既有应用错误码枚举可向后兼容地增加 `CREDIT_REJECTED`，但 C09-A 不新增会从公开路由产生该错误的运行时路径。`NoopCreditAdapter` 只表达本地 mock 的“计费不可用”，不得把 debit 伪装为成功；TaskRun 的既有状态图不在 C09-A 改动。`usage_records` 只作为外部扣费 receipt，需按 `(credit_provider, idempotency_key)` 唯一，不能成为余额账本。
 
+### 14.2.2 C09-B：三 VPS 联动设计阶段
+
+C09-B 当前只允许完成 `AI企业内容生产平台_C09-B三VPS联动设计.md` 与 ADR-0032 所定义的设计、来源和验收矩阵。Video OS 必须作为与 Sub2API/Veyra、Alchemy 平级的第三台 VPS；三方不得共享数据库、JSONL、Cookie/session、对象存储、队列、进程内状态或服务 secret。`video` intent/target、private overlay/service identity、无 query ticket POST handoff、local session、billing attempt/recovery、feature flags 和 rollout/rollback 都是后续受控实现，不在本子阶段写代码或调用外部系统。
+
+在用户明确授权测试用户、ticket/debit 次数、额度上限、素材、网络/VPS/DNS/TLS 变更和维护窗口前，禁止读取凭据、真实 ticket exchange/account/debit、Provider 调用、SSH、部署或任何 flag 启用。
+
 ### 14.3 Exit Gate
 
 通过一次成功扣费、同 key 回放、同 key 冲突、余额不足、Token 错误、服务暂时不可用、Worker 崩溃恢复和 usage 唯一性测试后，才能打开真实 Veyra feature flag。

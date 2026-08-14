@@ -404,6 +404,26 @@ receipt：`usage_records` 增加 `credit_provider`，唯一性固定为 `(credit
 
 后续：`VeyraIdentityAdapter`、外部身份映射、真实 HTTP、Token、Worker billing orchestration、`BILLING_PENDING` 执行及 feature flag 仍属于后续 C09 受控子阶段，必须另有审计授权。
 
+## ADR-0032：C09-B 三 VPS Veyra 联动与无 Query Ticket Handoff
+
+状态：PROPOSED
+
+日期：2026-08-14
+
+影响章节：C09、部署阶段
+
+上下文：Sub2API/Veyra、Alchemy 和未来 Video OS 是平级 VPS。既有 Veyra Portal 与本地补充方案使用 `?ticket=` 启动 Alchemy，但 AGENTS.md 禁止 ticket 位于 URL query、浏览器持久化或日志。Sub2API 现有 intent/Portal target 也尚无 `video`。
+
+决策：Video 作为第三台独立 VPS，拥有自己的 `video.aiself.vip` TLS edge、Video 数据库/Redis/对象存储、host-only 本地会话、服务身份和 private overlay。Sub2API 保留身份、余额、并发、ticket、原子 debit 与幂等的唯一权威；Alchemy 继续独立运行。未来 Portal 以 allowlisted `video` intent 签发一次性 ticket，并通过顶层 POST body handoff 交给 Video callback；Video 服务端交换 ticket、验证 `intent=video`、账户状态并签发 `__Host-video_session`，随后 303 到无 query 页面。未来 billing 使用冻结规则和 `billing_rule_key + task_run_id`，在产物验证后 debit，并以专用 billing attempt/recovery 保证 remote-success/local-crash 后仅 replay debit。
+
+选择原因：保持三个产品的会话、数据库和资产独立，满足浏览器不接触 Veyra/internal 数据的硬边界，并让跨 VPS 的远端 side effect 能通过 Veyra 幂等键恢复。
+
+影响：需要 Sub2API 增加 video intent/target、durable ticket 消费和 Video 专用可轮换服务身份；Video 需要 identity/session/billing attempts/feature flag/Worker 恢复；Alchemy 只需回归确认既有 target 与 billing 不受 Portal 变更影响。详情见 `AI企业内容生产平台_C09-B三VPS联动设计.md`。
+
+迁移/回滚：本 ADR 仅为设计，不产生运行时或数据库变更。未来迁移必须前向执行，回滚先关闭 Video identity/credit flag，再保持 billing attempt 和 receipt 供同 key replay，不得影响 Sub2API ledger 或 Alchemy。
+
+审计证据：Sub2API `intent.go`、`ticket.go`、`routes.go`、`billing.go`/tests；Alchemy `veyra_auth.py`、`generation.py`；Video C09-A CreditPort/receipt tests；三 VPS implementation/release/rollback/acceptance matrix。
+
 ## 新决策模板
 
 ```text

@@ -18,8 +18,8 @@
 | C05 | Outbox、Queue 和 Worker | `ACCEPTED` | C02/C04 | 2026-08-13 | 2026-08-13 | 审计员已独立复验并完成 `c05-accepted` 远端备份；`origin/main` 与 tag peeled ref 指向 `da788e085ebd2fba019a3fbdadd3c0636b809be4`。 |
 | C06 | Mock 视频生成闭环 | `ACCEPTED` | C05 | 2026-08-13 | 2026-08-14 | 审计员已独立复跑共享锁、Worker、Studio E2E、根门禁、数据库迁移与本地基础设施健康检查；`origin/main` 与 `c06-accepted^{}` 已复核为 `1e192c71cfda4636ef457eadc50ad4acafc895b3`。 |
 | C07 | SUB2API 离线 Adapter | `ACCEPTED` | C06 | 2026-08-14 | 2026-08-14 | `origin/main` 与 `c07-accepted^{}` 已独立复核为 `41d414cf1b6767c39f251445278831328e1620cf`；保持离线、disabled-only 边界 |
-| C08 | 真实 Provider 能力认证 | `IN_PROGRESS` | C07 | 2026-08-14 |  | A 段离线 certifier/guard/recovery/report 实现与验证中；仅授权 Grok 文生单 submit，尚未允许读取安全环境或真实请求 |
-| C09 | Veyra 身份和共享积分 | `PENDING` | C08 |  |  |  |
+| C08 | 真实 Provider 能力认证 | `ACCEPTED` | C07 | 2026-08-14 | 2026-08-14 | ADR-0030 受限认证已完成并复核；真实 profile 继续保持 disabled，未授权运行时装配或部署 |
+| C09 | Veyra 身份和共享积分 | `IN_PROGRESS` | C08 | 2026-08-14 |  | C09-A 离线基础已通过独立复核；C09-B 正在完成三 VPS 联动设计，不得进行真实 Veyra、扣费或运行时接线 |
 | C10 | MarkItDown 企业资料链路 | `PENDING` | C06 |  |  |  |
 | C11 | Prompt、Script、Storyboard | `PENDING` | C10 |  |  |  |
 | C12 | OpenMontage、QC、成片 | `PENDING` | C11/C06 |  |  |  |
@@ -539,13 +539,15 @@ Exit Gate 结论：提交、同一 request 的轮询/下载、MIME、SHA-256 和
 
 当前结论：C09-A 实现和离线门禁已完成，但本章保持 `IN_PROGRESS`，等待本轮证据复审后才可提交 `READY_FOR_AUDIT`。不得自行接受、Git 写入或启动 C10。
 
+C09-B 设计中（2026-08-14）：已完成本轮 `doc/AI企业内容生产平台_C09-B三VPS联动设计.md` 与 ADR-0032，固定 Sub2API/Veyra、Alchemy、Video OS 为三台平级 VPS，并记录各自 TLS/反代、private overlay、host-only session、ticket handoff、CreditPort、billing attempt/recovery、feature flag、发布/回滚、指标和验收边界。设计以 AGENTS.md 的禁止 query ticket 规则为准，未来 Portal 到 Video 使用一次性 POST body handoff，不能沿用旧文档的 `?ticket=`。本轮只读取本机 Sub2API `intent.go`、`ticket.go`、`routes.go`、`billing.go` 与 Alchemy `veyra_auth.py`、`generation.py`；没有读取凭据、访问网络、SSH/VPS、修改 DNS/TLS/部署或装配代码。
+
 审计复核（2026-08-14）：C09-A 的独立代码审查确认 `credit-veyra` 只依赖 Contracts，transport 强制注入，未发现默认 HTTP、环境读取或 API/Worker/Studio 装配；公开契约继续排除 credit provider、external user ID 和余额字段。独立复跑 contracts `22/22`、domain `8/8`、credit-veyra `6/6`、本地 PostgreSQL persistence `14/14`，以及根 `pnpm typecheck`、带本地 PostgreSQL 的根 `pnpm test` 和根 `pnpm build`，全部通过。根测试只保留 7 个既有服务条件 skip；构建只有既有 Nuxt `DEP0155` warning。C09-A 的离线 Exit Gate 通过，但整章仍为 `IN_PROGRESS`：正式 C09 Exit Gate 还要求受控的真实 Veyra 账户、debit、恢复和 feature-flag 证据，当前不得自行执行这些外部动作。
 
 风险：上游真实 Veyra 的 Token、`video` intent 和账户/扣费响应仍未认证；本章 A 段不得用离线 contract 假设替代真实权限或扣费验证。
 
 审计人：Codex（主线执行）
 
-Exit Gate 结论：`IN_PROGRESS`（C09-A 离线基础已通过审计；C09-B 的真实 Veyra 验证仍未开始）。
+Exit Gate 结论：`IN_PROGRESS`（C09-A 离线基础已通过审计；C09-B 正处于设计阶段，真实 Veyra 验证仍未开始）。
 
 每章完成时追加：
 

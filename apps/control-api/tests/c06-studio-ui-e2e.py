@@ -11,7 +11,7 @@ SHOT_PROMPT = "A deterministic local video generation shot."
 
 
 def video_dimensions(page) -> dict[str, object]:
-    return page.locator(".asset-item video").last.evaluate(
+    return page.get_by_role("dialog").locator("video").evaluate(
         """video => new Promise((resolve) => {
           const finish = () => resolve({
             src: video.currentSrc,
@@ -44,6 +44,8 @@ def install_command_uuid_seed(page, seed: str) -> str:
 
 
 def create_project_and_failed_generation(page, fixture: Path, project_name: str) -> dict[str, object]:
+    page.get_by_role("button", name="Refresh workbench", exact=True).click()
+    page.get_by_text("Control API is available", exact=True).wait_for(timeout=30_000)
     page.get_by_label("New project", exact=True).fill(project_name)
     page.get_by_role("button", name="Create project", exact=True).click()
     project_tab = page.get_by_role("tab", name=project_name, exact=True)
@@ -76,6 +78,7 @@ def create_project_and_failed_generation(page, fixture: Path, project_name: str)
     retry.wait_for(timeout=30_000)
     if not retry.is_enabled():
         raise AssertionError("Studio rendered a failed TaskRun but did not enable its retry command.")
+    page.locator(".run-activity").get_by_text("task_run.failed", exact=True).wait_for(timeout=30_000)
     return {"failure_text": failure_text}
 
 
@@ -99,13 +102,17 @@ def retry_failed_generation(page, project_name: str) -> dict[str, object]:
     shot = page.locator(".shot-item").filter(has_text=SHOT_PROMPT)
     shot.locator(".task-status.succeeded").wait_for(timeout=30_000)
     shot.get_by_title("Preview generated video", exact=True).click()
-    preview = page.locator(".asset-item video").last
+    preview_dialog = page.get_by_role("dialog")
+    preview_dialog.wait_for(state="visible", timeout=30_000)
+    preview = preview_dialog.locator("video")
     preview.wait_for(state="visible", timeout=30_000)
     dimensions = video_dimensions(page)
     if dimensions["video_width"] <= 0 or dimensions["video_height"] <= 0:
         raise AssertionError(f"Studio Preview generated video did not decode a video frame: {dimensions}")
     if not dimensions["duration"] or dimensions["duration"] <= 0:
         raise AssertionError(f"Studio Preview generated video has no duration: {dimensions}")
+    preview_dialog.get_by_role("button", name="Close preview", exact=True).click()
+    preview_dialog.wait_for(state="hidden", timeout=30_000)
     return dimensions
 
 
