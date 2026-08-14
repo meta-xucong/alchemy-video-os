@@ -7,7 +7,7 @@ from playwright.sync_api import sync_playwright
 
 
 RESULT_PREFIX = "C06_STUDIO_UI_E2E_RESULT="
-SHOT_PROMPT = "A deterministic local video generation shot."
+SHOT_PROMPT = "一个可确定性生成的本地视频分镜。"
 
 
 def video_dimensions(page) -> dict[str, object]:
@@ -44,41 +44,45 @@ def install_command_uuid_seed(page, seed: str) -> str:
 
 
 def create_project_and_failed_generation(page, fixture: Path, project_name: str) -> dict[str, object]:
-    page.get_by_role("button", name="Refresh workbench", exact=True).click()
-    page.get_by_text("Control API is available", exact=True).wait_for(timeout=30_000)
-    page.get_by_label("New project", exact=True).fill(project_name)
-    page.get_by_role("button", name="Create project", exact=True).click()
+    page.get_by_role("button", name="刷新工作台", exact=True).click()
+    page.get_by_text("控制 API 正常", exact=True).wait_for(timeout=30_000)
+    page.get_by_label("新建项目", exact=True).fill(project_name)
+    page.get_by_role("button", name="创建项目", exact=True).click()
     project_tab = page.get_by_role("tab", name=project_name, exact=True)
     project_tab.wait_for(timeout=30_000)
 
     page.locator("#asset-file").set_input_files(str(fixture))
-    page.get_by_role("button", name="Upload", exact=True).click()
-    page.get_by_text(fixture.name, exact=True).wait_for(timeout=30_000)
+    page.get_by_role("button", name="上传", exact=True).click()
+    page.locator(".asset-item, .field-error").first.wait_for(timeout=30_000)
+    upload_error = page.locator(".field-error")
+    if upload_error.count() and upload_error.is_visible():
+        raise AssertionError(f"Studio 未能确认参考图片：{upload_error.inner_text()}")
     asset_row = page.locator(".asset-item").filter(has_text=fixture.name)
-    if "READY" not in asset_row.inner_text():
-        raise AssertionError("Studio did not render the uploaded reference image as READY.")
+    asset_row.wait_for(timeout=30_000)
+    if "已就绪" not in asset_row.inner_text():
+        raise AssertionError("Studio 未将已上传的参考图片显示为已就绪。")
 
-    page.get_by_label("Shot brief", exact=True).fill(SHOT_PROMPT)
-    page.get_by_role("button", name="Create shot", exact=True).click()
+    page.get_by_label("分镜描述", exact=True).fill(SHOT_PROMPT)
+    page.get_by_role("button", name="创建分镜", exact=True).click()
     shot = page.locator(".shot-item").filter(has_text=SHOT_PROMPT)
     shot.wait_for(timeout=30_000)
-    shot.get_by_title("Mark shot ready", exact=True).click()
-    generate = shot.get_by_title("Generate mock video", exact=True)
+    shot.get_by_title("标记为可生成", exact=True).click()
+    generate = shot.get_by_title("生成本地 Mock 视频", exact=True)
     generate.wait_for(timeout=30_000)
     generate.click()
 
     failed_status = shot.locator(".task-status.failed")
     failed_status.wait_for(timeout=60_000)
     failure_text = failed_status.inner_text()
-    if "FAILED" not in failure_text:
-        raise AssertionError(f"Studio did not render a failed TaskRun status: {failure_text}")
-    if "Mock video generation was configured to fail." not in failure_text:
-        raise AssertionError(f"Studio did not render the public Mock failure message: {failure_text}")
-    retry = shot.get_by_title("Retry failed task", exact=True)
+    if "失败" not in failure_text:
+        raise AssertionError(f"Studio 未显示失败的任务状态：{failure_text}")
+    if "视频生成请求未被接受，请检查分镜后重试。" not in failure_text:
+        raise AssertionError(f"Studio 未显示公开的失败提示：{failure_text}")
+    retry = shot.get_by_title("重试失败任务", exact=True)
     retry.wait_for(timeout=30_000)
     if not retry.is_enabled():
-        raise AssertionError("Studio rendered a failed TaskRun but did not enable its retry command.")
-    page.locator(".run-activity").get_by_text("task_run.failed", exact=True).wait_for(timeout=30_000)
+        raise AssertionError("Studio 显示失败任务后没有启用重试命令。")
+    page.locator(".run-activity").get_by_text("任务失败", exact=True).wait_for(timeout=30_000)
     return {"failure_text": failure_text}
 
 
@@ -90,7 +94,7 @@ def retry_failed_generation(page, project_name: str) -> dict[str, object]:
     shot.wait_for(timeout=30_000)
     failed_status = shot.locator(".task-status.failed")
     failed_status.wait_for(timeout=30_000)
-    retry = shot.get_by_title("Retry failed task", exact=True)
+    retry = shot.get_by_title("重试失败任务", exact=True)
     retry.wait_for(timeout=30_000)
     retry.click()
     shot.locator(".task-status.succeeded").wait_for(timeout=60_000)
@@ -101,17 +105,17 @@ def retry_failed_generation(page, project_name: str) -> dict[str, object]:
     project_tab.click()
     shot = page.locator(".shot-item").filter(has_text=SHOT_PROMPT)
     shot.locator(".task-status.succeeded").wait_for(timeout=30_000)
-    shot.get_by_title("Preview generated video", exact=True).click()
+    shot.get_by_title("预览生成视频", exact=True).click()
     preview_dialog = page.get_by_role("dialog")
     preview_dialog.wait_for(state="visible", timeout=30_000)
     preview = preview_dialog.locator("video")
     preview.wait_for(state="visible", timeout=30_000)
     dimensions = video_dimensions(page)
     if dimensions["video_width"] <= 0 or dimensions["video_height"] <= 0:
-        raise AssertionError(f"Studio Preview generated video did not decode a video frame: {dimensions}")
+        raise AssertionError(f"Studio 预览视频未能解码画面：{dimensions}")
     if not dimensions["duration"] or dimensions["duration"] <= 0:
-        raise AssertionError(f"Studio Preview generated video has no duration: {dimensions}")
-    preview_dialog.get_by_role("button", name="Close preview", exact=True).click()
+        raise AssertionError(f"Studio 预览视频没有时长：{dimensions}")
+    preview_dialog.get_by_role("button", name="关闭预览", exact=True).click()
     preview_dialog.wait_for(state="hidden", timeout=30_000)
     return dimensions
 
@@ -137,7 +141,7 @@ def main() -> int:
                 page = browser.new_page()
                 command_seed_prefix = install_command_uuid_seed(page, args.command_seed)
                 page.goto(args.studio_origin, wait_until="domcontentloaded")
-                page.get_by_text("Control API is available", exact=True).wait_for(timeout=30_000)
+                page.get_by_text("控制 API 正常", exact=True).wait_for(timeout=30_000)
                 if args.mode == "failure":
                     failure = create_project_and_failed_generation(page, fixture, args.project_name)
                     result = {

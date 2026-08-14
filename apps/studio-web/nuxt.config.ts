@@ -10,7 +10,7 @@ export default defineNuxtConfig({
   },
   app: {
     head: {
-      title: "AI Enterprise Content Platform",
+      title: "AI 企业内容生产平台",
       meta: [{ name: "viewport", content: "width=device-width, initial-scale=1" }]
     }
   },

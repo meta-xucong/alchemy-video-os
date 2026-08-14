@@ -9,13 +9,13 @@ test("Studio presents an operator workbench with accessible local-MVP controls",
   const page = read("app/pages/index.vue");
 
   for (const label of [
-    "Create project",
-    "Upload reference",
-    "Create shot",
-    "Mark shot ready",
-    "Generate mock video",
-    "Retry failed task",
-    "Close preview",
+    "创建项目",
+    "上传参考图",
+    "创建分镜",
+    "标记为可生成",
+    "生成本地 Mock 视频",
+    "重试失败任务",
+    "关闭预览",
   ]) {
     assert.match(page, new RegExp(label));
   }
@@ -30,6 +30,9 @@ test("Studio presents an operator workbench with accessible local-MVP controls",
   assert.match(page, /SSE/);
   assert.match(page, /closePreview/);
   assert.match(page, /cancelShotEdit/);
+  assert.match(page, /localWorkspaceLabel/);
+  assert.match(page, /localIdentityLabel/);
+  assert.doesNotMatch(page, /Create project|Generate mock video|Retry failed task|Preview generated video/);
 });
 
 test("Studio workbench retains only public Control API and safe browser state", () => {
@@ -46,6 +49,10 @@ test("Studio workbench retains only public Control API and safe browser state", 
 test("Studio CSS defines stable desktop columns and single-column mobile recovery", () => {
   const styles = read("app/assets/studio.css");
 
+  assert.match(styles, /--black-soft:\s*#f3f0ea/);
+  assert.match(styles, /--brass:\s*#9a7535/);
+  assert.match(styles, /border-radius:\s*(?:5|6|8)px/);
+  assert.match(styles, /backdrop-filter:\s*blur\(20px\)/);
   assert.match(styles, /\.workbench-columns/);
   assert.match(styles, /grid-template-columns:\s*220px/);
   assert.match(styles, /@media \(max-width: 760px\)/);

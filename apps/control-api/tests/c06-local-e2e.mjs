@@ -16,8 +16,12 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const controlApiRoot = resolve(repoRoot, "apps", "control-api");
 const taskWorkerRoot = resolve(repoRoot, "apps", "task-worker");
 const studioWebRoot = resolve(repoRoot, "apps", "studio-web");
-const apiOrigin = "http://127.0.0.1:3032";
-const studioOrigin = "http://127.0.0.1:3031";
+const controlApiPort = Number(process.env.C06_E2E_CONTROL_API_PORT ?? "3032");
+const studioPort = Number(process.env.C06_E2E_STUDIO_PORT ?? "3031");
+if (!Number.isInteger(controlApiPort) || controlApiPort < 1 || controlApiPort > 65_535) throw new Error("C06_E2E_CONTROL_API_PORT must be a valid port.");
+if (!Number.isInteger(studioPort) || studioPort < 1 || studioPort > 65_535) throw new Error("C06_E2E_STUDIO_PORT must be a valid port.");
+const apiOrigin = `http://127.0.0.1:${controlApiPort}`;
+const studioOrigin = `http://127.0.0.1:${studioPort}`;
 const databaseUrl = "postgresql://video_local:video_local@127.0.0.1:15432/video_local";
 const redisUrl = "redis://127.0.0.1:6380";
 const storageConfig = {
@@ -48,13 +52,13 @@ const waitForPortsReleased = async () => {
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     try {
-      await Promise.all([assertPortAvailable(3031), assertPortAvailable(3032)]);
+      await Promise.all([assertPortAvailable(studioPort), assertPortAvailable(controlApiPort)]);
       return;
     } catch {
       await sleep(250);
     }
   }
-  throw new Error("C06 E2E did not release 3031/3032 during cleanup.");
+  throw new Error(`C06 E2E did not release ${studioPort}/${controlApiPort} during cleanup.`);
 };
 
 const pnpmCommand = (args) => process.platform === "win32"
@@ -259,7 +263,7 @@ const run = async () => {
   const successfulDeadLetterQueueName = `${successfulQueueName}-dead-letter`;
   const environment = {
     ...process.env,
-    CONTROL_API_PORT: "3032",
+    CONTROL_API_PORT: String(controlApiPort),
     CONTROL_API_ORIGIN: apiOrigin,
     DATABASE_URL: databaseUrl,
     REDIS_URL: redisUrl,
@@ -273,7 +277,7 @@ const run = async () => {
     VEYRA_AUTH_ENABLED: "false",
     PYTHONDONTWRITEBYTECODE: "1",
     HOST: "127.0.0.1",
-    PORT: "3031",
+    PORT: String(studioPort),
   };
   const workerEnvironment = (queueName, deadLetterQueueName, outcome) => ({
     ...environment,
@@ -297,7 +301,7 @@ const run = async () => {
   let isolation;
 
   try {
-    await Promise.all([assertPortAvailable(3031), assertPortAvailable(3032)]);
+    await Promise.all([assertPortAvailable(studioPort), assertPortAvailable(controlApiPort)]);
     isolation = await acquireC06E2EIsolation(databaseUrl);
     const migrate = pnpmCommand(["--filter", "@alchemy-video/persistence", "db:migrate"]);
     requireSuccess(spawnSync(migrate.command, migrate.args, { cwd: repoRoot, env: environment, stdio: "ignore", windowsHide: true }), "C06 E2E database migration");
@@ -319,7 +323,7 @@ const run = async () => {
 
     const failedResult = runStudioUiTest({ mode: "failure", projectName, commandSeed: suffix, environment });
     assert.equal(failedResult.retry_control_visible, true, "C06 failure E2E did not expose the Studio retry command.");
-    assert.match(failedResult.failure_text, /Mock video generation was configured to fail\./, "C06 failure E2E did not expose the public failure message.");
+    assert.match(failedResult.failure_text, /视频生成请求未被接受，请检查分镜后重试。/, "C06 failure E2E did not expose the public failure message.");
     assert.equal(failedResult.command_seed_prefix, commandSeedPrefix, "C06 failure E2E did not install its isolated command seed.");
     const failedTaskRun = await taskRunProviderRecord(projectName);
     assert.equal(failedTaskRun.status, "FAILED", "C06 failure E2E did not persist a public failure state.");

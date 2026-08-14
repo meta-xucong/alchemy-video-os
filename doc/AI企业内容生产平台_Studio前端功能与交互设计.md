@@ -20,6 +20,24 @@ Studio 首屏是可直接完成工作的企业视频工作台，而不是介绍�
 
 Studio 保留既有 Huobao Nuxt 3 布局、`useControlApi.ts`、`useAssetMedia.ts`、相对 `/api/v1` proxy 与 Lucide 图标。不得复制 Alchemy 的身份、Cookie、`app.js` 全局状态、Provider 路由、生成参数、JSONL、资产路径、账本、运行时或静态视觉素材。
 
+### 2.1 中文术语与严格视觉映射
+
+Studio 的产品可见文案、按钮文本、表单标签、空态、错误提示、`title`、`aria-label` 和 `aria-labelledby` 统一使用自然中文；API 字段、状态枚举、CSS class、DOM `id`、测试 `data` selector 保持不变。状态枚举只在中文界面层转换，不修改 Control API 语义。
+
+本地 `Default Workspace` 与 `Local Developer` 仅作为 Dev Identity 的 API 值保留；Studio 呈现层分别显示为“本地工作区”和“本地开发者”。非本地身份显示服务端提供的已授权名称，不做翻译或改写。
+
+| Alchemy 静态工作台模式 | Studio 中文落地 | 约束 |
+| --- | --- | --- |
+| `lux-header` 品牌栏、`brand-lockup`、模块标签 | `app-header`、`brand`、`Local MVP` 改为“AI 企业内容生产平台 / 本地工作台” | 保持紧凑高度、左右状态分布，不复制源 HTML |
+| `#f3f0ea` 工作区背景、`#fffdfa` 纸白工具面与暖灰细边 | Studio 同步浅暖灰背景、纸白 `surface-panel`、`rgba(36,30,24,.13)` 边框 | 低对比度、无渐变、圆角不超过 `8px` |
+| 低圆角按钮、深墨主动作、黄铜辅助提示、绿/蓝/红状态信息 | `.command-button` 深墨主动作，`.secondary-button` 纸白中性动作，`.task-status`/chip 使用黄铜、绿、蓝、红状态色 | 颜色只表达动作和状态，不装饰业务信息 |
+| 紧凑 eyebrow、标题、辅助说明三级节奏 | 中文 eyebrow、工作台标题、面板标题和 `field-hint` 保持同一字号层级 | 不使用营销式 hero，不放大标题占满首屏 |
+| 左侧模块导航、中央创作面、右侧上下文面板 | 项目导航、分镜工作台、资产库/运行活动三列 | 保留现有 `.workbench-columns` 和响应式断点 |
+| 空态带图标、短说明和下一步操作 | “还没有项目”“暂无分镜”“上传并确认参考图”等中文空态 | 空态必须说明下一步，不伪造数据 |
+| `publicSafeErrorText` 与状态通知 | `safeErrorMessage` 的中文公共错误 fallback | 不展示 Provider 原文、签名 URL、对象 key 或内部字段 |
+
+视觉适配仅吸收上述布局、间距、颜色、圆角、状态和互动节奏；不复制 Alchemy 的认证、Cookie、Provider、账本、JSONL、全局状态、端点或业务 JavaScript。
+
 ## 3. 信息架构
 
 ### 3.1 桌面布局

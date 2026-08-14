@@ -32,7 +32,7 @@ test("studio health screen uses the public control API boundary", () => {
 
   assert.match(composable, /\$fetch<HealthStatus>\("\/api\/v1\/health"\)/);
   assert.match(page, /useControlApi/);
-  assert.match(page, /Refresh workbench/);
+  assert.match(page, /刷新工作台/);
 });
 
 test("studio C03-C06 surfaces stay on the public control API boundary", () => {
@@ -48,16 +48,16 @@ test("studio C03-C06 surfaces stay on the public control API boundary", () => {
   assert.match(composable, /\/shots/);
   assert.match(composable, /Idempotency-Key/);
   assert.match(page, /currentIdentity/);
-  assert.match(page, /Create project/);
-  assert.match(page, /Choose reference image/);
+  assert.match(page, /创建项目/);
+  assert.match(page, /选择参考图片/);
   assert.match(page, /confirmAssetUpload/);
   assert.match(page, /createShot/);
   assert.match(page, /updateShot/);
   assert.match(page, /createGeneration/);
   assert.match(page, /retryTaskRun/);
   assert.match(page, /new EventSource\(`\/api\/v1\/events/);
-  assert.match(page, /Generate mock video/);
-  assert.match(page, /Preview generated video/);
+  assert.match(page, /生成本地 Mock 视频/);
+  assert.match(page, /预览生成视频/);
   assert.match(page, /fetch\(request\.data\.upload_url/);
   assert.match(assetMedia, /thumbFallback/);
   assert.doesNotMatch(composable, /\/internal\//);
