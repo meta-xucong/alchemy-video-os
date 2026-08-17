@@ -502,6 +502,48 @@ const mediaMessageMatchesEvent = (message: InternalMediaRuntimeQueueMessage, eve
     && event.data.production_run_id === message.production_run_id;
 };
 
+const referenceImageMimeTypes = ["image/jpeg", "image/png", "image/webp"] as const;
+type ReferenceImageMimeType = (typeof referenceImageMimeTypes)[number];
+type ReadyReferenceImageAsset = typeof assets.$inferSelect & { sha256: string; mimeType: ReferenceImageMimeType };
+
+const isReferenceImageMimeType = (value: string | null): value is ReferenceImageMimeType =>
+  referenceImageMimeTypes.includes(value as ReferenceImageMimeType);
+
+const uniqueIds = (ids: string[]) => [...new Set(ids)];
+
+const readyReferenceImageAssets = async (transaction: QueryExecutor, input: {
+  workspaceId: string;
+  projectId: string;
+  assetIds: string[];
+  origin: "USER_UPLOAD" | "DERIVED";
+}) => {
+  const orderedIds = uniqueIds(input.assetIds);
+  if (orderedIds.length === 0) return [] as ReadyReferenceImageAsset[];
+  const rows = await transaction
+    .select()
+    .from(assets)
+    .where(and(
+      eq(assets.workspaceId, input.workspaceId),
+      eq(assets.projectId, input.projectId),
+      eq(assets.status, "READY"),
+      eq(assets.kind, "IMAGE"),
+      eq(assets.origin, input.origin),
+      inArray(assets.id, orderedIds),
+    ));
+  const byId = new Map(rows.map((asset) => [asset.id, asset]));
+  return orderedIds
+    .map((id) => byId.get(id))
+    .filter((asset): asset is ReadyReferenceImageAsset =>
+      Boolean(asset?.sha256 && isReferenceImageMimeType(asset.mimeType)));
+};
+
+const visualReference = (asset: ReadyReferenceImageAsset, position: number) => ({
+  asset_id: asset.id,
+  sha256: asset.sha256,
+  mime_type: asset.mimeType,
+  position,
+});
+
 const initialVisualInput = async (transaction: QueryExecutor, input: {
   workspaceId: string;
   projectId: string;
@@ -513,39 +555,49 @@ const initialVisualInput = async (transaction: QueryExecutor, input: {
   if (input.shotSpec.referencePolicy === "TEXT_TRANSITION") {
     return { kind: "READY" as const, references: [] as Array<{ assetId: string; role: "STYLE" | "FIRST_FRAME"; position: number }>, visualInput: { mode: "TEXT" as const, references: [] as [] } };
   }
-  const referenceIds = input.shotSpec.referencePolicy === "REFERENCE_SET"
-    ? input.sourceAssetIds
-    : input.dependencySegments
-      .filter((segment) => input.shotSpec.dependsOnSequences.includes(segment.sequence))
-      .sort((left, right) => right.sequence - left.sequence)
-      .slice(0, 1)
-      .map((segment) => segment.handoffAssetId)
-      .filter((assetId): assetId is string => Boolean(assetId));
-  if (referenceIds.length === 0 || referenceIds.length > 7) {
-    return { kind: "WAITING" as const, reasonCode: "REFERENCE_POLICY_UNSATISFIED" as const, safeSummary: "等待可用的参考素材后继续制作。" };
-  }
-  const found = await transaction
-    .select()
-    .from(assets)
-    .where(and(
-      eq(assets.workspaceId, input.workspaceId),
-      eq(assets.projectId, input.projectId),
-      eq(assets.status, "READY"),
-      eq(assets.kind, "IMAGE"),
-      inArray(assets.id, referenceIds),
-    ));
-  if (found.length !== new Set(referenceIds).size || found.some((asset) => !asset.sha256 || !asset.mimeType || !["image/jpeg", "image/png", "image/webp"].includes(asset.mimeType))) {
-    return { kind: "WAITING" as const, reasonCode: "REFERENCE_POLICY_UNSATISFIED" as const, safeSummary: "参考素材尚未满足本段制作条件。" };
-  }
-  const ordered = referenceIds.map((id) => found.find((asset) => asset.id === id)!);
-  if (input.shotSpec.referencePolicy === "HANDOFF_FIRST_FRAME") {
-    const asset = ordered[0]!;
+  const sourceImages = (await readyReferenceImageAssets(transaction, {
+    workspaceId: input.workspaceId,
+    projectId: input.projectId,
+    assetIds: input.sourceAssetIds,
+    origin: "USER_UPLOAD",
+  })).slice(0, 7);
+  if (input.shotSpec.referencePolicy === "REFERENCE_SET") {
+    if (sourceImages.length === 0) {
+      return { kind: "WAITING" as const, reasonCode: "REFERENCE_POLICY_UNSATISFIED" as const, safeSummary: "等待可用的参考素材后继续制作。" };
+    }
     return {
       kind: "READY" as const,
-      references: [{ assetId: asset.id, role: "FIRST_FRAME" as const, position: 0 }],
+      references: sourceImages.map((asset, position) => ({ assetId: asset.id, role: "STYLE" as const, position })),
+      visualInput: {
+        mode: "REFERENCE_SET" as const,
+        references: sourceImages.map(visualReference),
+      },
+    };
+  }
+
+  const handoffAssetIds = input.dependencySegments
+    .filter((segment) => input.shotSpec.dependsOnSequences.includes(segment.sequence))
+    .sort((left, right) => right.sequence - left.sequence)
+    .slice(0, 1)
+    .map((segment) => segment.handoffAssetId)
+    .filter((assetId): assetId is string => Boolean(assetId));
+  const [handoffAsset] = await readyReferenceImageAssets(transaction, {
+    workspaceId: input.workspaceId,
+    projectId: input.projectId,
+    assetIds: handoffAssetIds,
+    origin: "DERIVED",
+  });
+  if (!handoffAsset) {
+    return { kind: "WAITING" as const, reasonCode: "REFERENCE_POLICY_UNSATISFIED" as const, safeSummary: "等待前一段交接帧通过检查后继续制作。" };
+  }
+  const ordered = [handoffAsset, ...sourceImages.filter((asset) => asset.id !== handoffAsset.id).slice(0, 6)];
+  if (ordered.length === 1) {
+    return {
+      kind: "READY" as const,
+      references: [{ assetId: handoffAsset.id, role: "FIRST_FRAME" as const, position: 0 }],
       visualInput: {
         mode: "FIRST_FRAME" as const,
-        references: [{ asset_id: asset.id, sha256: asset.sha256!, mime_type: asset.mimeType as "image/jpeg" | "image/png" | "image/webp", position: 0 }] as [{
+        references: [visualReference(handoffAsset, 0)] as [{
           asset_id: string;
           sha256: string;
           mime_type: "image/jpeg" | "image/png" | "image/webp";
@@ -556,10 +608,14 @@ const initialVisualInput = async (transaction: QueryExecutor, input: {
   }
   return {
     kind: "READY" as const,
-    references: ordered.map((asset, position) => ({ assetId: asset.id, role: "STYLE" as const, position })),
+    references: ordered.map((asset, position) => ({
+      assetId: asset.id,
+      role: position === 0 ? "FIRST_FRAME" as const : "STYLE" as const,
+      position,
+    })),
     visualInput: {
       mode: "REFERENCE_SET" as const,
-      references: ordered.map((asset, position) => ({ asset_id: asset.id, sha256: asset.sha256!, mime_type: asset.mimeType as "image/jpeg" | "image/png" | "image/webp", position })),
+      references: ordered.map(visualReference),
     },
   };
 };

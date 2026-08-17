@@ -531,6 +531,11 @@ function uniqueReferenceIds(ids: string[]) {
   return [...new Set(ids)];
 }
 
+function eligibleReferenceImageIds(ids: string[]) {
+  const readyImageIds = new Set(readyReferenceImages.value.map((asset) => asset.id));
+  return uniqueReferenceIds(ids).filter((id) => readyImageIds.has(id));
+}
+
 function eligiblePlanningSourceIds(ids: string[]) {
   const readyIds = new Set([
     ...readyReferenceImages.value.map((asset) => asset.id),
@@ -543,6 +548,13 @@ function syncPlanningReferenceSourceIds(ids: string[]) {
   planningDraft.sourceAssetIds = eligiblePlanningSourceIds([...readyPlanningDocumentIds.value, ...ids]);
 }
 
+function defaultSelectedReferenceIds() {
+  const brief = currentPlanningBrief.value;
+  return brief
+    ? eligibleReferenceImageIds(brief.source_asset_ids)
+    : readyReferenceImages.value.map((asset) => asset.id);
+}
+
 async function updateSelectedReferenceIds(ids: string[]) {
   const next = uniqueReferenceIds(ids);
   if (selectedReferenceIds.value.length === next.length && selectedReferenceIds.value.every((id, index) => id === next[index])) return;
@@ -552,12 +564,7 @@ async function updateSelectedReferenceIds(ids: string[]) {
 }
 
 function hydrateCreation() {
-  const selected = currentCreation.value;
-  if (!selected) return;
-  const bindings = detail.value?.reference_bindings.filter((item) => item.shot_id === selected.id).sort((left, right) => left.position - right.position) ?? [];
-  selectedReferenceIds.value = bindings.length
-    ? bindings.map((item) => item.asset_id)
-    : readyReferenceImages.value.map((asset) => asset.id);
+  selectedReferenceIds.value = defaultSelectedReferenceIds();
   syncPlanningReferenceSourceIds(selectedReferenceIds.value);
 }
 

@@ -59,6 +59,21 @@ test("C11 prompt compilation is internal, deterministic, and preserves the decla
   assert.equal(compiled.visualConstraints.identity_wardrobe_scene_lock, true);
   assert.deepEqual(compiled.referenceMap, { reference_policy: "REFERENCE_SET" });
   assert.equal(compiled.capabilitySnapshot.supports_handoff_first_frame, true);
+
+  const handoffCompiled = await compiler.compile({
+    title: "Continuation",
+    narrativeGoal: "Continue the prior scene without changing identity.",
+    startState: "The previous segment ends on a close two-shot.",
+    endState: "The characters sit down in the same room.",
+    transitionSummary: "Continue from the accepted handoff image.",
+    referencePolicy: "HANDOFF_FIRST_FRAME",
+    continuityNote: "The first reference is the handoff frame and additional references keep wardrobe stable.",
+    stylePreferences: "Warm industrial documentary lighting.",
+  });
+  assert.match(handoffCompiled.prompt, /first supplied reference image/);
+  assert.equal(handoffCompiled.capabilitySnapshot.max_reference_images, 7);
+  assert.equal(handoffCompiled.capabilitySnapshot.supports_handoff_plus_reference_set, true);
+  assert.equal(handoffCompiled.capabilitySnapshot.reference_set_and_handoff_are_mutually_exclusive, false);
 });
 
 test("universal planner separates many narrative beats from executable generation segments", async () => {

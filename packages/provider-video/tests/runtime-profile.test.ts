@@ -89,13 +89,15 @@ test("real snapshots accept only the declared runtime parameter range", () => {
 
 test("Mock runtime preserves the ordered reference-set snapshot for the local MVP flow", () => {
   const profile = resolveVideoProviderRuntimeProfile("mock");
+  const handoff = { ...reference, asset_id: "ast_01J4N8QZ8PCW2N2G6D2XJXJXJA", position: 0 };
+  const style = { ...reference, asset_id: "ast_01J4N8QZ8PCW2N2G6D2XJXJB", position: 1 };
   const snapshot = createRuntimeVideoInputSnapshot({
-    prompt: "A local Mock task may retain its reference binding.",
-    visualInput: { mode: "REFERENCE_SET", references: [reference] },
+    prompt: "A local Mock task may retain its ordered handoff and style references.",
+    visualInput: { mode: "REFERENCE_SET", references: [handoff, style] },
     profile,
   });
 
-  assert.deepEqual(snapshot.reference_asset_ids, [reference.asset_id]);
-  assert.notEqual(snapshot.reference_asset_ids, [reference.asset_id]);
+  assert.deepEqual(snapshot.reference_asset_ids, [handoff.asset_id, style.asset_id]);
   assert.equal(snapshot.visual_input?.mode, "REFERENCE_SET");
+  assert.deepEqual(snapshot.visual_input?.references.map((item) => item.position), [0, 1]);
 });

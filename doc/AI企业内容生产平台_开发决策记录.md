@@ -653,6 +653,28 @@ NarrativeBeat（叙事点）
 
 审计证据：Media Runtime 音轨/转场回归、CreativePlanning source eligibility 回归、PromptPackage 编译回归、C12 本地 E2E、成片 ffprobe 抽查和公开边界扫描。
 
+## ADR-0043：C12 交接帧与用户参考图采用有序视觉输入，Studio 勾选来源回到 CreativeBrief
+
+状态：ACCEPTED
+
+日期：2026-08-17
+
+影响章节：C11、C12；不改变公开手工 Shot 生成模式、Veyra、VPS、DNS、部署或共享积分。
+
+上下文：用户复核真实多段成片后指出两类问题：一是首尾帧衔接不应只靠提示词和最终转场，后续片段应直接拿前段尾帧作为开场承接；二是前端参考图默认未勾选，但后台真实生成又使用了参考图，说明页面状态与不可变 CreativeBrief 来源不一致。只读诊断显示，Studio 旧逻辑从“最新 Shot 的 reference_bindings”恢复勾选，而最新 Shot 往往是 C12 自动生成的内部片段，可能只绑定 `DERIVED` 交接帧；后台则按最新 `CreativeBriefRevision.source_asset_ids` 使用用户素材。
+
+决策：Studio 的参考图勾选只从最新 CreativeBrief 中仍然 READY 的 `USER_UPLOAD:IMAGE` 恢复；没有历史 brief 的新项目才默认全选已确认上传图片。用户上传图片后仍立即默认勾选；用户主动取消后，下一次提交会把选择写入新的 brief。Studio 不再从最新生成 Shot 的绑定反推用户勾选状态，避免派生交接帧污染页面。
+
+C12 后续片段的 `HANDOFF_FIRST_FRAME` 不再丢弃用户参考图。前段通过 QC 后，Media Runtime 继续派生 HandoffAsset；Production Scheduler 只有拿到该 HandoffAsset 后才调度依赖片段，并按“第 0 位 HandoffAsset + 第 1 位起最多 6 张用户上传参考图”的顺序创建内部 Shot、ReferenceBinding 与 TaskRun 快照。当前 SUB2API profile 没有独立尾帧字段或已认证逐帧连续能力，因此 Provider 输入仍走受控 `REFERENCE_SET` 多参考通道，PromptPackage 明确说明第一张参考图是交接开场帧。公开手工 Shot 模式仍保持 `FIRST_FRAME` 与 `REFERENCE_SET` 互斥。
+
+选择原因：该方案同时解决画面承接和参考图一致性，且不新增浏览器工程概念、不暴露 Provider 字段、不改公开 HTTP DTO，也不把派生交接帧回流成用户素材。它把“用户想要的素材选择”和“后台为了连续性追加的派生帧”分层保存，便于审计和重试。
+
+限制：有序多参考能让上游同时看到交接帧和用户参考图，但它不是已认证的 literal 首帧+尾帧双关键帧能力，不能承诺人体、服装、场景逐帧完美。若后续仍出现明显漂移，需要继续增加语义 QC、失败段自动诊断、桥接/转场镜头生成或新的 Provider 能力认证。
+
+迁移/回滚：不修改旧 TaskRun、Asset、HandoffAsset 或 VideoVersion。既有项目重新生成时创建新的 CreativeBrief/Storyboard/ProductionRun/VideoVersion；回滚只停止新规则生成，不解释或覆盖旧成片。
+
+审计证据：Studio 静态回归证明勾选由 CreativeBrief 恢复且不读取最新 Shot 绑定；Production Repository 集成回归证明第二段快照为 `[handoff, user-reference]` 的有序 `REFERENCE_SET`；CreativePlanning/Provider runtime 回归证明 PromptPackage 和 7 图上限一致；C12 E2E/本地测试通过后追加到章节审计记录。
+
 ## 新决策模板
 
 ```text

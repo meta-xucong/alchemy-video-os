@@ -22,7 +22,7 @@
 | C09 | 共享积分本地边界 | `ACCEPTED` | C08 | 2026-08-14 | 2026-08-16 | ADR-0039 后的本地 CreditPort、离线契约与 C09-C 本地运行时已独立复核；真实 Veyra/VPS 联动后移 C13-A |
 | C10 | MarkItDown 企业资料链路 | `ACCEPTED` | C06 | 2026-08-16 | 2026-08-16 | 独立审计已复核事务、公开边界、流式 Runtime、隔离浏览器验收和根级回归 |
 | C11 | Prompt、Script、Storyboard | `ACCEPTED` | C10 | 2026-08-16 | 2026-08-16 | 独立审计已复核本地创作版本、规划、审批、生产计划确认和零视频执行边界 |
-| C12 | OpenMontage、QC、成片 | `IN_PROGRESS` | C11/C06 | 2026-08-16 |  | 仅限本地 Mock 的依赖调度、交接帧、QC、合成和成片版本；外部边界继续关闭 |
+| C12 | OpenMontage、QC、成片 | `ACCEPTED` | C11/C06 | 2026-08-16 | 2026-08-17 | 本地依赖调度、交接帧、QC、合成、成片版本及交接帧/用户参考素材一致性修订均已通过完整回归；外部边界继续关闭 |
 | C13 | 发布前审计和部署准备 | `PENDING` | C09/C12 |  |  |  |
 
 ## 3. C00 开发前基线审计
@@ -749,7 +749,7 @@ Exit Gate 结论：C09 本地范围的架构、测试、公开边界和审计证
 
 ### C10：MarkItDown 企业资料链路启动记录
 
-状态：`IN_PROGRESS`
+状态：`ACCEPTED`
 
 实施日期：2026-08-16
 
@@ -1199,7 +1199,7 @@ Exit Gate 结论：`ACCEPTED`。18 个叙事点/30 秒不再被误解成 18 次�
 
 ### C12：真实多段成片质量修正
 
-状态：`IN_PROGRESS`
+状态：`ACCEPTED`
 
 实施日期：2026-08-17
 
@@ -1211,7 +1211,13 @@ Exit Gate 结论：`ACCEPTED`。18 个叙事点/30 秒不再被误解成 18 次�
 
 真实重试结果：受控本机栈已从新源码重启。“都市情感小说”新建 revision 4，源文本被规划为 11 个叙事点和 3 个各 10 秒的执行片段；尾部“把以上剧情设计成剧本”未进入任何 PromptPackage。新 brief 仅使用两张 `USER_UPLOAD:IMAGE`，没有派生交接帧。3 个 TaskRun 与 3 个已提交 ProviderAttempt 全部 `SUCCEEDED`。最终 VideoVersion 为 30.167 秒、848×480、H.264 + AAC、2,752,769 bytes；音量检测均值 `-26.6 dB`、峰值 `-5.8 dB`，不是静音。首/中/尾抽帧中女主衣着、男主外观与暖色室内场景保持一致，未见上一版明显的颈部/身体错位。
 
-风险：淡变转场能消除硬切，连续性 Prompt 能降低画面漂移概率，但当前 profile 没有已认证的“多参考图 + 尾帧”并用能力或语义视觉 QC，不能承诺人体结构、服装或场景逐帧完美。此次抽帧是人工抽样而非逐帧语义验收。真实生成会消耗 Provider 额度，但不触发 Veyra 计费。
+交接帧与参考素材一致性修订：Studio 在加载项目时不再从最新生成镜头的 `reference_bindings` 恢复勾选状态，而是从当前 immutable `CreativeBriefRevision.source_asset_ids` 中恢复仍为 `READY USER_UPLOAD IMAGE` 的素材；没有历史 brief 的项目仍默认勾选全部可用用户图片。这样，交接帧、海报等 `DERIVED` 资产不会让页面显示为未选择，也不会伪装成用户主动选择的素材。
+
+后续 `HANDOFF_FIRST_FRAME` 片段现在先等待前一段 QC 产出的 `DERIVED` 交接帧，再按固定顺序形成内部视觉输入：第 1 张是交接帧，随后最多 6 张为当前 brief 的用户参考图，总数不超过 7 张。仅有交接帧时保持真实 `FIRST_FRAME` 输入；有用户参考图时使用有序 `REFERENCE_SET`，私有 PromptPackage 明确要求模型把第 1 张作为开场交接帧、其余图片用于人物、服装、场景和色彩锚定。直接公开 Shot 生成接口仍保持“首帧或参考集二选一”的既有契约，未被本次内部 C12 调度绕开或扩大。
+
+补充验证（2026-08-17）：Creative Planning 5/5、Provider Video 31/31、Studio 32/32、Contracts 30/30、Control API 29 通过/1 个既有服务门控跳过、Document Worker 8/8、Production Worker 14/14、Task Worker 29 通过/5 个既有服务门控跳过、Workflow Worker 6/6；根 `pnpm typecheck` 和串行根 `pnpm -r --workspace-concurrency=1 --if-present test` 均退出 0；Studio build 通过（仅既有 Nuxt `DEP0155` warning）；隔离 C12 Mock E2E 通过。显式本地 PostgreSQL `production-repository.integration.test.ts` 1/1 通过，实证第二段不可变快照为 `[handoff, user_reference]`、`REFERENCE_SET`，并验证 QC、依赖调度、合成和失败路径。此修订没有执行新的真实 Provider 调用、Veyra、VPS、部署或 DNS 操作。
+
+风险：上游图像/视频模型没有提供平台可验证的逐像素“上一段尾帧必然等于下一段首帧”保证；本实现是受控的交接帧优先输入与提示约束，不应被表述为帧级无缝承诺。语义视觉 QC 和真正生成式桥接镜头仍是后续质量能力。此次抽帧是人工抽样而非逐帧语义验收。真实生成会消耗 Provider 额度，但不触发 Veyra 计费。
 
 审计人：Codex
 

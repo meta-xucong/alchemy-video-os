@@ -142,10 +142,27 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
       name: "C12 durable production",
     })).kind, "NEW");
 
+    const sourceImageAssetId = createPrefixedId("ast");
+    await database.db.insert(assets).values({
+      id: sourceImageAssetId,
+      workspaceId,
+      projectId,
+      kind: "IMAGE",
+      origin: "USER_UPLOAD",
+      status: "READY",
+      objectKey: `${workspaceId}/${projectId}/${sourceImageAssetId}/original.png`,
+      sha256: "e".repeat(64),
+      mimeType: "image/png",
+      byteSize: 512,
+      width: 160,
+      height: 90,
+      metadata: { fixture: "source-reference" },
+    });
+
     const created = await planning.createCreativeBriefRevision({
       scope: `${scope}:brief`,
       idempotencyKey: "create-brief",
-      requestHash: fingerprintRequest({ source_text: "雨夜抵达工厂，团队在黎明前完成交付。", target_duration_seconds: 30, target_resolution: "480p" }),
+      requestHash: fingerprintRequest({ source_text: "雨夜抵达工厂，团队在黎明前完成交付。", target_duration_seconds: 30, target_resolution: "480p", source_asset_ids: [sourceImageAssetId] }),
       workspaceId,
       projectId,
       creativeBriefRevisionId: briefId,
@@ -153,7 +170,7 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
       targetDurationSeconds: 30,
       targetResolution: "480p",
       stylePreferences: "克制的纪实感",
-      sourceAssetIds: [],
+      sourceAssetIds: [sourceImageAssetId],
       event: eventMetadata(),
     });
     assert.equal(created.kind, "NEW");
@@ -284,10 +301,12 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     assert.ok(secondSegment?.taskRunId);
     const [secondTask] = await database.db.select().from(taskRuns)
       .where(and(eq(taskRuns.workspaceId, workspaceId), eq(taskRuns.id, secondSegment.taskRunId!)));
-    const snapshot = secondTask?.inputSnapshot as { resolution?: string; visual_input?: { mode?: string; references?: Array<{ asset_id?: string }> } } | undefined;
+    const snapshot = secondTask?.inputSnapshot as { resolution?: string; reference_asset_ids?: string[]; visual_input?: { mode?: string; references?: Array<{ asset_id?: string }> } } | undefined;
     assert.equal(snapshot?.resolution, "480p");
-    assert.equal(snapshot?.visual_input?.mode, "FIRST_FRAME");
-    assert.equal(snapshot?.visual_input?.references?.length, 1);
+    assert.equal(snapshot?.visual_input?.mode, "REFERENCE_SET");
+    assert.equal(snapshot?.visual_input?.references?.length, 2);
+    assert.deepEqual(snapshot?.reference_asset_ids, [firstHandoffAssetId, sourceImageAssetId]);
+    assert.deepEqual(snapshot?.visual_input?.references?.map((reference) => reference.asset_id), [firstHandoffAssetId, sourceImageAssetId]);
 
     const secondAssetId = await generatedAsset(database.db, { workspaceId, projectId, taskRunId: secondSegment.taskRunId! });
     await production.recordProductionTaskSucceeded({ event: taskSucceededEvent({ workspaceId, projectId, taskRunId: secondSegment.taskRunId!, assetId: secondAssetId }), now: new Date() });

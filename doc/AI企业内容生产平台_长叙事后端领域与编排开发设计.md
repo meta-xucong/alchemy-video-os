@@ -120,11 +120,11 @@ Planner 输出必须包含 NarrativeBeat 的角色、场景、关键道具、开
 
 | 策略 | 发送的视觉输入 | 适用场景 | 限制 |
 | --- | --- | --- | --- |
-| `REFERENCE_SET` | 1 至 7 张角色/风格参考图 | 身份、风格或产品一致性优先 | 当前不能同时传交接首帧 |
-| `HANDOFF_FIRST_FRAME` | 上一段已接受的 Derived Image | 画面切入、动作或地点承接优先 | 当前只能用一张首帧 |
+| `REFERENCE_SET` | 1 至 7 张用户上传角色/风格参考图 | 身份、风格或产品一致性优先 | 第 1 段默认使用 |
+| `HANDOFF_FIRST_FRAME` | 第 0 位为上一段已接受的 Derived HandoffAsset；第 1 位起最多 6 张用户上传参考图 | 画面切入、动作或地点承接优先，同时稳定身份、服装和场景 | 使用多参考通道表达有序组合，不承诺逐帧无缝 |
 | `TEXT_TRANSITION` | 无图，通过场景/转场说明衔接 | 可接受明显转场或 B-roll | 不提供视觉连续性保证 |
 
-系统不能静默把 `REFERENCE_SET` 降级为 `HANDOFF_FIRST_FRAME`。若一个 Shot 同时需要多图身份参考和前段交接，Planner 产生可见风险与建议：改为转场连接、使用经过 C12 生成的合成首帧，或等待新能力认证。
+系统不能静默把用户参考图丢弃为纯 `HANDOFF_FIRST_FRAME`，也不能在缺少前序交接帧时假装完成连续性。若一个 Shot 同时需要多图身份参考和前段交接，C12 调度器按“交接帧第 0 位 + 用户参考图第 1 位起”的顺序创建内部 Shot/TaskRun；当该策略无法满足能力或素材条件时，必须形成可见风险与建议：改为转场连接、等待交接帧通过 QC，或等待更强关键帧能力认证。
 
 ## 6. 公开控制面与事件
 
@@ -175,7 +175,7 @@ Media Runtime 的每个动作通过受保护的内部 API 接收明确工具名�
 - 长故事 fixture 按事件边界产生有序 Script/Storyboard；短故事产生一段计划；两者都通过 schema 验证。
 - 规划命令在任何成功/失败/重试分支中均为零次视频 Provider POST。
 - Storyboard 批准前不能创建 ProductionRun；同幂等键回放不创建第二个 planning 或 production run。
-- 每个 StoryboardShotSpec 在 capability 范围内；首帧/多参考图冲突在创建视频任务前形成可公开的阻塞建议。
+- 每个 StoryboardShotSpec 在 capability 范围内；交接帧和用户参考图必须按有序视觉输入组合，素材缺失或能力不足在创建视频任务前形成可公开的阻塞建议。
 - 前段未接受时，依赖 Shot 不可提交；第 N 段重做只影响 N 和依赖它的后续段。
 - HandoffAsset 必须是同项目、已验收视频派生的 READY 图片；篡改来源、跨 workspace、过期 relay 或不支持 MIME 全部拒绝。
 - Provider Worker、Workflow Worker 和 Media Runtime 重启后均能从持久化事实恢复，且不重复 Planner/Provider/Render 提交。

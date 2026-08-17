@@ -163,10 +163,12 @@ Media Runtime 是仅绑定 loopback 的内部 HTTP 服务。它只接受 `INSPEC
 
 视觉输入必须遵守冻结的 StoryboardShotSpec `reference_policy`：`REFERENCE_SET` 只可使用同项目
 已确认的 1 至 7 张用户上传图片参考；派生的 `HANDOFF_FRAME`、缩略图、海报和既往生成图不得回流
-为新的 `REFERENCE_SET` 来源。`HANDOFF_FIRST_FRAME` 只可使用已接受的前序 HandoffAsset；
-`TEXT_TRANSITION` 不传图片。系统不得静默在这些模式之间降级，策略无法满足时只写安全的
-`WAITING/BLOCKED` 建议。C12 本地实现只允许显式 Mock 视频配置，禁止真实 Provider、Veyra、
-外部网络或付费调用。
+为新的用户来源素材。`HANDOFF_FIRST_FRAME` 必须以已接受的前序 HandoffAsset 作为第 0 位视觉输入；
+当本地已认证 profile 需要同时稳定交接画面和用户参考图时，C12 生产调度器使用有序 `REFERENCE_SET`
+表达“第 0 位 HandoffAsset + 最多 6 张 USER_UPLOAD 参考图”，并由 PromptPackage 明示首图是交接首帧。
+`TEXT_TRANSITION` 不传图片。系统不得静默丢弃交接帧或用户已选参考图；策略无法满足时只写安全的
+`WAITING/BLOCKED` 建议。C12 本地默认仍为 Mock；真实 Provider、Veyra、外部网络或付费调用只能在
+明确授权的受控本机真实模式中执行，部署继续后置。
 
 C12 Relay 仅投递已持久化的 `production_run.confirmed`、`task_run.succeeded` 与
 `task_run.failed`。内部队列消息是严格的判别联合，只携带事件、工作区、项目、关联 ID 与
@@ -324,7 +326,7 @@ ADR-0014 将本图确定为 TaskRun 迁移的唯一完整规则；根目录 `AGE
 
 `POST /shots/:shotId/generations` 的公开命令为严格的空对象 `{}`：用户的提示词和图片意图先保存到 `Shot` 及其 `reference_bindings`，生成时由 Control API 读取同一工作区、同一项目的已保存事实形成不可变 `TaskRun.input_snapshot`。浏览器不得提交或获知 provider、model、duration、resolution、ratio、base URL、密钥、Provider request ID、对象 key、relay URL 或 token。公开 `TaskRun`、项目详情、任务详情和 SSE 均不得返回 `input_snapshot`。
 
-图片绑定的生成语义为：无绑定是 `TEXT`；恰好一个 `FIRST_FRAME` 是 `FIRST_FRAME`；一至七个按 `position` 排序的 `STYLE` / `SUBJECT` 是 `REFERENCE_SET`。`FIRST_FRAME` 不得与其他绑定混用；`LAST_FRAME` 当前不受支持。每个图片必须归属同一工作区和项目、处于 `READY`、为 JPEG/PNG/WebP、具有 SHA-256，且单张不超过 8 MiB。Control API 将模式、资产 ID、SHA-256、MIME 和顺序写入内部 `visual_input` 快照，不写入对象 key 或临时 URL；异常绑定在创建 TaskRun 前返回应用验证错误，不能静默降级。
+图片绑定的公开 Shot 生成语义为：无绑定是 `TEXT`；恰好一个 `FIRST_FRAME` 是 `FIRST_FRAME`；一至七个按 `position` 排序的 `STYLE` / `SUBJECT` 是 `REFERENCE_SET`。浏览器直接编辑的 `FIRST_FRAME` 不得与其他绑定混用；`LAST_FRAME` 当前不受支持。C12 生产调度器为多段连续成片创建的内部 Shot 可保存 `FIRST_FRAME + STYLE` 绑定，用来审计“第 0 位交接帧 + 后续用户参考图”的自动连续性输入；该内部组合不成为新的公开手工编辑模式。每个图片必须归属同一工作区和项目、处于 `READY`、为 JPEG/PNG/WebP、具有 SHA-256，且单张不超过 8 MiB。Control API 将模式、资产 ID、SHA-256、MIME 和顺序写入内部 `visual_input` 快照，不写入对象 key 或临时 URL；异常绑定在创建 TaskRun 前返回应用验证错误，不能静默降级。
 
 同一 `project_id` 的 `Shot.position` 必须唯一。创建或编辑到已被其他分镜占用的位置返回 `409 SHOT_POSITION_CONFLICT`，该结果与 `NOT_FOUND`、`INVALID_REFERENCE` 一样写入命令去重终态：同 key/同 body 必须重放原结果，同 key/异 body 返回 `409 IDEMPOTENCY_CONFLICT`。`POST /assets/:assetId/confirm-upload` 对不存在资产也必须先写入可回放的 `404 NOT_FOUND`，避免资源后来出现时改变首次命令结果。
 

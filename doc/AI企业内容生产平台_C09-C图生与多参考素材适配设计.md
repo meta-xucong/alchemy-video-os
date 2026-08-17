@@ -191,6 +191,8 @@ flowchart LR
 
 2026-08-15 实现审计结论：通过。Contracts 形成 `TEXT` / `FIRST_FRAME` / `REFERENCE_SET` 互斥内部快照；Control API 只从已保存的分镜绑定创建快照，并在真实图片任务缺少 relay signing key 时拒绝创建 TaskRun。`@alchemy-video/reference-delivery` 以加密、到期且 workspace/project/asset/SHA/MIME 绑定的 token 提供受控 `GET` / `HEAD /provider-input/:token`；Worker 在任何 ProviderAttempt 或 submit 前完成引用解析并对未配置 relay 安全失败。Aiself mapper 覆盖一张首帧及一至七张有序参考 URL，无本地 4096 字节 hard gate。Studio 以中文保存“作为开场画面”或“作为参考素材”绑定，生成命令为 `{}`，不携带提示词或素材地址。根 `pnpm typecheck`、根 `pnpm test`、根 `pnpm build`、C06 Mock 浏览器 E2E、认证工具 15/15、静态凭据/公开边界扫描和 `git diff --check` 均通过。C06 在默认 3031 CORS 来源验证两张图片上传、失败提示、显式重试、同一任务恢复及 160x90/1s 播放，并清理两个项目、三个对象、隔离队列、夹具和子服务。真实 I2V/R2V 仍等待 Video VPS relay 部署审计和新的有界付费调用授权。
 
+2026-08-17 C12 连续成片补充：上述互斥规则仍约束公开手工 Shot 生成入口。C12 自动多段成片的内部 Shot 允许保存 `FIRST_FRAME + STYLE` 绑定作为审计事实，并用有序 `REFERENCE_SET` 快照传递“第 0 位交接帧 + 最多 6 张用户上传参考图”。该补充不新增浏览器手工模式，不开放尾帧字段，不宣称逐帧连续能力；详见 ADR-0043。
+
 ## 11. 2026-08-16 实机诊断后的交互与编译修正
 
 一次本机真实任务诊断证明：资产上传成功本身不等于已形成 `ReferenceBinding`。若页面仅显示“可选参考图”而未选中图片，生成快照必须是 `TEXT`，Worker 不会也不得把私有图片猜测为 Provider 输入。为避免非专业用户把“已上传”理解为“已使用”，Studio 的规则更新为：
