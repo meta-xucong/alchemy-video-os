@@ -1,0 +1,2 @@
+ALTER TABLE "creative_brief_revisions" ADD COLUMN "target_resolution" varchar(4) DEFAULT '720p' NOT NULL;--> statement-breakpoint
+ALTER TABLE "creative_brief_revisions" ADD CONSTRAINT "creative_brief_revisions_target_resolution_check" CHECK ("creative_brief_revisions"."target_resolution" in ('480p', '720p'));

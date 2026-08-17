@@ -882,7 +882,7 @@ test("C06 BullMQ exhaustion persists a public retryable failure and public retry
     const detailResponse = await app.request(`http://localhost/api/v1/task-runs/${taskRunId}`);
     const detail = await detailResponse.json() as { data: { task_run: { status: string; error: { code: string; retryable: boolean } | null } } };
     assert.equal(detailResponse.status, 200);
-    assert.deepEqual(detail.data.task_run.error, { code: "PROVIDER_UNAVAILABLE", message: "Mock video execution exhausted its recoverable delivery attempts.", retryable: true });
+    assert.deepEqual(detail.data.task_run.error, { code: "PROVIDER_UNAVAILABLE", message: "Video execution exhausted its recoverable delivery attempts.", retryable: true });
     assert.equal(detail.data.task_run.status, "FAILED");
 
     const retryResponse = await app.request(`http://localhost/api/v1/task-runs/${taskRunId}/retry`, {

@@ -7,7 +7,13 @@ export class DomainInvariantError extends Error {
       | "PROVIDER_RESUBMIT_FORBIDDEN"
       | "ACTIVE_TASK_RUN_EXISTS"
       | "IDEMPOTENCY_CONFLICT"
-      | "BILLING_RECEIPT_INVALID",
+      | "BILLING_RECEIPT_INVALID"
+      | "DOCUMENT_CONVERSION_STATE_INVALID"
+      | "DOCUMENT_RESULT_IMMUTABLE"
+      | "CREATIVE_PLAN_STATE_INVALID"
+      | "STORYBOARD_SPEC_INVALID"
+      | "PRODUCTION_RUN_STATE_INVALID"
+      | "PRODUCTION_SEGMENT_STATE_INVALID",
     message: string,
   ) {
     super(message);

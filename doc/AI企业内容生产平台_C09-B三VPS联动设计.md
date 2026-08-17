@@ -1,6 +1,6 @@
 # AI企业内容生产平台：C09-B 三 VPS Veyra 联动设计
 
-状态：`DESIGN_IN_PROGRESS`。本文只定义未来受控实现与部署的契约，不授权读取凭据、真实 HTTP、SSH/VPS、DNS、TLS、feature flag、Worker/API/Studio 接线或 Git 操作。
+状态：`PENDING`（设计已归档，按 ADR-0039 后移至 C13-A）。本文只定义未来受控实现与部署的契约，不授权读取凭据、真实 HTTP、SSH/VPS、DNS、TLS、feature flag、Worker/API/Studio 接线或 Git 操作。
 
 ## 1. 目标与事实边界
 

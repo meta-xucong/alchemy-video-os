@@ -1,8 +1,23 @@
 import { z } from "zod";
 
-import { DecimalStringSchema, TaskRunIdSchema } from "./primitives.js";
+import { DecimalStringSchema, TaskRunIdSchema, UtcTimestampSchema } from "./primitives.js";
 
 export const CreditProviderSchema = z.literal("veyra_sub2api");
+
+export const VeyraLoginIntentSchema = z.literal("video");
+
+export const VeyraLoginTicketExchangeInputSchema = z.object({
+  ticket: z.string().min(16).max(512),
+  expectedIntent: VeyraLoginIntentSchema.default("video"),
+}).strict();
+
+export const VeyraExternalIdentitySchema = z.object({
+  externalUserId: z.number().int().positive(),
+  intent: VeyraLoginIntentSchema,
+  email: z.string().min(1).nullable(),
+  role: z.string().min(1).nullable(),
+  expiresAt: UtcTimestampSchema,
+}).strict();
 
 export const CreditDecimalSchema = DecimalStringSchema;
 export const PositiveCreditAmountSchema = CreditDecimalSchema.refine(
@@ -49,6 +64,9 @@ export const BillingChargeRequestSchema = z.object({
 }).strict();
 
 export type CreditProvider = z.infer<typeof CreditProviderSchema>;
+export type VeyraLoginIntent = z.infer<typeof VeyraLoginIntentSchema>;
+export type VeyraLoginTicketExchangeInput = z.infer<typeof VeyraLoginTicketExchangeInputSchema>;
+export type VeyraExternalIdentity = z.infer<typeof VeyraExternalIdentitySchema>;
 export type CreditAccount = z.infer<typeof CreditAccountSchema>;
 export type CreditDebitInput = z.infer<typeof CreditDebitInputSchema>;
 export type CreditDebitResult = z.infer<typeof CreditDebitResultSchema>;

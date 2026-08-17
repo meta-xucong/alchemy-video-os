@@ -59,6 +59,10 @@ playwright-report/
 *.jpg
 *.jpeg
 
+# Video VPS certificate state and private deployment environment.
+infrastructure/deploy/certbot/
+infrastructure/deploy/.env.video
+
 # Editor / OS
 .idea/
 .vscode/

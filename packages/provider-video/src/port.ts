@@ -1,10 +1,15 @@
 import type { ApplicationErrorCode, VideoGenerationInputSnapshot } from "@alchemy-video/contracts";
 
+export type ResolvedVisualInput =
+  | { mode: "TEXT" }
+  | { mode: "FIRST_FRAME"; url: string }
+  | { mode: "REFERENCE_SET"; urls: readonly string[] };
+
 export type VideoGenerationInput = {
   taskRunId: string;
   inputSnapshot: VideoGenerationInputSnapshot;
-  // The worker resolves this ephemeral server-side URL after authorization; it is never persisted.
-  referenceImageUrl?: string;
+  // Worker-resolved ephemeral URLs are never persisted in TaskRun or ProviderAttempt records.
+  visualInput: ResolvedVisualInput;
 };
 
 export type ProviderSubmission = {

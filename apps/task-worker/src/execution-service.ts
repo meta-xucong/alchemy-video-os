@@ -1,9 +1,11 @@
 import { createPrefixedId } from "@alchemy-video/domain";
 import { VideoGenerationInputSnapshotSchema } from "@alchemy-video/contracts";
-import type { TaskRunStore } from "@alchemy-video/persistence";
+import type { AssetWorkspaceStore, TaskRunStore } from "@alchemy-video/persistence";
 import { StorageObjectAlreadyExistsError, createGeneratedVideoObjectKey, type StoragePort } from "@alchemy-video/storage-client";
 import type { VideoProviderPort } from "@alchemy-video/provider-video";
 import { VideoProviderFailure, VideoProviderProtocolError, validateMp4Bytes } from "@alchemy-video/provider-video";
+
+import type { ReferenceDeliveryPort } from "./reference-delivery.js";
 
 const readStream = async (stream: ReadableStream<Uint8Array>) => {
   const reader = stream.getReader();
@@ -37,7 +39,7 @@ const providerStageError = (error: unknown) => {
   }
   return {
     code: "PROVIDER_UNAVAILABLE",
-    message: "The local Mock video execution could not complete.",
+    message: "The video execution could not complete.",
     retryable: true,
   } as const;
 };
@@ -51,7 +53,7 @@ const downloadStageError = (error: unknown) => {
   }
   return {
     code: "PROVIDER_UNAVAILABLE",
-    message: "The local Mock video download or result write could not complete.",
+    message: "The video download or result write could not complete.",
     retryable: true,
   } as const;
 };
@@ -71,67 +73,97 @@ export class MockVideoTaskExecutor {
     >,
     private readonly provider: VideoProviderPort,
     private readonly storage: StoragePort,
+    private readonly options: Readonly<{
+      providerName?: string;
+      expectedModel?: string;
+      pollIntervalMs?: number;
+      maxPollAttempts?: number;
+      assetStore?: Pick<AssetWorkspaceStore, "findAsset">;
+      referenceDelivery?: ReferenceDeliveryPort;
+      allowLegacyReferenceAssets?: boolean;
+    }> = {},
   ) {}
 
   async execute(input: { workspaceId: string; taskRunId: string }) {
     const taskRun = await this.store.findTaskRun(input.workspaceId, input.taskRunId);
     if (!taskRun || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(taskRun.status)) return taskRun;
 
-    const attempt = await this.store.ensureProviderAttempt({
-      workspaceId: input.workspaceId,
-      taskRunId: input.taskRunId,
-      providerAttemptId: createPrefixedId("att"),
-      provider: "mock",
-      model: String(taskRun.inputSnapshot.model ?? "mock-video-v1"),
-      now: new Date(),
-    });
-    if (!attempt) return this.store.findTaskRun(input.workspaceId, input.taskRunId);
-
+    const inputSnapshot = VideoGenerationInputSnapshotSchema.parse(taskRun.inputSnapshot);
+    const providerName = this.options.providerName ?? "mock";
+    if (this.options.expectedModel && inputSnapshot.model !== this.options.expectedModel) {
+      return this.store.failTaskRun({
+        workspaceId: input.workspaceId,
+        taskRunId: taskRun.id,
+        code: "PROVIDER_REJECTED",
+        message: "The task generation profile is not compatible with this Worker.",
+        retryable: false,
+        now: new Date(),
+      });
+    }
+    let providerAttemptId: string | undefined;
     try {
+      const visualInput = await this.resolveVisualInput({
+        workspaceId: input.workspaceId,
+        projectId: taskRun.projectId,
+        inputSnapshot,
+      });
+      const attempt = await this.store.ensureProviderAttempt({
+        workspaceId: input.workspaceId,
+        taskRunId: input.taskRunId,
+        providerAttemptId: createPrefixedId("att"),
+        provider: providerName,
+        model: inputSnapshot.model,
+        now: new Date(),
+      });
+      if (!attempt) return this.store.findTaskRun(input.workspaceId, input.taskRunId);
+      providerAttemptId = attempt.id;
+      if (attempt.provider !== providerName || attempt.model !== inputSnapshot.model) {
+        return this.store.failTaskRun({
+          workspaceId: input.workspaceId,
+          taskRunId: taskRun.id,
+          providerAttemptId: attempt.id,
+          code: "PROVIDER_REJECTED",
+          message: "The persisted provider attempt is not compatible with this Worker.",
+          retryable: false,
+          now: new Date(),
+        });
+      }
       let providerRequestId = attempt.providerRequestId;
       if (!providerRequestId) {
         const submission = await this.provider.submit({
           taskRunId: taskRun.id,
-          inputSnapshot: VideoGenerationInputSnapshotSchema.parse(taskRun.inputSnapshot),
+          inputSnapshot,
+          visualInput,
         });
         providerRequestId = submission.providerRequestId;
         await this.store.recordProviderSubmission({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, providerRequestId: submission.providerRequestId, now: new Date() });
       }
 
-      const firstStatus = await this.provider.getStatus({ providerRequestId });
-      if (firstStatus.state === "FAILED") {
-        if (firstStatus.retryable) {
-          await this.store.recordProviderProcessing({
-            workspaceId: input.workspaceId,
-            taskRunId: taskRun.id,
-            providerAttemptId: attempt.id,
-            now: new Date(),
-          });
-          throw new RetryableTaskExecutionError(firstStatus.message);
-        }
-        return this.store.failTaskRun({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, code: firstStatus.code, message: firstStatus.message, retryable: firstStatus.retryable, now: new Date() });
-      }
-      if (firstStatus.state === "PROCESSING") {
+      let status = await this.provider.getStatus({ providerRequestId });
+      const maxPollAttempts = this.options.maxPollAttempts ?? 2;
+      for (let pollAttempt = 1; status.state === "PROCESSING"; pollAttempt += 1) {
         await this.store.recordProviderProcessing({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
+        if (pollAttempt >= maxPollAttempts) {
+          throw new RetryableTaskExecutionError("The video service is still processing this task.");
+        }
+        const pollIntervalMs = this.options.pollIntervalMs ?? 0;
+        if (pollIntervalMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs));
+        status = await this.provider.getStatus({ providerRequestId });
       }
-
-      const finalStatus = firstStatus.state === "SUCCEEDED"
-        ? firstStatus
-        : await this.provider.getStatus({ providerRequestId });
-      if (finalStatus.state === "FAILED") {
-        if (finalStatus.retryable) {
+      if (status.state === "FAILED") {
+        if (status.retryable) {
           await this.store.recordProviderProcessing({
             workspaceId: input.workspaceId,
             taskRunId: taskRun.id,
             providerAttemptId: attempt.id,
             now: new Date(),
           });
-          throw new RetryableTaskExecutionError(finalStatus.message);
+          throw new RetryableTaskExecutionError(status.message);
         }
-        return this.store.failTaskRun({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, code: finalStatus.code, message: finalStatus.message, retryable: finalStatus.retryable, now: new Date() });
+        return this.store.failTaskRun({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, code: status.code, message: status.message, retryable: status.retryable, now: new Date() });
       }
-      if (finalStatus.state !== "SUCCEEDED") {
-        throw new VideoProviderProtocolError("Mock provider did not reach a terminal success state.");
+      if (status.state !== "SUCCEEDED") {
+        throw new VideoProviderProtocolError("Video provider did not reach a terminal success state.");
       }
 
       await this.store.recordProviderProcessing({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
@@ -141,8 +173,46 @@ export class MockVideoTaskExecutor {
       if (error instanceof RetryableTaskExecutionError) throw error;
       const failure = providerStageError(error);
       if (failure.retryable) throw new RetryableTaskExecutionError(failure.message);
-      return this.store.failTaskRun({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, failureStage: "PROVIDER", ...failure, now: new Date() });
+      return this.store.failTaskRun({ workspaceId: input.workspaceId, taskRunId: taskRun.id, ...(providerAttemptId ? { providerAttemptId } : {}), failureStage: "PROVIDER", ...failure, now: new Date() });
     }
+  }
+
+  private async resolveVisualInput(input: Readonly<{
+    workspaceId: string;
+    projectId: string;
+    inputSnapshot: ReturnType<typeof VideoGenerationInputSnapshotSchema.parse>;
+  }>) {
+    const visualInput = input.inputSnapshot.visual_input;
+    if (!visualInput) {
+      if (input.inputSnapshot.reference_asset_ids.length === 0 || this.options.allowLegacyReferenceAssets) return { mode: "TEXT" as const };
+      throw new VideoProviderProtocolError("A real video task with reference assets is missing an immutable visual-input snapshot.");
+    }
+    if (visualInput.mode === "TEXT") return { mode: "TEXT" as const };
+    const assets = this.options.assetStore;
+    const delivery = this.options.referenceDelivery;
+    if (!assets || !delivery) {
+      throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", false, "PROVIDER", "Reference image delivery is not configured for this Worker.");
+    }
+    const snapshotIds = visualInput.references.map((reference) => reference.asset_id);
+    if (snapshotIds.length !== input.inputSnapshot.reference_asset_ids.length
+      || snapshotIds.some((assetId, index) => assetId !== input.inputSnapshot.reference_asset_ids[index])) {
+      throw new VideoProviderProtocolError("The task reference asset list does not match its visual-input snapshot.");
+    }
+    const resolvedAssets = await Promise.all(visualInput.references.map(async (reference) => ({
+      reference,
+      asset: await assets.findAsset(input.workspaceId, reference.asset_id),
+    })));
+    if (resolvedAssets.some(({ reference, asset }) => !asset
+      || asset.projectId !== input.projectId
+      || asset.status !== "READY"
+      || asset.kind !== "IMAGE"
+      || asset.sha256 !== reference.sha256
+      || asset.mimeType !== reference.mime_type
+      || !asset.byteSize
+      || asset.byteSize > 8 * 1024 * 1024)) {
+      throw new VideoProviderProtocolError("A reference image no longer matches the immutable task snapshot.");
+    }
+    return delivery.createVisualInput({ workspaceId: input.workspaceId, projectId: input.projectId, visualInput });
   }
 
   private async finishDownload(input: { workspaceId: string; taskRunId: string; attemptId: string; projectId: string }) {

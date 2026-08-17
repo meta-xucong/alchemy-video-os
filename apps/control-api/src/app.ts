@@ -2,24 +2,44 @@ import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import {
   AssetIdSchema,
+  ApproveStoryboardRevisionCommandSchema,
   ConfirmAssetUploadCommandSchema,
+  CreateCreativeBriefRevisionCommandSchema,
+  CreateDocumentConversionCommandSchema,
+  CreateProductionRunCommandSchema,
   CreateShotCommandSchema,
   CreateTaskRunCommandSchema,
   CreateUploadRequestCommandSchema,
+  CreativeBriefRevisionIdSchema,
   CreateProjectCommandSchema,
   EventIdSchema,
+  DocumentConversionIdSchema,
   IdempotencyKeySchema,
   ProjectIdSchema,
+  ProductionRunIdSchema,
   ShotIdSchema,
   TaskRunIdSchema,
   RetryTaskRunCommandSchema,
+  RetryProductionSegmentCommandSchema,
+  RetryDocumentConversionCommandSchema,
+  RequestCreativePlanCommandSchema,
+  StoryboardRevisionIdSchema,
   UpdateProjectCommandSchema,
   UpdateShotCommandSchema,
   WorkspaceIdSchema,
   projectPublicWorkspaceEvent,
 } from "@alchemy-video/contracts";
 import { fingerprintRequest } from "@alchemy-video/domain";
-import type { AssetWorkspaceStore, ControlPlaneStore, TaskRunStore } from "@alchemy-video/persistence";
+import {
+  UnsupportedVideoGenerationInputError,
+  VideoPromptCompilationError,
+  compileVideoPrompt,
+  createRuntimeVideoInputSnapshot,
+  resolveVideoProviderRuntimeProfile,
+  type VideoProviderRuntimeMode,
+} from "@alchemy-video/provider-video";
+import { ReferenceDeliveryTokenCodec } from "@alchemy-video/reference-delivery";
+import { InMemoryCreativePlanningStore, InMemoryDocumentConversionStore, type AssetWorkspaceStore, type ControlPlaneStore, type CreativePlanningStore, type DocumentConversionStore, type ProductionStore, type TaskRunStore } from "@alchemy-video/persistence";
 import { InMemoryStoragePort, StorageUnavailableError, createAssetObjectKey, type StoragePort } from "@alchemy-video/storage-client";
 import type { z } from "zod";
 
@@ -30,15 +50,20 @@ import { errorHandler, requestLogger } from "./middleware/logger.js";
 import { createInMemoryControlPlaneStore } from "./repository.js";
 import { createInMemoryAssetWorkspaceStore } from "./asset-repository.js";
 import { createInMemoryTaskRunStore } from "./task-run-repository.js";
-import { serializeAsset, serializeProject, serializeProjectDetail, serializeShot, serializeTaskRun, serializeTaskRunAttempt, serializeUser, serializeWorkspace } from "./serializers.js";
+import { serializeAsset, serializeCreativeBriefRevision, serializeDocumentConversion, serializeProductionRun, serializeProductionRunProgress, serializeProject, serializeProjectDetail, serializeShot, serializeStoryboardRevision, serializeTaskRun, serializeTaskRunAttempt, serializeUser, serializeVideoVersion, serializeWorkspace } from "./serializers.js";
 
 type CreateAppOptions = {
   identity?: IdentityPort;
   store?: ControlPlaneStore;
   assetStore?: AssetWorkspaceStore;
   taskStore?: TaskRunStore;
+  documentStore?: DocumentConversionStore;
+  planningStore?: CreativePlanningStore;
+  productionStore?: Pick<ProductionStore, "listProjectProductionProgress" | "listProjectVideoVersions" | "retryProductionSegment">;
   storage?: StoragePort;
   buildVersion?: string;
+  videoProviderMode?: VideoProviderRuntimeMode;
+  referenceDeliveryTokenCodec?: ReferenceDeliveryTokenCodec;
 };
 
 const response = <T>(context: HonoContext, data: T, status: 200 | 201 | 202 = 200) =>
@@ -69,9 +94,9 @@ const parseProjectId = (context: HonoContext) => {
   return parsed.data;
 };
 
-const parseAssetId = (context: HonoContext) => {
-  const parsed = AssetIdSchema.safeParse(context.req.param("asset_id"));
-  if (!parsed.success) throw validationError("asset_id is invalid.");
+const parseAssetId = (context: HonoContext, parameterName = "asset_id") => {
+  const parsed = AssetIdSchema.safeParse(context.req.param(parameterName));
+  if (!parsed.success) throw validationError(`${parameterName} is invalid.`);
   return parsed.data;
 };
 
@@ -84,6 +109,38 @@ const parseShotId = (context: HonoContext) => {
 const parseTaskRunId = (context: HonoContext) => {
   const parsed = TaskRunIdSchema.safeParse(context.req.param("task_run_id"));
   if (!parsed.success) throw validationError("task_run_id is invalid.");
+  return parsed.data;
+};
+
+const parseProductionRunId = (context: HonoContext) => {
+  const parsed = ProductionRunIdSchema.safeParse(context.req.param("production_run_id"));
+  if (!parsed.success) throw validationError("production_run_id is invalid.");
+  return parsed.data;
+};
+
+const parseProductionSegmentSequence = (context: HonoContext) => {
+  const value = context.req.param("sequence") ?? "";
+  if (!/^[1-9]\d*$/.test(value)) throw validationError("sequence is invalid.");
+  const sequence = Number(value);
+  if (!Number.isSafeInteger(sequence)) throw validationError("sequence is invalid.");
+  return sequence;
+};
+
+const parseDocumentConversionId = (context: HonoContext) => {
+  const parsed = DocumentConversionIdSchema.safeParse(context.req.param("conversion_id"));
+  if (!parsed.success) throw validationError("conversion_id is invalid.");
+  return parsed.data;
+};
+
+const parseCreativeBriefRevisionId = (context: HonoContext) => {
+  const parsed = CreativeBriefRevisionIdSchema.safeParse(context.req.param("creative_brief_revision_id"));
+  if (!parsed.success) throw validationError("creative_brief_revision_id is invalid.");
+  return parsed.data;
+};
+
+const parseStoryboardRevisionId = (context: HonoContext) => {
+  const parsed = StoryboardRevisionIdSchema.safeParse(context.req.param("storyboard_revision_id"));
+  if (!parsed.success) throw validationError("storyboard_revision_id is invalid.");
   return parsed.data;
 };
 
@@ -115,7 +172,12 @@ const resolveWorkspaceAccess = async (
   store: ControlPlaneStore,
 ): Promise<CurrentIdentity> => {
   const identity = await identityPort.resolve(context.req.raw);
-  await store.ensureDevIdentity(DEV_IDENTITY_SEED);
+  if (identity.bootstrap && (
+    identity.bootstrap.user.id !== identity.userId || identity.bootstrap.workspace.id !== identity.workspaceId
+  )) {
+    throw new ControlApiError(503, "AUTH_UNAVAILABLE", "The identity mapping is unavailable.", true);
+  }
+  await (identity.bootstrap ? store.ensureIdentity(identity.bootstrap) : store.ensureDevIdentity(DEV_IDENTITY_SEED));
 
   const user = await store.findUser(identity.userId);
   if (!user) {
@@ -136,21 +198,39 @@ const idempotencyConflict = () =>
 
 const notFound = (message: string) => new ControlApiError(404, "NOT_FOUND", message);
 const invalidReference = () => new ControlApiError(400, "VALIDATION_FAILED", "Reference assets must be READY assets in the same project.");
+const invalidCreativeSource = () => new ControlApiError(400, "VALIDATION_FAILED", "Creative source materials must be READY assets in the same project.");
 const storageUnavailable = () => new ControlApiError(503, "STORAGE_UNAVAILABLE", "Object storage is unavailable.", true);
 const invalidUpload = () => new ControlApiError(400, "DOWNLOAD_INVALID", "Uploaded object metadata does not match the confirmed asset.");
 const shotPositionConflict = () => new ControlApiError(409, "SHOT_POSITION_CONFLICT", "Another shot already uses this project position.");
 const taskRunActiveConflict = () => new ControlApiError(409, "TASK_RUN_ACTIVE_CONFLICT", "The shot already has an active task run.");
 const taskStateInvalid = () => new ControlApiError(400, "TASK_STATE_INVALID", "The task run cannot be retried from its current state.");
+const invalidDocumentSource = () => new ControlApiError(400, "DOCUMENT_UNSUPPORTED", "The selected project material cannot be converted.");
+const documentConversionConflict = () => new ControlApiError(409, "DOCUMENT_CONVERSION_ACTIVE_CONFLICT", "This project material is already being organized.");
+const documentConversionStateInvalid = () => new ControlApiError(400, "DOCUMENT_CONVERSION_FAILED", "This project material cannot be organized from its current state.");
+const creativePlanConflict = () => new ControlApiError(409, "CREATIVE_PLAN_ACTIVE_CONFLICT", "This creative brief is already being planned.");
+const creativePlanStateInvalid = () => new ControlApiError(400, "CREATIVE_PLAN_STATE_INVALID", "This creative brief cannot be planned from its current state.");
+const storyboardStateInvalid = () => new ControlApiError(400, "STORYBOARD_SPEC_INVALID", "This storyboard cannot be approved from its current state.");
+const productionRunConflict = () => new ControlApiError(409, "PRODUCTION_RUN_ACTIVE_CONFLICT", "This project already has an active production plan.");
+const productionRunStateInvalid = () => new ControlApiError(400, "PRODUCTION_RUN_STATE_INVALID", "This storyboard must be approved before creating a production plan.");
+const productionSegmentStateInvalid = () => new ControlApiError(400, "PRODUCTION_SEGMENT_STATE_INVALID", "This production segment cannot be retried from its current state.");
 
 const requestedMetadataMatches = (asset: { metadata: Record<string, unknown> }, input: { mimeType: string; byteSize: number }) =>
   asset.metadata.requested_mime_type === input.mimeType && asset.metadata.requested_byte_size === input.byteSize;
+
+const referenceImageMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+const maxReferenceImageBytes = 8 * 1024 * 1024;
 
 export function createApp(options: CreateAppOptions = {}) {
   const identityPort = options.identity ?? new DevIdentityAdapter();
   const store = options.store ?? createInMemoryControlPlaneStore();
   const assetStore = options.assetStore ?? createInMemoryAssetWorkspaceStore(store);
   const taskStore = options.taskStore ?? createInMemoryTaskRunStore(assetStore);
+  const documentStore = options.documentStore ?? new InMemoryDocumentConversionStore(assetStore);
+  const planningStore = options.planningStore ?? new InMemoryCreativePlanningStore(assetStore);
+  const productionStore = options.productionStore;
   const storage = options.storage ?? new InMemoryStoragePort();
+  const videoProfile = resolveVideoProviderRuntimeProfile(options.videoProviderMode ?? "mock");
+  const referenceDeliveryTokenCodec = options.referenceDeliveryTokenCodec;
   const buildVersion = options.buildVersion ?? process.env.BUILD_VERSION ?? "local";
   const app = new Hono();
 
@@ -163,6 +243,62 @@ export function createApp(options: CreateAppOptions = {}) {
   );
   app.use("*", requestLogger);
   app.onError(errorHandler);
+
+  const providerInputResponse = async (context: HonoContext, includeBody: boolean) => {
+    const token = context.req.param("token") ?? "";
+    const claim = referenceDeliveryTokenCodec?.verify(token);
+    if (!claim) return new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } });
+    const asset = await assetStore.findAsset(claim.workspaceId, claim.assetId);
+    if (!asset
+      || asset.projectId !== claim.projectId
+      || asset.status !== "READY"
+      || asset.kind !== "IMAGE"
+      || asset.sha256 !== claim.sha256
+      || asset.mimeType !== claim.mimeType
+      || !referenceImageMimeTypes.has(asset.mimeType)
+      || !asset.byteSize
+      || asset.byteSize > maxReferenceImageBytes) {
+      return new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } });
+    }
+    try {
+      if (!includeBody) {
+        const object = await storage.inspectObject({ objectKey: asset.objectKey });
+        if (!object || object.mimeType !== claim.mimeType || object.sha256 !== claim.sha256 || object.byteSize !== asset.byteSize) {
+          return new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } });
+        }
+        return new Response(null, {
+          status: 200,
+          headers: {
+            "Cache-Control": "no-store",
+            "Content-Length": String(object.byteSize),
+            "Content-Type": object.mimeType,
+            "X-Content-Type-Options": "nosniff",
+          },
+        });
+      }
+      const object = await storage.readObject({ objectKey: asset.objectKey });
+      if (!object || object.mimeType !== claim.mimeType || (object.byteSize !== undefined && object.byteSize !== asset.byteSize)) {
+        return new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } });
+      }
+      return new Response(object.stream, {
+        status: 200,
+        headers: {
+          "Cache-Control": "no-store",
+          ...(object.byteSize === undefined ? {} : { "Content-Length": String(object.byteSize) }),
+          "Content-Type": object.mimeType,
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    } catch (error) {
+      if (error instanceof StorageUnavailableError) {
+        return new Response(null, { status: 503, headers: { "Cache-Control": "no-store" } });
+      }
+      throw error;
+    }
+  };
+
+  app.get("/provider-input/:token", (context) => providerInputResponse(context, true));
+  app.on("HEAD", "/provider-input/:token", (context) => providerInputResponse(context, false));
 
   app.get("/api/v1/health", async (context) =>
     response(context, {
@@ -230,10 +366,15 @@ export function createApp(options: CreateAppOptions = {}) {
         : []),
     )).filter((asset): asset is NonNullable<typeof asset> => Boolean(asset));
     const assetIds = new Set(detail.assets.map((asset) => asset.id));
+    const [creativeBriefRevisions, storyboardRevisions, productionRuns] = await Promise.all([
+      planningStore.listProjectCreativeBriefRevisions(identity.workspaceId, projectId),
+      planningStore.listProjectStoryboardRevisions(identity.workspaceId, projectId),
+      planningStore.listProjectProductionRuns(identity.workspaceId, projectId),
+    ]);
     return response(context, serializeProjectDetail({
       ...detail,
       assets: [...detail.assets, ...generatedAssets.filter((asset) => !assetIds.has(asset.id))],
-    }, taskRuns));
+    }, taskRuns, { creativeBriefRevisions, storyboardRevisions, productionRuns }));
   });
 
   app.patch("/api/v1/projects/:project_id", async (context) => {
@@ -346,6 +487,249 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   });
 
+  app.get("/api/v1/projects/:project_id/documents", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const projectId = parseProjectId(context);
+    if (!(await assetStore.findProjectDetail(identity.workspaceId, projectId))) throw notFound("Project not found.");
+    const conversions = await documentStore.listProjectDocumentConversions(identity.workspaceId, projectId);
+    return response(context, conversions.map(serializeDocumentConversion));
+  });
+
+  app.post("/api/v1/projects/:project_id/documents/:source_asset_id/conversions", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const projectId = parseProjectId(context);
+    const sourceAssetId = parseAssetId(context, "source_asset_id");
+    const command = await parseBody(context, CreateDocumentConversionCommandSchema);
+    const idempotencyKey = readIdempotencyKey(context);
+    const execution = await documentStore.createDocumentConversion({
+      scope: `${identity.userId}:POST:/api/v1/projects/${projectId}/documents/${sourceAssetId}/conversions`,
+      idempotencyKey,
+      requestHash: fingerprintRequest(command),
+      workspaceId: identity.workspaceId,
+      projectId,
+      sourceAssetId,
+      documentId: createPrefixedId("doc"),
+      conversionId: createPrefixedId("dcv"),
+      event: {
+        eventId: createPrefixedId("evt"),
+        messageId: createPrefixedId("msg"),
+        traceId: createPrefixedId("trc"),
+        correlationId: createPrefixedId("cor"),
+      },
+    });
+    if (execution.kind !== "NEW" && execution.kind !== "REPLAY") {
+      if (execution.kind === "CONFLICT") throw idempotencyConflict();
+      if (execution.kind === "NOT_FOUND") throw notFound("Project or source document not found.");
+      if (execution.kind === "INVALID_SOURCE") throw invalidDocumentSource();
+      if (execution.kind === "ACTIVE_CONFLICT") throw documentConversionConflict();
+      throw documentConversionStateInvalid();
+    }
+    return response(context, serializeDocumentConversion(execution.value), execution.status);
+  });
+
+  app.get("/api/v1/document-conversions/:conversion_id", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const conversion = await documentStore.findDocumentConversion(identity.workspaceId, parseDocumentConversionId(context));
+    if (!conversion) throw notFound("Document conversion not found.");
+    return response(context, serializeDocumentConversion(conversion));
+  });
+
+  app.post("/api/v1/document-conversions/:conversion_id/retry", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const conversionId = parseDocumentConversionId(context);
+    const command = await parseBody(context, RetryDocumentConversionCommandSchema);
+    const idempotencyKey = readIdempotencyKey(context);
+    const execution = await documentStore.retryDocumentConversion({
+      scope: `${identity.userId}:POST:/api/v1/document-conversions/${conversionId}/retry`,
+      idempotencyKey,
+      requestHash: fingerprintRequest(command),
+      workspaceId: identity.workspaceId,
+      conversionId,
+      event: {
+        eventId: createPrefixedId("evt"),
+        messageId: createPrefixedId("msg"),
+        traceId: createPrefixedId("trc"),
+        correlationId: createPrefixedId("cor"),
+      },
+    });
+    if (execution.kind !== "NEW" && execution.kind !== "REPLAY") {
+      if (execution.kind === "CONFLICT") throw idempotencyConflict();
+      if (execution.kind === "NOT_FOUND") throw notFound("Document conversion not found.");
+      throw documentConversionStateInvalid();
+    }
+    return response(context, serializeDocumentConversion(execution.value), execution.status);
+  });
+
+  app.post("/api/v1/projects/:project_id/creative-brief-revisions", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const projectId = parseProjectId(context);
+    const command = await parseBody(context, CreateCreativeBriefRevisionCommandSchema);
+    const idempotencyKey = readIdempotencyKey(context);
+    if (!(await assetStore.findProjectDetail(identity.workspaceId, projectId))) throw notFound("Project not found.");
+    const execution = await planningStore.createCreativeBriefRevision({
+      scope: `${identity.userId}:POST:/api/v1/projects/${projectId}/creative-brief-revisions`,
+      idempotencyKey,
+      requestHash: fingerprintRequest(command),
+      workspaceId: identity.workspaceId,
+      projectId,
+      creativeBriefRevisionId: createPrefixedId("cbr"),
+      sourceText: command.source_text,
+      targetDurationSeconds: command.target_duration_seconds,
+      targetResolution: command.target_resolution,
+      stylePreferences: command.style_preferences,
+      sourceAssetIds: command.source_asset_ids,
+      event: {
+        eventId: createPrefixedId("evt"),
+        messageId: createPrefixedId("msg"),
+        traceId: createPrefixedId("trc"),
+        correlationId: createPrefixedId("cor"),
+      },
+    });
+    if (execution.kind !== "NEW" && execution.kind !== "REPLAY") {
+      if (execution.kind === "CONFLICT") throw idempotencyConflict();
+      if (execution.kind === "NOT_FOUND") throw notFound("Project not found.");
+      if (execution.kind === "INVALID_SOURCE") throw invalidCreativeSource();
+      if (execution.kind === "ACTIVE_CONFLICT") throw creativePlanConflict();
+      throw creativePlanStateInvalid();
+    }
+    return response(context, serializeCreativeBriefRevision(execution.value), execution.status);
+  });
+
+  app.post("/api/v1/creative-brief-revisions/:creative_brief_revision_id/plan", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const creativeBriefRevisionId = parseCreativeBriefRevisionId(context);
+    const command = await parseBody(context, RequestCreativePlanCommandSchema);
+    const idempotencyKey = readIdempotencyKey(context);
+    const execution = await planningStore.requestCreativePlan({
+      scope: `${identity.userId}:POST:/api/v1/creative-brief-revisions/${creativeBriefRevisionId}/plan`,
+      idempotencyKey,
+      requestHash: fingerprintRequest(command),
+      workspaceId: identity.workspaceId,
+      creativeBriefRevisionId,
+      event: {
+        eventId: createPrefixedId("evt"),
+        messageId: createPrefixedId("msg"),
+        traceId: createPrefixedId("trc"),
+        correlationId: createPrefixedId("cor"),
+      },
+    });
+    if (execution.kind !== "NEW" && execution.kind !== "REPLAY") {
+      if (execution.kind === "CONFLICT") throw idempotencyConflict();
+      if (execution.kind === "NOT_FOUND") throw notFound("Creative brief revision not found.");
+      if (execution.kind === "ACTIVE_CONFLICT") throw creativePlanConflict();
+      throw creativePlanStateInvalid();
+    }
+    return response(context, serializeCreativeBriefRevision(execution.value), execution.status);
+  });
+
+  app.get("/api/v1/projects/:project_id/storyboard-revisions", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const projectId = parseProjectId(context);
+    if (!(await assetStore.findProjectDetail(identity.workspaceId, projectId))) throw notFound("Project not found.");
+    return response(context, (await planningStore.listProjectStoryboardRevisions(identity.workspaceId, projectId)).map(serializeStoryboardRevision));
+  });
+
+  app.post("/api/v1/storyboard-revisions/:storyboard_revision_id/approve", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const storyboardRevisionId = parseStoryboardRevisionId(context);
+    const command = await parseBody(context, ApproveStoryboardRevisionCommandSchema);
+    const idempotencyKey = readIdempotencyKey(context);
+    const execution = await planningStore.approveStoryboardRevision({
+      scope: `${identity.userId}:POST:/api/v1/storyboard-revisions/${storyboardRevisionId}/approve`,
+      idempotencyKey,
+      requestHash: fingerprintRequest(command),
+      workspaceId: identity.workspaceId,
+      storyboardRevisionId,
+      event: {
+        eventId: createPrefixedId("evt"),
+        messageId: createPrefixedId("msg"),
+        traceId: createPrefixedId("trc"),
+        correlationId: createPrefixedId("cor"),
+      },
+    });
+    if (execution.kind !== "NEW" && execution.kind !== "REPLAY") {
+      if (execution.kind === "CONFLICT") throw idempotencyConflict();
+      if (execution.kind === "NOT_FOUND") throw notFound("Storyboard revision not found.");
+      throw storyboardStateInvalid();
+    }
+    return response(context, serializeStoryboardRevision(execution.value), execution.status);
+  });
+
+  app.get("/api/v1/projects/:project_id/production-runs", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const projectId = parseProjectId(context);
+    if (!(await assetStore.findProjectDetail(identity.workspaceId, projectId))) throw notFound("Project not found.");
+    if (productionStore) {
+      return response(context, (await productionStore.listProjectProductionProgress(identity.workspaceId, projectId)).map(serializeProductionRunProgress));
+    }
+    return response(context, (await planningStore.listProjectProductionRuns(identity.workspaceId, projectId)).map((productionRun) =>
+      serializeProductionRunProgress({ productionRun, segments: [] })));
+  });
+
+  app.get("/api/v1/projects/:project_id/video-versions", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const projectId = parseProjectId(context);
+    if (!(await assetStore.findProjectDetail(identity.workspaceId, projectId))) throw notFound("Project not found.");
+    if (!productionStore) return response(context, []);
+    return response(context, (await productionStore.listProjectVideoVersions(identity.workspaceId, projectId)).map(serializeVideoVersion));
+  });
+
+  app.post("/api/v1/production-runs/:production_run_id/segments/:sequence/retry", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const productionRunId = parseProductionRunId(context);
+    const sequence = parseProductionSegmentSequence(context);
+    const command = await parseBody(context, RetryProductionSegmentCommandSchema);
+    const idempotencyKey = readIdempotencyKey(context);
+    if (!productionStore) throw notFound("Production run not found.");
+    const execution = await productionStore.retryProductionSegment({
+      scope: `${identity.userId}:POST:/api/v1/production-runs/${productionRunId}/segments/${sequence}/retry`,
+      idempotencyKey,
+      requestHash: fingerprintRequest(command),
+      workspaceId: identity.workspaceId,
+      productionRunId,
+      sequence,
+      event: {
+        messageId: createPrefixedId("msg"),
+        traceId: createPrefixedId("trc"),
+        correlationId: createPrefixedId("cor"),
+      },
+    });
+    if (execution.kind === "CONFLICT") throw idempotencyConflict();
+    if (execution.kind === "NOT_FOUND") throw notFound("Production run or segment not found.");
+    if (execution.kind === "STATE_INVALID") throw productionSegmentStateInvalid();
+    return response(context, serializeProductionRunProgress(execution.value), execution.status);
+  });
+
+  app.post("/api/v1/projects/:project_id/production-runs", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const projectId = parseProjectId(context);
+    const command = await parseBody(context, CreateProductionRunCommandSchema);
+    const idempotencyKey = readIdempotencyKey(context);
+    if (!(await assetStore.findProjectDetail(identity.workspaceId, projectId))) throw notFound("Project not found.");
+    const execution = await planningStore.createProductionRun({
+      scope: `${identity.userId}:POST:/api/v1/projects/${projectId}/production-runs`,
+      idempotencyKey,
+      requestHash: fingerprintRequest(command),
+      workspaceId: identity.workspaceId,
+      projectId,
+      productionRunId: createPrefixedId("prd"),
+      storyboardRevisionId: command.storyboard_revision_id,
+      event: {
+        eventId: createPrefixedId("evt"),
+        messageId: createPrefixedId("msg"),
+        traceId: createPrefixedId("trc"),
+        correlationId: createPrefixedId("cor"),
+      },
+    });
+    if (execution.kind !== "NEW" && execution.kind !== "REPLAY") {
+      if (execution.kind === "CONFLICT") throw idempotencyConflict();
+      if (execution.kind === "NOT_FOUND") throw notFound("Project or storyboard revision not found.");
+      if (execution.kind === "ACTIVE_CONFLICT") throw productionRunConflict();
+      throw productionRunStateInvalid();
+    }
+    return response(context, serializeProductionRun(execution.value), execution.status);
+  });
+
   app.post("/api/v1/projects/:project_id/shots", async (context) => {
     const identity = await resolveWorkspaceAccess(context, identityPort, store);
     const projectId = parseProjectId(context);
@@ -402,8 +786,75 @@ export function createApp(options: CreateAppOptions = {}) {
     const shotId = parseShotId(context);
     const command = await parseBody(context, CreateTaskRunCommandSchema);
     const idempotencyKey = readIdempotencyKey(context);
-    if (command.model !== "mock-video-v1") {
-      throw validationError("The local C06 runtime only accepts model mock-video-v1.");
+    const shot = await assetStore.findShot(identity.workspaceId, shotId);
+    if (!shot) throw notFound("Shot not found.");
+    const detail = await assetStore.findProjectDetail(identity.workspaceId, shot.projectId);
+    if (!detail) throw notFound("Project not found.");
+    const bindings = detail.referenceBindings
+      .filter((binding) => binding.shotId === shot.id)
+      .sort((left, right) => left.position - right.position || left.assetId.localeCompare(right.assetId));
+    const references = await Promise.all(bindings.map(async (binding) => ({ binding, asset: await assetStore.findAsset(identity.workspaceId, binding.assetId) })));
+    if (references.some(({ asset }) => !asset
+      || asset.projectId !== shot.projectId
+      || asset.status !== "READY"
+      || asset.kind !== "IMAGE"
+      || !asset.sha256
+      || !asset.mimeType
+      || !referenceImageMimeTypes.has(asset.mimeType)
+      || !asset.byteSize
+      || asset.byteSize > maxReferenceImageBytes)) {
+      throw invalidReference();
+    }
+    const hasFirstFrame = bindings.some((binding) => binding.role === "FIRST_FRAME");
+    const hasUnsupportedRole = bindings.some((binding) => binding.role === "LAST_FRAME");
+    if (hasUnsupportedRole || (hasFirstFrame && bindings.length !== 1)) {
+      throw validationError("Choose either one opening image or one to seven reference images.");
+    }
+    if (!hasFirstFrame && bindings.some((binding) => binding.role !== "STYLE" && binding.role !== "SUBJECT")) {
+      throw validationError("The saved reference images do not form a supported video input.");
+    }
+    const visualInput = bindings.length === 0
+      ? { mode: "TEXT" as const, references: [] as [] }
+      : hasFirstFrame
+        ? {
+            mode: "FIRST_FRAME" as const,
+            references: references.map(({ binding, asset }) => ({
+              asset_id: binding.assetId,
+              sha256: asset!.sha256!,
+              mime_type: asset!.mimeType! as "image/jpeg" | "image/png" | "image/webp",
+              position: 0,
+            })) as [{ asset_id: string; sha256: string; mime_type: "image/jpeg" | "image/png" | "image/webp"; position: number }],
+          }
+        : {
+            mode: "REFERENCE_SET" as const,
+            references: references.map(({ binding, asset }) => ({
+              asset_id: binding.assetId,
+              sha256: asset!.sha256!,
+              mime_type: asset!.mimeType! as "image/jpeg" | "image/png" | "image/webp",
+              position: binding.position,
+            })),
+          };
+    if (videoProfile.mode === "sub2api" && visualInput.mode !== "TEXT" && !referenceDeliveryTokenCodec) {
+      throw validationError("Reference image delivery is not configured for the real video provider.");
+    }
+    let inputSnapshot;
+    try {
+      const compiledPrompt = compileVideoPrompt({
+        sourcePrompt: shot.prompt,
+        generationSettings: shot.generationSettings,
+        profile: videoProfile,
+      });
+      inputSnapshot = createRuntimeVideoInputSnapshot({
+        prompt: compiledPrompt.prompt,
+        visualInput,
+        profile: videoProfile,
+        settings: compiledPrompt.settings,
+      });
+    } catch (error) {
+      if (error instanceof UnsupportedVideoGenerationInputError || error instanceof VideoPromptCompilationError) {
+        throw validationError(error.message);
+      }
+      throw error;
     }
     const execution = await taskStore.createTaskRun({
       scope: `${identity.userId}:POST:/api/v1/shots/${shotId}/generations`,
@@ -413,7 +864,7 @@ export function createApp(options: CreateAppOptions = {}) {
       taskRunId: createPrefixedId("tsk"),
       shotId,
       kind: "VIDEO_GENERATION",
-      inputSnapshot: command,
+      inputSnapshot,
       event: {
         eventId: createPrefixedId("evt"),
         messageId: createPrefixedId("msg"),

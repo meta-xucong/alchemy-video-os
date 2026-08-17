@@ -5,57 +5,72 @@ import test from "node:test";
 const root = new URL("..", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 
-test("Studio presents an operator workbench with accessible local-MVP controls", () => {
-  const page = read("app/pages/index.vue");
+test("M1 project shell has accessible Chinese project controls", () => {
+  const home = read("app/pages/projects/index.vue");
+  const workspace = read("app/pages/projects/[project_id].vue");
 
   for (const label of [
-    "创建项目",
-    "上传参考图",
-    "创建分镜",
-    "标记为可生成",
-    "生成本地 Mock 视频",
-    "重试失败任务",
-    "关闭预览",
+    "新建项目",
+    "创建并进入",
+    "返回项目列表",
+    "刷新项目",
+    "编辑名称",
+    "保存名称",
+    "归档项目",
+    "删除功能等待服务端开放",
   ]) {
-    assert.match(page, new RegExp(label));
+    assert.match(`${home}\n${workspace}`, new RegExp(label));
   }
 
-  for (const surface of ["project-navigator", "asset-library", "storyboard-workbench", "run-activity", "media-dialog"]) {
-    assert.match(page, new RegExp(surface));
-  }
-
-  assert.match(page, /role="dialog"/);
-  assert.match(page, /aria-live="polite"/);
-  assert.match(page, /:aria-label="item.name"/);
-  assert.match(page, /SSE/);
-  assert.match(page, /closePreview/);
-  assert.match(page, /cancelShotEdit/);
-  assert.match(page, /localWorkspaceLabel/);
-  assert.match(page, /localIdentityLabel/);
-  assert.doesNotMatch(page, /Create project|Generate mock video|Retry failed task|Preview generated video/);
+  assert.match(home, /aria-label="项目列表"/);
+  assert.match(workspace, /role="alert"/);
+  assert.match(workspace, /aria-describedby="delete-capability-note"/);
+  assert.doesNotMatch(`${home}\n${workspace}`, /Create project|Delete project|Generate mock video/);
 });
 
-test("Studio workbench retains only public Control API and safe browser state", () => {
-  const page = read("app/pages/index.vue");
+test("M1 project browser state is route-owned and safe to replace", () => {
+  const session = read("app/composables/useProjectSession.ts");
+  const workspace = read("app/pages/projects/[project_id].vue");
+
+  assert.match(workspace, /useRoute\(\)/);
+  assert.match(workspace, /watch\(projectId/);
+  assert.match(session, /clearProjectState\(\)/);
+  assert.match(session, /replaceProjectDetail/);
+  assert.match(session, /selectedProjectId\.value = projectId/);
+  assert.match(session, /detail\.value = loaded/);
+  assert.match(session, /releasePreview/);
+});
+
+test("C10 presents project materials through public commands with user-facing status and retry controls", () => {
+  const workspace = read("app/pages/projects/[project_id].vue");
+  const materials = read("app/components/studio/ProjectMaterials.vue");
   const composable = read("app/composables/useControlApi.ts");
+  const events = read("app/composables/useProjectEvents.ts");
+  const source = `${workspace}\n${materials}\n${composable}\n${events}`;
 
-  assert.match(page, /new EventSource\(`\/api\/v1\/events/);
-  assert.match(page, /assetDownloadUrl/);
-  assert.match(page, /safeErrorMessage/);
-  assert.doesNotMatch(`${page}\n${composable}`, /\/internal\//);
-  assert.doesNotMatch(`${page}\n${composable}`, /\b(?:object_key|provider_request_id|request_payload|response_payload|veyra|minio|bullmq|outbox)\b/i);
+  for (const name of ["documents", "createDocumentConversion", "retryDocumentConversion", "uploadDocument", "retryDocument", "refreshDocuments"]) {
+    assert.match(source, new RegExp(name));
+  }
+  for (const label of ["项目资料", "添加资料", "正在整理", "已可用于这次创作", "这份资料暂时无法整理", "重新整理"]) {
+    assert.match(`${workspace}\n${materials}`, new RegExp(label));
+  }
+  for (const eventType of ["document_conversion.queued", "document_conversion.started", "document_conversion.succeeded", "document_conversion.failed"]) {
+    assert.match(events, new RegExp(eventType));
+  }
+  assert.doesNotMatch(`${workspace}\n${materials}`, /MarkItDown|object_key|runtime_url|document-runtime|bullmq|outbox/i);
+  assert.doesNotMatch(composable, /\/internal\//);
 });
 
-test("Studio CSS defines stable desktop columns and single-column mobile recovery", () => {
+test("M1 CSS keeps project views bounded on desktop and mobile", () => {
   const styles = read("app/assets/studio.css");
 
   assert.match(styles, /--black-soft:\s*#f3f0ea/);
   assert.match(styles, /--brass:\s*#9a7535/);
-  assert.match(styles, /border-radius:\s*(?:5|6|8)px/);
-  assert.match(styles, /backdrop-filter:\s*blur\(20px\)/);
-  assert.match(styles, /\.workbench-columns/);
-  assert.match(styles, /grid-template-columns:\s*220px/);
+  assert.match(styles, /\.project-home/);
+  assert.match(styles, /\.project-grid/);
+  assert.match(styles, /minmax\(240px, 1fr\)/);
+  assert.match(styles, /\.project-workspace-header/);
   assert.match(styles, /@media \(max-width: 760px\)/);
-  assert.match(styles, /\.media-dialog/);
-  assert.match(styles, /\.project-navigator/);
+  assert.match(styles, /\.project-management-actions/);
+  assert.match(styles, /border-radius:\s*(?:4|6|8)px/);
 });

@@ -74,6 +74,19 @@ export type PersistedOutboxEvent = {
   publishAttempts: number;
 };
 
+export interface OutboxRelayStore {
+  claimOutboxEvents(input: {
+    relayId: string;
+    now: Date;
+    leaseMs: number;
+    limit: number;
+    workspaceId?: string;
+    eventTypes?: readonly InternalEventEnvelope["event_type"][];
+  }): Promise<PersistedOutboxEvent[]>;
+  markOutboxPublished(input: { eventId: string; workspaceId: string; relayId: string; now: Date }): Promise<void>;
+  releaseOutboxEvent(input: { eventId: string; workspaceId: string; relayId: string; now: Date; retryDelayMs: number; maxAttempts: number; reason: string }): Promise<void>;
+}
+
 export type TaskRunEventResult = "PROCESSED" | "DUPLICATE" | "IGNORED" | "BUSY" | "RETRY";
 
 export type TaskRunEventProcessingInput = {
@@ -103,7 +116,7 @@ export type GeneratedAssetDraft = {
   taskRunId: string;
 };
 
-export interface TaskRunStore {
+export interface TaskRunStore extends OutboxRelayStore {
   createTaskRun(input: CreateTaskRunInput): Promise<TaskRunCommandExecution>;
   retryTaskRun(input: RetryTaskRunInput): Promise<TaskRunCommandExecution>;
   findTaskRun(workspaceId: string, taskRunId: string): Promise<ControlTaskRun | undefined>;
@@ -122,9 +135,6 @@ export interface TaskRunStore {
   finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; code: string; message: string; now: Date }): Promise<ControlTaskRun | undefined>;
   failTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId?: string; failureStage?: "PROVIDER" | "DOWNLOAD"; code: string; message: string; retryable: boolean; now: Date }): Promise<ControlTaskRun | undefined>;
   listWorkspaceEvents(input: { workspaceId: string; afterEventId?: string; limit: number }): Promise<InternalEventEnvelope[]>;
-  claimOutboxEvents(input: { relayId: string; now: Date; leaseMs: number; limit: number; workspaceId?: string }): Promise<PersistedOutboxEvent[]>;
-  markOutboxPublished(input: { eventId: string; workspaceId: string; relayId: string; now: Date }): Promise<void>;
-  releaseOutboxEvent(input: { eventId: string; workspaceId: string; relayId: string; now: Date; retryDelayMs: number; maxAttempts: number; reason: string }): Promise<void>;
   processEvent(input: TaskRunEventProcessingInput): Promise<TaskRunEventResult>;
   releaseConsumerEvent(input: { eventId: string; workspaceId: string; consumerName: string; workerId: string; reason: string; deadLetter: boolean; now: Date }): Promise<void>;
 }
@@ -782,10 +792,13 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
     });
   }
 
-  async claimOutboxEvents(input: { relayId: string; now: Date; leaseMs: number; limit: number; workspaceId?: string }) {
+  async claimOutboxEvents(input: { relayId: string; now: Date; leaseMs: number; limit: number; workspaceId?: string; eventTypes?: readonly InternalEventEnvelope["event_type"][] }) {
     const now = input.now.toISOString();
     const expiresAt = new Date(input.now.getTime() + input.leaseMs).toISOString();
     const workspaceCondition = input.workspaceId ? sql`and workspace_id = ${input.workspaceId}` : sql``;
+    const eventTypeCondition = input.eventTypes?.length
+      ? sql`and event_type in (${sql.join(input.eventTypes.map((eventType) => sql`${eventType}`), sql`, `)})`
+      : sql``;
     const result = await this.db.execute(sql`
       with candidates as (
         select id
@@ -795,6 +808,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
           and available_at <= ${now}::timestamptz
           and (lease_expires_at is null or lease_expires_at <= ${now}::timestamptz)
           ${workspaceCondition}
+          ${eventTypeCondition}
         order by available_at asc, id asc
         for update skip locked
         limit ${input.limit}

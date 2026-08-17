@@ -1,6 +1,6 @@
 import { InternalTaskRunQueueMessageSchema, type InternalTaskRunQueueMessage } from "@alchemy-video/contracts";
 import type { InternalEventQueuePort } from "@alchemy-video/task-queue";
-import type { PersistedOutboxEvent, TaskRunEventResult, TaskRunStore } from "@alchemy-video/persistence";
+import type { OutboxRelayStore, PersistedOutboxEvent, TaskRunEventResult, TaskRunStore } from "@alchemy-video/persistence";
 import type { MockVideoTaskExecutor } from "./execution-service.js";
 
 const failureReason = (error: unknown) =>
@@ -8,9 +8,17 @@ const failureReason = (error: unknown) =>
 
 export class OutboxRelay {
   constructor(
-    private readonly store: Pick<TaskRunStore, "claimOutboxEvents" | "markOutboxPublished" | "releaseOutboxEvent">,
+    private readonly store: OutboxRelayStore,
     private readonly queue: InternalEventQueuePort,
-    private readonly input: { relayId: string; leaseMs: number; retryDelayMs: number; maxAttempts: number; batchSize: number; workspaceId?: string },
+    private readonly input: {
+      relayId: string;
+      leaseMs: number;
+      retryDelayMs: number;
+      maxAttempts: number;
+      batchSize: number;
+      workspaceId?: string;
+      eventTypes?: Parameters<OutboxRelayStore["claimOutboxEvents"]>[0]["eventTypes"];
+    },
   ) {}
 
   async runOnce(now = new Date()) {
@@ -20,6 +28,7 @@ export class OutboxRelay {
       leaseMs: this.input.leaseMs,
       limit: this.input.batchSize,
       workspaceId: this.input.workspaceId,
+      eventTypes: this.input.eventTypes,
     });
     const result = { published: 0, retried: 0, deadLettered: 0 };
     for (const outbox of claimed) {
@@ -103,7 +112,7 @@ export class TaskRunEventConsumer {
       workspaceId: input.workspace_id,
       taskRunId: input.task_run_id,
       code: "PROVIDER_UNAVAILABLE",
-      message: "Mock video execution exhausted its recoverable delivery attempts.",
+      message: "Video execution exhausted its recoverable delivery attempts.",
       now: new Date(),
     });
   }

@@ -17,6 +17,10 @@ channels:
         name: InternalTaskRunQueueMessage
         payload:
           $ref: "#/components/schemas/InternalTaskRunQueueMessage"
+      creativePlanningRequested:
+        name: InternalCreativePlanningQueueMessage
+        payload:
+          $ref: "#/components/schemas/InternalCreativePlanningQueueMessage"
 components:
   schemas:
     InternalEventEnvelope:
@@ -68,6 +72,16 @@ components:
                     - shot
                     - task_run
                     - asset
+                    - document
+                    - document_conversion
+                    - creative_brief_revision
+                    - script_revision
+                    - storyboard_revision
+                    - production_run
+                    - production_segment
+                    - asset_derivation
+                    - qc_report
+                    - video_version
                 id:
                   type: string
                   minLength: 1
@@ -671,6 +685,1127 @@ components:
             - event_type
             - data
           additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - document_conversion.queued
+            data:
+              type: object
+              properties:
+                conversion_id:
+                  type: string
+                  pattern: ^dcv_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+                document_id:
+                  type: string
+                  pattern: ^doc_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+                source_asset_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/data/properties/a\
+                    sset_id"
+              required:
+                - conversion_id
+                - document_id
+                - source_asset_id
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - document_conversion.started
+            data:
+              type: object
+              properties:
+                conversion_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/9/properties/data/properties/c\
+                    onversion_id"
+                source_asset_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/data/properties/a\
+                    sset_id"
+              required:
+                - conversion_id
+                - source_asset_id
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - document_conversion.succeeded
+            data:
+              type: object
+              properties:
+                conversion_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/9/properties/data/properties/c\
+                    onversion_id"
+                source_asset_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/data/properties/a\
+                    sset_id"
+                markdown_asset_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/data/properties/a\
+                    sset_id"
+              required:
+                - conversion_id
+                - source_asset_id
+                - markdown_asset_id
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - document_conversion.failed
+            data:
+              type: object
+              properties:
+                conversion_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/9/properties/data/properties/c\
+                    onversion_id"
+                source_asset_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/data/properties/a\
+                    sset_id"
+                retryable:
+                  type: boolean
+              required:
+                - conversion_id
+                - source_asset_id
+                - retryable
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - creative_brief.planning_requested
+            data:
+              type: object
+              properties:
+                creative_brief_revision_id:
+                  type: string
+                  pattern: ^cbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+              required:
+                - creative_brief_revision_id
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - creative_brief.planning_failed
+            data:
+              type: object
+              properties:
+                creative_brief_revision_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/13/properties/data/properties/\
+                    creative_brief_revision_id"
+                error_code:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+              required:
+                - creative_brief_revision_id
+                - error_code
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - storyboard_revision.ready_for_review
+            data:
+              type: object
+              properties:
+                storyboard_revision_id:
+                  type: string
+                  pattern: ^sbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+                shot_count:
+                  type: integer
+                  exclusiveMinimum: true
+                  minimum: 0
+                total_duration_seconds:
+                  type: integer
+                  exclusiveMinimum: true
+                  minimum: 0
+                continuity_level:
+                  type: string
+                  enum:
+                    - STANDARD
+                    - REVIEW_REQUIRED
+              required:
+                - storyboard_revision_id
+                - shot_count
+                - total_duration_seconds
+                - continuity_level
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - storyboard_revision.approved
+            data:
+              type: object
+              properties:
+                storyboard_revision_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/15/properties/data/properties/\
+                    storyboard_revision_id"
+              required:
+                - storyboard_revision_id
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - production_run.confirmed
+            data:
+              type: object
+              properties:
+                production_run_id:
+                  type: string
+                  pattern: ^prd_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+                storyboard_revision_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/15/properties/data/properties/\
+                    storyboard_revision_id"
+                total_shot_count:
+                  type: integer
+                  exclusiveMinimum: true
+                  minimum: 0
+              required:
+                - production_run_id
+                - storyboard_revision_id
+                - total_shot_count
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - production_run.progressed
+            data:
+              type: object
+              properties:
+                production_run_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/\
+                    production_run_id"
+                status:
+                  type: string
+                  enum:
+                    - DRAFT
+                    - PLAN_READY
+                    - CONFIRMED
+                    - GENERATING
+                    - REVIEWING
+                    - RENDERING
+                    - SUCCEEDED
+                    - BLOCKED
+                    - FAILED
+                accepted_shot_count:
+                  type: integer
+                  minimum: 0
+                total_shot_count:
+                  type: integer
+                  exclusiveMinimum: true
+                  minimum: 0
+                current_sequence:
+                  type: integer
+                  exclusiveMinimum: true
+                  minimum: 0
+                  nullable: true
+              required:
+                - production_run_id
+                - status
+                - accepted_shot_count
+                - total_shot_count
+                - current_sequence
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - production_run.blocked
+            data:
+              type: object
+              properties:
+                production_run_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/\
+                    production_run_id"
+                sequence:
+                  type: integer
+                  exclusiveMinimum: true
+                  minimum: 0
+                reason_code:
+                  type: string
+                  enum:
+                    - DEPENDENCY_PENDING
+                    - SEGMENT_NEEDS_ATTENTION
+                    - REFERENCE_POLICY_UNSATISFIED
+                retryable:
+                  type: boolean
+              required:
+                - production_run_id
+                - sequence
+                - reason_code
+                - retryable
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - production_segment.qc_requested
+            data:
+              type: object
+              properties:
+                production_run_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/\
+                    production_run_id"
+                production_segment_id:
+                  type: string
+                  pattern: ^psg_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+                task_run_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/2/properties/data/properties/t\
+                    ask_run_id"
+              required:
+                - production_run_id
+                - production_segment_id
+                - task_run_id
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - handoff_asset.accepted
+            data:
+              type: object
+              properties:
+                production_run_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/\
+                    production_run_id"
+                sequence:
+                  type: integer
+                  exclusiveMinimum: true
+                  minimum: 0
+                handoff_asset_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/data/properties/a\
+                    sset_id"
+                asset_derivation_id:
+                  type: string
+                  pattern: ^drv_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+                qc_report_id:
+                  type: string
+                  pattern: ^qcr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+              required:
+                - production_run_id
+                - sequence
+                - handoff_asset_id
+                - asset_derivation_id
+                - qc_report_id
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - qc_report.completed
+            data:
+              type: object
+              properties:
+                qc_report_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/21/properties/data/properties/\
+                    qc_report_id"
+                subject_type:
+                  type: string
+                  enum:
+                    - PRODUCTION_SEGMENT
+                    - VIDEO_VERSION
+                subject_id:
+                  type: string
+                  minLength: 1
+                status:
+                  type: string
+                  enum:
+                    - PASS
+                    - NEEDS_ATTENTION
+                    - FAILED
+              required:
+                - qc_report_id
+                - subject_type
+                - subject_id
+                - status
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - video_version.composition_requested
+            data:
+              type: object
+              properties:
+                production_run_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/\
+                    production_run_id"
+              required:
+                - production_run_id
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - video_version.succeeded
+            data:
+              type: object
+              properties:
+                video_version_id:
+                  type: string
+                  pattern: ^vvr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+                production_run_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/\
+                    production_run_id"
+                asset_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/data/properties/a\
+                    sset_id"
+                duration_ms:
+                  type: integer
+                  exclusiveMinimum: true
+                  minimum: 0
+                qc_report_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/21/properties/data/properties/\
+                    qc_report_id"
+              required:
+                - video_version_id
+                - production_run_id
+                - asset_id
+                - duration_ms
+                - qc_report_id
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
+        - type: object
+          properties:
+            contract_version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+            message_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+            event_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+            occurred_at:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+            trace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+            correlation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+            causation_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+            idempotency_key:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+            producer:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+            workspace_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+            project_id:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+            aggregate:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+            version:
+              $ref: "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+            event_type:
+              type: string
+              enum:
+                - video_version.failed
+            data:
+              type: object
+              properties:
+                production_run_id:
+                  $ref: "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/\
+                    production_run_id"
+                error_code:
+                  type: string
+                  enum:
+                    - MEDIA_RUNTIME_UNAVAILABLE
+                    - MEDIA_RENDER_FAILED
+                    - QC_FAILED
+                retryable:
+                  type: boolean
+              required:
+                - production_run_id
+                - error_code
+                - retryable
+              additionalProperties: false
+          required:
+            - contract_version
+            - message_id
+            - event_id
+            - occurred_at
+            - trace_id
+            - correlation_id
+            - idempotency_key
+            - producer
+            - workspace_id
+            - aggregate
+            - version
+            - event_type
+            - data
+          additionalProperties: false
     InternalTaskRunQueueMessage:
       type: object
       properties:
@@ -705,4 +1840,68 @@ components:
         - attempt_no
         - correlation_id
         - input_snapshot
+      additionalProperties: false
+    InternalDocumentConversionQueueMessage:
+      type: object
+      properties:
+        contract_version:
+          type: string
+          enum:
+            - "1.0"
+        event_id:
+          type: string
+          pattern: ^evt_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+        workspace_id:
+          type: string
+          pattern: ^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+        project_id:
+          type: string
+          pattern: ^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+        conversion_id:
+          type: string
+          pattern: ^dcv_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+        source_asset_id:
+          type: string
+          pattern: ^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+        correlation_id:
+          type: string
+          minLength: 1
+      required:
+        - contract_version
+        - event_id
+        - workspace_id
+        - project_id
+        - conversion_id
+        - source_asset_id
+        - correlation_id
+      additionalProperties: false
+    InternalCreativePlanningQueueMessage:
+      type: object
+      properties:
+        contract_version:
+          type: string
+          enum:
+            - "1.0"
+        event_id:
+          type: string
+          pattern: ^evt_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+        workspace_id:
+          type: string
+          pattern: ^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+        project_id:
+          type: string
+          pattern: ^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+        creative_brief_revision_id:
+          type: string
+          pattern: ^cbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
+        correlation_id:
+          type: string
+          minLength: 1
+      required:
+        - contract_version
+        - event_id
+        - workspace_id
+        - project_id
+        - creative_brief_revision_id
+        - correlation_id
       additionalProperties: false

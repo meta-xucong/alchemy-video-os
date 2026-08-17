@@ -15,6 +15,12 @@ export type DevIdentitySeed = {
   };
 };
 
+export type ControlIdentitySeed = DevIdentitySeed & {
+  membership?: {
+    role?: "OWNER" | "ADMIN" | "EDITOR" | "VIEWER";
+  };
+};
+
 export type ControlUser = {
   id: string;
   displayName: string;
@@ -64,6 +70,7 @@ export type CommandConflict = { kind: "CONFLICT" };
 export type CommandNotFound = { kind: "NOT_FOUND"; status: 404 };
 
 export interface ControlPlaneStore {
+  ensureIdentity(seed: ControlIdentitySeed): Promise<void>;
   ensureDevIdentity(seed: DevIdentitySeed): Promise<void>;
   getDatabaseStatus(): Promise<"ok" | "unavailable" | "not_configured">;
   findUser(userId: string): Promise<ControlUser | undefined>;
@@ -89,7 +96,7 @@ const isNotFoundSnapshot = (snapshot: Record<string, unknown>) => snapshot.kind 
 export class DrizzleControlPlaneRepository implements ControlPlaneStore {
   constructor(private readonly db: PlatformDatabase) {}
 
-  async ensureDevIdentity(seed: DevIdentitySeed) {
+  async ensureIdentity(seed: ControlIdentitySeed) {
     await this.db.transaction(async (transaction) => {
       await transaction
         .insert(users)
@@ -101,9 +108,13 @@ export class DrizzleControlPlaneRepository implements ControlPlaneStore {
         .onConflictDoNothing();
       await transaction
         .insert(workspaceMembers)
-        .values({ workspaceId: seed.workspace.id, userId: seed.user.id, role: "OWNER" })
+        .values({ workspaceId: seed.workspace.id, userId: seed.user.id, role: seed.membership?.role ?? "OWNER" })
         .onConflictDoNothing();
     });
+  }
+
+  async ensureDevIdentity(seed: DevIdentitySeed) {
+    await this.ensureIdentity(seed);
   }
 
   async getDatabaseStatus() {

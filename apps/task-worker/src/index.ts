@@ -1,15 +1,11 @@
-import { config } from "dotenv";
-
-import { createDatabase, DrizzleTaskRunRepository } from "@alchemy-video/persistence";
+import { createDatabase, DrizzleAssetWorkspaceRepository, DrizzleTaskRunRepository } from "@alchemy-video/persistence";
 import { BullMqInternalEventQueue, createBullMqInternalEventWorker } from "@alchemy-video/task-queue";
 import { createS3StoragePort } from "@alchemy-video/storage-client";
-import { createMockMp4Fixture, MockVideoProvider } from "@alchemy-video/provider-video";
 
 import { MockVideoTaskExecutor } from "./execution-service.js";
+import { createWorkerVideoProviderRuntime } from "./provider-runtime.js";
+import { createWorkerReferenceDeliveryPort } from "./reference-delivery.js";
 import { OutboxRelay, TaskRunEventConsumer, recoverC06TaskRuns } from "./service.js";
-
-config({ path: ".env.local" });
-config();
 
 const databaseUrl = process.env.DATABASE_URL;
 const redisUrl = process.env.REDIS_URL;
@@ -20,17 +16,22 @@ if (!databaseUrl || !redisUrl) {
 const workerId = process.env.TASK_WORKER_ID ?? `task-worker-${process.pid}`;
 const database = createDatabase(databaseUrl);
 const store = new DrizzleTaskRunRepository(database.db);
-if ((process.env.VIDEO_PROVIDER ?? "mock") !== "mock") {
-  throw new Error("C06 only supports VIDEO_PROVIDER=mock; real providers belong to C07+.");
-}
+const assetStore = new DrizzleAssetWorkspaceRepository(database.db);
 const requiredStorageConfig = ["S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "S3_ACCESS_KEY", "S3_SECRET_KEY"] as const;
 if (requiredStorageConfig.some((name) => !process.env[name])) {
   throw new Error("S3_ENDPOINT, S3_REGION, S3_BUCKET, S3_ACCESS_KEY, and S3_SECRET_KEY are required for the C06 Worker.");
 }
 const storage = createS3StoragePort({ endpoint: process.env.S3_ENDPOINT!, region: process.env.S3_REGION!, bucket: process.env.S3_BUCKET!, accessKeyId: process.env.S3_ACCESS_KEY!, secretAccessKey: process.env.S3_SECRET_KEY! });
-const fixture = await createMockMp4Fixture();
-const provider = new MockVideoProvider({ fixtureBytes: fixture, outcome: process.env.MOCK_VIDEO_OUTCOME === "failed" ? "failed" : "succeeded" });
-const executor = new MockVideoTaskExecutor(store, provider, storage);
+const runtime = await createWorkerVideoProviderRuntime({ environment: process.env });
+const executor = new MockVideoTaskExecutor(store, runtime.provider, storage, {
+  providerName: runtime.profile.provider,
+  expectedModel: runtime.profile.model,
+  pollIntervalMs: runtime.profile.pollIntervalMs,
+  maxPollAttempts: runtime.profile.maxPollAttempts,
+  assetStore,
+  referenceDelivery: createWorkerReferenceDeliveryPort({ profile: runtime.profile, environment: process.env }),
+  allowLegacyReferenceAssets: runtime.profile.mode === "mock",
+});
 const queueName = process.env.TASK_QUEUE_NAME;
 const deadLetterQueueName = process.env.TASK_DEAD_LETTER_QUEUE_NAME;
 const queue = new BullMqInternalEventQueue(redisUrl, { ...(queueName ? { queueName } : {}) });
@@ -40,6 +41,7 @@ const relay = new OutboxRelay(store, queue, {
   retryDelayMs: 1_000,
   maxAttempts: 5,
   batchSize: 25,
+  eventTypes: ["task_run.queued"],
 });
 const consumer = new TaskRunEventConsumer(store, {
   consumerName: "task-run-transition",

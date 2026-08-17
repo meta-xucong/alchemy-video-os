@@ -6,6 +6,8 @@ import {
   BillingChargeRequestSchema,
   CreditDebitInputSchema,
   CreditProviderSchema,
+  VeyraExternalIdentitySchema,
+  VeyraLoginTicketExchangeInputSchema,
   decimalToScaledUnits,
   equalCreditDecimals,
 } from "../src/index.js";
@@ -52,4 +54,35 @@ test("billing charge contracts remain internal and exact", () => {
     "1.25000000",
   );
   assert.equal(ApplicationErrorCodeSchema.parse("CREDIT_REJECTED"), "CREDIT_REJECTED");
+});
+
+test("Veyra login ticket contracts are video-intent only and internal", () => {
+  assert.deepEqual(
+    VeyraLoginTicketExchangeInputSchema.parse({ ticket: "0123456789abcdef0123456789abcdef" }),
+    { ticket: "0123456789abcdef0123456789abcdef", expectedIntent: "video" },
+  );
+  assert.throws(() => VeyraLoginTicketExchangeInputSchema.parse({ ticket: "short" }));
+  assert.throws(() =>
+    VeyraLoginTicketExchangeInputSchema.parse({ ticket: "0123456789abcdef0123456789abcdef", expectedIntent: "alchemy" }),
+  );
+
+  assert.deepEqual(
+    VeyraExternalIdentitySchema.parse({
+      externalUserId: 42,
+      intent: "video",
+      email: "video-canary@example.test",
+      role: "owner",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    }).intent,
+    "video",
+  );
+  assert.throws(() =>
+    VeyraExternalIdentitySchema.parse({
+      externalUserId: 42,
+      intent: "alchemy",
+      email: "video-canary@example.test",
+      role: "owner",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    }),
+  );
 });

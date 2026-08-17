@@ -5,11 +5,11 @@ Source commit: f04d705603bd0257bcec6b8f44fd04ea3ea9b795
 
 | Target file | Upstream file and symbol | Preserved structure | Platform adaptation | Regression test |
 | --- | --- | --- | --- | --- |
-| package.json | backend/package.json | Hono, @hono/node-server, dotenv, tsx scripts | Removed AI SDK, MySQL, FFmpeg, Sharp and provider dependencies; added the platform's C02 contracts/domain/persistence workspace packages and Zod | pnpm --filter @alchemy-video/control-api test |
+| package.json | backend/package.json | Hono, @hono/node-server, tsx scripts | Removed AI SDK, MySQL, FFmpeg, Sharp, dotenv and provider credentials; added the platform's C02 contracts/domain/persistence/provider-video workspace packages and Zod | pnpm --filter @alchemy-video/control-api test |
 | tsconfig.json | backend/tsconfig.json | ES module TypeScript compiler shape | Extends root base config and limits rootDir to src | pnpm --filter @alchemy-video/control-api typecheck |
 | src/app.ts | backend/src/index.ts: app, Hono, cors, /api/v1/health | Hono app setup, local CORS, health route | C03 adds only public identity/workspace/project routes; short-drama routes, static files, Provider configuration and global business state remain excluded | tests/health.test.ts; tests/control-api.test.ts |
 | src/middleware/logger.ts | backend/src/middleware/logger.ts: requestLogger, errorHandler | Middleware names and request timing pattern | Generates platform request IDs, logs no request body or credentials, and returns the platform-safe error envelope | tests/health.test.ts; tests/control-api.test.ts |
-| src/index.ts | backend/src/index.ts: serve, PORT | Node Hono server startup | Uses CONTROL_API_PORT, loads the local database configuration, and constructs the isolated Drizzle-backed app | pnpm --filter @alchemy-video/control-api build |
+| src/index.ts | backend/src/index.ts: serve, PORT | Node Hono server startup | Uses process-injected CONTROL_API_PORT/DATABASE/S3 configuration and constructs the isolated Drizzle-backed app; it never loads a shared dotenv file or video credentials | pnpm --filter @alchemy-video/control-api build |
 
 ## C03 adaptation
 

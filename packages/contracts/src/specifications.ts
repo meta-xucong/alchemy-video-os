@@ -2,7 +2,24 @@ import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
 import { ApiErrorSchema, ApiFailureEnvelopeSchema, successEnvelope } from "./errors.js";
-import { InternalEventEnvelopeSchema, InternalTaskRunQueueMessageSchema, PublicWorkspaceEventEnvelopeSchema } from "./events.js";
+import { InternalCreativePlanningQueueMessageSchema, InternalDocumentConversionQueueMessageSchema, InternalEventEnvelopeSchema, InternalTaskRunQueueMessageSchema, PublicWorkspaceEventEnvelopeSchema } from "./events.js";
+import { CreateDocumentConversionCommandSchema, DocumentConversionSchema, DocumentSchema, RetryDocumentConversionCommandSchema } from "./documents.js";
+import {
+  ApproveStoryboardRevisionCommandSchema,
+  CreateCreativeBriefRevisionCommandSchema,
+  CreateProductionRunCommandSchema,
+  CreativeBriefRevisionSchema,
+  ProductionRunSchema,
+  RequestCreativePlanCommandSchema,
+  ScriptRevisionSchema,
+  StoryboardRevisionSchema,
+} from "./creative-planning.js";
+import {
+  ProductionRunProgressSchema,
+  ProductionSegmentSchema,
+  RetryProductionSegmentCommandSchema,
+  VideoVersionSchema,
+} from "./production.js";
 import {
   AssetSchema,
   AssetDownloadUrlSchema,
@@ -50,6 +67,25 @@ export const publicContractSchemas = {
   Asset: AssetSchema,
   AssetSuccess: successEnvelope(AssetSchema),
   AssetDownloadUrlSuccess: successEnvelope(AssetDownloadUrlSchema),
+  Document: DocumentSchema,
+  DocumentConversion: DocumentConversionSchema,
+  DocumentConversionSuccess: successEnvelope(DocumentConversionSchema),
+  DocumentListSuccess: successEnvelope(z.array(DocumentConversionSchema)),
+  CreativeBriefRevision: CreativeBriefRevisionSchema,
+  CreativeBriefRevisionSuccess: successEnvelope(CreativeBriefRevisionSchema),
+  ScriptRevision: ScriptRevisionSchema,
+  StoryboardRevision: StoryboardRevisionSchema,
+  StoryboardRevisionSuccess: successEnvelope(StoryboardRevisionSchema),
+  StoryboardRevisionListSuccess: successEnvelope(z.array(StoryboardRevisionSchema)),
+  ProductionRun: ProductionRunSchema,
+  ProductionRunSuccess: successEnvelope(ProductionRunSchema),
+  ProductionRunListSuccess: successEnvelope(z.array(ProductionRunSchema)),
+  ProductionSegment: ProductionSegmentSchema,
+  ProductionRunProgress: ProductionRunProgressSchema,
+  ProductionRunProgressSuccess: successEnvelope(ProductionRunProgressSchema),
+  ProductionRunProgressListSuccess: successEnvelope(z.array(ProductionRunProgressSchema)),
+  VideoVersion: VideoVersionSchema,
+  VideoVersionListSuccess: successEnvelope(z.array(VideoVersionSchema)),
   ReferenceBinding: ReferenceBindingSchema,
   CurrentIdentitySuccess: successEnvelope(CurrentIdentitySchema),
   HealthSuccess: successEnvelope(HealthSchema),
@@ -70,6 +106,13 @@ export const publicContractSchemas = {
   UpdateShotCommand: UpdateShotCommandSchema,
   CreateTaskRunCommand: CreateTaskRunCommandSchema,
   RetryTaskRunCommand: RetryTaskRunCommandSchema,
+  CreateDocumentConversionCommand: CreateDocumentConversionCommandSchema,
+  RetryDocumentConversionCommand: RetryDocumentConversionCommandSchema,
+  CreateCreativeBriefRevisionCommand: CreateCreativeBriefRevisionCommandSchema,
+  RequestCreativePlanCommand: RequestCreativePlanCommandSchema,
+  ApproveStoryboardRevisionCommand: ApproveStoryboardRevisionCommandSchema,
+  CreateProductionRunCommand: CreateProductionRunCommandSchema,
+  RetryProductionSegmentCommand: RetryProductionSegmentCommandSchema,
   ProjectDetailSuccess: successEnvelope(ProjectDetailSchema),
   PublicWorkspaceEventEnvelope: PublicWorkspaceEventEnvelopeSchema,
 };
@@ -77,6 +120,8 @@ export const publicContractSchemas = {
 export const internalContractSchemas = {
   InternalEventEnvelope: InternalEventEnvelopeSchema,
   InternalTaskRunQueueMessage: InternalTaskRunQueueMessageSchema,
+  InternalDocumentConversionQueueMessage: InternalDocumentConversionQueueMessageSchema,
+  InternalCreativePlanningQueueMessage: InternalCreativePlanningQueueMessageSchema,
 };
 
 export const openApiSchemas = Object.fromEntries(
@@ -216,7 +261,7 @@ export const createOpenApiDocument = (): JsonSchema => ({
         operationId: "confirmAssetUpload",
         parameters: [
           { $ref: "#/components/parameters/IdempotencyKey" },
-          { $ref: "#/components/parameters/AssetId" },
+          { $ref: "#/components/parameters/SourceAssetId" },
         ],
         requestBody: {
           required: true,
@@ -238,6 +283,168 @@ export const createOpenApiDocument = (): JsonSchema => ({
         responses: {
           "200": response("AssetDownloadUrlSuccess", "Short-lived asset download URL"),
           "404": response("ApiFailure", "Asset not found"),
+        },
+      },
+    },
+    "/api/v1/projects/{project_id}/documents": {
+      get: {
+        operationId: "listDocumentConversions",
+        parameters: [{ $ref: "#/components/parameters/ProjectId" }],
+        responses: {
+          "200": response("DocumentListSuccess", "Project document conversions"),
+          "404": response("ApiFailure", "Project not found"),
+        },
+      },
+    },
+    "/api/v1/projects/{project_id}/documents/{source_asset_id}/conversions": {
+      post: {
+        operationId: "createDocumentConversion",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { $ref: "#/components/parameters/ProjectId" },
+          { $ref: "#/components/parameters/SourceAssetId" },
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/CreateDocumentConversionCommand" } } } },
+        responses: {
+          "202": response("DocumentConversionSuccess", "Document conversion queued"),
+          "400": response("ApiFailure", "Source document is invalid"),
+          "404": response("ApiFailure", "Project or source asset not found"),
+          "409": response("ApiFailure", "Idempotency or active conversion conflict"),
+        },
+      },
+    },
+    "/api/v1/projects/{project_id}/creative-brief-revisions": {
+      post: {
+        operationId: "createCreativeBriefRevision",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { $ref: "#/components/parameters/ProjectId" },
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/CreateCreativeBriefRevisionCommand" } } } },
+        responses: {
+          "201": response("CreativeBriefRevisionSuccess", "Creative brief revision created"),
+          "400": response("ApiFailure", "Creative brief is invalid"),
+          "404": response("ApiFailure", "Project or source asset not found"),
+          "409": response("ApiFailure", "Idempotency conflict"),
+        },
+      },
+    },
+    "/api/v1/creative-brief-revisions/{creative_brief_revision_id}/plan": {
+      post: {
+        operationId: "requestCreativePlan",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { $ref: "#/components/parameters/CreativeBriefRevisionId" },
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/RequestCreativePlanCommand" } } } },
+        responses: {
+          "202": response("CreativeBriefRevisionSuccess", "Creative planning requested"),
+          "400": response("ApiFailure", "Creative brief cannot be planned"),
+          "404": response("ApiFailure", "Creative brief not found"),
+          "409": response("ApiFailure", "Idempotency or active planning conflict"),
+        },
+      },
+    },
+    "/api/v1/projects/{project_id}/storyboard-revisions": {
+      get: {
+        operationId: "listStoryboardRevisions",
+        parameters: [{ $ref: "#/components/parameters/ProjectId" }],
+        responses: {
+          "200": response("StoryboardRevisionListSuccess", "Project storyboard revisions"),
+          "404": response("ApiFailure", "Project not found"),
+        },
+      },
+    },
+    "/api/v1/storyboard-revisions/{storyboard_revision_id}/approve": {
+      post: {
+        operationId: "approveStoryboardRevision",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { $ref: "#/components/parameters/StoryboardRevisionId" },
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/ApproveStoryboardRevisionCommand" } } } },
+        responses: {
+          "202": response("StoryboardRevisionSuccess", "Storyboard revision approved"),
+          "400": response("ApiFailure", "Storyboard revision cannot be approved"),
+          "404": response("ApiFailure", "Storyboard revision not found"),
+          "409": response("ApiFailure", "Idempotency conflict"),
+        },
+      },
+    },
+    "/api/v1/projects/{project_id}/production-runs": {
+      get: {
+        operationId: "listProductionRuns",
+        parameters: [{ $ref: "#/components/parameters/ProjectId" }],
+        responses: {
+          "200": response("ProductionRunProgressListSuccess", "Project production runs and segment progress"),
+          "404": response("ApiFailure", "Project not found"),
+        },
+      },
+      post: {
+        operationId: "createProductionRun",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { $ref: "#/components/parameters/ProjectId" },
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/CreateProductionRunCommand" } } } },
+        responses: {
+          "202": response("ProductionRunSuccess", "Production run confirmed without video submission"),
+          "400": response("ApiFailure", "Storyboard revision cannot be confirmed"),
+          "404": response("ApiFailure", "Project or storyboard revision not found"),
+          "409": response("ApiFailure", "Idempotency or active production run conflict"),
+        },
+      },
+    },
+    "/api/v1/production-runs/{production_run_id}/segments/{sequence}/retry": {
+      post: {
+        operationId: "retryProductionSegment",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { $ref: "#/components/parameters/ProductionRunId" },
+          { $ref: "#/components/parameters/ProductionSegmentSequence" },
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/RetryProductionSegmentCommand" } } } },
+        responses: {
+          "202": response("ProductionRunProgressSuccess", "Production segment retry accepted"),
+          "400": response("ApiFailure", "Production segment is not retryable"),
+          "404": response("ApiFailure", "Production run or segment not found"),
+          "409": response("ApiFailure", "Idempotency or production state conflict"),
+        },
+      },
+    },
+    "/api/v1/projects/{project_id}/video-versions": {
+      get: {
+        operationId: "listVideoVersions",
+        parameters: [{ $ref: "#/components/parameters/ProjectId" }],
+        responses: {
+          "200": response("VideoVersionListSuccess", "Composed video versions"),
+          "404": response("ApiFailure", "Project not found"),
+        },
+      },
+    },
+    "/api/v1/document-conversions/{conversion_id}": {
+      get: {
+        operationId: "getDocumentConversion",
+        parameters: [{ $ref: "#/components/parameters/DocumentConversionId" }],
+        responses: {
+          "200": response("DocumentConversionSuccess", "Document conversion"),
+          "404": response("ApiFailure", "Document conversion not found"),
+        },
+      },
+    },
+    "/api/v1/document-conversions/{conversion_id}/retry": {
+      post: {
+        operationId: "retryDocumentConversion",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { $ref: "#/components/parameters/DocumentConversionId" },
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/RetryDocumentConversionCommand" } } } },
+        responses: {
+          "202": response("DocumentConversionSuccess", "Document conversion retry queued"),
+          "400": response("ApiFailure", "Conversion is not retryable"),
+          "404": response("ApiFailure", "Document conversion not found"),
+          "409": response("ApiFailure", "Idempotency conflict"),
         },
       },
     },
@@ -382,6 +589,12 @@ export const createOpenApiDocument = (): JsonSchema => ({
         required: true,
         schema: { type: "string", pattern: "^ast_" },
       },
+      SourceAssetId: {
+        name: "source_asset_id",
+        in: "path",
+        required: true,
+        schema: { type: "string", pattern: "^ast_" },
+      },
       ShotId: {
         name: "shot_id",
         in: "path",
@@ -393,6 +606,36 @@ export const createOpenApiDocument = (): JsonSchema => ({
         in: "path",
         required: true,
         schema: { type: "string", pattern: "^tsk_" },
+      },
+      DocumentConversionId: {
+        name: "conversion_id",
+        in: "path",
+        required: true,
+        schema: { type: "string", pattern: "^dcv_" },
+      },
+      CreativeBriefRevisionId: {
+        name: "creative_brief_revision_id",
+        in: "path",
+        required: true,
+        schema: { type: "string", pattern: "^cbr_" },
+      },
+      ProductionRunId: {
+        name: "production_run_id",
+        in: "path",
+        required: true,
+        schema: { type: "string", pattern: "^prd_" },
+      },
+      ProductionSegmentSequence: {
+        name: "sequence",
+        in: "path",
+        required: true,
+        schema: { type: "integer", minimum: 1 },
+      },
+      StoryboardRevisionId: {
+        name: "storyboard_revision_id",
+        in: "path",
+        required: true,
+        schema: { type: "string", pattern: "^sbr_" },
       },
     },
     schemas: openApiSchemas,
@@ -419,6 +662,10 @@ export const createAsyncApiDocument = (): JsonSchema => ({
         taskRunQueued: {
           name: "InternalTaskRunQueueMessage",
           payload: { $ref: "#/components/schemas/InternalTaskRunQueueMessage" },
+        },
+        creativePlanningRequested: {
+          name: "InternalCreativePlanningQueueMessage",
+          payload: { $ref: "#/components/schemas/InternalCreativePlanningQueueMessage" },
         },
       },
     },

@@ -340,6 +340,7 @@ export const runCertification = async (arguments_: CertifierArguments, dependenc
       const submission = await provider.submit({
         taskRunId: "certifier_live_grok_001",
         inputSnapshot: CERTIFIER_INPUT,
+        visualInput: { mode: "TEXT" },
       });
       const now = dependencies.now();
       try {

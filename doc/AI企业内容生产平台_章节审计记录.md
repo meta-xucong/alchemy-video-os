@@ -19,10 +19,10 @@
 | C06 | Mock 视频生成闭环 | `ACCEPTED` | C05 | 2026-08-13 | 2026-08-14 | 审计员已独立复跑共享锁、Worker、Studio E2E、根门禁、数据库迁移与本地基础设施健康检查；`origin/main` 与 `c06-accepted^{}` 已复核为 `1e192c71cfda4636ef457eadc50ad4acafc895b3`。 |
 | C07 | SUB2API 离线 Adapter | `ACCEPTED` | C06 | 2026-08-14 | 2026-08-14 | `origin/main` 与 `c07-accepted^{}` 已独立复核为 `41d414cf1b6767c39f251445278831328e1620cf`；保持离线、disabled-only 边界 |
 | C08 | 真实 Provider 能力认证 | `ACCEPTED` | C07 | 2026-08-14 | 2026-08-14 | ADR-0030 受限认证已完成并复核；真实 profile 继续保持 disabled，未授权运行时装配或部署 |
-| C09 | Veyra 身份和共享积分 | `IN_PROGRESS` | C08 | 2026-08-14 |  | C09-A 离线基础已通过独立复核；C09-B 正在完成三 VPS 联动设计，不得进行真实 Veyra、扣费或运行时接线 |
-| C10 | MarkItDown 企业资料链路 | `PENDING` | C06 |  |  |  |
-| C11 | Prompt、Script、Storyboard | `PENDING` | C10 |  |  |  |
-| C12 | OpenMontage、QC、成片 | `PENDING` | C11/C06 |  |  |  |
+| C09 | 共享积分本地边界 | `ACCEPTED` | C08 | 2026-08-14 | 2026-08-16 | ADR-0039 后的本地 CreditPort、离线契约与 C09-C 本地运行时已独立复核；真实 Veyra/VPS 联动后移 C13-A |
+| C10 | MarkItDown 企业资料链路 | `ACCEPTED` | C06 | 2026-08-16 | 2026-08-16 | 独立审计已复核事务、公开边界、流式 Runtime、隔离浏览器验收和根级回归 |
+| C11 | Prompt、Script、Storyboard | `ACCEPTED` | C10 | 2026-08-16 | 2026-08-16 | 独立审计已复核本地创作版本、规划、审批、生产计划确认和零视频执行边界 |
+| C12 | OpenMontage、QC、成片 | `IN_PROGRESS` | C11/C06 | 2026-08-16 |  | 仅限本地 Mock 的依赖调度、交接帧、QC、合成和成片版本；外部边界继续关闭 |
 | C13 | 发布前审计和部署准备 | `PENDING` | C09/C12 |  |  |  |
 
 ## 3. C00 开发前基线审计
@@ -521,7 +521,7 @@ Exit Gate 结论：提交、同一 request 的轮询/下载、MIME、SHA-256 和
 
 ### C09：Veyra 身份与共享积分（C09-A 离线基础）
 
-状态：`IN_PROGRESS`
+状态：`ACCEPTED`
 
 实施日期：2026-08-14
 
@@ -548,6 +548,674 @@ C09-B 设计中（2026-08-14）：已完成本轮 `doc/AI企业内容生产平�
 审计人：Codex（主线执行）
 
 Exit Gate 结论：`IN_PROGRESS`（C09-A 离线基础已通过审计；C09-B 正处于设计阶段，真实 Veyra 验证仍未开始）。
+
+### C09-C：图生与多参考素材设计审计
+
+状态：`IN_PROGRESS`（代码实现与本地验证进行中）
+
+实施日期：2026-08-15
+
+实现提交或工作区快照：未提交。本记录的原始设计审计完成后，已开始实现 contracts、Control API relay、Worker、Provider mapper、Studio 和本地回归；不读取或修改真实密钥值，不改 VPS、部署或本地验收配置。
+
+修改文件：`AI企业内容生产平台_C09-C图生与多参考素材适配设计.md`、`AI企业内容生产平台_C09-C真实Provider运行时接入.md`、`AI企业内容生产平台_开发决策记录.md`、`AI企业内容生产平台_正式开发总控文档.md`。
+
+契约结论：目标设计使用现有 `ReferenceBinding` 的 `FIRST_FRAME`、`SUBJECT`、`STYLE` 角色区分一张首帧与一至七张独立参考图，禁止两种模式混合；任务快照只保存资产 ID、SHA-256、MIME、顺序和模式，不保存对象 key 或临时 URL。新增的 `ReferenceDeliveryPort` 仅为 Worker 内部端口，未来以短时 `provider-input` HTTPS relay 提供 Provider 读取，浏览器、公开 DTO、事件和数据库普通审计字段不接触 relay URL/token。平台对 R2V 不设置 4096 UTF-8 字节本地硬拒绝，上游拒绝归一为既有错误语义且不重复提交。协议允许七张参考图，当前完成端到端视觉验证的样本为两张，两项证据明确分开。
+
+测试命令及结果：项目文档 `git diff --check` 通过；敏感文档扫描、设计必备控制项检查和 ADR/总控交叉策略检查通过。MCP 自检后独立执行 `python -m unittest -v test_server.py`，30/30 通过；`python -m py_compile server.py test_server.py` 通过；MCP `git diff --check` 通过。覆盖 R2V 取消本地字节门槛、1 至 7 张 HTTPS 引用预检、8 张拒绝、模式互斥和非 R2V 的显式限制保留。
+
+验收证据路径：本设计文档、ADR-0034、正式开发总控 C09-C 扩展说明，以及本地 MCP 的 `README.md`、`profiles.example.json`、`server.py`、`test_server.py` 工作区差异。未记录 API key、含凭据 URL、Cookie、真实 request ID、用户素材或视频文件。
+
+未完成项：产品实现与完整门禁正在复核；当前 3031 入口保持 Mock。未来 Video VPS relay 的 TLS、日志、secret、对象存储和网络规则仍未部署，真实 I2V/R2V 验收也尚未执行。
+
+风险：MCP 的七图数目是协议允许值，当前仅验证两图样本，不保证七图的视觉质量；上游仍可能拒绝超长 prompt，平台只负责安全映射且不重复 submit。真实 I2V/R2V 仍须在可被 Provider 访问的 HTTPS relay 上按独立受控调用范围验收。
+
+审计人：Codex（文档与本地 MCP 独立复核）
+
+Exit Gate 结论：设计审计通过，可以进入离线实现；C09 仍是唯一 `IN_PROGRESS` 章节，真实 Provider、Veyra、VPS、DNS、TLS、部署与 Git 写入保持关闭。
+
+### C09-C：图生与多参考素材实现复核
+
+状态：`READY_FOR_AUDIT`（本地实现与审计完成；真实部署与付费验收未授权）
+
+实施日期：2026-08-15
+
+实现提交或工作区快照：未提交，C09 仍为唯一 `IN_PROGRESS` 章节。
+
+修改文件：Contracts、Provider Video、Storage Client、Reference Delivery、Control API、Task Worker、Studio、C06 测试、认证工具和 ADR/契约/专项文档；未修改 `.env.local`、VPS、Compose、MinIO CORS、Sub2API、Alchemy 或 Git。
+
+契约变化：浏览器创建生成任务只提交 `{}`。Control API 从已保存 `Shot` 和 `reference_bindings` 冻结 `TEXT`、单张 `FIRST_FRAME` 或一至七张 `REFERENCE_SET` 快照；公开 DTO/SSE 不暴露快照、Provider、对象 key、relay token 或 URL。真实图片任务需 Control API 和 Worker 共享 `REFERENCE_DELIVERY_SIGNING_KEY`，且 Worker 另需 HTTPS `REFERENCE_DELIVERY_ORIGIN`；缺任何一端均在 Provider submit 前失败。
+
+测试命令及结果：`pnpm contracts:generate`、根 `pnpm typecheck`、根 `pnpm test`、根 `pnpm build` 均通过，构建仅有既有 Nuxt `DEP0155` warning。Control API 18 通过/1 个既有 service-gated skip，新增真实 relay key 缺失时 `400 VALIDATION_FAILED` 且零 TaskRun 的回归；Task Worker 25 通过/5 个既有 service-gated skip；Studio 20/20；Provider 27/27；Reference Delivery 3/3；认证工具 15/15。`pnpm --filter @alchemy-video/control-api test:c06-e2e` 通过，覆盖双图上传确认、失败提示、显式重试、同一 ProviderAttempt 恢复、刷新、160x90/1s 播放和 390x844 布局，并完整清理测试资源。
+
+验收证据路径：ADR-0034、`AI企业内容生产平台_C09-C图生与多参考素材适配设计.md`、`AI企业内容生产平台_C09-C真实Provider运行时接入.md`、相关单元/契约/E2E 测试及 `.codex-longrun` 验证记录。`git diff --check` 通过；静态扫描确认 Studio/Control API/relay 源码不读取视频 key，公开日志路径将 `/provider-input` token 脱敏，产品代码无 4096 字节 prompt gate。
+
+未完成项：Video VPS 的 HTTPS relay、对象存储访问、日志策略、密钥注入、TLS、部署和实际 I2V/R2V 认证均未执行。
+
+风险：协议允许七张参考图而当前独立视觉证据只有两张；真实上游仍可拒绝内容或参数。历史 C08 一次 USD 1 文生授权已消耗，不能复用。
+
+审计人：Codex（本地实现与审计）
+
+Exit Gate 结论：本地实现 `READY_FOR_AUDIT`。C09 整章仍为 `IN_PROGRESS`，不得 Git 写入或执行真实 Provider/VPS/部署；下一阶段是独立 relay 部署审计和新的 profile、次数、费用上限、素材范围授权。
+
+### C09-C：Video VPS 私有验证部署准备复核
+
+状态：`READY_FOR_AUDIT`（部署包已验证；未执行外部部署）
+
+实施日期：2026-08-15
+
+实现提交或工作区快照：未提交，C09 仍是唯一 `IN_PROGRESS` 章节。
+
+修改文件：`.dockerignore`、`.gitignore`、`.env.example`、`packages/storage-client`、`apps/control-api/src/index.ts`、`infrastructure/deploy/`、ADR-0035、C09-C 运行时/设计文档和本记录。
+
+契约变化：内部对象读写继续使用 `S3_ENDPOINT`，只有浏览器预签名上传/下载 URL 可使用独立 `S3_PUBLIC_ENDPOINT`；`S3_BROWSER_ORIGINS` 受控传入对象存储 CORS。没有公开 API、事件、数据库或 TaskRun 状态变化。部署包中的 Provider base URL/key 只出现于 Worker 环境注入，Control API/Studio 均无该值。当前固定开发身份以 Nginx Basic Auth 保护浏览器面；`/provider-input/<opaque-token>` 仅为 Provider 的 GET/HEAD 临时读取入口，关闭 access log 且不继承该认证。
+
+测试命令及结果：根 `pnpm typecheck`、根 `pnpm test` 均通过（仅既有 service-gated skips）；storage-client 4 通过、1 个既有 MinIO service-gated skip；storage-client 和 Control API 类型检查通过；`docker compose --env-file infrastructure/deploy/.env.video.example -f infrastructure/deploy/docker-compose.video.yml --profile edge config --quiet` 通过；`docker build --file infrastructure/deploy/Dockerfile --tag alchemy-video-deploy-verify:local .` 成功，镜像内 Control API、Worker 和 Studio runtime entry 均存在；Nginx `video.bootstrap.conf` 在 `nginx:1.27-alpine` 中通过 `nginx -t`；`git diff --check` 通过。部署样例扫描只命中显式 `REPLACE_...` 占位符，没有真实 Key、URL、token 或密码。
+
+验收证据路径：`infrastructure/deploy/README.md`、`docker-compose.video.yml`、Nginx bootstrap/production 配置、ADR-0035、storage-client 单测和 Docker 本地镜像检查。
+
+未完成项：尚无标识为 Video OS 的新 VPS，`video.aiself.vip` 与 `assets.video.aiself.vip` 均没有 DNS A/AAAA 记录；因此没有执行 SSH、DNS、ACME、Compose、Provider 或实际图生调用。Nginx 生产语法必须在该 VPS 的 ACME 证书和私有 htpasswd 文件存在后复核。
+
+风险：现有应用尚未实现 C09-B Veyra identity/session；部署包只适用于临时的单人 Basic Auth 验证，不能作为公开多用户上线。历史 C08 一次调用授权已消耗；将 `VIDEO_PROVIDER` 改为 `sub2api` 前仍需新的精确 profile、调用次数、费用上限和素材范围记录。
+
+审计人：Codex（部署准备与本地静态/镜像复核）
+
+Exit Gate 结论：部署准备 `READY_FOR_AUDIT`。外部部署与真实 Provider 均保持未执行，等待明确的新 Video VPS 与有界真实调用范围。
+
+### C09-C：默认参考素材与创作编译修正复核
+
+状态：`READY_FOR_AUDIT`（本地修正、完整回归和浏览器验收完成；不改变 C09 整章状态）
+
+实施日期：2026-08-16
+
+实现提交或工作区快照：未提交。C09 仍为唯一 `IN_PROGRESS` 章节；本轮未执行 Git 写入。
+
+修改文件：`packages/provider-video/src/prompt-compiler.ts`、`runtime-profile.ts`、Control API generation route、Studio 项目页与参考素材组件、Studio/API/Provider 回归测试、ADR-0036、C09-C 设计与运行时文档和本记录。未修改 `.env.local`、VPS、Compose、MinIO CORS、Sub2API、Alchemy 或真实 Provider 配置。
+
+契约变化：没有新增公开 HTTP DTO、事件、数据库表或 TaskRun 状态。确认上传图片后，Studio 在当前 Shot 存在时立即持久化 `REFERENCE_SET` bindings；旧项目中的未绑定 READY 图片只在页面中默认选中，下一次保存或生成才落为绑定事实。Control API 在创建真实 TaskRun 前将已有创作描述和偏好确定性编译为不可变输入快照，解析 1 至 15 秒及 480p/720p；默认使用 5 秒、720p、16:9，且不设 4096 字节本地拒绝。Mock profile 继续固定使用本地测试参数。
+
+测试命令及结果：Provider Video 31/31、Control API 20 通过/1 个既有 service-gated skip、Studio 22/22 均通过；根 `pnpm typecheck`、根 `pnpm test`、根 `pnpm build` 均通过，构建仅有既有 Nuxt `DEP0155` warning。`pnpm --filter @alchemy-video/control-api test:c06-e2e` 在隔离端口与真实 `localhost:3031` 浏览器来源通过，覆盖两张图片上传确认后默认勾选、持久化、失败状态、显式重试、同一 ProviderAttempt 恢复、160x90/1s 视频预览、项目隔离、390x844 布局，并清理 2 项目、3 对象、隔离队列、夹具和子服务。验收时短暂停止本工作区的 Studio 和启动检查 Worker，避免既有精确 CORS 白名单及全局 Outbox Relay 干扰；完成后已恢复。
+
+验收证据路径：ADR-0036、`AI企业内容生产平台_C09-C图生与多参考素材适配设计.md` 第 11 节、`AI企业内容生产平台_C09-C真实Provider运行时接入.md`、Provider/API/Studio tests 及 `.codex-longrun` 隔离验收日志。浏览器复核 `http://localhost:3031/projects/prj_01M022N889M46M37YD8HSP9HBZ` 显示“都市情感小说”的两张已上传图片均勾选“作为参考素材”，并显示“本次会使用 2 张参考图”。同源 `/api/v1/health` 为 HTTP 200。
+
+未完成项：本轮没有替用户对真实 Provider 发起新 POST。现有失败 TaskRun 保持不可变；用户应在第三步点击“调整后生成新版本”后才会以更新后的图片绑定、15 秒/480p 解析和编译快照提交新运行。
+
+风险：真实上游仍可能因内容或自身参数策略返回 `PROVIDER_REJECTED`；页面只展示归一化建议，不泄露 Provider 细节。七图是已允许的契约上限，本轮真实浏览器链路验证仍为两图；VPS relay、Veyra、计费、DNS、TLS 和部署不在本轮范围。
+
+审计人：Codex（本地修正与独立复核）
+
+Exit Gate 结论：本轮修正 `READY_FOR_AUDIT`。可以交由用户验收本地界面；C09 整章仍为 `IN_PROGRESS`，不得提交、推送或扩大到 Veyra/VPS/部署。
+
+### C09-C：可调视频规格与真实快照复核
+
+状态：`READY_FOR_AUDIT`（本地实现、回归、浏览器验收和文档审计完成；不改变 C09 整章状态）
+
+实施日期：2026-08-16
+
+实现提交或工作区快照：未提交。C09 仍为唯一 `IN_PROGRESS` 章节；本轮未执行 Git 写入、VPS 操作或真实 Provider POST。
+
+修改文件：`packages/contracts/src/resources.ts`、`packages/provider-video/src/prompt-compiler.ts`、`runtime-profile.ts`、Control API 生成路径、Studio 第三步规格控件及样式、Provider/Contracts/Control API/Studio 回归测试，以及 ADR-0037、C09-C/Studio/项目制前端设计与本记录。未修改 `.env.local`、Provider 密钥、VPS、Compose、MinIO CORS、Sub2API 或 Alchemy。
+
+契约变化：Shot 的既有 `generation_settings` 在含 `video_settings` 时受公开命令契约校验：`duration_seconds` 必须为 `1..15` 的整数，`resolution` 只能是 `480p|720p`，`ratio` 固定为 `16:9`。Studio 第三步以时长下拉菜单、清晰度单选和只读画幅保存这些值；创作描述中的数字不再隐式改变模型参数。真实 profile 只从该受控设置冻结 TaskRun 快照，Mock 保持固定 `1 秒 / 160x90` 测试夹具。没有新增生成命令字段、事件、状态、数据库表或浏览器可见 Provider 数据。
+
+测试命令及结果：`pnpm contracts:generate`、根 `pnpm typecheck`、根 `pnpm test`、根 `pnpm build` 均通过；构建只有既有 Nuxt `DEP0155` warning，根测试仅保留既有 service-gated skips。Contracts 22/22、Provider 31/31、Studio 22/22 通过。`pnpm --filter @alchemy-video/control-api test:c06-e2e` 通过：真实浏览器选择 `8 秒 / 480p` 后，数据库断言该 Shot 保存 `8 / 480p / 16:9`，失败 Mock 任务仍确定性冻结 `1 秒`；失败提示、显式重试、同一 ProviderAttempt 恢复、双参考图、视频播放、项目隔离、390x844 布局和测试资源清理均通过。Control API 的真实 profile 路由单测另外断言同一受控设置冻结到 TaskRun 为 `15 / 480p / 16:9`，而非从描述解析。
+
+验收证据路径：ADR-0037、`AI企业内容生产平台_C09-C图生与多参考素材适配设计.md` 第 11-12 节、`AI企业内容生产平台_C09-C真实Provider运行时接入.md`、`c06-local-e2e.mjs`、`c06-studio-ui-e2e.py` 和对应 Contracts/Provider/API/Studio 单测。浏览器只读复核 `http://localhost:3031/projects/prj_01M022N889M46M37YD8HSP9HBZ`：页面显示中文“视频规格”，时长为 `SELECT` 且包含 1 至 15，项目已有默认值为 `5 秒 / 720p / 16:9`；同源 `/api/v1/health` 为 HTTP 200。
+
+未完成项：没有替用户重试既有失败 TaskRun，也没有提交新的真实视频。下一次用户在第三步选择规格并点击“调整后生成新版本”时，才会使用新保存的规格发起新的真实运行。
+
+风险：历史真实任务的上游终态仍仅返回泛化失败，不能归因于参考图、内容或某一规格组合；其不可变快照不会被本修正改写。`1..15` 与 `480p|720p` 是当前受控协议范围，不表示每个组合均已完成同等真实质量验收。Veyra、计费、VPS、DNS、TLS 和部署仍不在本轮范围。
+
+审计人：Codex（本地实现与独立复核）
+
+Exit Gate 结论：本项修正 `READY_FOR_AUDIT`，可交由用户在本地 Studio 验收。C09 整章仍为 `IN_PROGRESS`，不得 Git 提交、推送或扩大到外部部署。
+
+### C09-C：当前项目真实运行与版本一致性复核
+
+状态：`READY_FOR_AUDIT`（有界真实运行完成；不改变 C09 整章状态）
+
+实施日期：2026-08-16
+
+实现提交或工作区快照：未提交。本轮仅重启本机受控运行器中已过期的 Control API 进程；未改 `.env.local`、VPS、Provider、Veyra、Compose、MinIO CORS 或 Git。
+
+诊断与结果：用户项目的两张图片均已以 `REFERENCE_SET` 绑定，页面显示 `5 秒 / 480p / 16:9`。第一次受用户授权的真实新版本请求获得 Provider request ID 后异步失败；只读审计发现其不可变快照为 `15 秒 / 480p / 16:9`，而不是页面值。根因是本机 `3133` Control API 在参数修正前启动，Node/tsx 不热更新，旧进程仍从创作描述提取数字。重启该进程并通过 health 后，以同一页面保存输入创建一次有效验证：TaskRun 快照为 `5 秒 / 480p / 16:9`，Provider request ID 已持久化，随后成功归档生成视频。公开结果资产为 `VIDEO / GENERATED / READY`，约 1.39 MB；受控预览 GET 返回 `200`、`video/mp4` 和非空内容。
+
+验证范围：浏览器确认两张参考图勾选、规格可见且已保存；Control API 公共详情确认成功 TaskRun 和结果资产；受控的 workspace 范围只读审计确认前一条失败任务与后一条成功任务的快照、ProviderAttempt 状态和 request-ID 持久化语义。未输出密钥、relay URL、Provider request ID、签名下载地址、原始上游响应、用户素材或视频二进制；没有为诊断自动重试任何已有任务。
+
+未完成项：本次成功证明当前项目的两图、`5 秒 / 480p / 16:9` 本机闭环，不替代其他规格、内容、七图质量、Veyra、计费、VPS、DNS、TLS 或部署验收。常驻 API/Worker/Studio 源码变更后仍须按受控运行器规则重启并复核 health。
+
+审计人：Codex（受用户授权的单项目真实运行与脱敏复核）
+
+Exit Gate 结论：当前项目的真实生成链路可交付本地验收；C09 整章仍为 `IN_PROGRESS`，不执行提交、推送或外部部署。
+
+### 阶段性收尾：C09-C 单镜头真实运行与长叙事范围确认
+
+状态：`READY_FOR_AUDIT`（阶段记录；不改变 C09 整章 `IN_PROGRESS`）
+
+实施日期：2026-08-16
+
+实现提交或工作区快照：未提交。保留当前用户工作区的未提交代码与文档差异；本记录未执行 Git、VPS、DNS、TLS、Veyra 或共享积分操作。
+
+当前完成范围：C01 至 C08 在本记录中已 `ACCEPTED`。C09 是唯一 `IN_PROGRESS` 章节；C09-C 已完成单项目中文 Studio、项目隔离、上传确认、默认参考素材绑定、一至七张参考素材契约路径、可调规格、单 Shot 真实 Provider 本机闭环、失败/重试、Worker 恢复和项目内成片版本播放的本地验收/审计证据。最近一次用户授权的“都市情感小说”双参考图真实运行已生成归档视频，但它只证明这一条本地有界链路可用。
+
+未完成范围：自动读懂长小说、剧本、自动分镜、多段依赖调度、交接帧、连续性 QC、字幕/音频、镜头拼接和最终完整成片尚未实现。当前页面的一条描述仍只会创建一个 Shot/TaskRun；不能称为自动长片制作。
+
+设计记录：长叙事设计已拆为三个独立文档：`AI企业内容生产平台_长叙事自动编排与连续成片设计.md` 仅记录范围、依赖和统一决策；`AI企业内容生产平台_长叙事后端领域与编排开发设计.md` 记录 revision、ProductionRun、TaskRun、交接帧、事件、Worker、迁移和后端验收；`AI企业内容生产平台_长叙事前端项目工作台交互设计.md` 记录项目页面、用户流程、中文状态、成果区和浏览器验收。ADR-0038 作为三份设计的决策锚点。方案要求先生成用户可审阅的故事计划，再在明确确认后按依赖图逐段生成，并以 C12 合成不可覆盖成片；不允许按字数直接切段后自动付费提交。当前 profile 的首帧和一至七张参考素材互斥且没有已认证尾帧，故视觉连续性只能作为受控交接/转场策略，不能承诺帧级无缝。
+
+后续动作：按固定依赖先完成 C10 的受控资料 Artifact，再在 C11 实现 revision、PlanningModelPort、Workflow Worker 和 Storyboard，随后由 C12 实现交接帧、QC、合成和 VideoVersion。任何真实多段调用仍需单独记录 profile、次数、额度和素材范围。
+
+审计人：Codex（阶段性范围复核）
+
+Exit Gate 结论：当前单 Shot 本地真实链路可以继续由用户验收；C09 整章不变更为 `ACCEPTED`，C10/C11/C12 不能被视为已开发或已通过。
+
+### C09 范围重基线：真实 Veyra/VPS 联动后移至 C13-A
+
+状态：`READY_FOR_AUDIT`（C09 仅保留本地边界；C13-A 仍为 `PENDING`）
+
+实施日期：2026-08-16
+
+决定与范围：用户明确要求在所有本地开发完成前，不执行真实 Veyra、VPS 部署或同 Sub2API/Alchemy 的运行时联动。ADR-0039 因此将 C09 的真实账户、ticket、debit、feature flag、三 VPS 网络/会话/发布回滚验证全部移入 C13-A。C09 现在只包括已经完成并有证据的本地 CreditPort/Noop adapter/注入式 transport/精确金额/receipt 幂等、C09-B 架构设计归档和 C09-C 单 Shot 本地运行时边界。
+
+不变项：Sub2API 仍是未来余额和扣费唯一权威；视频成功后的扣费时序、`402/409` 语义、同 key 回放与禁止重复 submit 均未删除，只是不能在本地阶段启用或以假实现替代。C10/C11/C12 的真实多段视频调用仍独立受有界授权约束，不因本次范围重排而自动获得权限。
+
+审计要求：C09 章节接受前，审计员仍须复核既有本地测试、公开边界、C09-C 本地实际运行证据以及无真实 Veyra/VPS 操作的事实。只有 C09 变为 `ACCEPTED` 后，C10 才能成为唯一 `IN_PROGRESS` 章节。
+
+审计人：Codex（范围重基线记录）
+
+Exit Gate 结论：等待缩小范围的独立审计；未执行真实 Veyra、扣费、VPS、SSH、DNS、TLS、部署或 Git。
+
+### C09：共享积分本地边界最终审计
+
+状态：`ACCEPTED`
+
+实施日期：2026-08-16
+
+实现提交或工作区快照：未提交。按章节治理，C09 接受后才允许后续形成受限 Git 提交；本次未执行 Git 写入。
+
+范围与结论：依据 ADR-0039，C09 的 Exit Gate 只包含本地 `CreditPort`、`NoopCreditAdapter`、注入式 transport/mapper、十进制金额与 usage receipt 幂等准备，以及 C09-C 的受控本地视频运行时。真实 Veyra 登录票据、账户查询、debit、feature flag、三台 VPS、SSH、DNS、TLS、部署和跨系统会话已明确后移至 C13-A，不再阻塞本地内容生产链。
+
+审计修正：C06 浏览器验收曾因 `3031` 上已有 IPv6 常驻 Studio 而错误命中真实本机入口，造成 8 秒真实 profile 快照被误判为 Mock 结果。已在 `c06-local-e2e.mjs` 增加双栈/通配端口占用拒绝、独立 build version 代理校验和直连 Mock API 快照探针。受控停止并恢复本机 Studio 后，隔离 E2E 确认独立 API/Studio、双图上传、失败/显式重试、项目隔离、移动端、视频解码和资源清理；Mock 快照及结果固定为 `1 秒 / 160x90`，可见 Shot 设置仍保持 `8 秒 / 480p / 16:9`。
+
+测试命令及结果：`pnpm contracts:generate` 通过；`pnpm --filter @alchemy-video/credit-veyra test` 为 6/6；根 `pnpm test` 通过（既有 service-gated skip 保留）；`pnpm --filter @alchemy-video/control-api test` 为 20 通过、1 个既有 skip；根 `pnpm typecheck` 通过；根 `pnpm build` 通过，仅有既有 Nuxt `DEP0155` warning；`pnpm --filter @alchemy-video/control-api test:c06-e2e` 通过，输出为失败/重试 UI、`160x90`、`1s`，并清理 2 个项目、3 个对象、两个隔离队列、夹具与子服务。恢复后 `http://localhost:3031/api/v1/health` 返回 200。
+
+验收证据路径：ADR-0039、`AI企业内容生产平台_C09-B三VPS联动设计.md`、`AI企业内容生产平台_C09-C图生与多参考素材适配设计.md`、`AI企业内容生产平台_C09-C真实Provider运行时接入.md`、CreditPort 回归、C06 浏览器 E2E 及本审计记录。
+
+未完成项：C13-A 尚未开始，且必须等 C10/C11/C12 接受并取得新的、明确有界授权后才可接触真实 Veyra 或 VPS。当前用户可继续通过本机 `3031` Studio 验收已存在的受控真实视频链路；这不构成 Veyra 或部署验收。
+
+风险：七张参考图为协议上限，质量覆盖仍不能由两图 E2E 代替；真实 Provider 的内容/参数拒绝仍由统一错误语义处理。C09 不保留本地余额账本，也不以 `NoopCreditAdapter` 伪造扣费成功。
+
+审计人：Codex
+
+Exit Gate 结论：C09 本地范围的架构、测试、公开边界和审计证据完整，标记为 `ACCEPTED`。C10 成为唯一 `IN_PROGRESS` 章节；C13-A 保持 `PENDING`。
+
+### C10：MarkItDown 企业资料链路启动记录
+
+状态：`IN_PROGRESS`
+
+实施日期：2026-08-16
+
+范围：只实现已授权资料 Asset 的受控转换、来源追溯、错误恢复和本地 fixture 验收。C10 不建立知识库、Embedding、品牌画像、自由 Agent 或任意 URL 转换，也不触及真实 Veyra、VPS、部署或视频 Provider。
+
+设计准入：ADR-0040 与 `AI企业内容生产平台_C10企业资料转换与Artifact设计.md` 已审计通过。固定 MarkItDown 来源为 `fd239d5d2be43d9b68329730206b9312c7d5a388`（`0.1.7`）；在受忽略的 `.codex-longrun/c10-document-runtime-venv` 中，PDF/DOCX/PPTX/XLSX fixture 的 `convert_stream` 均输出非空 Markdown。该环境只作为本地测试依赖，不包含生产密钥、VPS、Veyra 或视频配置。
+
+审计人：Codex
+
+### C10：DocumentConversion 持久化更正独立复核
+
+状态：`IN_PROGRESS`（仅持久化门禁通过，章节尚未完成）
+
+实施日期：2026-08-16
+
+范围与审计：在实现 C10 运行时、Worker、Control API 或 Studio 前，审计发现转换状态和 outbox 事务性、并发领取以及陈旧/重复完成的风险，故停止受控任务完成更正。随后独立执行 `pnpm --filter @alchemy-video/persistence typecheck` 和连接本地 PostgreSQL 的 `document-conversion-repository.integration.test.ts`；二者均通过。回归覆盖并发 `QUEUED -> RUNNING`、失败后重试、陈旧完成不产生产物、重复完成不覆盖结果，以及故意 outbox 主键冲突后事务回滚并保持 `RUNNING`。
+
+边界：本复核不构成 C10 Exit Gate，也不授权 C11、C12、C13-A、真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用或 Git 写入。C10 后续只能继续本地资料转换、来源追溯、Worker/Control API/Studio 的受控集成与相应测试。
+
+审计人：Codex
+
+### C10：Document Runtime 目标边界审计暂停
+
+状态：`IN_PROGRESS`（安全更正待实现，章节尚未完成）
+
+实施日期：2026-08-16
+
+审计发现：新建的 Document Worker 将 `DOCUMENT_RUNTIME_URL` 原样传入 HTTP Client。虽然示例默认值是 `127.0.0.1`，代码尚未拒绝远程主机、URL 凭据、query 或 fragment，因而不能证明资料字节与 Runtime Token 不会离开本机。该问题在启动 Worker、执行任何转换或调用外部服务之前发现。
+
+最小纠正：在 Client 构造和 Worker 启动路径解析 URL，只接受本地 loopback `http` endpoint，并拒绝凭据、query、fragment 及非 loopback host；补充允许和拒绝目标的单测。更正经独立审计后才可恢复 C10 集成。
+
+边界：本暂停不改变 C10 仍为唯一 `IN_PROGRESS` 章节，也不授权 C11、C12、C13-A、真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用或 Git 写入。
+
+审计人：Codex
+
+### C10：Document Runtime 目标边界独立复核
+
+状态：`IN_PROGRESS`（安全门禁通过，章节尚未完成）
+
+实施日期：2026-08-16
+
+复核结果：Runtime Client 现仅接受根路径的 `http://127.0.0.1:<port>` 或 IPv6 loopback endpoint；远程 host、`localhost`、私网 host、HTTPS、URL 凭据、query、fragment 和非根路径均在构造 Client 前拒绝。Root 独立执行 `pnpm --filter @alchemy-video/document-worker typecheck` 与 `pnpm --filter @alchemy-video/document-worker test`，二者通过；三项测试确认不安全目标在 `fetch` 前失败且内部路径固定。该复核没有启动 Worker、没有转换任何资料，也没有发出网络请求。
+
+边界：此结论只解除 C10 Runtime URL 的本地安全暂停。C10 仍是唯一 `IN_PROGRESS` 章节；C11、C12、C13-A、真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用和 Git 写入仍未授权。
+
+审计人：Codex
+
+### C10：Control API 类型收窄独立复核
+
+状态：`IN_PROGRESS`（局部类型门禁通过，章节尚未完成）
+
+实施日期：2026-08-16
+
+审计发现与纠正：受控 C10 任务在 Control API 类型检查失败后已停止。原因是两个资料转换命令路由在分支处理后，TypeScript 无法证明结果保留成功联合的 `value` 和 `status`。修正只把这两个路由改为先显式缩窄至 `NEW|REPLAY`，再序列化成功结果；错误码和运行时流程不变。
+
+独立验证：Root 执行 `pnpm --filter @alchemy-video/control-api typecheck`，通过。此验证没有启动 Document Worker、没有转换资料、没有调用真实 Provider/Veyra/VPS/部署，也没有 Git 写入。
+
+边界：本结论只解除该局部类型检查暂停。C10 仍是唯一 `IN_PROGRESS` 章节；C11、C12、C13-A、真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用和 Git 写入仍未授权。
+
+审计人：Codex
+
+### C10：Document Runtime 测试入口独立复核
+
+状态：`IN_PROGRESS`（测试入口门禁通过，章节尚未完成）
+
+实施日期：2026-08-16
+
+审计发现与纠正：受控 C10 任务首次从仓库根目录执行 Runtime unittest，因 Python 无法导入同目录的 `runtime.py` 而在断言执行前失败。任务已暂停；该问题限于测试工作目录，没有执行资料转换或变更产品代码。按服务目录运行同一套测试即可使用受控的相邻模块导入路径。
+
+独立验证：Root 从 `services/document-runtime` 运行 `..\\..\\.codex-longrun\\c10-document-runtime-venv\\Scripts\\python.exe -m unittest discover -s tests`，3/3 通过。
+
+边界：此结论只解除 Runtime 测试入口暂停。C10 仍是唯一 `IN_PROGRESS` 章节；C11、C12、C13-A、真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用和 Git 写入仍未授权。
+
+审计人：Codex
+
+### C10：PostgreSQL 测试串行化独立复核
+
+状态：`IN_PROGRESS`（验证执行门禁通过，章节尚未完成）
+
+实施日期：2026-08-16
+
+审计发现与纠正：受控测试阶段同时运行多个 PostgreSQL 持久化套件，因共享测试工作区清理出现 `40P01` deadlock；另有 Windows 不支持的 `rg` glob 路径返回非零。任务已停止。二者均为测试执行问题，不能作为 C10 通过证据，也没有显示 DocumentConversion 领域逻辑错误。
+
+独立验证：Root 单独设置本地 `DATABASE_URL` 后串行运行 `pnpm --filter @alchemy-video/persistence exec tsx --test tests/document-conversion-repository.integration.test.ts`，1/1 通过。后续 C10 数据库测试保持串行，搜索使用显式目录。
+
+边界：本结论只解除上述测试执行暂停。C10 仍是唯一 `IN_PROGRESS` 章节；C11、C12、C13-A、真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用和 Git 写入仍未授权。
+
+审计人：Codex
+
+### C10：资料转换公开命令独立复核
+
+状态：`IN_PROGRESS`（公开路由门禁通过，章节尚未完成）
+
+实施日期：2026-08-16
+
+审计发现与纠正：新增资料转换路由回归先暴露了错误读取路径参数及失败转换公开 `retryable` 投影过宽的问题；初次命令因此返回 `400`。修正后创建命令仅使用 `source_asset_id`，重试命令只在 `FAILED` 且可重试时入队，公开 DTO 不泄漏对象 key、来源 SHA、Runtime 地址或 token。
+
+独立验证：Root 运行 `pnpm --filter @alchemy-video/control-api exec tsx --test tests/c10-document-routes.test.ts`，2/2 通过；随后运行 `pnpm --filter @alchemy-video/control-api test`，22 通过、1 个既有服务门控跳过。Control API typecheck 通过。
+
+边界：此结论只解除 C10 公开命令回归暂停。C10 仍是唯一 `IN_PROGRESS` 章节，且仍缺真实资料夹具与端到端验收；C11、C12、C13-A、真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用和 Git 写入仍未授权。
+
+审计人：Codex
+
+### C10：Document Runtime 解释器碰撞独立复核
+
+状态：`IN_PROGRESS`（测试入口已纠正，章节尚未完成）
+
+实施日期：2026-08-16
+
+审计发现与纠正：受控 C10 运行器以未受约束的测试入口调用 Runtime，Python 因此加载了另一工作目录下同名的 `runtime` 包，而不是 C10 的 `services/document-runtime/runtime.py`。运行器已停止；这不是资料转换实现或外部链路的失败。后续 Runtime 测试固定从服务目录使用 C10 专用虚拟环境的 `unittest`，禁止裸 `pytest` 与默认解释器。
+
+独立验证：Root 从 `services/document-runtime` 运行 `..\\..\\.codex-longrun\\c10-document-runtime-venv\\Scripts\\python.exe -m unittest discover -s tests`，3/3 通过。
+
+边界：此结论仅解除 Runtime 测试入口暂停。C10 仍为唯一 `IN_PROGRESS`，尚缺真实资料夹具和本地端到端验收；C11、C12、C13-A、真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用和 Git 写入继续禁止。
+
+审计人：Codex
+
+### C10：MarkItDown 企业资料链路完成待独立审计
+
+状态：`READY_FOR_AUDIT`
+
+实施日期：2026-08-16
+
+实现提交或工作区快照：未提交工作区；本章及既有 C09 用户改动均保持原状，未执行 Git 写入。
+
+修改文件：C10 的 Contracts/Domain/Persistence DocumentConversion 模块、`apps/document-worker/`、Document Runtime、Control API 文档命令与安全序列化、Studio 项目资料面板、受控浏览器测试和本地验证记录。
+
+契约变化：新增独立 `DocumentConversion`、公开资料转换命令和安全 DTO/SSE 投影；转换仅使用受控对象流与 loopback Runtime，派生 Markdown Asset 追溯到冻结的源 Asset。
+
+测试命令及结果：Contracts 23/23、Domain 9/9、Document Worker 8/8、Runtime 5/5（PDF/DOCX/PPTX/XLSX stream fixtures）、Control API 22/22 加 1 个既有服务门控跳过、Studio 24/24；串行 PostgreSQL 转换回归 1/1；`pnpm typecheck`、`pnpm test`、`pnpm build` 均通过；`pnpm --filter @alchemy-video/control-api test:c10-e2e` 在本地隔离栈通过。
+
+验收证据路径：`.codex-longrun/progress.md`、`.codex-longrun/test-log.md`、`.codex-longrun/blockers.md` 及 C10 测试文件；浏览器 E2E 使用一次性数据库、队列、端口、对象和 fixture，并在结束时清理。
+
+未完成项：仅独立章节审计结论；C11/C12 功能尚未开始。
+
+风险：根级 `pnpm test` 中已有依赖本地服务的测试保持跳过；C10 的 PostgreSQL 和浏览器验证已在显式本地依赖下通过。Nuxt 构建保留既有 Node DEP0155 警告。
+
+审计人：Codex
+
+Exit Gate 结论：C10 实现与测试证据齐备，进入 `READY_FOR_AUDIT`；不得据此启动 C11、C12、C13-A、真实 Provider、Veyra、VPS、部署、付费调用或 Git 写入。
+
+### C10：独立审计暂停，Runtime 请求体边界
+
+状态：`IN_PROGRESS`
+
+实施日期：2026-08-16
+
+审计发现：`services/document-runtime/main.py` 在应用 25 MiB 限制前调用 `await request.body()`，会先聚合任意大小的请求体。此行为不满足 C10 的受控输入流和有界内存契约，故先前 `READY_FOR_AUDIT` 不能作为 Exit Gate 证据。
+
+最小纠正：改为逐块读取 `Request.stream()`，超过上限立即拒绝；保留成功路径的 SHA-256 与 MIME/文件名校验，并新增直接验证超限 HTTP 请求的回归。修正后重新执行 Runtime、Worker、浏览器 E2E 和根级门禁。
+
+边界：受控 supervisor 当前未运行并保持停止。本暂停不授权 C11、C12、C13-A、真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用或 Git 写入。
+
+审计人：Codex
+
+### C10：Runtime 请求体边界更正复核
+
+状态：`READY_FOR_AUDIT`
+
+实施日期：2026-08-16
+
+更正与证据：Runtime 已改为逐块消费 `Request.stream()`；超出 25 MiB 后立刻返回 `413 DOCUMENT_UNSUPPORTED`，不再调用 `request.body()`。Runtime 6/6 的直接处理器回归验证超限第二块触发后不读取后续块；SHA-256、MIME、文件名和 stream-only MarkItDown 校验仍保留。
+
+重新验证：Document Worker 8/8、串行 PostgreSQL 持久化 1/1、Studio 24/24 与 typecheck、隔离 C10 浏览器 E2E、根级 `pnpm typecheck`、`pnpm test`、`pnpm build` 全部通过。
+
+边界：此更正只恢复 C10 的独立审计资格。C11/C12 仍为 `PENDING`；C13-A、真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用和 Git 写入继续禁止。
+
+审计人：Codex
+
+### C10：MarkItDown 企业资料链路最终独立审计
+
+状态：`ACCEPTED`
+
+实施日期：2026-08-16
+
+独立审计：逐项复核 C10 的 DocumentConversion 状态转移与 outbox 事务、workspace/project 约束、冻结源 Asset 与不可替换 Markdown Asset、Runtime 的 loopback-only Worker 目标和 `Request.stream()` 上限、公开 DTO/SSE 脱敏、浏览器下载附件响应及隔离资源清理。审计期间发现并纠正了 Runtime 先聚合请求体的缺口；修正后完成独立 Runtime 6/6、Worker 8/8、PostgreSQL 1/1、Studio 24/24、隔离浏览器 E2E 及根级 typecheck/test/build 重跑。
+
+未完成项：C10 无。C11 现为唯一 `IN_PROGRESS` 章节；C12、C13-A 和所有外部边界仍未开始。
+
+风险：根级套件的既有本地基础设施门控测试仍按设计跳过；C10 的数据库和浏览器闭环已通过显式本地依赖验证。Nuxt 的 DEP0155 为既有构建警告。
+
+审计人：Codex
+
+Exit Gate 结论：C10 满足总控文档第 15 章的格式 fixture、stream-only、来源追溯、可重试且不污染源资产要求，正式标记 `ACCEPTED`。仅授权进入 C11 本地开发；不授权 C12、C13-A、真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用或 Git 写入。
+
+### C11：Prompt、Script、Storyboard 启动与 Exit Gate 记录
+
+状态：`ACCEPTED`
+
+实施日期：2026-08-16
+
+范围：只实现 C11 已批准的本地长叙事创作版本、确定性拆分规划、用户审批和生产计划确认。不得提交视频 Provider、扣费、部署或修改 C12 媒体处理行为。
+
+实现工作区快照：未提交；章节验收期间未执行 `git add`、提交或推送。
+
+修改范围：`packages/contracts` 的 C11 DTO、错误和事件；`packages/domain` 的 revision/ProductionRun 状态机；`packages/persistence` 的 C11 schema、迁移、workspace-scoped repository 和集成测试；`packages/creative-planning` 的确定性 planner/compiler；`apps/workflow-worker` 的 durable planning relay/consumer；Control API 公开 C11 命令与安全投影；Studio 中文故事计划/审阅/确认界面与 C11 浏览器验收脚本。
+
+契约结论：`Project -> CreativeBriefRevision -> ScriptRevision -> StoryboardRevision -> ProductionRun` 已形成 C11 的持久化、可审阅链路。ProductionRun `CONFIRMED` 明确只保存计划，不创建 `Shot`、`TaskRun`、Provider attempt、扣费或媒体处理工作；这些执行能力只属于后续 C12。
+
+测试及证据：contracts 26/26；domain 12/12；creative-planning 3/3；Workflow Worker 4/4；Control API 24 passed、1 个既有服务条件 skip；Studio 27/27、typecheck/build；C11 disposable PostgreSQL integration 1/1；隔离 `test:c11-e2e` 覆盖新建项目、45 秒中文故事、三段计划、审批、制作计划确认、刷新、390x844 及零 TaskRun；根 `pnpm typecheck`、`pnpm test`、`pnpm build` 均通过。证据在 `.codex-longrun/test-log.md`、`.codex-longrun/progress.md` 和 C11 专项测试文件中；临时数据库、队列、端口、进程和构建目录均已清理。
+
+审计纠正：C11 Worker 曾多余加载 `.env.local`/`.env`；它改为只接收显式 `DATABASE_URL` 与 `REDIS_URL` 后，重新通过 Worker、E2E 与根回归。此更正没有读取或使用真实 Provider/Veyra 凭据。
+
+风险：既有基础设施条件测试按设计跳过；C11 的 PostgreSQL 集成和完整浏览器链路已通过显式本地依赖。Nuxt `DEP0155` 是既有构建警告。C12 尚未实现媒体执行、交接帧、QC、合成或成片版本。
+
+审计人：Codex
+
+Exit Gate 结论：`ACCEPTED`。C11 的本地规划、审阅与生产计划确认符合契约和边界，且没有提前触发视频执行。仅授权进入 C12 本地开发；C13-A、真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用和 Git 写入继续禁止。
+
+### C12：本地受控媒体制作、QC 与成片启动记录
+
+状态：`IN_PROGRESS`
+
+实施日期：2026-08-16
+
+范围：在 C11 已确认的 `ProductionRun` 上实现本地 Mock 的依赖调度、交接帧、基础 QC、受控合成、不可替换的 `VideoVersion` 与公开播放/下载投影。每段仍使用既有 `Shot -> TaskRun -> Asset` 状态机；整体制作状态不得替代单段任务状态。
+
+启动审计：已核对 C11 为 `ACCEPTED`，当前不存在 C12 Worker、测试端口 `3331/3332` 或受控 longrun supervisor。现有 C09 本地验收服务保持不触碰。C12 开始前已确认 C11 的事件 relay 需要按消费者严格过滤，避免一个 relay 提前确认其他消费者的 outbox 事件；该兼容性修正和对应回归归入 C12。
+
+边界：仅使用显式本地 `VIDEO_PROVIDER=mock`、`LOCAL_AUTH_MODE=dev`、`VEYRA_AUTH_ENABLED=false` 的一次性测试环境。严禁真实 Provider、Veyra、VPS/SSH、DNS、部署、外部付费调用、Git 暂存/提交/推送；不得读取 `.env.local`。
+
+前置契约工作：先将 C12 的 ProductionSegment、HandoffAsset、QcReport、VideoVersion、公开路由、事件投影和重试语义写入领域/API 事件契约，再开始 schema、Worker 或 Studio 改动。
+
+审计人：Codex
+
+Exit Gate 结论：C12 为唯一 `IN_PROGRESS` 正式章节；尚无实现或验收结论。
+
+### C12：本地受控媒体制作、QC、成片与结果审阅最终独立审计
+
+状态：`ACCEPTED`
+
+实施日期：2026-08-16
+
+实现提交或工作区快照：未提交工作区；本章全程未执行 `git add`、提交或推送，既有用户改动保持原状。
+
+修改文件：C12 的 Contracts/Domain/Persistence 生产段、交接帧、QC、不可替换 VideoVersion 与公开投影；`apps/production-worker/` 与 `services/media-runtime/`；Control API 的生产进度/成片读取；Studio 的制作进度和成片审阅面板；C12 API/浏览器/持久化回归及本地长任务记录。
+
+契约变化：确认后的 `ProductionRun` 通过依赖图生成本地 Mock `Shot -> TaskRun`；通过 QC 的前序镜头产生受控交接帧，后续镜头才可运行；全部接受后生成不可替换 `VideoVersion`。公开读模型只暴露安全的制作进度与成功成片的短时播放/下载投影，Provider、对象 key、内部 Runtime、提示词和凭据均不公开。
+
+测试命令及结果：`pnpm --filter @alchemy-video/control-api test:c12-e2e` 通过；Control API 26 通过、1 个既有服务门控跳过；Studio 28/28；Production Worker 12/12；Media Runtime 4/4；Studio/Control API/Production Worker typecheck 通过；一次性 PostgreSQL 数据库迁移后 `production-repository.integration.test.ts` 1/1 通过；根 `pnpm typecheck`、`pnpm test`、`pnpm build` 全部退出码 0。根级服务条件跳过符合既有设计，Nuxt `DEP0155` 为既有警告。
+
+验收证据路径：`.codex-longrun/progress.md`、`.codex-longrun/test-log.md`、`.codex-longrun/state.json`、`apps/control-api/tests/c12-local-e2e.mjs`、`apps/control-api/tests/c12-studio-ui-e2e.py`、`apps/control-api/tests/c12-production-read-routes.test.ts`、`packages/persistence/tests/production-repository.integration.test.ts` 与 `services/media-runtime/tests/`。
+
+审计发现与纠正：独立复核中发现终帧提取窗口对确定性 1 秒 MP4 可产生零帧，已改为可解析的末段窗口；Studio 未订阅 C12 安全事件，已补齐公开进度刷新；无持久化生产库的公开读回退曾返回错误 DTO，已更正并加回归；移动端 E2E 曾把折叠详情内不可见控件当作可用控件，已仅审计用户可见控件。四项均在最终回归中通过。
+
+未完成项：C12 无。C10-C12 本地范围完成。
+
+风险：真实 Provider、Veyra、VPS、DNS、部署、付费调用及 Git 发布不属于本章，仍处于 C13-A 后置边界；不得以本地 Mock 通过推断真实联动已可用。
+
+审计人：Codex
+
+Exit Gate 结论：`ACCEPTED`。C12 满足总控文档第 17 章的完整来源链、受控媒体工具、QC 关联、版本化成片、播放和下载要求。本地 C10-C12 阶段正式结束；后续只能在单独授权的 C13-A 任务中处理真实 Provider、Veyra、VPS 和部署。
+
+### C13-A：真实 Veyra、Provider 与三 VPS 联动启动前置审计
+
+状态：`BLOCKED`
+
+实施日期：2026-08-16
+
+实现提交或工作区快照：未提交；未执行 `git add`、提交或推送。
+
+修改文件：新增 `doc/AI企业内容生产平台_C13-A真实联动启动前置审计与授权清单.md`，并在总控文档中登记其为 C13-A 启动前置参考。
+
+契约变化：无公共 API、事件、数据库、Worker、Provider、Veyra、部署或前端行为变化。本次只形成真实联动启动门禁。
+
+测试命令及结果：文档阶段仅需状态和差异校验；结果记录在 `.codex-longrun/test-log.md`。未运行真实 Provider、Veyra、VPS、DNS、TLS、扣费或部署测试。
+
+验收证据路径：`doc/AI企业内容生产平台_C13-A真实联动启动前置审计与授权清单.md`、`.codex-longrun/state.json`、`.codex-longrun/blockers.md`。
+
+未完成项：C13-A 真实执行尚未开始。缺少用户一次性明确的测试用户、ticket/debit 上限、额度、Provider profile、素材、VPS/SSH、DNS/TLS、维护窗口、回滚和 Git 发布策略授权。
+
+风险：若未补齐授权就进入真实执行，可能误触真实用户、余额、扣费、VPS 服务、DNS/TLS 或生产数据。因此当前必须 fail-closed。
+
+审计人：Codex
+
+Exit Gate 结论：`BLOCKED`。C13-A 的安全启动包已完成；真实 Provider、Veyra、VPS、DNS、TLS、扣费、部署和 Git 发布仍等待明确授权参数。
+
+### C13-A：最小 canary 授权后的 Phase 0/Phase 1 进展
+
+状态：`IN_PROGRESS`
+
+实施日期：2026-08-16
+
+实现提交或工作区快照：未提交；未执行 `git add`、提交或推送。
+
+修改文件：`doc/AI企业内容生产平台_C13-A真实联动启动前置审计与授权清单.md`、`.codex-longrun/*`、`packages/contracts/src/credit.ts`、`packages/contracts/tests/credit.test.ts`、`packages/credit-veyra/src/errors.ts`、`packages/credit-veyra/src/identity-adapter.ts`、`packages/credit-veyra/src/identity-port.ts`、`packages/credit-veyra/src/index.ts`、`packages/credit-veyra/tests/identity-adapter.test.ts`。
+
+契约变化：新增内部 Veyra ticket exchange 输入和外部身份 DTO，只允许 `intent=video`；未新增公开 OpenAPI 路由、事件、数据库迁移或前端行为。
+
+测试命令及结果：Phase 0 已通过 Provider Video 31/31、Task Worker 25 通过/5 个既有服务门控 skip、Credit Veyra 6/6 及对应 typecheck，并完成只读 GitHub/SSH inventory。Phase 1 身份入口通过 `pnpm --filter @alchemy-video/contracts test` 30/30、`pnpm --filter @alchemy-video/contracts typecheck`、`pnpm --filter @alchemy-video/credit-veyra test` 10/10、`pnpm --filter @alchemy-video/credit-veyra typecheck`、`pnpm --filter @alchemy-video/contracts generate` 和本次差异 `git diff --check`。
+
+验收证据路径：`doc/AI企业内容生产平台_C13-A真实联动启动前置审计与授权清单.md` 第 9-10 节、`.codex-longrun/progress.md`、`.codex-longrun/test-log.md`、`packages/credit-veyra/tests/identity-adapter.test.ts`。
+
+未完成项：尚未识别安全的新 Video VPS；尚未实现本地 session/workspace mapping、billing attempts/recovery、Sub2API Portal `video` target allowlist；尚未执行真实 ticket、Provider、debit、DNS/TLS、部署或 Git 发布。
+
+风险：当前身份 adapter 已具备离线消费端校验，但 Sub2API 服务端若未新增 `video` intent 和受控 target，真实登录桥仍不能开启。因 Phase 0 未找到安全 Video VPS，远程部署继续禁止。
+
+审计人：Codex
+
+Exit Gate 结论：C13-A 从 `BLOCKED` 进入授权后本地 `IN_PROGRESS`，但只允许继续 Phase 1 离线实现和测试。Phase 2 远程部署仍被 Video VPS 目标缺失阻塞；真实 Provider、真实 Veyra ticket、扣费、DNS/TLS、部署和 Git 写入仍未开放。
+
+### C13-A：Phase 1 本地身份映射与计费恢复审计
+
+状态：`READY_FOR_AUDIT`
+
+实施日期：2026-08-16
+
+实现提交或工作区快照：未提交；未执行 `git add`、提交或推送。
+
+修改文件：`apps/control-api/src/identity.ts`、`apps/control-api/src/app.ts`、`apps/control-api/src/repository.ts`、`apps/control-api/tests/c13a-identity.test.ts`、`packages/persistence/src/control-plane-repository.ts`、`apps/task-worker/package.json`、`apps/task-worker/src/billing-executor.ts`、`apps/task-worker/tests/billing-executor.test.ts`，以及 C13-A 文档和 longrun 记录。
+
+契约变化：无公开 API/事件变更。内部 ControlPlaneStore 增加 `ensureIdentity()` 用于 Veyra bootstrap 映射；Task Worker 增加未装配到真实执行路径的 `VideoBillingExecutor`。
+
+测试命令及结果：`pnpm install --offline` 通过且零下载；`pnpm --filter @alchemy-video/control-api test` 29 通过、1 个既有服务门控 skip；Control API typecheck 通过；Persistence typecheck 通过；`pnpm --filter @alchemy-video/task-worker test` 29 通过、5 个既有服务门控 skip；Task Worker typecheck 通过。
+
+验收证据路径：`apps/control-api/tests/c13a-identity.test.ts`、`apps/task-worker/tests/billing-executor.test.ts`、`.codex-longrun/test-log.md`、`.codex-longrun/progress.md`。
+
+未完成项：Phase 1 的本仓库离线身份/计费边界已完成；Sub2API Portal `video/video-mobile` target allowlist 尚未改；真实 session cookie、真实 ticket exchange route、真实 account preflight、真实 debit、Provider canary、VPS/DNS/TLS/deploy 均未执行。Phase 2 仍因缺少安全新 Video VPS 阻塞。
+
+风险：`VideoBillingExecutor` 尚未接入真实 Worker 状态机，属于先行边界组件；接入时仍需数据库级 billing attempt/recovery 集成测试。Sub2API 服务端未具备 `video` intent 前，不得打开真实登录桥。
+
+审计人：Codex
+
+Exit Gate 结论：Phase 1 本仓库离线实现达到 `READY_FOR_AUDIT`。不授权进入远程部署；Phase 2 仍等待安全 Video VPS 目标。
+
+### C10-C12：持久本地验收入口修复与复核
+
+状态：`ACCEPTED`
+
+实施日期：2026-08-16
+
+实现提交或工作区快照：未提交；未执行 `git add`、提交或推送。
+
+修改文件：`infrastructure/local/start-full-local-stack.ps1`、`infrastructure/local/README.md`、`apps/studio-web/app/pages/projects/[project_id].vue`、`apps/studio-web/tests/project-flow.test.mjs`、`apps/control-api/tests/c12-local-e2e.mjs`、`.codex-longrun/progress.md`、`.codex-longrun/test-log.md`、本文件。
+
+契约变化：无公开 API、事件、Provider、Veyra、部署或数据库契约语义变化。C12 E2E harness 增加本地端口覆盖变量；Studio 结果区在无 C12 `VideoVersion` 时显示同项目既有成功生成视频为 `历史成片`，不改变后端 DTO。
+
+测试命令及结果：`infrastructure/local/start-full-local-stack.ps1` 成功启动最新本地全栈；`http://127.0.0.1:3133/api/v1/health`、`http://localhost:3031/api/v1/health`、`http://localhost:3031/projects` 均可用；`都市情感小说` 项目的 `/production-runs` 与 `/video-versions` 均返回 200。浏览器 DOM 看到 `项目资料`、`故事计划`、`生成故事计划`、`视频规格`、`成片版本`、`历史成片` 和 `查看镜头片段`。`pnpm --filter @alchemy-video/studio-web test` 28/28 通过；Studio typecheck 通过；Studio build 通过（仅既有 Nuxt DEP0155 警告）；`C12_E2E_RUNTIME_PORT=3435 pnpm --filter @alchemy-video/control-api test:c12-e2e` 通过。
+
+验收证据路径：`.codex-longrun/local-acceptance/full-stack-pids.json`、`.codex-longrun/local-acceptance/backups/video_local_before_full_stack_20260816-215947.dump`、`.codex-longrun/test-log.md`、`.codex-longrun/progress.md`。
+
+未完成项：C13-A 真实 Provider/Veyra/VPS/部署仍按后续章节边界处理；本次只修复本地最新 C10-C12 验收入口。
+
+风险：持久入口当前是本机受控进程而非生产部署；重启电脑后需重新运行 `infrastructure/local/start-full-local-stack.ps1`。真实 Provider、共享积分、VPS 和域名仍未纳入本次验收。
+
+审计人：Codex
+
+Exit Gate 结论：本地 C10-C12 最新工作台入口恢复并验收通过。`http://localhost:3031/projects` 当前可用于用户继续本地验收；外部边界继续关闭。
+
+### C11-C12：工作台清晰度与布局修订
+
+状态：`ACCEPTED`
+
+实施日期：2026-08-16
+
+实现提交或工作区快照：未提交；未执行 `git add`、提交或推送。
+
+修改文件：`packages/contracts/src/creative-planning.ts`、`contracts/*`、`packages/persistence/src/schema.ts`、`packages/persistence/src/creative-planning-repository.ts`、`packages/persistence/src/production-repository.ts`、`packages/persistence/drizzle/0011_daily_lord_tyger.sql`、`apps/control-api/src/app.ts`、`apps/control-api/src/serializers.ts`、`apps/studio-web/app/components/studio/StoryPlanningPanel.vue`、`apps/studio-web/app/pages/projects/[project_id].vue`、`apps/studio-web/app/assets/studio.css`、对应测试及三份设计/契约文档。
+
+契约变化：`CreativeBriefRevision` 和创建命令新增公开、安全的 `target_resolution: 480p | 720p`；命令默认 `720p`，历史数据库迁移以 `720p` 回填。清晰度随 immutable brief 固化；C12 调度器以该值创建每段 `TaskRun.input_snapshot`，不再硬编码 `720p`。未暴露 Provider、模型、队列、对象存储或凭据。
+
+测试命令及结果：Contracts 30/30；Persistence 15 通过、8 个既有服务门控跳过；Control API 29 通过、1 个既有服务门控跳过；Studio 29/29、typecheck、build 均通过（仅 Nuxt 既有 DEP0155 warning）；C11 浏览器 E2E 验证选中 `480p` 后刷新仍保留且零 TaskRun；C12 浏览器 E2E 验证三段 TaskRun 快照均为 `480p`，并完成 Mock 生成、QC、合成、播放、下载和 `390x844` 布局。最新本地全栈迁移并启动后，Control API、Studio 与同源代理均为 HTTP 200。
+
+验收证据路径：`packages/persistence/drizzle/0011_daily_lord_tyger.sql`、`apps/control-api/tests/c11-local-e2e.mjs`、`apps/control-api/tests/c12-local-e2e.mjs`、`.codex-longrun/local-acceptance/full-stack-pids.json`。
+
+未完成项：无本地功能缺口。真实 Provider、Veyra、VPS、DNS、部署和 Git 发布仍不属于本次修订。
+
+风险：本地 Mock 的固定测试视频尺寸不代表真实上游编码分辨率；真实 profile 的实际能力与费用仍须按 C13-A 独立认证与授权。
+
+审计人：Codex
+
+Exit Gate 结论：`ACCEPTED`。界面保留一条用户能理解的内容输入和三个有限的成片偏好；清晰度从页面到不可变任务快照可追溯，素材选择不再重复占据故事卡，桌面与移动端布局均已回归。
+
+### C11-C12：成果区稳定性修订
+
+状态：`ACCEPTED`
+
+实施日期：2026-08-16
+
+实现提交或工作区快照：未提交；未执行 `git add`、提交或推送。
+
+修改文件：`apps/studio-web/app/composables/useProjectEvents.ts`、`apps/studio-web/app/pages/projects/[project_id].vue`、`apps/studio-web/app/components/studio/ProjectResultsPanel.vue`、`apps/studio-web/app/components/studio/GenerationPanel.vue`、`apps/studio-web/app/assets/studio.css`、`apps/studio-web/nuxt.config.ts`、`infrastructure/local/start-full-local-stack.ps1`、对应浏览器/静态测试与 Studio 设计文档。
+
+契约变化：无公开 API、事件、状态机或数据库变化。SSE 仍只刷新当前项目的公开投影；刷新改为合并数据而非触发整页加载。固定本机演示入口仅注入一个前端运行时标识，明确测试片段不能代表正式成片。
+
+测试命令及结果：Studio 30/30、typecheck、build 通过（仅既有 Nuxt `DEP0155` warning）；C12 本地 E2E 通过，新增断言确认成片播放器没有 `autoplay`，展开镜头片段后不与播放器重叠，并保持成片下载、移动布局和隔离清理通过。重启本机全栈后，Studio、Control API、数据库及全部受控服务健康。
+
+验收证据路径：`apps/studio-web/tests/project-flow.test.mjs`、`apps/control-api/tests/c12-studio-ui-e2e.py`、`.codex-longrun/local-acceptance/full-stack-pids.json`。
+
+未完成项：正式内容生成仍依赖后续独立的真实 Provider 认证与启动；本机固定 `VIDEO_PROVIDER=mock` 的蓝色测试视频不是有效商业成片。
+
+风险：Mock 只验证编排、播放和合成流程，不能验证真实内容质量、上游画面或费用。
+
+审计人：Codex
+
+Exit Gate 结论：`ACCEPTED`。连续事件不会再卸载/重载项目播放器，播放只在用户选择后发生，镜头片段不会被右侧成果卡遮挡，演示片与正式成片的边界对用户可见。
+
+### C13-A：本机真实 Provider 成片链路修复与 canary
+
+状态：`ACCEPTED`
+
+实施日期：2026-08-16（本机时区）
+
+实现提交或工作区快照：未提交；未执行 `git add`、提交或推送。
+
+修改文件：`packages/persistence/src/production-repository.ts`、`apps/production-worker/src/video-input-snapshot.ts`、`apps/production-worker/src/index.ts`、`apps/production-worker/package.json`、`apps/production-worker/tests/video-input-snapshot.test.ts`、`apps/studio-web/tests/project-flow.test.mjs`、`infrastructure/local/start-full-local-stack.ps1`、`infrastructure/local/run-real-provider-canary.mjs`、`infrastructure/local/README.md`、本真实 Provider 运行文档与 longrun 记录。
+
+契约变化：无公开 API、事件、数据库迁移或 Studio 表单变化。C12 生产调度新增内部可注入 TaskRun 快照工厂：默认 Mock 行为不变；显式 `VIDEO_PROVIDER=sub2api` 时由 Production Worker 按真实 Provider profile 生成 `grok-imagine-video-1.5` 的不可变 TaskRun 快照。启动脚本新增显式真实模式参数，但默认仍为 `VIDEO_PROVIDER=mock`。
+
+测试命令及结果：`pnpm install --offline` 零下载；Production Worker 14/14；Production Worker typecheck；Persistence typecheck；Task Worker 29 通过、5 个既有服务门控 skip；Provider Video 31/31；Control API 29 通过、1 个既有服务门控 skip；Control API typecheck；Studio 30/30；Studio typecheck；`C12_E2E_RUNTIME_PORT=3435 pnpm --filter @alchemy-video/control-api test:c12-e2e` 通过。默认 Mock 持久入口启动通过；随后 `start-full-local-stack.ps1 -VideoProvider sub2api -SkipBuild -SkipBackup` 成功启动真实本地入口。
+
+真实 canary 结果：`infrastructure/local/run-real-provider-canary.mjs --real-call` 使用合成参考图和新建项目创建 1 个真实 Provider 任务，并完成 C12 最终成片。数据库核对：TaskRun `SUCCEEDED`，模型 `grok-imagine-video-1.5`，`duration=15`，`resolution=720p`，`visual_input=REFERENCE_SET`，参考图 1 张，ProviderAttempt 1 条且已提交 1 条。VideoVersion `SUCCEEDED`，结果资产 `video/mp4`，1,541,708 bytes，15,084 ms。公开项目页与同源健康检查均 HTTP 200。
+
+验收证据路径：`.codex-longrun/local-acceptance/full-stack-pids.json`、`.codex-longrun/local-acceptance/logs/`、`infrastructure/local/run-real-provider-canary.mjs`、`.codex-longrun/test-log.md`、`.codex-longrun/progress.md`。
+
+未完成项：Veyra/shared credit、Video VPS、DNS/TLS、部署和 Git 发布仍不属于本次本机 canary；C13-A 远程 Phase 2 仍等待安全的新 Video VPS 目标。
+
+风险：真实模式会让后续新建视频任务消耗外部 Provider 额度；长故事按分镜数量触发多次真实调用。一次合成 canary 只证明本机链路和当前参数可用，不保证所有小说内容、复杂提示词或 7 图视觉质量。
+
+审计人：Codex
+
+Exit Gate 结论：`ACCEPTED`。本机真实 Provider 到 C12 最终成片链路已修复并通过一次真实合成 canary；远程部署和共享积分继续后置。
+
+### C11-C12：通用叙事点与生成片段本地实现
+
+状态：`ACCEPTED`
+
+实施日期：2026-08-16
+
+实现提交或工作区快照：未提交；未执行 `git add`、提交或推送。
+
+修改文件：`packages/contracts/src/creative-planning.ts`、`packages/contracts/src/resources.ts`、`contracts/*`、`packages/creative-planning/src/index.ts`、`packages/creative-planning/tests/deterministic-planner.test.ts`、`apps/workflow-worker/src/execution-service.ts`、`apps/workflow-worker/tests/execution-service.test.ts`、`packages/persistence/src/schema.ts`、`packages/persistence/src/creative-planning-repository.ts`、`packages/persistence/src/production-repository.ts`、`packages/persistence/drizzle/0012_previous_sleeper.sql`、`packages/persistence/drizzle/meta/*`、`packages/persistence/tests/creative-planning-repository.test.ts`、`apps/control-api/src/serializers.ts`、`apps/control-api/tests/c11-creative-planning-routes.test.ts`、`apps/control-api/tests/c12-studio-ui-e2e.py`、`apps/production-worker/src/video-input-snapshot.ts`、`apps/production-worker/tests/video-input-snapshot.test.ts`、`packages/provider-video/src/runtime-profile.ts`、`apps/studio-web/app/composables/useControlApi.ts`、`apps/studio-web/app/components/studio/ProductionProgressPanel.vue`、`apps/studio-web/app/pages/projects/[project_id].vue`、`apps/studio-web/tests/project-flow.test.mjs`、longrun 记录。
+
+契约变化：公开 Storyboard DTO 新增 `narrative_beat_sequences`、`narrative_beat_count`、`generation_segment_count`；ProductionRun DTO 新增兼容型 `total_segment_count`、`accepted_segment_count`；TaskRun 输入快照新增可选 `generation_segment_sequence` 与 `narrative_beat_sequences`。数据库新增 `storyboard_shot_specs.narrative_beat_sequences`，迁移先回填历史行再增加非空数组检查。旧 `shot` 命名字段保留兼容，不再作为当前 Provider 调用数量的产品语义。
+
+测试命令及结果：Creative Planning 4/4；Workflow Worker 6/6；Persistence 15 通过、8 个既有数据库门控 skip；Production Worker 14/14；Provider Video 31/31；Contracts 30/30；Control API 29 通过、1 个既有服务门控 skip；Studio 30/30；所有触达包 typecheck 通过；Studio build 通过（仅既有 Nuxt DEP0155 警告）；`C12_E2E_RUNTIME_PORT=3435 pnpm --filter @alchemy-video/control-api test:c12-e2e` 通过；根级 `pnpm typecheck`、`pnpm test`、`pnpm build` 全部退出 0；`git diff --check` 退出 0（仅既有 CRLF warning）。
+
+验收证据路径：`packages/creative-planning/tests/deterministic-planner.test.ts`、`apps/workflow-worker/tests/execution-service.test.ts`、`packages/persistence/tests/creative-planning-repository.test.ts`、`apps/control-api/tests/c11-creative-planning-routes.test.ts`、`apps/control-api/tests/c12-studio-ui-e2e.py`、`.codex-longrun/test-log.md`、`.codex-longrun/progress.md`。
+
+未完成项：持久本地 `video_local` 如需用于浏览器验收，需要重新运行本地启动脚本以应用新增迁移 0012；真实 Provider 大规模长故事质量、Veyra/shared credit、Video VPS、DNS/TLS、部署和 Git 发布仍属后续边界。
+
+风险：当前分组器是确定性本地规划模型，能保证叙事点和生成片段数量边界，但不是最终商业级智能编剧质量；后续接入更强 PlanningModelPort 时必须继续满足本次锁定的同一契约和 E2E。真实 Provider 每个生成片段仍会产生一次付费调用，因此长故事真实运行前仍需要预算和账号边界。
+
+审计人：Codex
+
+Exit Gate 结论：`ACCEPTED`。18 个叙事点/30 秒不再被误解成 18 次视频生成；后台会生成 3 个可执行片段并合成一个不可变成片。C11/C12 本地链路、公开投影、快照和浏览器 E2E 已通过；外部边界继续关闭。
+
+### C12：真实多段成片质量修正
+
+状态：`IN_PROGRESS`
+
+实施日期：2026-08-17
+
+范围：仅修正本机 C12 成片合成、创作素材资格和内部 PromptPackage 连续性约束，并在用户已授权的本机 `sub2api` 真实模式下为既有项目创建一版新的受控成片。不得触碰 Veyra、共享积分、VPS、SSH、DNS、TLS、部署、Git 或公开 API。
+
+已确认根因：最新真实源片段带 AAC 音轨，旧 Media Runtime 合成命令使用 `-an`，因此最终 `VideoVersion` 被错误静音；旧 creative brief 还含有一张 `DERIVED` 的蓝色交接帧，可在新版本第一段再次作为多参考输入；确定性编译器没有将用户已保存的风格偏好和角色/服装/场景/人体结构连续性写入实际 Provider prompt。
+
+已完成修正与验证：契约与 ADR-0042 已先行更新。Media Runtime 改为保留/交叉淡变音频，并对未通过语义衔接验收的段边界加入固定时长、保持总时长的淡变转场；CreativeBriefRevision 和 Studio 只允许 READY `USER_UPLOAD` 图片/文档作为新来源；PromptPackage v2 载入风格偏好、参考策略、身份/服装/场景、角色位置和自然人体结构约束。Creative Planning 4/4、Workflow Worker 6/6、Persistence 15 通过/8 既有服务门控跳过、Media Runtime 5/5、Studio 31/31 与 typecheck、Production Worker 14/14 与 typecheck、C12 隔离 Mock E2E、状态校验与 diff check 均通过。
+
+真实重试结果：受控本机栈已从新源码重启。“都市情感小说”新建 revision 4，源文本被规划为 11 个叙事点和 3 个各 10 秒的执行片段；尾部“把以上剧情设计成剧本”未进入任何 PromptPackage。新 brief 仅使用两张 `USER_UPLOAD:IMAGE`，没有派生交接帧。3 个 TaskRun 与 3 个已提交 ProviderAttempt 全部 `SUCCEEDED`。最终 VideoVersion 为 30.167 秒、848×480、H.264 + AAC、2,752,769 bytes；音量检测均值 `-26.6 dB`、峰值 `-5.8 dB`，不是静音。首/中/尾抽帧中女主衣着、男主外观与暖色室内场景保持一致，未见上一版明显的颈部/身体错位。
+
+风险：淡变转场能消除硬切，连续性 Prompt 能降低画面漂移概率，但当前 profile 没有已认证的“多参考图 + 尾帧”并用能力或语义视觉 QC，不能承诺人体结构、服装或场景逐帧完美。此次抽帧是人工抽样而非逐帧语义验收。真实生成会消耗 Provider 额度，但不触发 Veyra 计费。
+
+审计人：Codex
+
+Exit Gate 结论：`ACCEPTED`。修正代码、定向/隔离回归、真实 3 段新版本、媒体音轨/时长核对、素材资格与 PromptPackage 审计、抽帧检查及本地入口健康检查均通过。C12 重新关闭；C13-A 的 Veyra、VPS、部署与 Git 边界不因本次本机重试而开放。
 
 每章完成时追加：
 

@@ -1,5 +1,7 @@
 export * from "./adapter.js";
 export * from "./errors.js";
+export * from "./identity-adapter.js";
+export * from "./identity-port.js";
 export * from "./mapper.js";
 export * from "./noop.js";
 export * from "./port.js";

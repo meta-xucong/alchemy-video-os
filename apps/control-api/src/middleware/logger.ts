@@ -13,7 +13,7 @@ export const requestLogger: MiddlewareHandler = async (context, next) => {
       event: "http.request.completed",
       request_id: context.get("requestId"),
       method: context.req.method,
-      path: context.req.path,
+      path: context.req.path.startsWith("/provider-input/") ? "/provider-input/[redacted]" : context.req.path,
       status: context.res.status,
       duration_ms: Math.round(performance.now() - startedAt)
     })

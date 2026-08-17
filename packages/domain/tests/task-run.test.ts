@@ -16,6 +16,92 @@ import {
   TASK_RUN_TRANSITIONS,
   transitionTaskRun,
 } from "../src/index.js";
+import { assertDocumentConversionTransition, transitionDocumentConversion } from "../src/index.js";
+import {
+  assertCreativeRevisionTransition,
+  assertProductionRunCreatable,
+  assertProductionRunTransition,
+  assertStoryboardPlan,
+} from "../src/index.js";
+import {
+  assertProductionAcceptanceCount,
+  assertProductionSegmentDependencies,
+  assertProductionSegmentTransition,
+} from "../src/index.js";
+
+test("C11 creative revisions require review before approval and remain immutable after approval", () => {
+  assert.doesNotThrow(() => assertCreativeRevisionTransition("DRAFT", "PLANNING"));
+  assert.doesNotThrow(() => assertCreativeRevisionTransition("PLANNING", "READY_FOR_REVIEW"));
+  assert.doesNotThrow(() => assertCreativeRevisionTransition("READY_FOR_REVIEW", "APPROVED"));
+  assert.doesNotThrow(() => assertCreativeRevisionTransition("APPROVED", "SUPERSEDED"));
+  assert.throws(
+    () => assertCreativeRevisionTransition("APPROVED", "PLANNING"),
+    (error: unknown) => error instanceof DomainInvariantError && error.code === "CREATIVE_PLAN_STATE_INVALID",
+  );
+});
+
+test("C11 storyboard plans use ordered event boundaries rather than length slicing", () => {
+  assert.doesNotThrow(() => assertStoryboardPlan({
+    totalDurationSeconds: 24,
+    specs: [
+      { sequence: 1, durationSeconds: 8, dependsOnSequences: [] },
+      { sequence: 2, durationSeconds: 8, dependsOnSequences: [1] },
+      { sequence: 3, durationSeconds: 8, dependsOnSequences: [2] },
+    ],
+  }));
+  assert.throws(
+    () => assertStoryboardPlan({ totalDurationSeconds: 16, specs: [{ sequence: 2, durationSeconds: 16, dependsOnSequences: [] }] }),
+    (error: unknown) => error instanceof DomainInvariantError && error.code === "STORYBOARD_SPEC_INVALID",
+  );
+  assert.throws(
+    () => assertStoryboardPlan({ totalDurationSeconds: 8, specs: [{ sequence: 1, durationSeconds: 8, dependsOnSequences: [1] }] }),
+    (error: unknown) => error instanceof DomainInvariantError && error.code === "STORYBOARD_SPEC_INVALID",
+  );
+});
+
+test("C11 production confirmation requires an approved plan and does not imply execution", () => {
+  assert.doesNotThrow(() => assertProductionRunCreatable("APPROVED"));
+  assert.throws(
+    () => assertProductionRunCreatable("READY_FOR_REVIEW"),
+    (error: unknown) => error instanceof DomainInvariantError && error.code === "PRODUCTION_RUN_STATE_INVALID",
+  );
+  assert.doesNotThrow(() => assertProductionRunTransition("DRAFT", "PLAN_READY"));
+  assert.doesNotThrow(() => assertProductionRunTransition("PLAN_READY", "CONFIRMED"));
+  assert.throws(
+    () => assertProductionRunTransition("PLAN_READY", "GENERATING"),
+    (error: unknown) => error instanceof DomainInvariantError && error.code === "PRODUCTION_RUN_STATE_INVALID",
+  );
+});
+
+test("C12 segment state and dependency invariants preserve accepted work", () => {
+  assert.doesNotThrow(() => assertProductionSegmentTransition("PENDING", "GENERATING"));
+  assert.doesNotThrow(() => assertProductionSegmentTransition("GENERATING", "CHECKING"));
+  assert.doesNotThrow(() => assertProductionSegmentTransition("CHECKING", "ACCEPTED"));
+  assert.doesNotThrow(() => assertProductionSegmentTransition("FAILED", "GENERATING"));
+  assert.throws(
+    () => assertProductionSegmentTransition("ACCEPTED", "GENERATING"),
+    (error: unknown) => error instanceof DomainInvariantError && error.code === "PRODUCTION_SEGMENT_STATE_INVALID",
+  );
+  assert.doesNotThrow(() => assertProductionSegmentDependencies({ sequence: 3, dependencySequences: [1, 2], acceptedSequences: [1, 2] }));
+  assert.throws(
+    () => assertProductionSegmentDependencies({ sequence: 3, dependencySequences: [2], acceptedSequences: [1] }),
+    (error: unknown) => error instanceof DomainInvariantError && error.code === "PRODUCTION_SEGMENT_STATE_INVALID",
+  );
+  assert.doesNotThrow(() => assertProductionAcceptanceCount({ acceptedShotCount: 2, totalShotCount: 3 }));
+  assert.throws(
+    () => assertProductionAcceptanceCount({ acceptedShotCount: 4, totalShotCount: 3 }),
+    (error: unknown) => error instanceof DomainInvariantError && error.code === "PRODUCTION_SEGMENT_STATE_INVALID",
+  );
+});
+
+test("DocumentConversion has a separate retryable state machine", () => {
+  assert.doesNotThrow(() => assertDocumentConversionTransition("FAILED", "QUEUED"));
+  assert.throws(() => assertDocumentConversionTransition("SUCCEEDED", "QUEUED"));
+  assert.throws(() => transitionDocumentConversion(
+    { id: "dcv_1", status: "RUNNING", sourceAssetId: "ast_1", markdownAssetId: null },
+    { status: "SUCCEEDED", markdownAssetId: null },
+  ));
+});
 
 const inputSnapshot = {
   model: "mock-video-v1",
