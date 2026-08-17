@@ -160,7 +160,7 @@ export class DeterministicPlanningModel implements PlanningModelPort {
         referencePolicy,
         dependsOnSequences: index === 0 ? [] : [index],
         continuityNote: referencePolicy === "HANDOFF_FIRST_FRAME"
-          ? "需要 C12 在前一段通过验收后提供交接首帧；当前计划不承诺帧级无缝。"
+          ? "需要 C12 在前一段通过验收后提供交接首帧，并继续携带已选用户参考图稳定人物、服装和场景；当前计划不承诺帧级无缝。"
           : referencePolicy === "REFERENCE_SET"
             ? "优先保持已选参考素材中的人物或品牌风格一致。"
           : "使用明确转场说明承接叙事，不承诺视觉帧级连续。",
@@ -193,7 +193,7 @@ export class DeterministicStoryboardCompiler implements StoryboardCompilerPort {
     const referenceInstruction = input.referencePolicy === "REFERENCE_SET"
       ? "Treat the approved reference images as the visual source of truth for identity, hairstyle, wardrobe, palette, and scene language."
       : input.referencePolicy === "HANDOFF_FIRST_FRAME"
-        ? "Begin exactly from the approved handoff first frame and preserve its visible identity, wardrobe, setting, lighting, framing, and spatial relationships."
+        ? "Use the first supplied reference image as the approved handoff opening frame. Begin from that image exactly; treat any additional approved reference images as identity, wardrobe, palette, and scene anchors."
         : "Use a deliberate cinematic transition; do not introduce an unexplained change of identity, wardrobe, setting, or time.";
     const prompt = [
       input.narrativeGoal,
@@ -221,9 +221,12 @@ export class DeterministicStoryboardCompiler implements StoryboardCompilerPort {
       referenceMap: { reference_policy: input.referencePolicy },
       capabilitySnapshot: {
         max_duration_seconds: 15,
+        max_reference_images: 7,
         supports_reference_set: true,
         supports_handoff_first_frame: true,
-        reference_set_and_handoff_are_mutually_exclusive: true,
+        supports_handoff_plus_reference_set: true,
+        handoff_plus_reference_set_order: "handoff_first_then_user_references",
+        reference_set_and_handoff_are_mutually_exclusive: false,
       },
     };
   }

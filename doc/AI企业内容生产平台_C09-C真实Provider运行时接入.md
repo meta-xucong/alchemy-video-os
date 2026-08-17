@@ -28,7 +28,7 @@ Control API 从已保存的 `Shot` 与同项目 `reference_bindings` 建立不�
 
 ## 已认证能力与拒绝规则
 
-当前真实 profile 使用 `grok-imagine-video-1.5` 和固定画幅 `16:9`。C08 的 `1s / 480p` 是一次受限文生认证的成本下限，不是产品默认创作质量；本机 MCP 的当前 `aiself-grok` 证据已覆盖 `5s / 720p / 16:9` 的独立参考素材路径。Studio 第三步将时长 `1..15` 秒与清晰度 `480p|720p` 作为明确的可保存设置显示，默认 `5s / 720p`。Control API 只从 `Shot.generation_settings.video_settings` 读取这两个值，并在创建 TaskRun 前校验范围；自然语言中的数字不再改写模型参数。`ratio` 为公开显示但不可修改的当前 profile 能力，必须为 `16:9`。其他可选组合只代表协议可接受范围，不扩大为已完成的真实画质认证。ADR-0034 已实现 `FIRST_FRAME` 与一至七张 `REFERENCE_SET` 的输入映射：前者写入 `image.image_url`，后者写入 `reference_images[].url`；二者严格互斥，不支持尾帧或混合模式。参考素材协议最多七张，但当前独立视觉端到端证据只有两张。Seedance 和 Veyra 计费仍未开放。
+当前真实 profile 使用 `grok-imagine-video-1.5` 和固定画幅 `16:9`。C08 的 `1s / 480p` 是一次受限文生认证的成本下限，不是产品默认创作质量；本机 MCP 的当前 `aiself-grok` 证据已覆盖 `5s / 720p / 16:9` 的独立参考素材路径。Studio 第三步将时长 `1..15` 秒与清晰度 `480p|720p` 作为明确的可保存设置显示，默认 `5s / 720p`。Control API 只从 `Shot.generation_settings.video_settings` 读取这两个值，并在创建 TaskRun 前校验范围；自然语言中的数字不再改写模型参数。`ratio` 为公开显示但不可修改的当前 profile 能力，必须为 `16:9`。其他可选组合只代表协议可接受范围，不扩大为已完成的真实画质认证。ADR-0034 已实现公开单 Shot 的 `FIRST_FRAME` 与一至七张 `REFERENCE_SET` 输入映射：前者写入 `image.image_url`，后者写入 `reference_images[].url`；公开手工入口保持互斥。C12 自动多段成片按 ADR-0043 使用有序 `REFERENCE_SET` 承载“第 0 位交接帧 + 用户参考图”，不开放尾帧字段，也不宣称逐帧连续能力。参考素材协议最多七张，但当前独立视觉端到端证据只有两张。Seedance 和 Veyra 计费仍未开放。
 
 Control API 只校验并保留已保存的创作描述作为 Worker 专用提示词（只去除首尾空白）。它不在前后追加模板、翻译、偏好或参数说明，因此发送给 Aiself 的 `prompt` 与用户的创作描述一致。该步骤从受控 `video_settings` 取得规格，但不是浏览器直连模型、不会读取密钥，也不会声明已完成脚本 Agent 或内容政策审核。TaskRun 只保存该执行提示词和冻结后的规格；原始想法继续由 Shot 保存。平台不恢复 4096 字节本地硬拒绝。
 

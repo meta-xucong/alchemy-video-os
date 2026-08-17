@@ -158,6 +158,19 @@ test("M2 lets a confirmed reference upload be followed by a distinct file select
   assert.match(references, /@change="onFileChange"/);
 });
 
+test("Studio hydrates selected references from the current brief instead of generated handoff bindings", () => {
+  const workspace = read("app/pages/projects/[project_id].vue");
+  const hydrateBlock = workspace.match(/function hydrateCreation\(\) \{[\s\S]*?\n\}/)?.[0] ?? "";
+
+  assert.match(workspace, /function eligibleReferenceImageIds\(ids: string\[\]\)/);
+  assert.match(workspace, /function defaultSelectedReferenceIds\(\)/);
+  assert.match(workspace, /\? eligibleReferenceImageIds\(brief\.source_asset_ids\)/);
+  assert.match(workspace, /: readyReferenceImages\.value\.map\(\(asset\) => asset\.id\);/);
+  assert.match(hydrateBlock, /selectedReferenceIds\.value = defaultSelectedReferenceIds\(\);/);
+  assert.match(hydrateBlock, /syncPlanningReferenceSourceIds\(selectedReferenceIds\.value\);/);
+  assert.doesNotMatch(hydrateBlock, /reference_bindings|currentCreation\.value/);
+});
+
 test("Studio keeps one visible input and hides story planning orchestration", () => {
   const workspace = read("app/pages/projects/[project_id].vue");
   const composer = read("app/components/studio/StoryPlanningPanel.vue");

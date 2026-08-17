@@ -67,6 +67,10 @@ test("C11 Studio retains a long-story input, adjustable total duration, user-fac
   assert.match(references, /已自动作为参考素材/);
   assert.match(workspace, /targetResolution: "720p" as "480p" \| "720p"/);
   assert.match(workspace, /target_resolution: planningDraft\.targetResolution/);
+  assert.match(workspace, /function eligibleReferenceImageIds\(ids: string\[\]\)/);
+  assert.match(workspace, /function defaultSelectedReferenceIds\(\)/);
+  assert.match(workspace, /\? eligibleReferenceImageIds\(brief\.source_asset_ids\)/);
+  assert.match(workspace, /syncPlanningReferenceSourceIds\(selectedReferenceIds\.value\)/);
   assert.match(workspace, /planningDraft\.sourceAssetIds = uniqueReferenceIds\(\[\.\.\.readyPlanningDocumentIds\.value, \.\.\.selectedReferenceIds\.value\]\);/);
   assert.match(workspace, /planningDraft\.sourceAssetIds = uniqueReferenceIds\(\[\.\.\.planningDraft\.sourceAssetIds, request\.data\.asset_id\]\);/);
   assert.doesNotMatch(panel, /story-source-assets|selected-source-asset-ids|sourceAssets/);
