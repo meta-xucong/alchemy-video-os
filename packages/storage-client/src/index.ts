@@ -12,7 +12,7 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const DEFAULT_URL_TTL_SECONDS = 10 * 60;
-const STUDIO_ORIGINS = ["http://127.0.0.1:3031", "http://localhost:3031"];
+const DEFAULT_BROWSER_ORIGINS = ["http://127.0.0.1:3031", "http://localhost:3031"];
 
 export type ObjectInspection = {
   mimeType: string;
@@ -31,6 +31,12 @@ export type SignedDownload = {
   expiresAt: string;
 };
 
+export type StorageObjectStream = {
+  mimeType: string;
+  byteSize?: number;
+  stream: ReadableStream<Uint8Array>;
+};
+
 export interface StoragePort {
   createUploadUrl(input: {
     objectKey: string;
@@ -40,10 +46,18 @@ export interface StoragePort {
   inspectObject(input: { objectKey: string }): Promise<ObjectInspection | undefined>;
   putObject(input: { objectKey: string; mimeType: string; bytes: Uint8Array; ifNoneMatch?: "*" }): Promise<void>;
   createDownloadUrl(input: { objectKey: string; expiresInSeconds?: number }): Promise<SignedDownload>;
+  readObject(input: { objectKey: string }): Promise<StorageObjectStream | undefined>;
 }
 
 export type S3StorageConfig = {
   endpoint: string;
+  /**
+   * Public S3 endpoint used only when signing browser upload/download URLs.
+   * Server-side reads and writes continue to use endpoint on the private network.
+   */
+  publicEndpoint?: string;
+  /** Browser origins allowed to use upload/download URLs. Defaults to local Studio origins. */
+  browserOrigins?: readonly string[];
   region: string;
   bucket: string;
   accessKeyId: string;
@@ -133,6 +147,24 @@ export const createGeneratedVideoObjectKey = (input: {
   assetId: string;
 }) => `${input.workspaceId}/${input.projectId}/${input.assetId}/generated.mp4`;
 
+export const createHandoffFrameObjectKey = (input: {
+  workspaceId: string;
+  projectId: string;
+  assetId: string;
+}) => `${input.workspaceId}/${input.projectId}/${input.assetId}/handoff.png`;
+
+export const createComposedVideoObjectKey = (input: {
+  workspaceId: string;
+  projectId: string;
+  assetId: string;
+}) => `${input.workspaceId}/${input.projectId}/${input.assetId}/composed.mp4`;
+
+export const createDocumentMarkdownObjectKey = (input: {
+  workspaceId: string;
+  projectId: string;
+  assetId: string;
+}) => `${input.workspaceId}/${input.projectId}/${input.assetId}/document.md`;
+
 const asAsyncIterable = (body: unknown): AsyncIterable<Uint8Array> => {
   if (!body || typeof (body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] !== "function") {
     throw new StorageUnavailableError("Object storage returned an unreadable object body.");
@@ -140,12 +172,38 @@ const asAsyncIterable = (body: unknown): AsyncIterable<Uint8Array> => {
   return body as AsyncIterable<Uint8Array>;
 };
 
+const asReadableStream = (body: unknown): ReadableStream<Uint8Array> => {
+  if (body && typeof (body as { transformToWebStream?: unknown }).transformToWebStream === "function") {
+    return (body as { transformToWebStream(): ReadableStream<Uint8Array> }).transformToWebStream();
+  }
+  const iterator = asAsyncIterable(body)[Symbol.asyncIterator]();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await iterator.next();
+        if (next.done) {
+          controller.close();
+        } else {
+          controller.enqueue(new Uint8Array(next.value));
+        }
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    async cancel() {
+      await iterator.return?.();
+    },
+  });
+};
+
 export class S3StoragePort implements StoragePort {
   private bucketInitialization?: Promise<void>;
 
   constructor(
     private readonly client: S3Client,
+    private readonly signingClient: S3Client,
     private readonly bucket: string,
+    private readonly browserOrigins: readonly string[],
   ) {}
 
   async createUploadUrl(input: { objectKey: string; mimeType: string; expiresInSeconds?: number }) {
@@ -154,7 +212,7 @@ export class S3StoragePort implements StoragePort {
     try {
       return {
         uploadUrl: await getSignedUrl(
-          this.client,
+          this.signingClient,
           new PutObjectCommand({
             Bucket: this.bucket,
             Key: input.objectKey,
@@ -221,13 +279,34 @@ export class S3StoragePort implements StoragePort {
     try {
       return {
         downloadUrl: await getSignedUrl(
-          this.client,
-          new GetObjectCommand({ Bucket: this.bucket, Key: input.objectKey }),
+          this.signingClient,
+          new GetObjectCommand({
+            Bucket: this.bucket,
+            Key: input.objectKey,
+            ResponseContentDisposition: "attachment",
+          }),
           { expiresIn: expiresInSeconds },
         ),
         expiresAt: expiresAt(expiresInSeconds),
       };
     } catch (error) {
+      throw new StorageUnavailableError("Object storage is unavailable.", storageDiagnostic(error));
+    }
+  }
+
+  async readObject(input: { objectKey: string }): Promise<StorageObjectStream | undefined> {
+    await this.ensureBucket();
+    try {
+      const object = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: input.objectKey }));
+      if (!object.Body) throw new StorageUnavailableError("Object storage returned an unreadable object body.");
+      return {
+        mimeType: object.ContentType ?? "application/octet-stream",
+        ...(object.ContentLength === undefined ? {} : { byteSize: object.ContentLength }),
+        stream: asReadableStream(object.Body),
+      };
+    } catch (error: unknown) {
+      if (error instanceof Error && (error.name === "NotFound" || error.name === "NoSuchKey")) return undefined;
+      if (error instanceof StorageUnavailableError) throw error;
       throw new StorageUnavailableError("Object storage is unavailable.", storageDiagnostic(error));
     }
   }
@@ -255,7 +334,7 @@ export class S3StoragePort implements StoragePort {
             CORSRules: [{
               AllowedHeaders: ["Content-Type", "If-None-Match"],
               AllowedMethods: ["GET", "HEAD", "PUT"],
-              AllowedOrigins: STUDIO_ORIGINS,
+              AllowedOrigins: [...this.browserOrigins],
               ExposeHeaders: ["ETag"],
               MaxAgeSeconds: 300,
             }],
@@ -273,18 +352,23 @@ export class S3StoragePort implements StoragePort {
   }
 }
 
+const createS3Client = (input: Pick<S3StorageConfig, "endpoint" | "region" | "accessKeyId" | "secretAccessKey">) =>
+  new S3Client({
+    endpoint: input.endpoint,
+    region: input.region,
+    forcePathStyle: true,
+    credentials: {
+      accessKeyId: input.accessKeyId,
+      secretAccessKey: input.secretAccessKey,
+    },
+  });
+
 export const createS3StoragePort = (config: S3StorageConfig): StoragePort =>
   new S3StoragePort(
-    new S3Client({
-      endpoint: config.endpoint,
-      region: config.region,
-      forcePathStyle: true,
-      credentials: {
-        accessKeyId: config.accessKeyId,
-        secretAccessKey: config.secretAccessKey,
-      },
-    }),
+    createS3Client(config),
+    createS3Client({ ...config, endpoint: config.publicEndpoint ?? config.endpoint }),
     config.bucket,
+    config.browserOrigins?.length ? config.browserOrigins : DEFAULT_BROWSER_ORIGINS,
   );
 
 export class InMemoryStoragePort implements StoragePort {
@@ -325,6 +409,22 @@ export class InMemoryStoragePort implements StoragePort {
       throw new StorageObjectAlreadyExistsError();
     }
     this.objects.set(input.objectKey, { mimeType: input.mimeType, bytes: input.bytes });
+  }
+
+  async readObject(input: { objectKey: string }) {
+    const object = this.objects.get(input.objectKey);
+    if (!object) return undefined;
+    const bytes = new Uint8Array(object.bytes);
+    return {
+      mimeType: object.mimeType,
+      byteSize: bytes.byteLength,
+      stream: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      }),
+    };
   }
 }
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,8 +16,18 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const controlApiRoot = resolve(repoRoot, "apps", "control-api");
 const taskWorkerRoot = resolve(repoRoot, "apps", "task-worker");
 const studioWebRoot = resolve(repoRoot, "apps", "studio-web");
-const apiOrigin = "http://127.0.0.1:3032";
-const studioOrigin = "http://127.0.0.1:3031";
+const controlApiPort = Number(process.env.C06_E2E_CONTROL_API_PORT ?? "3032");
+const studioPort = Number(process.env.C06_E2E_STUDIO_PORT ?? "3031");
+if (!Number.isInteger(controlApiPort) || controlApiPort < 1 || controlApiPort > 65_535) throw new Error("C06_E2E_CONTROL_API_PORT must be a valid port.");
+if (!Number.isInteger(studioPort) || studioPort < 1 || studioPort > 65_535) throw new Error("C06_E2E_STUDIO_PORT must be a valid port.");
+const studioBindHost = process.env.C06_E2E_STUDIO_HOST ?? "127.0.0.1";
+const studioOriginHost = process.env.C06_E2E_STUDIO_ORIGIN_HOST ?? studioBindHost;
+if (!new Set(["127.0.0.1", "::1"]).has(studioBindHost)) throw new Error("C06_E2E_STUDIO_HOST must be a loopback address.");
+if (!new Set(["127.0.0.1", "localhost", "::1"]).has(studioOriginHost)) throw new Error("C06_E2E_STUDIO_ORIGIN_HOST must be a local browser origin.");
+const urlHost = (host) => host.includes(":") ? `[${host}]` : host;
+const apiOrigin = `http://127.0.0.1:${controlApiPort}`;
+const studioOrigin = `http://${urlHost(studioOriginHost)}:${studioPort}`;
+const studioProbeOrigin = `http://${urlHost(studioBindHost)}:${studioPort}`;
 const databaseUrl = "postgresql://video_local:video_local@127.0.0.1:15432/video_local";
 const redisUrl = "redis://127.0.0.1:6380";
 const storageConfig = {
@@ -31,30 +41,63 @@ const onePixelPng = Uint8Array.from(Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl0f7kAAAAASUVORK5CYII=",
   "base64",
 ));
+const secondOnePixelPng = Uint8Array.from(Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+));
 const fixturePath = resolve(repoRoot, ".codex-longrun", "c06-studio-generation-1x1.png");
+const secondFixturePath = resolve(repoRoot, ".codex-longrun", "c06-studio-generation-second-1x1.png");
 const uiScriptPath = resolve(controlApiRoot, "tests", "c06-studio-ui-e2e.py");
 const studioServerScriptPath = resolve(studioWebRoot, "scripts", "serve-local.mjs");
 const resultPrefix = "C06_STUDIO_UI_E2E_RESULT=";
 
 const sleep = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 
-const assertPortAvailable = (port) => new Promise((resolveAvailable, rejectAvailable) => {
-  const probe = createServer();
-  probe.once("error", () => rejectAvailable(new Error(`Port ${port} is already in use; refusing to stop an existing service.`)));
-  probe.listen(port, "127.0.0.1", () => probe.close(resolveAvailable));
+const assertTcpReachable = (host, port, name) => new Promise((resolveReachable, rejectReachable) => {
+  const socket = createConnection({ host, port });
+  const finish = (error) => {
+    socket.destroy();
+    if (error) rejectReachable(error);
+    else resolveReachable();
+  };
+  socket.setTimeout(5_000, () => finish(new Error(`${name} did not accept a local TCP connection within 5 seconds.`)));
+  socket.once("connect", () => finish());
+  socket.once("error", () => finish(new Error(`${name} is unavailable at ${host}:${port}.`)));
 });
+
+const assertLocalRuntimeReady = async () => {
+  await Promise.all([
+    assertTcpReachable("127.0.0.1", 15432, "PostgreSQL"),
+    assertTcpReachable("127.0.0.1", 6380, "Redis"),
+    assertTcpReachable("127.0.0.1", 9002, "MinIO"),
+  ]);
+};
+
+const assertPortAvailableOnHost = (port, host) => new Promise((resolveAvailable, rejectAvailable) => {
+  const probe = createServer();
+  probe.once("error", () => rejectAvailable(new Error(`Port ${host}:${port} is already in use; refusing to stop an existing service.`)));
+  probe.listen(port, host, () => probe.close(resolveAvailable));
+});
+
+const assertPortAvailable = (port, host) => host
+  ? assertPortAvailableOnHost(port, host)
+  : Promise.all([
+      assertPortAvailableOnHost(port, "127.0.0.1"),
+      assertPortAvailableOnHost(port, "::1"),
+      assertPortAvailableOnHost(port, "::"),
+    ]);
 
 const waitForPortsReleased = async () => {
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     try {
-      await Promise.all([assertPortAvailable(3031), assertPortAvailable(3032)]);
+      await Promise.all([assertPortAvailable(studioPort), assertPortAvailable(controlApiPort)]);
       return;
     } catch {
       await sleep(250);
     }
   }
-  throw new Error("C06 E2E did not release 3031/3032 during cleanup.");
+  throw new Error(`C06 E2E did not release ${studioPort}/${controlApiPort} during cleanup.`);
 };
 
 const pnpmCommand = (args) => process.platform === "win32"
@@ -138,18 +181,19 @@ const publicResponseHasNoInternalFields = async (projectName) => {
   }
 };
 
-const cleanupProject = async (projectName, storage, commandSeedPrefix) => {
+const cleanupProject = async (projectNames, storage, commandSeedPrefix) => {
+  assert.ok(Array.isArray(projectNames) && projectNames.length > 0, "C06 E2E cleanup requires its generated project names.");
   const database = new Client({ connectionString: databaseUrl });
   await database.connect();
   try {
     const projects = await database.query(
-      "SELECT id FROM projects WHERE workspace_id = $1 AND name = $2",
-      ["ws_dev_default", projectName],
+      "SELECT id FROM projects WHERE workspace_id = $1 AND name = ANY($2::text[])",
+      ["ws_dev_default", projectNames],
     );
     const projectIds = projects.rows.map(({ id }) => id);
     const assets = await database.query(
-      "SELECT assets.object_key FROM assets INNER JOIN projects ON projects.id = assets.project_id WHERE projects.workspace_id = $1 AND projects.name = $2",
-      ["ws_dev_default", projectName],
+      "SELECT assets.object_key FROM assets INNER JOIN projects ON projects.id = assets.project_id WHERE projects.workspace_id = $1 AND projects.name = ANY($2::text[])",
+      ["ws_dev_default", projectNames],
     );
     const objectKeys = assets.rows.map(({ object_key: objectKey }) => objectKey);
     await Promise.all(objectKeys.map((objectKey) => storage.send(new DeleteObjectCommand({ Bucket: storageConfig.bucket, Key: objectKey })).catch(() => undefined)));
@@ -158,19 +202,19 @@ const cleanupProject = async (projectName, storage, commandSeedPrefix) => {
     }
     await database.query("DELETE FROM command_deduplications WHERE idempotency_key LIKE $1", [`%${commandSeedPrefix}%`]);
     await database.query(
-      "DELETE FROM task_runs USING projects WHERE task_runs.project_id = projects.id AND projects.workspace_id = $1 AND projects.name = $2",
-      ["ws_dev_default", projectName],
+      "DELETE FROM task_runs USING projects WHERE task_runs.project_id = projects.id AND projects.workspace_id = $1 AND projects.name = ANY($2::text[])",
+      ["ws_dev_default", projectNames],
     );
     const deleted = await database.query(
-      "DELETE FROM projects WHERE workspace_id = $1 AND name = $2 RETURNING id",
-      ["ws_dev_default", projectName],
+      "DELETE FROM projects WHERE workspace_id = $1 AND name = ANY($2::text[]) RETURNING id",
+      ["ws_dev_default", projectNames],
     );
     const remaining = await database.query(
-      "SELECT count(*)::integer AS count FROM projects WHERE workspace_id = $1 AND name = $2",
-      ["ws_dev_default", projectName],
+      "SELECT count(*)::integer AS count FROM projects WHERE workspace_id = $1 AND name = ANY($2::text[])",
+      ["ws_dev_default", projectNames],
     );
     assert.equal(remaining.rows[0].count, 0, "C06 E2E project cleanup left a database record.");
-    assert.ok(deleted.rowCount === 0 || deleted.rowCount === 1, "C06 E2E cleanup removed an unexpected project count.");
+    assert.ok(deleted.rowCount >= 0 && deleted.rowCount <= projectNames.length, "C06 E2E cleanup removed an unexpected project count.");
     for (const objectKey of objectKeys) {
       assert.equal(await hasObject(storage, objectKey), false, `C06 E2E object cleanup left ${objectKey}.`);
     }
@@ -194,14 +238,19 @@ const taskRunProviderRecord = async (projectName) => {
   try {
     const result = await database.query(
       `SELECT task_runs.id, task_runs.status, task_runs.result_asset_id,
+              task_runs.input_snapshot ->> 'duration' AS task_duration,
+              shots.generation_settings -> 'video_settings' ->> 'duration_seconds' AS saved_duration,
+              shots.generation_settings -> 'video_settings' ->> 'resolution' AS saved_resolution,
+              shots.generation_settings -> 'video_settings' ->> 'ratio' AS saved_ratio,
               count(provider_attempts.id)::integer AS attempt_count,
               count(provider_attempts.provider_request_id)::integer AS submitted_attempt_count,
               min(provider_attempts.provider_request_id) AS provider_request_id
        FROM task_runs
        INNER JOIN projects ON projects.id = task_runs.project_id
+       INNER JOIN shots ON shots.workspace_id = task_runs.workspace_id AND shots.id = task_runs.shot_id
        LEFT JOIN provider_attempts ON provider_attempts.workspace_id = task_runs.workspace_id AND provider_attempts.task_run_id = task_runs.id
        WHERE projects.workspace_id = $1 AND projects.name = $2
-       GROUP BY task_runs.id, task_runs.status, task_runs.result_asset_id`,
+       GROUP BY task_runs.id, task_runs.status, task_runs.result_asset_id, task_runs.input_snapshot, shots.generation_settings`,
       ["ws_dev_default", projectName],
     );
     assert.equal(result.rowCount, 1, "C06 retry E2E expected exactly one TaskRun.");
@@ -209,6 +258,46 @@ const taskRunProviderRecord = async (projectName) => {
   } finally {
     await database.end();
   }
+};
+
+const assertMockApiRuntimeProfile = async (input) => {
+  const projectName = `C06 Mock runtime probe ${input.suffix}`;
+  const commandKey = (name) => `c06-${input.commandSeedPrefix}-mock-profile-${name}`;
+  const request = async (path, options) => {
+    const response = await fetch(`${apiOrigin}${path}`, options);
+    assert.ok(response.ok, `C06 Mock runtime probe request ${path} failed with HTTP ${response.status}.`);
+    return response.json();
+  };
+
+  const project = await request("/api/v1/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": commandKey("project") },
+    body: JSON.stringify({ name: projectName }),
+  });
+  const shot = await request(`/api/v1/projects/${project.data.id}/shots`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": commandKey("shot") },
+    body: JSON.stringify({
+      position: 0,
+      prompt: "Verify the local Mock runtime profile.",
+      generation_settings: { video_settings: { duration_seconds: 8, resolution: "480p", ratio: "16:9" } },
+      reference_bindings: [],
+    }),
+  });
+  await request(`/api/v1/shots/${shot.data.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": commandKey("ready") },
+    body: JSON.stringify({ status: "READY" }),
+  });
+  await request(`/api/v1/shots/${shot.data.id}/generations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": commandKey("generation") },
+    body: "{}",
+  });
+  const taskRun = await taskRunProviderRecord(projectName);
+  assert.equal(Number(taskRun.task_duration), 1, "The C06 Control API process did not use the fixed local Mock profile.");
+  assert.equal(taskRun.saved_resolution, "480p", "The C06 Mock runtime probe did not retain the Shot setting separately.");
+  await cleanupProject([projectName], input.storage, input.commandSeedPrefix);
 };
 
 const assertSingleRetriedAttempt = async (projectName, failedRecord) => {
@@ -226,7 +315,9 @@ const runStudioUiTest = (input) => {
     uiScriptPath,
     "--studio-origin", studioOrigin,
     "--fixture", fixturePath,
+    "--fixture", secondFixturePath,
     "--project-name", input.projectName,
+    "--secondary-project-name", input.secondaryProjectName,
     "--mode", input.mode,
     "--command-seed", input.commandSeed,
   ], { cwd: repoRoot, env: input.environment, encoding: "utf8", timeout: 120_000, windowsHide: true });
@@ -253,13 +344,15 @@ const run = async () => {
   const suffix = randomUUID();
   const commandSeedPrefix = suffix.replaceAll("-", "").slice(0, 8);
   const projectName = `C06 Studio E2E ${suffix}`;
+  const secondaryProjectName = `${projectName} B`;
+  const projectNames = [projectName, secondaryProjectName];
   const failedQueueName = `alchemy-video-c06-failure-${suffix}`;
   const failedDeadLetterQueueName = `${failedQueueName}-dead-letter`;
   const successfulQueueName = `alchemy-video-c06-retry-${suffix}`;
   const successfulDeadLetterQueueName = `${successfulQueueName}-dead-letter`;
   const environment = {
     ...process.env,
-    CONTROL_API_PORT: "3032",
+    CONTROL_API_PORT: String(controlApiPort),
     CONTROL_API_ORIGIN: apiOrigin,
     DATABASE_URL: databaseUrl,
     REDIS_URL: redisUrl,
@@ -271,9 +364,12 @@ const run = async () => {
     LOCAL_AUTH_MODE: "dev",
     VIDEO_PROVIDER: "mock",
     VEYRA_AUTH_ENABLED: "false",
+    BUILD_VERSION: `c06-e2e-${suffix}`,
     PYTHONDONTWRITEBYTECODE: "1",
-    HOST: "127.0.0.1",
-    PORT: "3031",
+    HOST: studioBindHost,
+    PORT: String(studioPort),
+    STUDIO_NUXT_BUILD_DIR: resolve(repoRoot, ".codex-longrun", "c06-studio-build", suffix),
+    STUDIO_NITRO_OUTPUT_DIR: resolve(repoRoot, ".codex-longrun", "c06-studio-output", suffix),
   };
   const workerEnvironment = (queueName, deadLetterQueueName, outcome) => ({
     ...environment,
@@ -295,17 +391,32 @@ const run = async () => {
   const cleanupFailures = [];
   let cleanupResult;
   let isolation;
+  let portsClaimed = false;
+  let cleanupRequired = false;
 
   try {
-    await Promise.all([assertPortAvailable(3031), assertPortAvailable(3032)]);
+    await assertLocalRuntimeReady();
+    await Promise.all([assertPortAvailable(studioPort), assertPortAvailable(controlApiPort)]);
+    portsClaimed = true;
     isolation = await acquireC06E2EIsolation(databaseUrl);
     const migrate = pnpmCommand(["--filter", "@alchemy-video/persistence", "db:migrate"]);
     requireSuccess(spawnSync(migrate.command, migrate.args, { cwd: repoRoot, env: environment, stdio: "ignore", windowsHide: true }), "C06 E2E database migration");
-    await writeFile(fixturePath, onePixelPng, { flag: "w" });
+    await Promise.all([
+      writeFile(fixturePath, onePixelPng, { flag: "w" }),
+      writeFile(secondFixturePath, secondOnePixelPng, { flag: "w" }),
+    ]);
+    cleanupRequired = true;
     assert.equal(createHash("sha256").update(onePixelPng).digest("hex").length, 64);
+    assert.notEqual(
+      createHash("sha256").update(onePixelPng).digest("hex"),
+      createHash("sha256").update(secondOnePixelPng).digest("hex"),
+      "C06 Studio E2E fixtures must be different images.",
+    );
 
     apiProcess = startService(controlApiRoot, ["--import", "tsx", "src/index.ts"], environment);
-    await waitFor(`${apiOrigin}/api/v1/health`, "Control API", [apiProcess]);
+    const apiHealth = await waitFor(`${apiOrigin}/api/v1/health`, "Control API", [apiProcess]);
+    assert.equal((await apiHealth.json()).data.build_version, environment.BUILD_VERSION, "C06 did not start its isolated Control API instance.");
+    await assertMockApiRuntimeProfile({ suffix, commandSeedPrefix, storage });
     failedWorkerProcess = startService(
       taskWorkerRoot,
       ["--import", "tsx", "src/index.ts"],
@@ -314,18 +425,28 @@ const run = async () => {
     await sleep(1_000);
     if (typeof failedWorkerProcess.exitCode === "number") throw new Error("C06 failed Mock Worker exited before the UI generation flow began.");
     studioProcess = startService(studioWebRoot, [studioServerScriptPath], environment);
-    await waitFor(`${studioOrigin}/`, "Studio", [apiProcess, failedWorkerProcess, studioProcess]);
-    await waitFor(`${studioOrigin}/api/v1/health`, "Studio Control API proxy", [apiProcess, failedWorkerProcess, studioProcess]);
+    await waitFor(`${studioProbeOrigin}/`, "Studio", [apiProcess, failedWorkerProcess, studioProcess]);
+    const studioProxyHealth = await waitFor(`${studioProbeOrigin}/api/v1/health`, "Studio Control API proxy", [apiProcess, failedWorkerProcess, studioProcess]);
+    assert.equal((await studioProxyHealth.json()).data.build_version, environment.BUILD_VERSION, "Studio did not proxy to the isolated C06 Control API instance.");
 
-    const failedResult = runStudioUiTest({ mode: "failure", projectName, commandSeed: suffix, environment });
+    const failedResult = runStudioUiTest({ mode: "failure", projectName, secondaryProjectName, commandSeed: suffix, environment });
     assert.equal(failedResult.retry_control_visible, true, "C06 failure E2E did not expose the Studio retry command.");
-    assert.match(failedResult.failure_text, /Mock video generation was configured to fail\./, "C06 failure E2E did not expose the public failure message.");
+    assert.match(failedResult.failure_text, /本次创作尚未完成/, "C06 failure E2E did not expose the public failure message.");
+    assert.equal(failedResult.reference_images.length, 2, "C06 failure E2E did not confirm two reference images.");
+    for (const image of failedResult.reference_images) {
+      assert.ok(image.width > 0 && image.height > 0, "C06 failure E2E did not decode an uploaded PNG reference.");
+    }
+    assert.equal(failedResult.mobile_viewport, "390x844", "C06 failure E2E did not verify the required mobile viewport.");
     assert.equal(failedResult.command_seed_prefix, commandSeedPrefix, "C06 failure E2E did not install its isolated command seed.");
     const failedTaskRun = await taskRunProviderRecord(projectName);
     assert.equal(failedTaskRun.status, "FAILED", "C06 failure E2E did not persist a public failure state.");
     assert.equal(failedTaskRun.attempt_count, 1, "C06 failure E2E did not persist one ProviderAttempt.");
     assert.equal(failedTaskRun.submitted_attempt_count, 1, "C06 failure E2E did not persist its provider request ID.");
     assert.ok(failedTaskRun.provider_request_id, "C06 failure E2E did not retain a provider request ID for UI retry.");
+    assert.equal(Number(failedTaskRun.saved_duration), 8, "C06 failure E2E did not save the selected 8-second duration.");
+    assert.equal(failedTaskRun.saved_resolution, "480p", "C06 failure E2E did not save the selected 480p resolution.");
+    assert.equal(failedTaskRun.saved_ratio, "16:9", "C06 failure E2E did not save the fixed 16:9 ratio.");
+    assert.equal(Number(failedTaskRun.task_duration), 1, "C06 failure E2E changed the deterministic Mock task duration.");
     await stopWorker(failedWorkerProcess, "C06 failed Mock Worker");
     failedWorkerProcess = undefined;
 
@@ -336,9 +457,10 @@ const run = async () => {
     );
     await sleep(1_000);
     if (typeof successfulWorkerProcess.exitCode === "number") throw new Error("C06 successful Mock Worker exited before the UI retry flow began.");
-    const retryResult = runStudioUiTest({ mode: "retry", projectName, commandSeed: suffix, environment });
+    const retryResult = runStudioUiTest({ mode: "retry", projectName, secondaryProjectName, commandSeed: suffix, environment });
     assert.ok(retryResult.video_width > 0 && retryResult.video_height > 0, "C06 Studio retry preview did not decode a video frame.");
     assert.ok(retryResult.duration > 0, "C06 Studio retry preview did not report a playable duration.");
+    assert.equal(retryResult.desktop_viewport, "1280x720", "C06 retry E2E did not verify the required desktop viewport.");
     assert.equal(retryResult.command_seed_prefix, commandSeedPrefix, "C06 retry E2E did not reuse its isolated command seed.");
     await assertSingleRetriedAttempt(projectName, failedTaskRun);
     await publicResponseHasNoInternalFields(projectName);
@@ -352,21 +474,28 @@ const run = async () => {
     stopService(successfulWorkerProcess);
     stopService(failedWorkerProcess);
     stopService(apiProcess);
-    await waitForPortsReleased();
+    if (portsClaimed) await waitForPortsReleased();
   } catch (error) {
     cleanupFailures.push(error);
   }
-  try {
-    cleanupResult = await cleanupProject(projectName, storage, commandSeedPrefix);
-  } catch (error) {
-    cleanupFailures.push(error);
-  }
-  try {
-    await clearInternalEventQueues({ redisUrl, queueName: failedQueueName, deadLetterQueueName: failedDeadLetterQueueName });
-    await clearInternalEventQueues({ redisUrl, queueName: successfulQueueName, deadLetterQueueName: successfulDeadLetterQueueName });
-    await rm(fixturePath, { force: true });
-  } catch (error) {
-    cleanupFailures.push(error);
+  if (cleanupRequired) {
+    try {
+      cleanupResult = await cleanupProject(projectNames, storage, commandSeedPrefix);
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+    try {
+      await clearInternalEventQueues({ redisUrl, queueName: failedQueueName, deadLetterQueueName: failedDeadLetterQueueName });
+      await clearInternalEventQueues({ redisUrl, queueName: successfulQueueName, deadLetterQueueName: successfulDeadLetterQueueName });
+      await Promise.all([
+        rm(fixturePath, { force: true }),
+        rm(secondFixturePath, { force: true }),
+        rm(environment.STUDIO_NUXT_BUILD_DIR, { recursive: true, force: true }),
+        rm(environment.STUDIO_NITRO_OUTPUT_DIR, { recursive: true, force: true }),
+      ]);
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
   }
   try {
     await isolation?.release();
@@ -382,7 +511,7 @@ const run = async () => {
     throw cleanupError;
   }
   if (executionError) throw executionError;
-  console.log(`C06 E2E cleanup passed: removed ${cleanupResult.projects} project, ${cleanupResult.objects} objects, two isolated queues, fixture, and child services.`);
+  if (cleanupRequired) console.log(`C06 E2E cleanup passed: removed ${cleanupResult.projects} projects, ${cleanupResult.objects} objects, two isolated queues, fixture, and child services.`);
 };
 
 await run();

@@ -1,0 +1,11 @@
+[project]
+name = "alchemy-media-runtime"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1.0",
+  "uvicorn>=0.30,<1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

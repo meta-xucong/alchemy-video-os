@@ -12,6 +12,8 @@ test("studio retains the Huobao Nuxt app layout and local API proxy shape", () =
 
   assert.equal(packageJson.dependencies.nuxt, "^3.17.5");
   assert.match(config, /srcDir:\s*"app\//);
+  assert.match(config, /buildDir:\s*localBuildDirectory/);
+  assert.match(config, /dir:\s*localNitroOutputDirectory/);
   assert.match(config, /ssr:\s*false/);
   assert.match(config, /"\/api\/v1"/);
   assert.match(config, /runtimeConfig/);
@@ -20,46 +22,43 @@ test("studio retains the Huobao Nuxt app layout and local API proxy shape", () =
   assert.match(read("app/server/routes/api/v1/[...path].ts"), /resolveControlApiOrigin/);
   assert.match(read("app/server/routes/api/v1/[...path].ts"), /proxyControlApiRequest/);
   assert.equal(packageJson.scripts.dev, "node scripts/serve-local.mjs");
-  assert.match(localServer, /\.output\/server\/index\.mjs/);
+  assert.match(localServer, /STUDIO_NITRO_OUTPUT_DIR/);
+  assert.match(localServer, /resolve\(outputDirectory, "server", "index\.mjs"\)/);
   assert.match(localServer, /process\.env\.HOST \?\?= "127\.0\.0\.1"/);
   assert.match(localServer, /process\.env\.PORT \?\?= "3031"/);
+  assert.match(localServer, /if \(!process\.env\.NITRO_CONTROL_API_ORIGIN && process\.env\.CONTROL_API_ORIGIN\)/);
   assert.match(localServer, /pathToFileURL\(serverEntry\)\.href/);
 });
 
-test("studio health screen uses the public control API boundary", () => {
+test("M1 root route hands off to project home and all project commands stay public", () => {
+  const rootPage = read("app/pages/index.vue");
+  const home = read("app/pages/projects/index.vue");
+  const workspace = read("app/pages/projects/[project_id].vue");
   const composable = read("app/composables/useControlApi.ts");
-  const page = read("app/pages/index.vue");
 
+  assert.match(rootPage, /navigateTo\("\/projects", \{ replace: true \}\)/);
+  assert.match(home, /currentIdentity/);
+  assert.match(home, /createProject/);
+  assert.match(workspace, /project\(nextProjectId, signal\)/);
+  assert.match(workspace, /updateProject/);
   assert.match(composable, /\$fetch<HealthStatus>\("\/api\/v1\/health"\)/);
-  assert.match(page, /useControlApi/);
-  assert.match(page, /Refresh workbench/);
+  assert.match(composable, /\/api\/v1\/projects/);
+  assert.match(composable, /Idempotency-Key/);
+  assert.doesNotMatch(`${rootPage}\n${home}\n${workspace}\n${composable}`, /\/internal\//);
 });
 
-test("studio C03-C06 surfaces stay on the public control API boundary", () => {
-  const composable = read("app/composables/useControlApi.ts");
-  const page = read("app/pages/index.vue");
-  const assetMedia = read("app/composables/useAssetMedia.ts");
+test("M1 exposes the real project lifecycle and never simulates deletion", () => {
+  const home = read("app/pages/projects/index.vue");
+  const workspace = read("app/pages/projects/[project_id].vue");
+  const source = `${home}\n${workspace}`;
 
-  assert.match(composable, /\/api\/v1\/me/);
-  assert.match(composable, /\/api\/v1\/projects/);
-  assert.match(composable, /assets\/upload-requests/);
-  assert.match(composable, /confirm-upload/);
-  assert.match(composable, /download-url/);
-  assert.match(composable, /\/shots/);
-  assert.match(composable, /Idempotency-Key/);
-  assert.match(page, /currentIdentity/);
-  assert.match(page, /Create project/);
-  assert.match(page, /Choose reference image/);
-  assert.match(page, /confirmAssetUpload/);
-  assert.match(page, /createShot/);
-  assert.match(page, /updateShot/);
-  assert.match(page, /createGeneration/);
-  assert.match(page, /retryTaskRun/);
-  assert.match(page, /new EventSource\(`\/api\/v1\/events/);
-  assert.match(page, /Generate mock video/);
-  assert.match(page, /Preview generated video/);
-  assert.match(page, /fetch\(request\.data\.upload_url/);
-  assert.match(assetMedia, /thumbFallback/);
-  assert.doesNotMatch(composable, /\/internal\//);
-  assert.doesNotMatch(`${composable}\n${page}\n${assetMedia}`, /\b(?:object_key|provider_request_id|request_payload|response_payload|veyra|minio|bullmq|outbox)\b/i);
+  assert.match(home, /我的项目/);
+  assert.match(home, /新建项目/);
+  assert.match(home, /从一个视频想法开始/);
+  assert.match(workspace, /编辑名称/);
+  assert.match(workspace, /归档项目/);
+  assert.match(workspace, /删除功能等待服务端开放/);
+  assert.match(workspace, /disabled aria-disabled="true"/);
+  assert.doesNotMatch(source, /method:\s*"DELETE"|删除成功/);
+  assert.doesNotMatch(source, /\b(?:provider_request_id|object_key|veyra|minio|bullmq|outbox)\b/i);
 });

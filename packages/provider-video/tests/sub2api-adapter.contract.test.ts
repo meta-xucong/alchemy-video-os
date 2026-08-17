@@ -27,7 +27,9 @@ const input = {
     resolution: "720p",
     ratio: "16:9",
     reference_asset_ids: [],
+    visual_input: { mode: "TEXT", references: [] },
   },
+  visualInput: { mode: "TEXT" },
 } as const;
 
 const streamFromBytes = (bytes: Uint8Array) => new ReadableStream<Uint8Array>({

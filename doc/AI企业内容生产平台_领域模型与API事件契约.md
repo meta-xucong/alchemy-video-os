@@ -4,7 +4,7 @@
 
 本文件定义控制面的稳定边界。页面、worker、未来 Codex CLI、SUB2API 适配器及后续 Agent 只能通过本文件规定的 HTTP、队列消息和领域端口协作。任何模块不得通过读取另一模块的数据库表、Redis key 或文件路径交换数据。
 
-第一版契约只覆盖本地 MVP；字段已为真实视频与共享积分预留，但不激活它们。
+第一版契约只覆盖本地 MVP；字段已为真实视频与共享积分预留，但不激活它们。长叙事和真实 Provider 的统一编排规则由 `AI企业内容生产平台_通用叙事点与生成片段编排规范.md` 与 ADR-0041 固化：`NarrativeBeat` 是故事层单元，`GenerationSegment` 才是一次真实视频 TaskRun 的执行单元。现有 `StoryboardShotSpec`/`production_segments.shot_spec_id` 保留为兼容字段；新 revision 和新公开 DTO 不得把逻辑叙事点数量直接解释为 Provider 调用数量。
 
 ## 2. 通用约定
 
@@ -20,6 +20,14 @@
 | 任务运行 | `tsk_` | `tsk_01J...` |
 | 提供方尝试 | `att_` | `att_01J...` |
 | 使用记录 | `use_` | `use_01J...` |
+| 创作简报修订 | `cbr_` | `cbr_01J...` |
+| 剧本修订 | `scr_` | `scr_01J...` |
+| 分镜修订 | `sbr_` | `sbr_01J...` |
+| 分镜规格 | `ssp_` | `ssp_01J...` |
+| 叙事点 | `bt_` | `bt_01J...` |
+| 生成片段 | `seg_` | `seg_01J...` |
+| 提示词包 | `ppk_` | `ppk_01J...` |
+| 制作批次 | `prd_` | `prd_01J...` |
 | 事件 | `evt_` | `evt_01J...` |
 
 ID 使用可排序的 ULID 字符串，数据库用 `text` 主键。时间一律为 UTC RFC 3339 毫秒字符串。积分和金额不得使用二进制浮点：内部以 `numeric(18, 8)` 保存，API 用十进制字符串，例如 `"0.25000000"`；这是对现有 Sub2API `float64` 边界的保护层。
@@ -55,6 +63,137 @@ ID 使用可排序的 ULID 字符串，数据库用 `text` 主键。时间一律
 
 ## 3. 核心模型
 
+### 3.0 C11 创作计划与制作确认（版本 1）
+
+`CreativeBriefRevision -> ScriptRevision -> StoryboardRevision` 是长叙事的不可变
+创作链。每次修改故事原文、目标总时长、目标清晰度、风格偏好、已选择素材或任一可见段落，均创建新的
+下游 revision；`APPROVED` revision 不得原地编辑。规划状态使用
+`DRAFT -> PLANNING -> READY_FOR_REVIEW -> APPROVED`，任一未批准 revision 可进入
+`FAILED`，而已批准 revision 仅可因新 revision 出现而变为 `SUPERSEDED`。
+
+一个 `StoryboardRevision` 按唯一 `sequence` 保存一至多个 `StoryboardShotSpec`。每个规格
+只承载一个主要可见事件，记录叙事目的、开始/结束状态、时长建议、前序依赖、参考素材职责
+和连续性风险。拆分依据是事件、人物状态、场景和节奏，绝不按字符数、字数或浏览器计时切片。
+`PromptPackage` 由已批准的 ShotSpec 与能力快照确定性编译；它不覆盖用户原文，也不向浏览器
+公开 prompt、模型、Provider 或内部参考路由。
+
+`CreativeBriefRevision.target_resolution` 是用户明确选择的完整成片清晰度，当前受控值仅为
+`480p` 或 `720p`，默认 `720p`。它与故事原文、时长、风格和素材一起不可变地冻结；C12
+在创建每个分段 `TaskRun.input_snapshot` 时必须使用该 revision 的值，不能在调度器中另行
+硬编码默认清晰度。
+
+`ProductionRun` 在用户确认计划后固定 `StoryboardRevision`、总段数、总时长和预算 guard，
+状态为 `DRAFT -> PLAN_READY -> CONFIRMED`。C11 的 `CONFIRMED` 只记录制作意图，**不得**
+创建或提交 `TaskRun`、调用视频 Provider、扣费或访问媒体 Runtime；C12 的依赖调度器才可从
+已确认的 ProductionRun 创建符合前序条件的 Shot/TaskRun。相同幂等键的规划、审批和确认必须
+回放原结果，不能产生第二个 revision 或 ProductionRun。
+
+浏览器可读取受控的 revision、段落摘要和 ProductionRun 进度，但不得读取原始规划输入、
+`PromptPackage.prompt`、Provider/模型、内部依赖图、对象 key、签名 URL、队列、Veyra 或 trace
+字段。规划命令在成功、失败和重试的任一路径中均为零次视频 Provider 调用。
+
+### 3.0.1 C12 本地媒体制作、QC 与成片（版本 1）
+
+C12 从一个已确认的 `ProductionRun` 开始。它新增 `ProductionSegment`、`AssetDerivation`、
+`QcReport` 和 `VideoVersion`，但不改变既有 `Shot -> TaskRun -> Asset` 的不可变快照、幂等、
+Provider request ID 恢复或媒体校验语义。`ProductionSegment` 是一个 StoryboardShotSpec 在某次
+ProductionRun 中的调度事实；它私有地关联实际 `Shot`、`TaskRun`、交接帧和 QC，浏览器只得到
+序号、标题、公共状态、可重试标记和安全摘要，不能得到这些内部 ID。
+
+`ProductionSegment` 使用 `PENDING | WAITING | GENERATING | CHECKING | ACCEPTED | FAILED`：
+
+- `PENDING` 仅能由 C12 Scheduler 创建；满足依赖后进入 `GENERATING`，并在同一事务内创建实际
+  `Shot`、不可变视频 `TaskRun` 和 `task_run.queued` outbox 事实。
+- 缺少前段可接受结果、交接帧或基础 QC 时为 `WAITING`；它不是 Provider 失败，也不能提交视频。
+- 视频 TaskRun 成功后先进入 `CHECKING`。只有同项目、同工作区、已验证 VIDEO Asset 的基础 QC
+  通过，且需要交接的段已形成 READY `HandoffAsset`，才可进入 `ACCEPTED`。
+- 可恢复视频或媒体失败进入 `FAILED`；用户显式的段重试才可创建新的 TaskRun。重试不得修改旧
+  TaskRun 快照、旧 HandoffAsset、旧 QcReport 或旧 VideoVersion。
+
+`ProductionRun` 的完整状态转换为
+`DRAFT -> PLAN_READY -> CONFIRMED -> GENERATING -> REVIEWING -> RENDERING -> SUCCEEDED`；
+任意仍在等待前序或等待用户处理的批次可处于 `BLOCKED`，并只能返回 `GENERATING`、
+`REVIEWING` 或进入 `FAILED`。单段失败默认把依赖它的后续段置为 `WAITING` 并把批次置为
+`BLOCKED`，不得把已经接受的前段重做或把整个批次伪装为已失败。只有不可恢复的 Scheduler、
+媒体 Runtime 或渲染失败才可使 ProductionRun 进入终态 `FAILED`。
+
+`HandoffAsset` 不是独立二进制或文件系统真相：它是
+`Asset(kind=IMAGE, origin=DERIVED, status=READY)` 加上 `AssetDerivation` 关系，关系冻结源 VIDEO
+Asset、源 TaskRun、派生类型 `HANDOFF_FRAME`、验收时间和产生它的基础 QcReport。只能从同项目
+已接受的视频段派生；跨工作区、未通过 QC、非 VIDEO 或缺少哈希/尺寸的来源一律拒绝。
+
+本地 C12 的 QC 是确定性的技术质量门：视频必须通过已有的 MIME、字节数、SHA-256 与 `ffprobe`
+校验；交接帧必须为可解码 IMAGE；最终成片必须可解码、总时长大于零且来源段顺序完整。若输入
+片段含有音轨，合成后的最终成片必须保留可解码音轨，不能以静音输出替代。相邻段尚未通过语义级
+首尾衔接验收时，Media Runtime 必须在合成时加入受限的画面与音频淡变转场；转场不构成对人物、
+服装、场景或逐帧连续性的保证。`QcReport` 只保存安全摘要和
+`PASS | NEEDS_ATTENTION | FAILED`，原始工具输出、临时路径和命令行不得进入数据库公开 DTO、
+事件或日志。
+
+当所有必需段都为 `ACCEPTED` 后，受控 Media Runtime 才能读取授权的 Asset bytes，按 approved
+Storyboard sequence 合成一个新的 `Asset(kind=VIDEO, origin=DERIVED, status=READY)`，再创建
+不可替换的 `VideoVersion`。`VideoVersion` 固定 ProductionRun、StoryboardRevision、最终 Asset、
+总时长和最终 QcReport；重做任一段或重新合成一律创建新版本，绝不覆盖既有镜头结果或成片。
+公开 `GET /projects/:projectId/video-versions` 只返回 `SUCCEEDED` 的完整成片版本；媒体或合成失败
+由 `ProductionRunProgress` 的段落状态和安全摘要表达，不能伪造可播放的 Asset ID、时长或下载 URL。
+成片播放和下载继续通过既有单资产短时 URL 路由按需获取，URL 不进入 VideoVersion、项目详情、
+事件、日志或浏览器持久化状态。
+本地运行时只接受固定工具名与 Asset ID 的受控命令，临时目录、媒体清单、工具输出和进程内队列
+都不是平台事实来源。
+
+### C12 内部 Media Runtime 协议
+
+Media Runtime 是仅绑定 loopback 的内部 HTTP 服务。它只接受 `INSPECT_VIDEO`、
+`EXTRACT_HANDOFF_FRAME`、`COMPOSE_VIDEO` 三种固定工具请求，并以 `mop_` operation ID 关联一次
+受控调用。Production Worker 在完成工作区、项目、TaskRun 和 Asset 范围校验后，从对象存储读取
+字节并发送给 Runtime；Runtime 不接收对象 key、URL、路径、Provider 名称、浏览器身份、prompt、
+数据库连接或任意命令行参数。
+
+- 单视频检查和交接帧提取请求为受限的 `video/mp4` 字节流，并携带预期 SHA-256；Runtime 返回安全
+  元数据或单张 PNG 字节流。
+- 合成请求为固定二进制 envelope，最多 12 个有序 MP4 段；长度字段在累计上限内验证，Runtime 自行
+  分配临时文件名并在响应前清理。对多个未通过语义衔接验收的相邻段，Runtime 使用固定时长的淡变
+  转场，并以末帧/末段延展保持规划总时长；若来源含音轨，同时执行音频淡变。它不解释客户端提供的
+  文件名或目录。
+- Runtime 只可使用部署时明确配置的 ffmpeg/ffprobe 可执行文件；工具原始输出、临时路径、输入媒体
+  和命令行不得进入数据库、outbox、SSE、公开 DTO 或日志。
+- `production_segment.qc_requested` 是 TaskRun 成功后的持久化交接；`handoff_asset.accepted` 唤醒
+  依赖调度；全部镜头验收后由 `video_version.composition_requested` 触发版本化合成。三者均为内部事件，
+  不向浏览器公开。
+
+视觉输入必须遵守冻结的 StoryboardShotSpec `reference_policy`：`REFERENCE_SET` 只可使用同项目
+已确认的 1 至 7 张用户上传图片参考；派生的 `HANDOFF_FRAME`、缩略图、海报和既往生成图不得回流
+为新的 `REFERENCE_SET` 来源。`HANDOFF_FIRST_FRAME` 只可使用已接受的前序 HandoffAsset；
+`TEXT_TRANSITION` 不传图片。系统不得静默在这些模式之间降级，策略无法满足时只写安全的
+`WAITING/BLOCKED` 建议。C12 本地实现只允许显式 Mock 视频配置，禁止真实 Provider、Veyra、
+外部网络或付费调用。
+
+C12 Relay 仅投递已持久化的 `production_run.confirmed`、`task_run.succeeded` 与
+`task_run.failed`。内部队列消息是严格的判别联合，只携带事件、工作区、项目、关联 ID 与
+correlation ID；它不携带 prompt、Provider 字段、对象 key、签名 URL、媒体字节或本地路径。消费端
+必须回读并验证同一 outbox envelope 后才推进调度状态。
+
+### 3.1 C10 DocumentConversion（版本 1）
+
+企业资料转换不复用 `TaskRun`。`Document` 绑定同项目、同工作区内一个已确认的
+`Asset(kind=DOCUMENT, origin=USER_UPLOAD, status=READY)`；`DocumentConversion` 冻结该源
+Asset 的 ID、SHA-256、MIME、文件名和字节数，并产生一个不可替换的
+`Asset(kind=DOCUMENT, origin=DERIVED)` Markdown 结果。转换状态为
+`CREATED -> QUEUED -> RUNNING -> SUCCEEDED`，`QUEUED|RUNNING -> FAILED`，且只有用户显式
+重试可以使 `FAILED -> QUEUED`。每个 Document 最多一个非终态转换。
+
+浏览器只可使用以下公开资源：
+
+- `POST /projects/:projectId/documents/:sourceAssetId/conversions`（空对象命令、幂等）
+- `GET /projects/:projectId/documents`
+- `GET /document-conversions/:conversionId`
+- `POST /document-conversions/:conversionId/retry`（空对象命令、幂等）
+
+`DocumentConversion` 公开 DTO 只含转换 ID、源 Asset ID、状态、可重试标志、Markdown Asset
+ID、warnings 摘要和时间。不得公开 object key、Runtime 地址或 token、原始异常、转换器堆栈
+或内部请求头。内部事件 `document_conversion.queued|started|succeeded|failed` 使用既有内部
+envelope；SSE 投影只含 conversion/source/Markdown Asset ID、状态和 retryable。
+
 ### 3.1 表与所有权
 
 | 表 | 核心字段 | 责任 |
@@ -63,6 +202,16 @@ ID 使用可排序的 ULID 字符串，数据库用 `text` 主键。时间一律
 | `workspaces` | `id`, `name`, `created_by` | 数据隔离根 |
 | `workspace_members` | `workspace_id`, `user_id`, `role` | 成员与权限 |
 | `projects` | `id`, `workspace_id`, `name`, `status` | 内容生产项目 |
+| `creative_brief_revisions` | `id`, `workspace_id`, `project_id`, `revision`, `source_text`, `target_duration_seconds`, `target_resolution`, `style_preferences`, `source_asset_ids`, `status` | 不可变故事输入、成片清晰度与可追溯素材选择 |
+| `script_revisions` | `id`, `workspace_id`, `project_id`, `creative_brief_revision_id`, `revision`, `beats`, `status` | 受 schema 校验的叙事 beats |
+| `storyboard_revisions` | `id`, `workspace_id`, `project_id`, `script_revision_id`, `revision`, `total_duration_seconds`, `continuity_level`, `status` | 可审阅、可批准的故事计划 |
+| `storyboard_shot_specs` | `id`, `workspace_id`, `project_id`, `storyboard_revision_id`, `sequence`, `duration_seconds`, `start_state`, `end_state`, `reference_policy`, `depends_on_sequence` | 有序、不可变的可见段落规格 |
+| `prompt_packages` | `id`, `workspace_id`, `project_id`, `shot_spec_id`, `compiler_version`, `capability_snapshot`, `prompt` | 内部编译产物；prompt 不公开 |
+| `production_runs` | `id`, `workspace_id`, `project_id`, `storyboard_revision_id`, `status`, `total_shot_count`, `accepted_shot_count`, `budget_guard` | 已确认的整体制作意图，不替代 TaskRun |
+| `production_segments` | `id`, `workspace_id`, `project_id`, `production_run_id`, `shot_spec_id`, `sequence`, `status`, `shot_id`, `task_run_id`, `handoff_asset_id`, `qc_report_id` | C12 每段调度与依赖完成事实；实际任务关联不向浏览器公开 |
+| `asset_derivations` | `id`, `workspace_id`, `project_id`, `derived_asset_id`, `source_asset_id`, `source_task_run_id`, `derivation_type`, `qc_report_id`, `accepted_at` | 派生交接帧及未来受控媒体派生的不可变来源关系 |
+| `qc_reports` | `id`, `workspace_id`, `project_id`, `subject_type`, `subject_id`, `kind`, `status`, `safe_summary` | 段和成片的安全、可追溯质量结论 |
+| `video_versions` | `id`, `workspace_id`, `project_id`, `production_run_id`, `storyboard_revision_id`, `asset_id`, `status`, `duration_ms`, `qc_report_id` | 不可替换的完整成片版本，不等同于单段 TaskRun 结果 |
 | `assets` | `id`, `workspace_id`, `project_id`, `kind`, `origin`, `status`, `object_key`, `sha256`, `metadata` | 上传、生成及派生的不可变媒体版本 |
 | `shots` | `id`, `workspace_id`, `project_id`, `position`, `prompt`, `model`, `generation_settings`, `status`, `selected_asset_id` | 用户可编辑的分镜意图 |
 | `reference_bindings` | `shot_id`, `asset_id`, `role`, `position` | 分镜与参考资产关系 |
@@ -155,6 +304,14 @@ ADR-0014 将本图确定为 TaskRun 迁移的唯一完整规则；根目录 `AGE
 | `POST /projects` | 创建项目 | `201` + `Project` |
 | `GET /projects/:projectId` | 项目详情 | 项目、分镜、资产摘要和该项目的公开 `TaskRun` 摘要；不含 ProviderAttempt 内部字段 |
 | `PATCH /projects/:projectId` | 重命名/归档 | 更新的 `Project` |
+| `POST /projects/:projectId/creative-brief-revisions` | 保存故事输入 | `201` + `CreativeBriefRevision`；仅接受原文、总时长、`480p/720p` 成片清晰度、风格和同项目已确认的用户上传素材 ID；派生交接帧不能作为新的创作参考 |
+| `POST /creative-brief-revisions/:creativeBriefRevisionId/plan` | 请求故事规划 | `202` + `CreativeBriefRevision`；只进入规划队列，零次视频提交 |
+| `GET /projects/:projectId/storyboard-revisions` | 获取故事计划 | 公开 revision、段落摘要、连续性提示和审批状态 |
+| `POST /storyboard-revisions/:storyboardRevisionId/approve` | 批准故事计划 | `202` + `StoryboardRevision`；批准后不可原地修改 |
+| `POST /production-runs` | 确认完整制作 | `202` + `ProductionRun`；C11 只写确认事实，不创建视频 TaskRun |
+| `GET /projects/:projectId/production-runs` | 获取制作批次及受控段落进度 | 返回 `ProductionRunProgress[]`；公开制作批次、段落标题/序号/状态和安全进度；不含 Shot、TaskRun、Provider 或对象内部字段 |
+| `POST /production-runs/:productionRunId/segments/:sequence/retry` | 显式重试失败段 | `202` + `ProductionRunProgress`；只允许该批次的 FAILED 段，创建新的 TaskRun 而不修改旧快照 |
+| `GET /projects/:projectId/video-versions` | 获取完整成片版本 | 只返回 C12 `SUCCEEDED` VideoVersion 的公开元数据、最终 Asset ID、时长和 QC 摘要；播放仍经既有单 Asset 短时 URL |
 | `POST /projects/:projectId/assets/upload-requests` | 申请上传 | `asset_id`、短时 `upload_url`、`headers`、`expires_at`；相同幂等键只回放同一 Asset，READY 后 URL 为 `null` |
 | `POST /assets/:assetId/confirm-upload` | 确认上传 | 校验对象存在，置 `READY` |
 | `GET /assets/:assetId/download-url` | 获取播放/下载 URL | 只返回授权资产的短时 URL |
@@ -165,22 +322,19 @@ ADR-0014 将本图确定为 TaskRun 迁移的唯一完整规则；根目录 `AGE
 | `POST /task-runs/:taskRunId/retry` | 显式重试 | `202` + 新/复用的任务说明 |
 | `GET /events?workspace_id=...` | SSE | 只推送该工作区事件 |
 
+`POST /shots/:shotId/generations` 的公开命令为严格的空对象 `{}`：用户的提示词和图片意图先保存到 `Shot` 及其 `reference_bindings`，生成时由 Control API 读取同一工作区、同一项目的已保存事实形成不可变 `TaskRun.input_snapshot`。浏览器不得提交或获知 provider、model、duration、resolution、ratio、base URL、密钥、Provider request ID、对象 key、relay URL 或 token。公开 `TaskRun`、项目详情、任务详情和 SSE 均不得返回 `input_snapshot`。
+
+图片绑定的生成语义为：无绑定是 `TEXT`；恰好一个 `FIRST_FRAME` 是 `FIRST_FRAME`；一至七个按 `position` 排序的 `STYLE` / `SUBJECT` 是 `REFERENCE_SET`。`FIRST_FRAME` 不得与其他绑定混用；`LAST_FRAME` 当前不受支持。每个图片必须归属同一工作区和项目、处于 `READY`、为 JPEG/PNG/WebP、具有 SHA-256，且单张不超过 8 MiB。Control API 将模式、资产 ID、SHA-256、MIME 和顺序写入内部 `visual_input` 快照，不写入对象 key 或临时 URL；异常绑定在创建 TaskRun 前返回应用验证错误，不能静默降级。
+
 同一 `project_id` 的 `Shot.position` 必须唯一。创建或编辑到已被其他分镜占用的位置返回 `409 SHOT_POSITION_CONFLICT`，该结果与 `NOT_FOUND`、`INVALID_REFERENCE` 一样写入命令去重终态：同 key/同 body 必须重放原结果，同 key/异 body 返回 `409 IDEMPOTENCY_CONFLICT`。`POST /assets/:assetId/confirm-upload` 对不存在资产也必须先写入可回放的 `404 NOT_FOUND`，避免资源后来出现时改变首次命令结果。
 
 创建生成命令的最小请求：
 
 ```json
-{
-  "model": "mock-video-v1",
-  "prompt": "A close-up product shot with slow camera movement.",
-  "duration": 5,
-  "resolution": "720p",
-  "ratio": "16:9",
-  "reference_asset_ids": ["ast_01J..."]
-}
+{}
 ```
 
-字段沿用 SUB2API 视频 MCP 的外部命名，以降低 adapter 的字段转换；`reference_asset_ids` 由控制面解析成对象临时 URL，浏览器绝不直接把外部 `image_url` 交给提供方。
+`Shot` 的已保存提示词、generation settings 与 reference bindings 才是生成输入。Worker 只在提交瞬间把该内部快照解析成 `TEXT`、单张首帧或一至七张参考图；真实图片经专用短时 HTTPS relay 提供给 Provider，浏览器绝不直接把外部 `image_url`、对象存储 URL 或预签名 URL 交给 Provider。
 
 ## 5. 内部事件契约
 
@@ -199,7 +353,7 @@ type InternalEvent<T extends string, D> = {
   producer: string;
   workspace_id: string;
   project_id?: string;
-  aggregate: { type: "project" | "shot" | "task_run" | "asset"; id: string };
+  aggregate: { type: "project" | "shot" | "task_run" | "asset" | "creative_brief_revision" | "script_revision" | "storyboard_revision" | "production_run" | "production_segment" | "asset_derivation" | "qc_report" | "video_version"; id: string };
   data: D;
   version: 1;
 };
@@ -218,8 +372,23 @@ type InternalEvent<T extends string, D> = {
 | `task_run.succeeded` | worker | `task_run_id`, `result_asset_id`, `sha256` | UI、后续编排 |
 | `task_run.failed` | worker | `task_run_id`, `error_code`, `retryable`, `provider_attempt_id` | UI、告警 |
 | `usage.debited` | billing adapter | `usage_record_id`, `task_run_id`, `amount`, `source`, `replayed` | 内部审计、未来用量页 |
+| `creative_brief.planning_requested` | API | `creative_brief_revision_id` | Workflow Worker |
+| `creative_brief.planning_failed` | Workflow Worker | `creative_brief_revision_id`, `error_code` | UI |
+| `storyboard_revision.ready_for_review` | Workflow Worker | `storyboard_revision_id`, `shot_count`, `total_duration_seconds`, `continuity_level` | UI |
+| `storyboard_revision.approved` | API | `storyboard_revision_id` | UI、后续制作编排 |
+| `production_run.confirmed` | API | `production_run_id`, `storyboard_revision_id`, `total_shot_count` | UI、C12 Scheduler |
+| `production_run.progressed` | C12 Scheduler | `production_run_id`, `status`, `accepted_shot_count`, `total_shot_count`, `current_sequence` | UI、审计 |
+| `production_run.blocked` | C12 Scheduler | `production_run_id`, `sequence`, `reason_code`, `retryable` | UI、审计 |
+| `production_segment.qc_requested` | C12 Scheduler | `production_run_id`, `production_segment_id`, `task_run_id` | C12 Media Runtime |
+| `handoff_asset.accepted` | C12 Media Runtime | `production_run_id`, `sequence`, `handoff_asset_id`, `qc_report_id` | C12 Scheduler、审计 |
+| `qc_report.completed` | C12 Media Runtime | `qc_report_id`, `subject_type`, `subject_id`, `status` | C12 Scheduler、UI 安全投影 |
+| `video_version.composition_requested` | C12 Media Runtime | `production_run_id` | C12 Media Runtime |
+| `video_version.succeeded` | C12 Media Runtime | `video_version_id`, `production_run_id`, `asset_id`, `duration_ms`, `qc_report_id` | UI、审计 |
+| `video_version.failed` | C12 Media Runtime | `production_run_id`, `error_code`, `retryable` | UI、审计 |
 
 队列至少一次投递；`event_id` 是事件事实 ID。消费账本必须把去重和 lease 身份持久化为 `(workspace_id, event_id, consumer_name)`，并以复合外键或等价的事务完整性证明它与同工作区 outbox 行一致；不得只依赖全局 `event_id` 唯一性。Worker 以队列消息的 `workspace_id` 作为 outbox、TaskRun 与消费账本的唯一数据库范围，错误工作区不得读取、领取、回收、完成或死信其他工作区的账本记录。SSE 使用 `event_id` 作为 `id`，客户端使用 `Last-Event-ID` 重连。事件版本不就地破坏：新增字段可直接加，语义变化或删字段创建 `version=2` 事件。
+
+每个 outbox relay 只可 lease 它明确拥有的事件类型。一个 relay 不得因为无法生成自己的队列消息而把另一个消费者的事件标记 `published`；C12 的 Scheduler 消费 `production_run.confirmed` 与生产段 TaskRun 的安全终态，Task Worker 只消费 `task_run.queued`，C11 Planning Worker 只消费 `creative_brief.planning_requested`。同一事件如需多个持久消费者，必须先写出各自可独立确认的派生事件或 fan-out ledger，不得依赖抢占顺序。
 
 ## 6. 端口（Ports）与适配器
 
@@ -230,15 +399,61 @@ interface VideoProviderPort {
   download(input: { providerRequestId: string }): Promise<ProviderDownload>;
 }
 
+interface PlanningModelPort {
+  plan(input: PlanningInput): Promise<StoryboardDraft>;
+}
+
+interface StoryboardCompilerPort {
+  compile(input: ApprovedShotSpec & {
+    stylePreferences: string;
+  }): Promise<PromptPackage>;
+}
+
+interface MediaRuntimePort {
+  extractHandoffFrame(input: { sourceAssetId: string }): Promise<{ derivedAssetId: string; qc: "PASS" | "NEEDS_ATTENTION" | "FAILED" }>;
+  inspectVideo(input: { assetId: string; expectedDurationMs?: number }): Promise<{ status: "PASS" | "NEEDS_ATTENTION" | "FAILED"; safeSummary: string }>;
+  compose(input: { orderedAssetIds: string[] }): Promise<{ assetId: string; durationMs: number; qc: "PASS" | "NEEDS_ATTENTION" | "FAILED" }>;
+}
+
 type ProviderDownload = {
   stream: ReadableStream<Uint8Array>;
   mimeType: string;
   contentLength?: number;
 };
 
+`stylePreferences` 是已冻结 CreativeBriefRevision 的内部编译输入。编译器必须把它与该段已经批准的
+开始/结束状态、参考策略和连续性说明一起写入 PromptPackage；至少形成身份、服装、场景、角色数、
+自然人体结构和相邻段承接的可审计约束。它不新增浏览器字段，也不得让 Provider、模型或原始 prompt
+进入公开 DTO。
+
 interface IdentityPort {
   resolve(request: Request): Promise<Identity>;
 }
+
+type CreditAccount = {
+  externalUserId: number;
+  email: string;
+  role: string;
+  balance: string;
+  status: string;
+  concurrency: number;
+};
+
+type CreditDebitInput = {
+  externalUserId: number;
+  amount: string;
+  idempotencyKey: string;
+  source: string;
+  referenceId: string;
+};
+
+type CreditDebitResult = {
+  externalUserId: number;
+  amount: string;
+  balanceAfter: string;
+  idempotencyKey: string;
+  replayed: boolean;
+};
 
 interface CreditPort {
   getAccount(input: { externalUserId: number }): Promise<CreditAccount>;
@@ -246,7 +461,9 @@ interface CreditPort {
 }
 ```
 
-本地实现为 `DevIdentityAdapter`、`NoopCreditAdapter` 和 `MockVideoProvider`。未来实现为 `VeyraIdentityAdapter`、`VeyraSub2ApiCreditAdapter` 和 `Sub2ApiVideoProvider`。端口返回的错误必须归一化为 `AUTH_UNAVAILABLE`、`AUTH_FORBIDDEN`、`CREDIT_INSUFFICIENT`、`CREDIT_CONFLICT`、`PROVIDER_UNAVAILABLE`、`PROVIDER_REJECTED`、`DOWNLOAD_INVALID` 等应用错误码，页面不认识 HTTP 上游细节。
+本地实现为 `DevIdentityAdapter`、`NoopCreditAdapter` 和 `MockVideoProvider`。未来实现为 `VeyraIdentityAdapter`、`VeyraSub2ApiCreditAdapter` 和 `Sub2ApiVideoProvider`。端口返回的错误必须归一化为 `AUTH_UNAVAILABLE`、`AUTH_FORBIDDEN`、`CREDIT_INSUFFICIENT`、`CREDIT_CONFLICT`、`CREDIT_UNAVAILABLE`、`CREDIT_REJECTED`、`PROVIDER_UNAVAILABLE`、`PROVIDER_REJECTED`、`DOWNLOAD_INVALID` 等应用错误码，页面不认识 HTTP 上游细节。
+
+C09-A 固定 Veyra HTTP 归一化：`402 -> CREDIT_INSUFFICIENT`、`409 -> CREDIT_CONFLICT`、`401/403 -> AUTH_FORBIDDEN`、网络或 `5xx -> CREDIT_UNAVAILABLE`、其余 `4xx -> CREDIT_REJECTED`。`401/403` 是否进行受限重试和如何推进 TaskRun 只属于后续扣费执行流程；本子阶段没有 Worker 装配或状态推进。
 
 ## 7. 数据库事务与恢复规则
 
@@ -257,6 +474,7 @@ interface CreditPort {
 5. 积分扣费仅位于 `BILLING_PENDING`，且 idempotency key 只由 `billing_rule_key + task_run_id` 构成；详见共享积分规范。
 6. 扣费成功事件、usage record 和最终状态必须在同一数据库事务内写出，确保重放不会重复扣费。
 7. C05 消费事务完成但执行器尚未来得及运行时，C06 Worker 在 ready 后扫描持久化的可恢复视频 TaskRun，并逐项等待完成；预期执行失败应写入 TaskRun 失败事实，意外恢复错误必须以脱敏的结构化 worker 日志记录，供下一次受控扫描继续恢复。
+8. C12 Scheduler 在一个事务内创建或推进 `ProductionSegment`、实际 Shot/TaskRun、状态和对应 outbox 事件；同一个 ProductionRun/sequence 的重复事件不得创建第二个活动 TaskRun。媒体 Runtime 的外部工具执行前后都通过持久化 `QcReport`、`AssetDerivation`、VideoVersion 草案和状态比较恢复，不能把临时文件、已执行命令或进程内记忆当成恢复依据。
 
 ## 8. 合约测试
 
@@ -268,5 +486,11 @@ interface CreditPort {
 - 上游字段 `request_id` 与内部 `provider_request_id` 的映射。
 - 输入/输出 payload 脱敏，日志与事件中没有密钥、Bearer token、预签名 URL query。
 - `402`、`409`、`401/403` 分别映射为 `CREDIT_INSUFFICIENT`、`CREDIT_CONFLICT`、`AUTH_FORBIDDEN`。
+- C11 `PlanningModelPort` 仅能在 Workflow Worker 内由持久化规划事件调用，使用确定性 local fixture；规划、审批或制作确认不得调用 `VideoProviderPort`。
+- C12 确认后只调度依赖满足的段；第 N 段失败只阻塞其依赖后续段，N 之前已接受段不重做，段重试不重提已有 provider_request_id。
+- C12 HandoffAsset、基础 QC 和最终 VideoVersion 都必须同工作区、同项目且可追溯；篡改来源、跨项目 Asset、对象 key/路径泄露和无法解码的媒体均被拒绝。
+- C12 多段合成必须保留存在于全部来源段的音轨，并在未通过语义衔接验收的边界生成受限画面/音频淡变；回归必须证明合成成片具有可解码音轨、规划时长不因转场缩短，且 Runtime 不公开命令行或临时路径。
+- 新 CreativeBriefRevision 的来源资格必须拒绝 `DERIVED` handoff/poster/thumbnail 等派生图；Studio 重新载入历史 brief 时也必须剔除这类资产，不能把旧交接帧重新提交给 Provider。
+- C12 的公开 ProductionRun、VideoVersion、SSE 与 Studio 检查不含 Prompt、Provider、模型、TaskRun/Shot 内部 ID、对象 key、签名 query、Veyra、原始工具输出或本地路径。
 
 在开始实现前，以上 schema 应落为 `packages/contracts/src/*.ts`，由 CI 校验 OpenAPI、JSON Schema 与 fixture 三者一致。

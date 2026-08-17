@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { createPrefixedId } from "@alchemy-video/domain";
 import { StorageUnavailableError, createInMemoryStoragePort, type StoragePort } from "@alchemy-video/storage-client";
-import { MockVideoProvider, Sub2ApiVideoProvider, createMockMp4Fixture } from "@alchemy-video/provider-video";
+import { MockVideoProvider, Sub2ApiVideoProvider, VideoProviderFailure, createMockMp4Fixture } from "@alchemy-video/provider-video";
 import type { VideoProviderPort } from "@alchemy-video/provider-video";
 import type { Sub2ApiTransport, Sub2ApiTransportResponse } from "@alchemy-video/provider-video";
 
@@ -11,6 +12,7 @@ import { InMemoryTaskRunStore } from "../../control-api/src/task-run-repository.
 import { InMemoryAssetWorkspaceStore } from "../../control-api/src/asset-repository.js";
 import { InMemoryControlPlaneStore } from "../../control-api/src/repository.js";
 import { MockVideoTaskExecutor } from "../src/execution-service.js";
+import type { ReferenceDeliveryPort } from "../src/reference-delivery.js";
 
 const event = () => ({ eventId: createPrefixedId("evt"), messageId: createPrefixedId("msg"), traceId: createPrefixedId("trc"), correlationId: createPrefixedId("cor") });
 
@@ -85,6 +87,33 @@ class FailFirstWriteStorage implements StoragePort {
   createDownloadUrl(input: Parameters<StoragePort["createDownloadUrl"]>[0]) {
     return this.storage.createDownloadUrl(input);
   }
+
+  readObject(input: Parameters<StoragePort["readObject"]>[0]) {
+    return this.storage.readObject(input);
+  }
+}
+
+class CapturingProvider implements VideoProviderPort {
+  readonly submittedVisualInputs: Parameters<VideoProviderPort["submit"]>[0]["visualInput"][] = [];
+
+  constructor(private readonly provider: MockVideoProvider) {}
+
+  get submitCount() {
+    return this.provider.submitCount;
+  }
+
+  submit(input: Parameters<VideoProviderPort["submit"]>[0]) {
+    this.submittedVisualInputs.push(input.visualInput);
+    return this.provider.submit(input);
+  }
+
+  getStatus(input: Parameters<VideoProviderPort["getStatus"]>[0]) {
+    return this.provider.getStatus(input);
+  }
+
+  download(input: Parameters<VideoProviderPort["download"]>[0]) {
+    return this.provider.download(input);
+  }
 }
 
 class NeverTerminalProvider implements VideoProviderPort {
@@ -147,6 +176,97 @@ const prepareTask = async () => {
     leaseMs: 100,
   });
   return { assets, store, workspaceId, taskRunId };
+};
+
+const prepareReferenceTask = async () => {
+  const control = new InMemoryControlPlaneStore();
+  const workspaceId = createPrefixedId("ws");
+  const userId = createPrefixedId("usr");
+  const projectId = createPrefixedId("prj");
+  const shotId = createPrefixedId("sht");
+  await control.ensureDevIdentity({ user: { id: userId, displayName: "C09-C Worker" }, workspace: { id: workspaceId, name: "C09-C Worker" } });
+  await control.createProject({ scope: "c09-c:project", idempotencyKey: "project", requestHash: "a".repeat(64), workspaceId, projectId, name: "C09-C project" });
+  const assets = new InMemoryAssetWorkspaceStore(control);
+  const references = await Promise.all([0, 1].map(async (position) => {
+    const assetId = createPrefixedId("ast");
+    const bytes = new Uint8Array([position + 1, 7, 9]);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    await assets.createUploadAsset({
+      scope: `c09-c:asset:${position}`,
+      idempotencyKey: `asset-${position}`,
+      requestHash: `${position}`.repeat(64),
+      workspaceId,
+      projectId,
+      assetId,
+      kind: "IMAGE",
+      objectKey: `${workspaceId}/${projectId}/${assetId}/original.png`,
+      filename: `reference-${position}.png`,
+      mimeType: "image/png",
+      byteSize: bytes.byteLength,
+    });
+    await assets.confirmAssetUpload({
+      scope: `c09-c:asset-confirm:${position}`,
+      idempotencyKey: `asset-confirm-${position}`,
+      requestHash: `${position + 2}`.repeat(64),
+      workspaceId,
+      assetId,
+      sha256,
+      mimeType: "image/png",
+      byteSize: bytes.byteLength,
+      verifyUpload: async () => true,
+    });
+    return { assetId, sha256, position };
+  }));
+  await assets.createShot({
+    scope: "c09-c:shot",
+    idempotencyKey: "shot",
+    requestHash: "b".repeat(64),
+    workspaceId,
+    projectId,
+    shotId,
+    position: 0,
+    prompt: "Generate a reference-set Mock video.",
+    model: "mock-video-v1",
+    generationSettings: {},
+    referenceBindings: references.map((reference) => ({ assetId: reference.assetId, role: reference.position === 0 ? "STYLE" : "SUBJECT", position: reference.position })),
+  });
+  await assets.setShotGenerationState({ workspaceId, shotId, status: "READY" });
+  const store = new InMemoryTaskRunStore(assets);
+  const taskRunId = createPrefixedId("tsk");
+  const created = await store.createTaskRun({
+    scope: "c09-c:task",
+    idempotencyKey: "task",
+    requestHash: "c".repeat(64),
+    workspaceId,
+    taskRunId,
+    shotId,
+    kind: "VIDEO_GENERATION",
+    inputSnapshot: {
+      model: "mock-video-v1",
+      prompt: "Generate a reference-set Mock video.",
+      duration: 1,
+      resolution: "160x90",
+      ratio: "16:9",
+      reference_asset_ids: references.map((reference) => reference.assetId),
+      visual_input: {
+        mode: "REFERENCE_SET",
+        references: references.map((reference) => ({ asset_id: reference.assetId, sha256: reference.sha256, mime_type: "image/png" as const, position: reference.position })),
+      },
+    },
+    event: event(),
+  });
+  assert.equal(created.kind, "NEW");
+  const queued = (await store.listWorkspaceEvents({ workspaceId, limit: 10 })).find((item) => item.event_type === "task_run.queued");
+  assert.ok(queued && queued.event_type === "task_run.queued");
+  if (!queued || queued.event_type !== "task_run.queued") throw new Error("queued reference task missing");
+  await store.processEvent({
+    message: { contract_version: "1.0", event_id: queued.event_id, workspace_id: workspaceId, task_run_id: taskRunId, attempt_no: 1, correlation_id: queued.correlation_id, input_snapshot: queued.data.input_snapshot },
+    consumerName: "c09-c-task-transition",
+    workerId: "c09-c-worker-test",
+    now: new Date(),
+    leaseMs: 100,
+  });
+  return { assets, store, workspaceId, projectId, taskRunId, references };
 };
 
 test("C06 executor produces one immutable playable video asset and does not resubmit after recovery", async () => {
@@ -264,7 +384,7 @@ test("C06 transient result storage failure preserves the submitted request for q
   const storage = new FailFirstWriteStorage(createInMemoryStoragePort());
   const executor = new MockVideoTaskExecutor(store, provider, storage);
 
-  await assert.rejects(executor.execute({ workspaceId, taskRunId }), /local Mock video download or result write/);
+  await assert.rejects(executor.execute({ workspaceId, taskRunId }), /video download or result write/);
   assert.equal(provider.submitCount, 1);
   const [interruptedAttempt] = await store.listTaskRunAttempts(workspaceId, taskRunId);
   assert.equal(interruptedAttempt?.status, "DOWNLOAD_FAILED");
@@ -281,16 +401,18 @@ test("C06 transient result storage failure preserves the submitted request for q
   assert.equal((await storage.inspectObject({ objectKey: drafts!.objectKey }))?.sha256, asset?.sha256);
 });
 
-test("C06 keeps a pre-download provider protocol error out of the download recovery path", async () => {
+test("C09-C keeps a still-processing Provider task out of the download path for later recovery", async () => {
   const { store, workspaceId, taskRunId } = await prepareTask();
   const provider = new NeverTerminalProvider(await createMockMp4Fixture());
-  const result = await new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort()).execute({ workspaceId, taskRunId });
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort());
 
-  assert.equal(result?.status, "FAILED");
-  assert.equal(result?.error?.code, "PROVIDER_PROTOCOL_INVALID");
+  await assert.rejects(executor.execute({ workspaceId, taskRunId }), /still processing/);
+  const taskRun = await store.findTaskRun(workspaceId, taskRunId);
+  assert.equal(taskRun?.status, "PROVIDER_PROCESSING");
+  assert.equal(taskRun?.error, null);
   assert.equal(provider.submitCount, 1);
   const [attempt] = await store.listTaskRunAttempts(workspaceId, taskRunId);
-  assert.equal(attempt?.status, "FAILED");
+  assert.equal(attempt?.status, "PROCESSING");
   assert.ok(attempt?.providerRequestId);
 });
 
@@ -454,4 +576,47 @@ test("C07 temporary download 503 remains recoverable without resubmission", asyn
   const recovered = await executor.execute({ workspaceId, taskRunId });
   assert.equal(recovered?.status, "SUCCEEDED");
   assert.equal(transport.requests.filter((request) => request.method === "POST").length, 1);
+});
+
+test("C09-C resolves ordered reference images before exactly one Provider submission", async () => {
+  const { assets, store, workspaceId, projectId, taskRunId, references } = await prepareReferenceTask();
+  const provider = new CapturingProvider(new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() }));
+  const deliveryCalls: Parameters<ReferenceDeliveryPort["createVisualInput"]>[0][] = [];
+  const delivery: ReferenceDeliveryPort = {
+    async createVisualInput(input) {
+      deliveryCalls.push(input);
+      return { mode: "REFERENCE_SET", urls: input.visualInput.references.map((reference) => `https://provider-input.invalid/${reference.asset_id}`) };
+    },
+  };
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    assetStore: assets,
+    referenceDelivery: delivery,
+  });
+
+  const result = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(result?.status, "SUCCEEDED");
+  assert.equal(provider.submitCount, 1);
+  assert.deepEqual(deliveryCalls[0]?.visualInput.references.map((reference) => reference.asset_id), references.map((reference) => reference.assetId));
+  assert.deepEqual(provider.submittedVisualInputs, [{ mode: "REFERENCE_SET", urls: references.map((reference) => `https://provider-input.invalid/${reference.assetId}`) }]);
+  assert.equal(deliveryCalls[0]?.workspaceId, workspaceId);
+  assert.equal(deliveryCalls[0]?.projectId, projectId);
+});
+
+test("C09-C fails before submission when reference delivery is unavailable", async () => {
+  const { assets, store, workspaceId, taskRunId } = await prepareReferenceTask();
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    assetStore: assets,
+    referenceDelivery: {
+      async createVisualInput() {
+        throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", false, "PROVIDER", "Controlled reference delivery outage.");
+      },
+    },
+  });
+
+  const result = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(result?.status, "FAILED");
+  assert.equal(result?.error?.code, "PROVIDER_UNAVAILABLE");
+  assert.equal(provider.submitCount, 0);
+  assert.deepEqual(await store.listTaskRunAttempts(workspaceId, taskRunId), []);
 });

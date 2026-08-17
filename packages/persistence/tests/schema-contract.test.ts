@@ -4,22 +4,33 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import {
+  assetDerivations,
   assets,
   commandDeduplications,
+  creativeBriefRevisions,
   eventConsumptions,
   outboxEvents,
+  productionSegments,
   projects,
   providerAttempts,
+  qcReports,
   referenceBindings,
   shots,
   taskRuns,
   usageRecords,
   users,
+  videoVersions,
   workspaceMembers,
   workspaces,
 } from "../src/schema.js";
-import { taskRunStatus } from "../src/schema.js";
-import { TASK_RUN_STATUSES, TASK_RUN_TERMINAL_STATUSES } from "@alchemy-video/contracts";
+import { productionSegmentStatus, qcStatus, taskRunStatus, videoVersionStatus } from "../src/schema.js";
+import {
+  PRODUCTION_SEGMENT_STATUSES,
+  QC_STATUSES,
+  TASK_RUN_STATUSES,
+  TASK_RUN_TERMINAL_STATUSES,
+  VIDEO_VERSION_STATUSES,
+} from "@alchemy-video/contracts";
 
 test("the C02 schema contains every contract table", () => {
   assert.deepEqual(
@@ -95,11 +106,89 @@ test("the C05 generated snapshot baseline has no duplicate outbox DDL", async ()
   assert.doesNotMatch(baseline, /CREATE TABLE|ALTER TABLE|DROP INDEX/i);
 });
 
+test("the C11 migration creates composite unique targets before adding their foreign keys", async () => {
+  const migration = await readFile(
+    resolve(import.meta.dirname, "..", "drizzle", "0009_sad_magma.sql"),
+    "utf8",
+  );
+  const orderedPairs = [
+    ["creative_brief_revisions_workspace_project_id_key", "script_revisions_workspace_project_creative_brief_fk"],
+    ["script_revisions_workspace_project_id_key", "storyboard_revisions_workspace_project_script_fk"],
+    ["storyboard_revisions_workspace_project_id_key", "production_runs_workspace_project_storyboard_fk"],
+    ["storyboard_revisions_workspace_project_id_key", "storyboard_shot_specs_workspace_project_storyboard_fk"],
+    ["storyboard_shot_specs_workspace_project_id_key", "prompt_packages_workspace_project_shot_spec_fk"],
+  ];
+  for (const [uniqueTarget, foreignKey] of orderedPairs) {
+    assert.ok(migration.indexOf(uniqueTarget) >= 0, `${uniqueTarget} is missing from C11 migration.`);
+    assert.ok(migration.indexOf(foreignKey) >= 0, `${foreignKey} is missing from C11 migration.`);
+    assert.ok(migration.indexOf(uniqueTarget) < migration.indexOf(foreignKey), `${uniqueTarget} must precede ${foreignKey}.`);
+  }
+});
+
+test("the C12 schema keeps production rows project-scoped and persists only public-safe media references", () => {
+  assert.equal(productionSegments.dependsOnSequences.columnType, "PgJsonb");
+  assert.equal(productionSegments.safeSummary.notNull, true);
+  assert.equal(assetDerivations.derivedAssetId.notNull, true);
+  assert.equal(qcReports.safeSummary.notNull, true);
+  assert.equal(videoVersions.assetId.notNull, false);
+  assert.equal(videoVersions.durationMs.notNull, false);
+  assert.deepEqual(productionSegmentStatus.enumValues, PRODUCTION_SEGMENT_STATUSES);
+  assert.deepEqual(qcStatus.enumValues, QC_STATUSES);
+  assert.deepEqual(videoVersionStatus.enumValues, VIDEO_VERSION_STATUSES);
+});
+
+test("the C12 migration creates composite unique targets before adding their foreign keys", async () => {
+  const migration = await readFile(
+    resolve(import.meta.dirname, "..", "drizzle", "0010_brown_toad_men.sql"),
+    "utf8",
+  );
+  const orderedPairs = [
+    ["task_runs_workspace_project_id_key", "asset_derivations_workspace_project_source_task_run_fk"],
+    ["task_runs_workspace_project_id_key", "production_segments_workspace_project_task_run_fk"],
+    ["qc_reports_workspace_project_id_key", "asset_derivations_workspace_project_qc_report_fk"],
+    ["qc_reports_workspace_project_id_key", "production_segments_workspace_project_qc_report_fk"],
+    ["qc_reports_workspace_project_id_key", "video_versions_workspace_project_qc_report_fk"],
+  ];
+  for (const [uniqueTarget, foreignKey] of orderedPairs) {
+    assert.ok(migration.indexOf(uniqueTarget) >= 0, `${uniqueTarget} is missing from C12 migration.`);
+    assert.ok(migration.indexOf(foreignKey) >= 0, `${foreignKey} is missing from C12 migration.`);
+    assert.ok(migration.indexOf(uniqueTarget) < migration.indexOf(foreignKey), `${uniqueTarget} must precede ${foreignKey}.`);
+  }
+});
+
+test("creative briefs persist a bounded target resolution with a migration-safe default", async () => {
+  const migration = await readFile(
+    resolve(import.meta.dirname, "..", "drizzle", "0011_daily_lord_tyger.sql"),
+    "utf8",
+  );
+
+  assert.equal(creativeBriefRevisions.targetResolution.notNull, true);
+  assert.equal(creativeBriefRevisions.targetResolution.columnType, "PgVarchar");
+  assert.match(migration, /ADD COLUMN "target_resolution" varchar\(4\) DEFAULT '720p' NOT NULL/);
+  assert.match(migration, /creative_brief_revisions_target_resolution_check/);
+  assert.match(migration, /'480p', '720p'/);
+});
+
 test("usage amounts use exact numeric columns and task runs persist JSON snapshots", () => {
   assert.equal(usageRecords.amount.dataType, "string");
   assert.equal(usageRecords.amount.columnType, "PgNumeric");
+  assert.equal(usageRecords.creditProvider.notNull, true);
   assert.equal(taskRuns.inputSnapshot.columnType, "PgJsonb");
   assert.equal(commandDeduplications.responseSnapshot.columnType, "PgJsonb");
+});
+
+test("C09 receipt identity is provider-scoped and migration-safe", async () => {
+  const migration = await readFile(
+    resolve(import.meta.dirname, "..", "drizzle", "0007_sleepy_jubilee.sql"),
+    "utf8",
+  );
+  assert.equal(usageRecords.creditProvider.name, "credit_provider");
+  assert.match(migration, /ADD COLUMN "credit_provider" varchar\(64\) DEFAULT 'veyra_sub2api'/);
+  assert.match(migration, /UPDATE "usage_records" SET "credit_provider" = 'veyra_sub2api'/);
+  assert.match(migration, /ALTER COLUMN "credit_provider" SET NOT NULL/);
+  assert.match(migration, /ALTER COLUMN "credit_provider" DROP DEFAULT/);
+  assert.match(migration, /usage_records_credit_provider_idempotency_key_key/);
+  assert.doesNotMatch(migration, /ADD COLUMN "credit_provider" varchar\(64\) NOT NULL/);
 });
 
 test("TaskRun enum follows the ADR-0014 contract", () => {

@@ -28,6 +28,7 @@ tools/sub2api-video-certifier/
   src/cli.ts                   # 手工显式运行的认证命令
   src/cases.ts                 # CERT 测试用例表
   reports/.gitkeep             # 本地报告，不提交真实响应
+  capability-snapshots/.gitkeep # 本地、脱敏、待独立审计的能力快照
 fixtures/providers/sub2api/
   schema-version.json
   grok-imagine-video-1.5/
@@ -54,15 +55,14 @@ CERTIFY_LIVE_VIDEO=false
 CERTIFY_MAX_SUBMISSIONS=0
 ```
 
-真实认证只允许同时满足以下条件：
+通用真实认证只允许同时满足以下条件。C08 当前授权进一步收紧为精确 Grok-only CLI guard，见 ADR-0029 和 C08 矩阵：
 
 1. 开发者把 Key 写入未提交的 `.env.local` 或操作系统密钥存储。
 2. 命令显式传入 `--live`。
-3. `CERTIFY_LIVE_VIDEO=true`。
-4. `CERTIFY_MAX_SUBMISSIONS` 是大于零且不超过本次命令 `--max-submissions` 的整数。
-5. 目标 profile 已被用户明确允许测试。
+3. 目标 profile 已被用户明确允许测试。
+4. C08 的 `--live --profile grok-imagine-video-1.5 --max-submissions 1 --budget-usd 1.00` 以及 `--stop-after-submit` 或 `--resume` 均精确匹配；未匹配时不得读取任何环境变量。
 
-任一条件不满足时，certifier 只跑离线夹具，并打印 `LIVE_CALLS_SKIPPED`。API 和 worker 也必须在 `VIDEO_PROVIDER=sub2api` 且 Key 缺失时启动失败，不能悄悄降级到真实默认 URL。
+任一条件不满足时，certifier 只跑离线夹具，并打印 `LIVE_CALLS_SKIPPED`；它不得读取 base URL 或 Key，也不得 fetch。API 和 worker 也必须在 `VIDEO_PROVIDER=sub2api` 且 Key 缺失时启动失败，不能悄悄降级到真实默认 URL。
 
 ## 4. 适配器设计
 
@@ -101,7 +101,7 @@ type VideoProviderProfile = {
 };
 ```
 
-初始只登记、但不启用两个候选 profile：`grok-imagine-video-1.5` 与实际可用的 Seedance model。Seedance 的精确模型名、时长、分辨率、比例、图生字段必须来自 live certification，不允许仅根据仓库名或 UI 猜测填写。
+初始只登记、但不启用候选 profile。C08 当前仅认证 `grok-imagine-video-1.5` 文生；Seedance、图生和任何第二 profile 都未获授权。Seedance 的精确模型名、时长、分辨率、比例、图生字段必须来自另一轮 live certification，不允许仅根据仓库名或 UI 猜测填写。
 
 `pollIntervalMs` 默认 5000，`maxPollAttempts` 默认 120；单次 worker lease 小于该总时长时，必须持久化 `next_poll_at` 并由下一次 job 接管。轮询次数、状态、原生响应摘要写入 `provider_attempts`。
 
@@ -126,37 +126,38 @@ type VideoProviderProfile = {
 
 ## 6. 真实认证用例
 
-真实调用只在用户提供 Key 并允许具体 profile 后执行。每个用例最多提交一次任务；重试只查询同一 `provider_request_id`。建议先执行 Grok，再按同样形式认证 Seedance。
+真实调用只在用户提供 Key 并允许具体 profile 后执行。每个用例最多提交一次任务；重试只查询同一 `provider_request_id`。C08 当前只允许 Grok 的 `LIVE-GROK-001`，不执行图生或 Seedance。
 
 | 编号 | profile | 场景 | 成功标准 |
 | --- | --- | --- | --- |
-| `LIVE-GROK-001` | `grok-imagine-video-1.5` | 最短、最低成本文生视频 | 提交、轮询到终态、下载通过媒体校验 |
-| `LIVE-GROK-002` | `grok-imagine-video-1.5` | 图生视频 | 仅在 `001` 通过且账号支持时执行；验证 image 字段 |
-| `LIVE-GROK-003` | 同上 | 进程恢复 | 提交后中止 certifier，再用报告里的 ID 查询成功并下载 |
-| `LIVE-SED-001` | 已确认 Seedance model | 最短文生视频 | 同 `LIVE-GROK-001` |
-| `LIVE-SED-002` | 已确认 Seedance model | 图生视频 | 仅在其公开能力和 `001` 均通过时执行 |
+| `LIVE-GROK-001` | `grok-imagine-video-1.5` | 固定 `1s/480p/16:9` 文生；总 submit=1、预算=`USD 1.00` | POST 前 reservation 后 `--stop-after-submit`；在 recovery TTL 内可多次 `--resume`，每次仅 GET/poll/download，提交、轮询、下载通过媒体校验 |
+| `LIVE-GROK-002` | 未授权 | 图生视频 | 不执行，`LIVE_CALLS_SKIPPED` |
+| `LIVE-GROK-003` | 同上 | 进程恢复 | 原始 ID 只由已忽略、权限受限、15 分钟有效的 regular recovery state 保存；无 raw ID 的 active claim 串行保护 resume。retryable poll/download 可在 TTL 内由后续 `--resume` 继续，始终只查询/下载；reservation 永远禁止第二 POST，报告仅含 hash |
+| `LIVE-SED-001` | 未授权 | 最短文生视频 | 不执行，`LIVE_CALLS_SKIPPED` |
+| `LIVE-SED-002` | 未授权 | 图生视频 | 不执行，`LIVE_CALLS_SKIPPED` |
 
-认证 prompt 必须短、无人物肖像、无品牌、无私有参考图，例如 `A paper kite moving gently above a green field, daylight, static camera.`。图生用一张仓库内可公开提交的合成色卡/几何图，不用用户上传素材。
+认证 prompt 必须短、无人物肖像、无品牌、无私有参考图。C08 固定使用合成文生 prompt，不接受图像输入或用户素材；prompt 不写入 report、日志、fixture 或终端输出。
 
-实时报告只存本地 `tools/sub2api-video-certifier/reports/<timestamp>.md`，结构如下：
+实时报告只存本地 `tools/sub2api-video-certifier/reports/<timestamp>.json`，结构如下：
 
 ```json
 {
-  "evidence_id": "cert_20260812_grok_001",
+  "evidenceId": "cert_20260812_grok_001",
   "profile": "grok-imagine-video-1.5",
   "model": "grok-imagine-video-1.5",
-  "case_id": "LIVE-GROK-001",
-  "submitted_at": "2026-08-12T00:00:00Z",
-  "terminal_status": "SUCCEEDED",
-  "provider_request_id_hash": "sha256:...",
-  "request_field_names": ["model", "prompt", "duration", "resolution", "ratio"],
-  "response_field_names": ["id", "status"],
-  "download_validation": {"content_type": "video/mp4", "sha256": "...", "ffprobe_ok": true},
+  "caseId": "LIVE-GROK-001",
+  "recordedAt": "2026-08-12T00:00:00Z",
+  "terminalStatus": "SUCCEEDED",
+  "providerState": "SUCCEEDED",
+  "providerRequestIdHash": "sha256:...",
+  "requestFieldNames": ["model", "duration", "resolution", "ratio"],
+  "responseFieldNames": ["id", "status"],
+  "downloadValidation": {"mimeType": "video/mp4", "sha256": "...", "ffprobeOk": true},
   "redactions": ["authorization", "request_id", "download_url"]
 }
 ```
 
-报告中的 request ID 用 hash 替代原值。没有通过媒体校验就不能把 profile 标为 `enabled`，即使接口返回了成功状态。
+报告中的 request ID 用 hash 替代原值。`providerState` 只能是 `PROCESSING`、`SUCCEEDED` 或 `FAILED`；失败时才允许增加 `providerFailure`，其只能是 `classification/code/stage/retryable` 的白名单结构，不能包含 message、detail、URL、header 或原始 payload。没有通过媒体校验就不能把 profile 标为 `enabled`，即使接口返回了成功状态。
 
 ## 7. 失败分类与功能门禁
 

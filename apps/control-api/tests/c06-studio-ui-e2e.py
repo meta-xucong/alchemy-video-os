@@ -3,24 +3,22 @@ import json
 import sys
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import Page, sync_playwright
 
 
 RESULT_PREFIX = "C06_STUDIO_UI_E2E_RESULT="
-SHOT_PROMPT = "A deterministic local video generation shot."
+CREATION_IDEA = "为一件无品牌产品拍摄晨光中的简短展示视频。"
 
 
-def video_dimensions(page) -> dict[str, object]:
-    return page.locator(".asset-item video").last.evaluate(
+def video_dimensions(video) -> dict[str, object]:
+    return video.evaluate(
         """video => new Promise((resolve) => {
           const finish = () => resolve({
-            src: video.currentSrc,
             ready_state: video.readyState,
-            network_state: video.networkState,
             video_width: video.videoWidth,
             video_height: video.videoHeight,
             duration: video.duration,
-            media_error: video.error ? { code: video.error.code, message: video.error.message } : null,
+            media_error: video.error ? { code: video.error.code } : null,
           });
           if (video.readyState >= 1) return finish();
           video.addEventListener('loadedmetadata', finish, { once: true });
@@ -29,7 +27,18 @@ def video_dimensions(page) -> dict[str, object]:
     )
 
 
-def install_command_uuid_seed(page, seed: str) -> str:
+def image_dimensions(page: Page) -> dict[str, int]:
+    return page.get_by_role("dialog").locator("img").evaluate(
+        """image => new Promise((resolve) => {
+          const finish = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+          if (image.complete) return finish();
+          image.addEventListener('load', finish, { once: true });
+          setTimeout(finish, 10000);
+        })"""
+    )
+
+
+def install_command_uuid_seed(page: Page, seed: str) -> str:
     compact_seed = "".join(character for character in seed if character.isalnum())
     if len(compact_seed) < 8:
         raise AssertionError("C06 Studio UI E2E command seed is invalid.")
@@ -43,120 +52,248 @@ def install_command_uuid_seed(page, seed: str) -> str:
     return prefix
 
 
-def create_project_and_failed_generation(page, fixture: Path, project_name: str) -> dict[str, object]:
-    page.get_by_label("New project", exact=True).fill(project_name)
-    page.get_by_role("button", name="Create project", exact=True).click()
-    project_tab = page.get_by_role("tab", name=project_name, exact=True)
-    project_tab.wait_for(timeout=30_000)
+def open_project_home(page: Page, studio_origin: str) -> None:
+    page.goto(f"{studio_origin}/projects", wait_until="domcontentloaded")
+    page.get_by_role("heading", name="我的项目", exact=True).wait_for(timeout=30_000)
 
-    page.locator("#asset-file").set_input_files(str(fixture))
-    page.get_by_role("button", name="Upload", exact=True).click()
-    page.get_by_text(fixture.name, exact=True).wait_for(timeout=30_000)
-    asset_row = page.locator(".asset-item").filter(has_text=fixture.name)
-    if "READY" not in asset_row.inner_text():
-        raise AssertionError("Studio did not render the uploaded reference image as READY.")
 
-    page.get_by_label("Shot brief", exact=True).fill(SHOT_PROMPT)
-    page.get_by_role("button", name="Create shot", exact=True).click()
-    shot = page.locator(".shot-item").filter(has_text=SHOT_PROMPT)
-    shot.wait_for(timeout=30_000)
-    shot.get_by_title("Mark shot ready", exact=True).click()
-    generate = shot.get_by_title("Generate mock video", exact=True)
-    generate.wait_for(timeout=30_000)
-    generate.click()
+def create_project(page: Page, project_name: str) -> str:
+    page.get_by_role("button", name="新建项目", exact=True).first.click()
+    page.locator("#new-project-name").fill(project_name)
+    page.get_by_role("button", name="创建并进入", exact=True).click()
+    page.get_by_role("heading", name=project_name, exact=True).wait_for(timeout=30_000)
+    return page.url
 
-    failed_status = shot.locator(".task-status.failed")
-    failed_status.wait_for(timeout=60_000)
-    failure_text = failed_status.inner_text()
-    if "FAILED" not in failure_text:
-        raise AssertionError(f"Studio did not render a failed TaskRun status: {failure_text}")
-    if "Mock video generation was configured to fail." not in failure_text:
-        raise AssertionError(f"Studio did not render the public Mock failure message: {failure_text}")
-    retry = shot.get_by_title("Retry failed task", exact=True)
+
+def rename_project_and_restore(page: Page, project_name: str) -> None:
+    renamed = f"{project_name} 已编辑"
+    page.get_by_role("button", name="编辑名称", exact=True).click()
+    page.locator("#project-rename").fill(renamed)
+    page.get_by_role("button", name="保存名称", exact=True).click()
+    page.get_by_role("heading", name=renamed, exact=True).wait_for(timeout=30_000)
+    page.get_by_role("button", name="编辑名称", exact=True).click()
+    page.locator("#project-rename").fill(project_name)
+    page.get_by_role("button", name="保存名称", exact=True).click()
+    page.get_by_role("heading", name=project_name, exact=True).wait_for(timeout=30_000)
+
+
+def upload_and_preview_reference(page: Page, fixture: Path) -> dict[str, int]:
+    file_input = page.locator("#reference-file")
+    try:
+        file_input.wait_for(state="attached", timeout=30_000)
+    except Exception as error:
+        visible_text = page.locator("body").inner_text(timeout=5_000)[-2_000:]
+        raise AssertionError(f"Studio 项目页未挂载参考图上传控件：{visible_text}") from error
+    file_input.set_input_files(str(fixture))
+    page.get_by_role("button", name="添加参考图", exact=True).click()
+    asset = page.locator(".reference-option").filter(has_text=fixture.name)
+    try:
+        asset.wait_for(timeout=30_000)
+    except Exception as error:
+        failures = page.locator(".field-error, [role=alert]").all_inner_texts()
+        raise AssertionError(f"Studio 未将参考图上传并确认到当前项目：{failures}") from error
+    reference_checkbox = asset.get_by_role("checkbox")
+    if not reference_checkbox.is_checked():
+        raise AssertionError("Studio 确认上传后没有默认将参考图用于本次创作。")
+    page.get_by_text("本次会使用", exact=False).wait_for(timeout=30_000)
+    asset.get_by_role("button", name=f"预览图片：{fixture.name}", exact=True).click()
+    dialog = page.get_by_role("dialog")
+    dialog.wait_for(state="visible", timeout=30_000)
+    dimensions = image_dimensions(page)
+    if dimensions["width"] <= 0 or dimensions["height"] <= 0:
+        raise AssertionError(f"Studio 未能解码已上传参考图：{dimensions}")
+    dialog.get_by_role("button", name="关闭预览", exact=True).click()
+    dialog.wait_for(state="hidden", timeout=30_000)
+    return dimensions
+
+
+def upload_and_preview_references(page: Page, fixtures: list[Path]) -> list[dict[str, int]]:
+    dimensions = [upload_and_preview_reference(page, fixture) for fixture in fixtures]
+    for fixture in fixtures:
+        page.locator(".reference-option").filter(has_text=fixture.name).wait_for(timeout=30_000)
+    if page.locator(".reference-option").count() < len(fixtures):
+        raise AssertionError("Studio 未将两张已确认参考图都显示在当前项目素材列表。")
+    return dimensions
+
+
+def enter_chinese_creation(page: Page) -> None:
+    page.locator("#creation-idea").fill(CREATION_IDEA)
+    page.get_by_label("视频时长", exact=True).select_option("8")
+    if page.get_by_label("视频时长", exact=True).input_value() != "8":
+        raise AssertionError("Studio 未保留用户选择的 8 秒时长。")
+    page.get_by_label("480p", exact=True).check()
+    if not page.get_by_label("480p", exact=True).is_checked():
+        raise AssertionError("Studio 未保留用户选择的 480p 清晰度。")
+    page.get_by_role("button", name="保存想法", exact=True).click()
+    page.get_by_text("已保存，等待开始", exact=True).wait_for(timeout=30_000)
+    if page.locator(".idea-composer").get_by_role("button", name="开始生成视频", exact=True).count():
+        raise AssertionError("第一步不应保留生成视频入口。")
+    start = page.locator(".generation-panel").get_by_role("button", name="开始生成视频", exact=True)
+    start.wait_for(timeout=30_000)
+    if not start.is_enabled():
+        raise AssertionError("保存想法后，第三步的唯一生成入口应可用。")
+    for label in ("整理创作需求", "准备画面与节奏", "正在生成视频", "检查成片"):
+        page.locator(".creation-progress").get_by_text(label, exact=True).wait_for(timeout=30_000)
+    start.click()
+
+
+def create_and_verify_isolated_project(page: Page, project_name: str) -> None:
+    page.get_by_role("link", name="返回项目列表", exact=True).click()
+    page.get_by_role("heading", name="我的项目", exact=True).wait_for(timeout=30_000)
+    create_project(page, project_name)
+    if page.locator("#creation-idea").input_value():
+        raise AssertionError("项目 B 意外继承了项目 A 的创作草稿。")
+    page.get_by_text("尚未选择用于本次视频的参考图；也可以直接生成文字创作。", exact=True).wait_for(timeout=30_000)
+    start = page.locator(".generation-panel").get_by_role("button", name="开始生成视频", exact=True)
+    if not start.is_disabled():
+        raise AssertionError("空项目 B 的生成按钮不应可用。")
+    delete_button = page.get_by_role("button", name="删除项目", exact=True)
+    if not delete_button.is_disabled():
+        raise AssertionError("没有公开删除 API 时，删除项目按钮必须保持禁用。")
+    page.get_by_text("删除功能等待服务端开放", exact=True).wait_for(timeout=30_000)
+    page.get_by_role("button", name="归档项目", exact=True).click()
+    page.get_by_text("已归档", exact=True).wait_for(timeout=30_000)
+    page.get_by_role("button", name="恢复项目", exact=True).click()
+    page.get_by_text("进行中", exact=True).wait_for(timeout=30_000)
+
+
+def assert_mobile_layout(page: Page, project_url: str, project_name: str, primary_action: str) -> None:
+    page.goto(project_url, wait_until="domcontentloaded")
+    page.get_by_role("heading", name=project_name, exact=True).wait_for(timeout=30_000)
+    for label in ("刷新项目", "编辑名称", "保存想法", primary_action, "添加参考图", "归档项目", "删除项目"):
+        page.get_by_role("button", name=label, exact=True).first.wait_for(state="visible", timeout=30_000)
+    for label in ("视频时长", "480p", "720p"):
+        page.get_by_label(label, exact=True).wait_for(state="visible", timeout=30_000)
+    layout = page.evaluate(
+        """() => {
+          const width = window.innerWidth;
+          const controls = [...document.querySelectorAll('button, select, textarea, input:not([type="file"])')]
+            .filter((element) => getComputedStyle(element).display !== 'none')
+            .map((element) => {
+              const rect = element.getBoundingClientRect();
+              return { label: element.getAttribute('aria-label') || element.textContent?.trim() || element.id, left: rect.left, right: rect.right };
+            });
+          return { viewport: { width, height: window.innerHeight }, scroll_width: document.documentElement.scrollWidth, controls };
+        }"""
+    )
+    if layout["scroll_width"] > layout["viewport"]["width"]:
+        raise AssertionError(f"手机布局存在水平溢出：{layout}")
+    for control in layout["controls"]:
+        if control["left"] < 0 or control["right"] > layout["viewport"]["width"]:
+            raise AssertionError(f"手机布局控件越界：{control}")
+
+
+def create_project_and_failed_generation(
+    page: Page,
+    fixtures: list[Path],
+    project_name: str,
+    secondary_project_name: str,
+    studio_origin: str,
+    command_seed: str,
+    browser,
+) -> dict[str, object]:
+    command_seed_prefix = install_command_uuid_seed(page, command_seed)
+    open_project_home(page, studio_origin)
+    project_url = create_project(page, project_name)
+    rename_project_and_restore(page, project_name)
+    images = upload_and_preview_references(page, fixtures)
+    enter_chinese_creation(page)
+    try:
+        page.get_by_text("本次创作未完成", exact=True).wait_for(timeout=60_000)
+    except Exception as error:
+        status = page.locator(".generation-status").inner_text()
+        message = page.locator(".generation-message").inner_text()
+        raise AssertionError(f"Studio 未在失败流程中显示公开失败状态：状态={status}；提示={message}") from error
+    failure_text = page.locator(".generation-message").inner_text()
+    if "本次创作尚未完成" not in failure_text:
+        raise AssertionError(f"Studio 未显示公开失败提示：{failure_text}")
+    failure_feedback = page.locator(".generation-feedback")
+    failure_feedback.get_by_text("本次创作已进入生成阶段，但没有完成。请调整描述后生成新版本，或重试这次创作。", exact=True).wait_for(timeout=30_000)
+    retry = page.get_by_role("button", name="重试生成", exact=True)
     retry.wait_for(timeout=30_000)
     if not retry.is_enabled():
-        raise AssertionError("Studio rendered a failed TaskRun but did not enable its retry command.")
-    return {"failure_text": failure_text}
+        raise AssertionError("Studio 显示失败任务后没有启用显式重试命令。")
+    new_version = page.get_by_role("button", name="调整后生成新版本", exact=True)
+    new_version.wait_for(timeout=30_000)
+    if not new_version.is_enabled():
+        raise AssertionError("Studio 显示失败任务后没有启用新版本生成命令。")
+    create_and_verify_isolated_project(page, secondary_project_name)
+    mobile_page = browser.new_page(viewport={"width": 390, "height": 844})
+    try:
+        assert_mobile_layout(mobile_page, project_url, project_name, "调整后生成新版本")
+    finally:
+        mobile_page.close()
+    return {
+        "command_seed_prefix": command_seed_prefix,
+        "failure_text": failure_text,
+        "retry_control_visible": True,
+        "reference_images": images,
+        "mobile_viewport": "390x844",
+    }
 
 
-def retry_failed_generation(page, project_name: str) -> dict[str, object]:
-    project_tab = page.get_by_role("tab", name=project_name, exact=True)
-    project_tab.wait_for(timeout=30_000)
-    project_tab.click()
-    shot = page.locator(".shot-item").filter(has_text=SHOT_PROMPT)
-    shot.wait_for(timeout=30_000)
-    failed_status = shot.locator(".task-status.failed")
-    failed_status.wait_for(timeout=30_000)
-    retry = shot.get_by_title("Retry failed task", exact=True)
-    retry.wait_for(timeout=30_000)
-    retry.click()
-    shot.locator(".task-status.succeeded").wait_for(timeout=60_000)
-
+def retry_failed_generation(page: Page, project_name: str, studio_origin: str, command_seed: str) -> dict[str, object]:
+    command_seed_prefix = install_command_uuid_seed(page, command_seed)
+    open_project_home(page, studio_origin)
+    page.get_by_role("link", name=f"进入项目：{project_name}", exact=True).click()
+    page.get_by_role("heading", name=project_name, exact=True).wait_for(timeout=30_000)
+    page.get_by_text("本次创作未完成", exact=True).wait_for(timeout=30_000)
+    page.get_by_role("button", name="重试生成", exact=True).click()
+    page.get_by_text("视频已生成", exact=True).wait_for(timeout=60_000)
+    page.locator(".generation-feedback").get_by_text("本次创作已完成，可以预览当前结果。", exact=True).wait_for(timeout=30_000)
     page.reload(wait_until="domcontentloaded")
-    project_tab = page.get_by_role("tab", name=project_name, exact=True)
-    project_tab.wait_for(timeout=30_000)
-    project_tab.click()
-    shot = page.locator(".shot-item").filter(has_text=SHOT_PROMPT)
-    shot.locator(".task-status.succeeded").wait_for(timeout=30_000)
-    shot.get_by_title("Preview generated video", exact=True).click()
-    preview = page.locator(".asset-item video").last
+    page.get_by_role("heading", name=project_name, exact=True).wait_for(timeout=30_000)
+    page.get_by_text("视频已生成", exact=True).wait_for(timeout=30_000)
+    results_panel = page.locator(".project-results-panel")
+    results_panel.get_by_role("heading", name="成片版本", exact=True).wait_for(timeout=30_000)
+    result_button = results_panel.get_by_role("button", name="查看成片 01", exact=True)
+    result_button.wait_for(timeout=30_000)
+    page.get_by_role("button", name="预览视频", exact=True).click()
+    if result_button.get_attribute("aria-pressed") != "true":
+        raise AssertionError("Studio 预览视频动作没有选中项目成果中的当前成片。")
+    preview = results_panel.locator("video")
     preview.wait_for(state="visible", timeout=30_000)
-    dimensions = video_dimensions(page)
+    dimensions = video_dimensions(preview)
     if dimensions["video_width"] <= 0 or dimensions["video_height"] <= 0:
-        raise AssertionError(f"Studio Preview generated video did not decode a video frame: {dimensions}")
+        raise AssertionError(f"Studio 预览视频未能解码画面：{dimensions}")
     if not dimensions["duration"] or dimensions["duration"] <= 0:
-        raise AssertionError(f"Studio Preview generated video has no duration: {dimensions}")
-    return dimensions
+        raise AssertionError(f"Studio 预览视频没有时长：{dimensions}")
+    return {**dimensions, "command_seed_prefix": command_seed_prefix, "desktop_viewport": "1280x720"}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--studio-origin", required=True)
-    parser.add_argument("--fixture", required=True)
+    parser.add_argument("--fixture", action="append", required=True)
     parser.add_argument("--project-name", required=True)
+    parser.add_argument("--secondary-project-name", required=True)
     parser.add_argument("--mode", choices=("failure", "retry"), required=True)
     parser.add_argument("--command-seed", required=True)
     args = parser.parse_args()
-
-    fixture = Path(args.fixture).resolve()
+    fixtures = [Path(value).resolve() for value in args.fixture]
     result: dict[str, object] = {"ok": False}
     try:
-        if not fixture.is_file():
-            raise AssertionError("The C06 PNG fixture is missing.")
-
+        if len(fixtures) != 2 or any(not fixture.is_file() for fixture in fixtures):
+            raise AssertionError("C06 Studio UI E2E requires two valid PNG fixtures.")
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = playwright.chromium.launch(
+                headless=True,
+                args=["--host-resolver-rules=MAP localhost [::1]"],
+            )
             try:
-                page = browser.new_page()
-                command_seed_prefix = install_command_uuid_seed(page, args.command_seed)
-                page.goto(args.studio_origin, wait_until="domcontentloaded")
-                page.get_by_text("Control API is available", exact=True).wait_for(timeout=30_000)
+                page = browser.new_page(viewport={"width": 1280, "height": 720})
                 if args.mode == "failure":
-                    failure = create_project_and_failed_generation(page, fixture, args.project_name)
-                    result = {
-                        "ok": True,
-                        "mode": args.mode,
-                        "project_name": args.project_name,
-                        "failure_text": failure["failure_text"],
-                        "retry_control_visible": True,
-                        "command_seed_prefix": command_seed_prefix,
-                    }
-                elif args.mode == "retry":
-                    dimensions = retry_failed_generation(page, args.project_name)
-                    result = {
-                        "ok": True,
-                        "mode": args.mode,
-                        "project_name": args.project_name,
-                        "video_width": dimensions["video_width"],
-                        "video_height": dimensions["video_height"],
-                        "duration": dimensions["duration"],
-                        "command_seed_prefix": command_seed_prefix,
-                    }
+                    failure = create_project_and_failed_generation(
+                        page, fixtures, args.project_name, args.secondary_project_name, args.studio_origin, args.command_seed, browser
+                    )
+                    result = {"ok": True, "mode": args.mode, "project_name": args.project_name, **failure}
+                else:
+                    retry = retry_failed_generation(page, args.project_name, args.studio_origin, args.command_seed)
+                    result = {"ok": True, "mode": args.mode, "project_name": args.project_name, **retry}
             finally:
                 browser.close()
     except Exception as error:
         result = {"ok": False, "project_name": args.project_name, "error": str(error)}
-
     print(f"{RESULT_PREFIX}{json.dumps(result, ensure_ascii=True)}")
     return 0 if result["ok"] else 1
 

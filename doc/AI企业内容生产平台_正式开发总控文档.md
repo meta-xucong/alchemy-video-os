@@ -45,6 +45,19 @@
 
 平台长期目标是让企业用户通过网页完成：企业资料导入、品牌上下文整理、脚本与分镜创作、参考资产绑定、AI 视频镜头生成、媒体处理、质量检查、审阅、版本化导出和用量审计。
 
+所有视频创作能力统一遵循 `AI企业内容生产平台_通用叙事点与生成片段编排规范.md`：
+
+```text
+用户故事/素材
+  -> NarrativeBeat（叙事点）
+  -> GenerationSegment（实际生成片段）
+  -> Video TaskRun
+  -> Media Runtime 合成/QC
+  -> VideoVersion（最终成片）
+```
+
+叙事点数量不等于真实 Provider 调用数量。一个生成片段才允许创建一个视频 TaskRun；多个叙事点可以在满足 Provider 时长、预算和连续性约束的前提下合并进一个生成片段。任何新题材、新 Provider、新前端入口或新媒体能力都必须沿用这条主链路，不能恢复“一个逻辑镜头一次真实调用”、字符切片或浏览器循环提交的旧模式。该规则由 ADR-0041 固化。
+
 第一条可验证链路不是完整 Agent，而是：
 
 ```text
@@ -67,11 +80,11 @@ Dev Identity
 | B | TaskRun、Worker、Mock 视频闭环 | 是 |
 | C | SUB2API 视频 adapter 离线契约 | A/B 通过后 |
 | D | 真实 Grok/Seedance 能力认证 | 用户明确提供 Key 后 |
-| E | Veyra 登录、账户、共享积分 | Provider 认证后 |
+| E | 共享积分的本地端口、精度、幂等与离线契约 | Provider 认证后 |
 | F | MarkItDown 企业资料 Runtime | MVP 稳定后 |
 | G | Seedance Prompt Package、脚本、分镜 | 资料链路稳定后 |
 | H | OpenMontage 媒体 Runtime、QC、成片 | 单镜头稳定后 |
-| I | VPS、域名、生产部署、Codex 入口 | 最后 |
+| I | VPS、域名、真实 Veyra 联动、生产部署、Codex 入口 | 所有本地章节验收后 |
 
 ## 3. 统一工程基线
 
@@ -164,7 +177,7 @@ flowchart TD
   C5 --> C6[第 6 章 Mock 视频闭环]
   C6 --> C7[第 7 章 SUB2API 离线 Adapter]
   C7 --> C8[第 8 章 真实 Provider 能力认证]
-  C8 --> C9[第 9 章 Veyra 身份与共享积分]
+  C8 --> C9[第 9 章 共享积分本地边界]
   C6 --> C10[第 10 章 MarkItDown 资料链路]
   C10 --> C11[第 11 章 Prompt / Script / Storyboard]
   C11 --> C12[第 12 章 OpenMontage / QC / 成片]
@@ -471,32 +484,31 @@ GET  /videos/{id}/content
 ### 13.1 进入条件
 
 - 第 7 章 `ACCEPTED`。
-- 用户明确指定 profile、允许的调用次数、额度上限和测试素材。
+- 用户或审计员已记录当前 profile、允许的调用次数、额度上限和测试素材；任何未获记录的 profile、图生或 Seedance 参数保持禁止。
 - Key 存于本地未提交环境，命令显式 `--live`。
 
 ### 13.2 实施步骤
 
-1. 先用 Grok 最短文生视频验证提交/轮询/下载。
-2. 再验证单图生视频。
-3. 验证进程中止后的恢复查询。
-4. 对 Seedance 先实测 model ID、字段、时长、比例和分辨率，禁止猜值。
-5. 生成 capability snapshot 和脱敏认证报告。
+1. 当前受限授权仅用 Grok 最短文生视频验证提交、轮询和下载。
+2. 当前不得验证图生；任何单图生测试必须先取得独立 profile、次数、额度和素材授权。
+3. 验证进程中止、短暂 poll/download 故障后的 GET-only 恢复查询，不得重复提交。
+4. Seedance 的 model ID、字段、时长、比例和分辨率属于另一轮受控认证，禁止猜值或借用本轮额度。
+5. 生成 hash-only 脱敏认证报告；capability snapshot 在独立审计和后续受控变更前保持 disabled。
 
 ### 13.3 Exit Gate
 
 只有提交、轮询、下载、MIME、SHA-256 和 ffprobe 全通过，profile 才能标记 `CERTIFIED`。真实认证报告不能进入普通 CI，也不能把真实 request ID、Key、票据和签名 URL 提交到仓库。
 
-## 14. 第 9 章：Veyra 身份和共享积分
+## 14. 第 9 章：共享积分本地边界
 
 ### 14.1 进入条件
 
 - 第 8 章目标 Provider 已认证。
 - 已完成 fake server 契约测试。
-- 用户明确允许真实 Veyra 账户和扣费测试。
 
 ### 14.2 固定原则
 
-Sub2API 是余额和原子扣费的唯一权威；视频平台不复制账本。沿用：
+Sub2API 是余额和原子扣费的唯一权威；视频平台不复制账本。未来真实联动沿用：
 
 ```text
 POST /api/veyra/internal/login-ticket/exchange
@@ -505,11 +517,31 @@ POST /api/veyra/internal/billing/debit
 Header: X-Veyra-Internal-Token
 ```
 
-余额预检不是预授权。视频成功下载并验证后进入 `BILLING_PENDING`，以 `billing_rule_key + task_run_id` 扣费。`402` 为 `CREDIT_INSUFFICIENT`，`409` 为 `CREDIT_CONFLICT`；充值重试只能扣费，不能再次 submit 视频。
+余额预检不是预授权。未来真实模式中，视频成功下载并验证后进入 `BILLING_PENDING`，以 `billing_rule_key + task_run_id` 扣费。`402` 为 `CREDIT_INSUFFICIENT`，`409` 为 `CREDIT_CONFLICT`；充值重试只能扣费，不能再次 submit 视频。真实登录、账户、debit、feature flag、VPS 与跨系统联动移至 C13-A，不属于 C09 的本地 Exit Gate。
 
-### 14.3 Exit Gate
+### 14.2.1 C09-A：离线基础范围
 
-通过一次成功扣费、同 key 回放、同 key 冲突、余额不足、Token 错误、服务暂时不可用、Worker 崩溃恢复和 usage 唯一性测试后，才能打开真实 Veyra feature flag。
+C09-A 只建立可替换的内部 `CreditPort`、`NoopCreditAdapter`、注入式 Veyra transport 契约、精确十进制 mapper 与 usage receipt 幂等准备。adapter 不提供默认 HTTP client，不读取环境变量、Token 或 URL；fake transport/fake server 只在测试进程中使用。
+
+本子阶段不装配 Worker、Control API 或 Studio，不新开公开 DTO、浏览器路由、队列消息或真实扣费。失败 envelope 的结构不变；为完整表达内部 Veyra mapper 的其他拒绝，既有应用错误码枚举可向后兼容地增加 `CREDIT_REJECTED`，但 C09-A 不新增会从公开路由产生该错误的运行时路径。`NoopCreditAdapter` 只表达本地 mock 的“计费不可用”，不得把 debit 伪装为成功；TaskRun 的既有状态图不在 C09-A 改动。`usage_records` 只作为外部扣费 receipt，需按 `(credit_provider, idempotency_key)` 唯一，不能成为余额账本。
+
+### 14.2.2 C09-B：三 VPS 联动设计归档
+
+C09-B 只保留 `AI企业内容生产平台_C09-B三VPS联动设计.md` 与 ADR-0032 所定义的设计、来源和验收矩阵。Video OS 必须作为与 Sub2API/Veyra、Alchemy 平级的第三台 VPS；三方不得共享数据库、JSONL、Cookie/session、对象存储、队列、进程内状态或服务 secret。`video` intent/target、private overlay/service identity、无 query ticket POST handoff、local session、billing attempt/recovery、feature flags 和 rollout/rollback 均已归入 C13-A 的后期受控实现，不在 C09 写代码或调用外部系统。
+
+在 C13-A 获得测试用户、ticket/debit 次数、额度上限、素材、网络/VPS/DNS/TLS 变更和维护窗口的明确授权前，禁止读取凭据、真实 ticket exchange/account/debit、Provider 调用、SSH、部署或任何 flag 启用。
+
+### 14.2.3 C09-C：受控真实视频运行时接入
+
+仅在用户明确要求将已认证的 SUB2API 视频 profile 接入产品运行时后，允许在不触碰 Veyra、VPS、DNS、TLS 和部署的前提下实现 Worker 内的 HTTPS transport、Provider factory、Control API 内部快照策略和 Studio 的公开命令收敛。密钥和 base URL 只能由 Worker 读取；Control API 可读取非敏感的运行模式，但浏览器不得接收 Provider、模型、地址、密钥或原始 Provider 数据。
+
+默认仍必须为 `VIDEO_PROVIDER=mock`。真实 mode 只能使用经过 C08 认证并在 ADR 中列明的精确基础参数范围。ADR-0034 已离线实现单张 `FIRST_FRAME` 与一至七张 `REFERENCE_SET` 的输入契约；ADR-0037 将用户可见且可保存的时长限定为 `1..15` 秒、清晰度限定为 `480p|720p`、比例限定为 `16:9`，未受控或超出范围的规格、缺失或不完整的 relay 配置、尾帧、混合模式、模型和任何 Seedance 能力必须在创建任务前明确拒绝。运行时装配、离线回归和受控本地启动不等于真实付费调用；每次真实 POST 仍需单独记录 profile、调用次数、费用上限和素材范围，且不得启动 Veyra 或部署工作。
+
+图生与多参考素材扩展以 ADR-0034 和 `AI企业内容生产平台_C09-C图生与多参考素材适配设计.md` 为设计准入：首帧图生与独立参考图必须互斥；独立参考图按已声明契约可接受一至七张，且文档必须区分协议上限与已完成端到端验证的样本数。平台不以本地 4096 字节硬上限拒绝该路线，而由上游的安全归一化拒绝语义处理超长请求。已完成 `ReferenceDeliveryPort`、私有对象到短时 Provider HTTPS relay、公开 DTO 脱敏和 Worker 恢复的离线/Mock 验证；尚未部署公开 HTTPS relay，因此不能提前对用户图片发出真实 Provider 请求。
+
+### 14.3 C09 Exit Gate
+
+C09 只要求本地 `CreditPort`、`NoopCreditAdapter`、注入式 Veyra transport/mapper、精确金额、usage receipt 幂等准备、公开边界和离线/Mock 回归通过。C09 不能读取真实 Veyra 凭据、访问真实账户、执行 debit、启用 feature flag、SSH、部署或变更 VPS。真实 Veyra 的成功扣费、同 key 回放/冲突、余额不足、Token 错误、服务暂不可用、Worker 崩溃恢复、usage 唯一性和生产 rollout/rollback 均属于 C13-A 的 Exit Gate。
 
 ## 15. 第 10 章：MarkItDown 企业资料链路
 
@@ -541,11 +573,15 @@ PDF/DOCX/PPTX/XLSX fixture 转换通过；`convert_stream` 不允许任意网络
 2. 定义 `PromptPackage`、`ScriptArtifact`、`ScenePlanArtifact` 版本 schema。
 3. 实现 Workflow Worker 的显式状态机，而不是自由 Agent 直接推进数据库。
 4. 让每个 Prompt/Script/Storyboard revision 绑定事实引用、参考资产和审批状态。
-5. 输出 `GenerateShotCommand`，由 Provider Worker 执行。
+5. 输出可确认的 `ProductionRun` 计划；C12 的依赖调度器才可从已确认计划产生 `GenerateShotCommand` 并交给 Provider Worker。
+
+长叙事采用 `AI企业内容生产平台_长叙事自动编排与连续成片设计.md` 的总览、`AI企业内容生产平台_长叙事后端领域与编排开发设计.md` 的后端边界，以及 `AI企业内容生产平台_长叙事前端项目工作台交互设计.md` 的页面边界。原文必须先成为 `CreativeBriefRevision`，再产生 `ScriptRevision` 与有序 `StoryboardRevision`；不得按字符数截断后直接循环创建视频任务。每个 `ShotSpec` 只承载一个可见叙事事件，并记录开始/结束状态、连续性约束、参考素材职责和能力范围内的建议时长。`ProductionRun` 记录整体计划和进度，但不取代单 Shot 的 `TaskRun`。
+
+规划阶段只产生可审阅的结构化 Artifact，不能调用视频 Provider；C11 用户确认“开始制作完整视频”后只创建并冻结 `ProductionRun`，不创建或提交任何视频 TaskRun。C12 再按依赖图创建符合条件的 Shot 任务。长文规划需要独立、可认证的 `PlanningModelPort`，不能把视频 Provider 当作文本 Agent，也不能让自由 Agent 直接写数据库。当前 profile 的首帧与多参考图互斥、无已认证尾帧能力；任何视觉连续性降级必须在计划中可见，不能承诺帧级无缝衔接。
 
 ### 16.3 Exit Gate
 
-用户可以确认脚本和分镜；分镜包含事实引用和 ReferenceBinding；PromptPackage 可被 schema 验证；单镜头调用能追溯画像、脚本、分镜和 prompt 版本。
+用户可以确认脚本和分镜；分镜包含事实引用和 ReferenceBinding；PromptPackage 可被 schema 验证；已确认 ProductionRun 能追溯画像、脚本、分镜和 prompt 版本。长叙事 fixture 必须生成有序计划而非字数切片；计划确认前后均为零次视频提交，确认结果幂等且可追溯。逐段幂等提交与前序镜头/交接帧依赖阻塞属于 C12 Exit Gate。
 
 ## 17. 第 12 章：OpenMontage、QC 和成片
 
@@ -561,25 +597,36 @@ PDF/DOCX/PPTX/XLSX fixture 转换通过；`convert_stream` 不允许任意网络
 4. 实现视频抽帧、ffprobe、拼接、字幕和质量报告。
 5. 支持 8-12 个镜头版本化合成，失败镜头可标记而不破坏全部工程。
 
+对需要连续画面的长叙事，C12 从已接受镜头提取 `HandoffAsset`，在前序通过基础 QC 后才允许提交依赖它的后续镜头。当前 provider 只支持首帧或多参考图，不能混用且不支持已认证尾帧；因此视觉连续性必须通过交接帧、明确转场和最终合成逐层实现，不可描述为模型保证的逐帧连续。新的故事输入只能使用用户上传且已确认的素材；派生交接帧不得回流为新的多参考来源。合成不得丢弃来源音轨；对尚无语义级首尾衔接验收的边界，必须使用有界的画面/音频淡变并保持规划总时长。任何局部重做只能重算受影响镜头和依赖它的后续镜头，不能覆盖既有接受版本。
+
 ### 17.3 Exit Gate
 
-成片 MP4 具备完整来源链；工具执行可审计、可重试、无任意本地目录访问；QC 报告能关联到镜头和版本；成片播放和下载通过。
+成片 MP4 具备完整来源链；当来源片段有音轨时最终成片也有可解码音轨；未验证衔接边界有可追溯的受控转场；工具执行可审计、可重试、无任意本地目录访问；QC 报告能关联到镜头和版本；成片播放和下载通过。
 
 ## 18. 第 13 章：发布前审计和部署准备
 
-### 18.1 当前只准备，不执行部署
+### 18.1 C13-A：真实 Veyra 与 VPS 联动
+
+C13-A 只在 C09、C10、C11、C12 全部 `ACCEPTED` 后开始。它接收 C09-B 的既有三 VPS 设计，实施并验证 Video OS 与 Sub2API/Veyra、Alchemy 的受控联动：`video` intent/target、私有 overlay/service identity、一次性 POST ticket handoff、host-only session、账户预检、产物验证后 debit、billing attempt/recovery、feature flag、限额和发布/回滚。
+
+开始前必须有用户对测试用户、ticket/debit 次数、额度上限、素材范围、网络/VPS/DNS/TLS 变更和维护窗口的明确授权。C13-A 不得以本地离线测试或旧 Provider 成功视频推断真实 Veyra 权限、余额、扣费或跨 VPS 联动已经可用。
+
+启动前置审计和授权清单以 `AI企业内容生产平台_C13-A真实联动启动前置审计与授权清单.md` 为准。该文件只允许整理 runbook、授权项、离线 fake 测试与默认 fail-closed 预检；在授权参数补齐前，不得读取 secret、SSH、发真实 HTTP、改 VPS/DNS/TLS 或开启真实 feature flag。
+
+### 18.2 当前只准备，不执行部署
 
 必须准备但当前不执行：VPS 资源、域名 DNS、反向代理、TLS、持久化卷、数据库备份/回滚、密钥注入、日志监控、限流、费用告警、Sub2API `video` intent 和权限配置。
 
-### 18.2 发布前审计
+### 18.3 发布前审计
 
 - 依赖和第三方来源可追溯。
 - 所有 secret scan、日志脱敏、workspace isolation 通过。
 - 数据库迁移、回滚和备份恢复通过。
 - Provider、Credit、Worker、Media Runtime 的失败和恢复路径通过。
+- C13-A 的真实 Veyra 账户、扣费幂等、余额不足、故障恢复、三 VPS 边界、feature flag 与回滚演练通过。
 - 真实 feature flags 默认关闭，域名不硬编码。
 
-### 18.3 最终 Exit Gate
+### 18.4 最终 Exit Gate
 
 全部章节 `ACCEPTED`，审计记录完整，未关闭风险有责任人和处理计划，才可进入部署设计。域名和 VPS 工作另开部署任务，不能在本地开发任务中顺便执行。
 

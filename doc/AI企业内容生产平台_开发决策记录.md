@@ -352,6 +352,307 @@
 | 选择原因 | 复用 C05/C06 的至少一次 delivery、duplicate 仍执行和启动恢复机制，避免创建没有消费者的 `RETRY_SCHEDULED` 状态；同时保持提交幂等边界和公开失败可见性。 |
 | 审计证据 | 离线 adapter 覆盖查询 `429/503` 的 typed retryable status；跨包回归覆盖首次查询短暂失败后 TaskRun 仍为 `PROVIDER_PROCESSING`、无失败事件、重试成功且 POST submit 只有一次。 |
 
+## ADR-0029：C08 Certifier 的单次提交和有界 GET-only 恢复
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED` |
+| 日期 | 2026-08-14 |
+| 影响章节 | C08；不改变 C06/C07 运行时、公开 API、数据库、队列或 capability registry |
+| 上下文 | C08 获得仅一个 `grok-imagine-video-1.5` 文生认证的受限授权：总 submit 上限为 `1`、总成本上限为 `USD 1.00`、固定最低成本输入为 `duration=1`、`resolution=480p`、`ratio=16:9`。此前文档同时要求“受控退出删除恢复状态”和“中断后恢复”，但没有定义可保存原始 request ID 的唯一例外。 |
+| 决策 | 新建独立 `tools/sub2api-video-certifier` workspace，复用 C07 `Sub2ApiVideoProvider` 与 injected `Sub2ApiTransport`。只有命令精确匹配 `--live --profile grok-imagine-video-1.5 --max-submissions 1 --budget-usd 1.00`，且附带 `--stop-after-submit` 或 `--resume` 时，certifier 才可读取 `SUB2API_VIDEO_BASE_URL` / `SUB2API_VIDEO_API_KEY`。它不读取其他 live 开关，也不装配到 Worker/API/Studio。唯一 POST 只允许在 `--stop-after-submit`：在网络 POST 前，certifier 必须在 `tools/sub2api-video-certifier/recovery/` 原子创建权限受限、无 raw ID 的 submission reservation；reservation、报告、regular recovery 或 active claim 任一存在都永久拒绝第二 POST，即使前次网络结果不明。提交成功后 raw request ID 只写入同目录的 recovery state，最大保留 `15` 分钟。`--resume` 用无 raw ID 的短 lease active claim 串行保护读取；可在 TTL 内多次显式恢复，但每次只执行 GET/poll/download，绝不 POST。 |
+| 安全与报告 | recovery state 只含 raw request ID 与非敏感 run metadata；submission reservation 与 active claim 只含版本、profile、owner ID 和时间，不含 raw ID。active claim 的 lease 为 60 秒，并在每次 GET/poll 前由当前 owner 续租；超时后的新 resume 可以接管，旧 owner 不能覆盖或删除新 claim。目录只向运行 certifier 的单一 OS 身份授予访问；状态不得写入其他临时目录、reports、日志、数据库、事件、fixture、浏览器或 Git。poll/download 的 retryable `429`/`503` 在同次 resume 内有界 GET-only 重试；仍未完成时释放 active claim、保留 regular recovery 至 TTL，后续显式 resume 仍只 GET。过期时无网络删除；成功、不可重试最终失败、超限和其他受控退出均删除 raw recovery，reservation 保留以证明 submit 已消耗。reports 仅含 case/profile/model、时间、安全字段名、request ID hash、归一化 `provider_state`（`PROCESSING`/`SUCCEEDED`/`FAILED`）、MIME/长度/SHA-256/ffprobe 与 redaction/cleanup 结论。若有 typed failure，只允许附带 `{ classification, code, stage, retryable }`，其中 classification 限定为 `REJECTED`、`UNAVAILABLE`、`PROTOCOL_DRIFT` 或 `DOWNLOAD_INVALID`。绝不含 message、prompt、URL、header、key、raw ID、上游 body、内容 URL、媒体或截图。 |
+| 官方成本依据 | 审计员于 2026-08-14 独立复核 [xAI 官方模型与定价文档](https://docs.x.ai/docs/models)：`grok-imagine-video-1.5` 支持文生、duration `1..15` 秒、480p `USD 0.08/秒`。该事实是本次授权参数的成本选择依据；C08 仅用它选择 `1s/480p` 并在本地以十进制 cents 验证 `USD 0.08 <= USD 1.00`。它不是 SUB2API 协议、字段或能力认证事实，不能据此猜测 SUB2API 的 status、ratio、响应或下载行为。A 段不联网重新抓取该来源。 |
+| 选择原因 | 用 CLI 显式参数和可测试的依赖注入同时守住预算、一次 POST 与恢复边界；将恢复所需的短暂敏感 ID 与长期 hash-only 审计报告分开，避免浏览器、平台运行时或 Git 获得真实 Provider 标识。 |
+| 审计证据 | injected fake transport 覆盖 guard 失败时零 env/fetch、提交前 reservation、写 recovery/report 失败与 active claim 后均零第二 POST、TTL 内多次 resume 仅 GET、retryable poll/download 的有界 GET-only 重试、预算/次数守卫、`REJECTED`/`UNAVAILABLE`/`PROTOCOL_DRIFT` 的白名单诊断、MIME/长度/SHA-256/ffprobe、hash-only 报告、raw ID 扫描、过期 recovery 删除和 source/upstream/static scan。 |
+
+## ADR-0030：C08 审计执行器不可用时的受限交接
+
+状态：ACCEPTED
+
+日期：2026-08-14
+
+影响章节：C08、C09
+
+上下文：C08 已完成受控的单次真实认证并进入 `READY_FOR_AUDIT`，但负责独立审计的 Codex 任务 `019ff6ad-255d-7582-9c96-797d6d4942d5` 的执行器异常退出，无法接收复审材料。用户明确要求继续推进，无需逐项重新授权。
+
+决策：当前执行器以只读复审确认 C08 的一次提交上限、GET-only 恢复、媒体校验、报告/快照脱敏、raw recovery 清理、profile disabled、无运行时装配及全仓门禁后，将 C08 标记为 `ACCEPTED`。该程序性替代不授权额外 Provider 提交、profile 启用、Veyra 请求、共享积分扣费或部署。
+
+选择原因：不伪造独立审计的存在，也不让已完成且有完整可复验证据的章节永久阻塞；将例外限制为 C08 的状态交接，并保持下一章节的所有外部边界关闭。
+
+影响：C09 可开始其离线 `CreditPort`、fake server、错误归一化、receipt 唯一性和状态机实现。任何真实 Veyra 换票、账户查询或 debit 仍要求后续单独的可执行认证方案和不含凭据的审计证据。
+
+迁移/回滚：不改变数据库、公开 API、Provider capability 或 feature flag。若后续独立审计发现 C08 证据不足，C08 退回 `IN_PROGRESS`，C09 仅保留不联网的测试与端口代码。
+
+审计证据：`C08` 审计记录、hash-only local report/capability snapshot、certifier `15/15`、根 contracts generate/typecheck/test/build、安全扫描和 long-running state 验证。
+
+## ADR-0031：C09-A 离线 CreditPort 与 receipt 边界
+
+状态：ACCEPTED
+
+日期：2026-08-14
+
+影响章节：C09
+
+上下文：C08 已受限验收，C09 首先只允许离线身份/共享积分基础。现有共享积分规范把 `401/403` 写为 `CREDIT_AUTH_FORBIDDEN`，但 `AGENTS.md` 与领域契约固定公开应用错误为 `AUTH_FORBIDDEN`。视频平台还需要保留外部 debit receipt 的 provider 维度，却不能复制 Sub2API 余额账本。
+
+决策：建立仅内部的 `CreditPort` DTO、`NoopCreditAdapter`、注入式 `VeyraCreditTransport` 与 `VeyraSub2ApiCreditAdapter`。`402 -> CREDIT_INSUFFICIENT`、`409 -> CREDIT_CONFLICT`、`401/403 -> AUTH_FORBIDDEN`、网络或 `5xx -> CREDIT_UNAVAILABLE`、其余 `4xx -> CREDIT_REJECTED`。金额在业务层保持八位以内的十进制字符串；向上游 number mapper 必须做无损 round-trip 和安全整数范围校验。
+
+receipt：`usage_records` 增加 `credit_provider`，唯一性固定为 `(credit_provider, idempotency_key)`；它是 receipt 镜像而不是余额账本。C09-A 只提供持久化准备和回放/冲突校验，不把 debit 接入 Worker 或状态转换。
+
+安全与边界：adapter 必须强制注入 transport；没有默认 fetch、base URL、环境读取、Token 读取或运行时装配。fake transport 只能用于离线测试，公共 OpenAPI/SSE/Studio 不导出 credit provider、外部用户或 receipt 字段。
+
+后续：`VeyraIdentityAdapter`、外部身份映射、真实 HTTP、Token、Worker billing orchestration、`BILLING_PENDING` 执行及 feature flag 仍属于后续 C09 受控子阶段，必须另有审计授权。
+
+## ADR-0032：C09-B 三 VPS Veyra 联动与无 Query Ticket Handoff
+
+状态：ACCEPTED
+
+日期：2026-08-14
+
+影响章节：C09、部署阶段
+
+上下文：Sub2API/Veyra、Alchemy 和未来 Video OS 是平级 VPS。既有 Veyra Portal 与本地补充方案使用 `?ticket=` 启动 Alchemy，但 AGENTS.md 禁止 ticket 位于 URL query、浏览器持久化或日志。Sub2API 现有 intent/Portal target 也尚无 `video`。
+
+决策：Video 作为第三台独立 VPS，拥有自己的 `video.aiself.vip` TLS edge、Video 数据库/Redis/对象存储、host-only 本地会话、服务身份和 private overlay。Sub2API 保留身份、余额、并发、ticket、原子 debit 与幂等的唯一权威；Alchemy 继续独立运行。未来 Portal 以 allowlisted `video` intent 签发一次性 ticket，并通过顶层 POST body handoff 交给 Video callback；Video 服务端交换 ticket、验证 `intent=video`、账户状态并签发 `__Host-video_session`，随后 303 到无 query 页面。未来 billing 使用冻结规则和 `billing_rule_key + task_run_id`，在产物验证后 debit，并以专用 billing attempt/recovery 保证 remote-success/local-crash 后仅 replay debit。
+
+选择原因：保持三个产品的会话、数据库和资产独立，满足浏览器不接触 Veyra/internal 数据的硬边界，并让跨 VPS 的远端 side effect 能通过 Veyra 幂等键恢复。
+
+影响：需要 Sub2API 增加 video intent/target、durable ticket 消费和 Video 专用可轮换服务身份；Video 需要 identity/session/billing attempts/feature flag/Worker 恢复；Alchemy 只需回归确认既有 target 与 billing 不受 Portal 变更影响。详情见 `AI企业内容生产平台_C09-B三VPS联动设计.md`。
+
+迁移/回滚：本 ADR 仅为设计，不产生运行时或数据库变更。未来迁移必须前向执行，回滚先关闭 Video identity/credit flag，再保持 billing attempt 和 receipt 供同 key replay，不得影响 Sub2API ledger 或 Alchemy。
+
+审计证据：Sub2API `intent.go`、`ticket.go`、`routes.go`、`billing.go`/tests；Alchemy `veyra_auth.py`、`generation.py`；Video C09-A CreditPort/receipt tests；三 VPS implementation/release/rollback/acceptance matrix。
+
+## ADR-0033：C09-C 受控 SUB2API 视频运行时接入
+
+状态：ACCEPTED
+
+日期：2026-08-15
+
+影响章节：C09；不改变 Veyra、共享积分、VPS、DNS、TLS 或部署边界
+
+上下文：用户明确要求将其已放入受忽略本地安全环境的 `aiself-grok` SUB2API 地址与密钥接入产品真实视频链路。C08 已完成一次受限的真实文生认证，证明该 host/profile 的提交、查询、下载和媒体校验可以工作；但 C08 的 capability snapshot 仍是 `enabled: false`，且 Studio、Control API 和 Worker 仍固定使用 `mock-video-v1`。此前一次 submit 额度已耗尽，不能把历史认证视为任意内容或参数的持续付费授权。
+
+决策：保持 `VIDEO_PROVIDER=mock` 为所有默认本地运行的唯一行为。新增仅由 Worker 读取的 `VIDEO_PROVIDER=sub2api` 运行时组合：Worker 使用注入式 HTTPS transport 向受配置的 SUB2API base URL 发出三段式请求，并且只在此模式读取 `SUB2API_VIDEO_BASE_URL` 与 `SUB2API_VIDEO_API_KEY`。Control API 不读取这两个值，浏览器也不收到 Provider 名称、模型、地址、密钥、原始响应或 Provider request ID。浏览器生成命令只表达用户的文本与已选资产；Control API 按受控运行配置形成不可变的内部 `input_snapshot`，Worker 只执行该快照。
+
+能力门禁：真实 profile 仅按 C08 已认证的最小闭环开放文生 `1s / 480p / 16:9`。带 `reference_asset_ids` 的真实请求在 Control API 创建 TaskRun 前被明确拒绝；不把参考图片偷偷降级为文生，也不声明图生、15 秒、其他比例、Seedance、Veyra 预检或扣费已经启用。Mock 保持现有 `1s / 160x90 / 16:9` 行为。Provider 运行时必须验证 HTTPS base URL、保留其 path prefix、阻止 path escape，并将网络/协议异常归一化为既有应用错误；密钥、URL query、header、payload 和原始 request ID 不得进入日志、事件、数据库、公开 DTO 或测试输出。
+
+真实调用门禁：只有 API 和 Worker 都显式设为 `VIDEO_PROVIDER=sub2api`、Worker 配置完整且用户为本次调用给出 profile、调用次数、费用上限和素材范围后，才允许真实 POST。此次接入工作本身不发出 Provider 请求、不启用 Veyra/扣费、不修改 VPS 或当前 Mock 验收入口；完成离线/本地门禁后，首次付费提交作为单独受控动作执行。
+
+选择原因：将用户所提供的真实接入配置落实在唯一允许持有密钥的 Worker，同时使默认开发闭环不产生意外费用，并让已认证的能力范围成为可测试的运行时约束而不是前端硬编码。
+
+审计证据：本 ADR 后的 Worker transport/factory 单测、Control API 内部快照与拒绝路径测试、Studio 无 Provider 字段回归、Mock E2E 回归、类型/构建门禁、密钥与公开边界扫描，以及不含任何真实 request 的受控真实模式启动检查。
+
+## ADR-0034：C09-C 图生与多参考素材按受控 HTTPS relay 交付
+
+状态：ACCEPTED
+
+日期：2026-08-15
+
+影响章节：C09-C、后续部署阶段；不改变当前 Mock 默认、Veyra、DNS、TLS 或 VPS
+
+替代关系：本 ADR 只替代 ADR-0033 中“真实 profile 拒绝所有参考图”及浏览器生成命令携带提示词/资产 ID 的输入规则；ADR-0033 的 Worker-only credential、HTTPS transport、path-prefix、恢复和真实调用门禁继续有效。
+
+上下文：本地 `sub2api-video-mcp` 的 `aiself-grok` profile 已有独立的单图首帧和多图独立参考证据。其客户端契约分别为 `image.image_url` 与 `reference_images[].url`；多参考网关会转换为 Wokey `multipart image[]` 和 `mode=multimodal_reference`。现有产品只保存私有对象，且 Worker 尚未把引用资产变成 Provider 可读取 URL，因此不能把已上传图片安全地送入真实适配器。用户要求取消本地 4096 UTF-8 字节硬拒绝，并开放协议声明的全部最多 7 张独立参考图。
+
+决策：不运行或嵌入 MCP server。平台将复用其经过审计的字段、模式互斥、能力证据和测试思路，新增 Worker 内部 `ReferenceDeliveryPort` 与互斥的 `ResolvedVisualInput`。单个 `FIRST_FRAME` binding 映射到 `image.image_url`；一至七个有序 `SUBJECT`/`STYLE` binding 映射到 `reference_images[].url`；二者不可混用。Worker 仅在 submit 前将已授权私有图片包装为短时 Provider HTTPS relay URL，URL、token、签名 query、object key、Provider payload 和密钥不得持久化或公开。平台不以 4096 字节作为本地硬 gate；上游超长或参数拒绝归一为既有 `PROVIDER_REJECTED`，不进行重复 submit。产品开放一至七张参考图，但 capability 记录继续声明当前完成的端到端视觉验证仅为两张。
+
+选择原因：使用户图片、项目隔离、重启恢复与 Provider 输入语义同时可审计，避免把本机 MinIO、任意外链、MCP 进程状态或浏览器预签名 URL 变成生产事实。显式区分首帧和参考素材，避免把身份图静默改成首帧或文生。
+
+影响：实现将修改内部 snapshot、ProviderPort 输入、Aiself mapper、Worker 装配、引用绑定写入/校验、Studio 的简明素材语义以及本地 fake/E2E 覆盖。Control API 和浏览器继续不能读取视频 Key、Provider URL、对象 key、relay token、Provider request ID 或原始响应。未来 Video VPS 需要独立 TLS relay 签名密钥、私有对象存储读取权限、最小化 endpoint 日志和受控公开 origin；Sub2API/Veyra 与 Alchemy 不共享这些秘密或数据。
+
+迁移/回滚：先在 Mock 和 injected fake relay 下完成全部测试，真实 profile 保持关闭。回滚先关闭新 profile/relay token 签发，保留已提交 TaskRun 的查询下载恢复与所有已有审计事实；禁止删除 ProviderAttempt、TaskRun、结果资产或用重新提交替代恢复。
+
+审计证据：`AI企业内容生产平台_C09-C图生与多参考素材适配设计.md`、MCP 自检、1-7 张/模式互斥/无硬 4096 的离线 contracts、relay token/隔离/泄露扫描、Worker 无重复 submit 恢复、Studio Mock E2E、VPS relay 独立发布审计，以及后续单独授权的 I2V 与两图 R2V 真实验收。
+
+## ADR-0035：Video VPS 私有验证部署包与公开对象签名端点
+
+状态：ACCEPTED
+
+日期：2026-08-15
+
+影响章节：C09-C、部署准备；不改变公开 API、TaskRun 状态机、Veyra、共享积分或默认 Mock。
+
+上下文：真实图生和一至七张参考图需要 Provider 可访问的 HTTPS relay，浏览器上传又需要通过 HTTPS 使用短时 S3 预签名 URL。原 StoragePort 只接受一个对象存储 endpoint，无法同时保证 API/Worker 使用私有 Compose 网络和浏览器使用公开 TLS 主机。当前 Video Control API 只有固定开发身份，不能将其页面直接公开到互联网。
+
+决策：`S3StorageConfig` 新增可选的 `publicEndpoint` 与 `browserOrigins`。内部 `S3_ENDPOINT` 仍负责 bucket 初始化、确认、读取和 Worker 写入；仅 `createUploadUrl`/`createDownloadUrl` 使用 `S3_PUBLIC_ENDPOINT` 产生浏览器可访问的 URL。Video VPS 样例以独立 `assets.video.aiself.vip` 反代 S3 API，不发布 MinIO Console；Nginx 只允许 GET/HEAD/PUT/OPTIONS，固定 CORS 到 `https://video.aiself.vip`，并屏蔽 `/minio/*` 管理路径。`video.aiself.vip` 将 Nuxt、`/api/v1/*` 和 SSE 置于 Basic Auth，直到 ADR-0032 的 Veyra identity/session 被实际接受；不透明 `GET`/`HEAD /provider-input/<token>` 不继承 Basic Auth、关闭 access log，并只转发给 Control API。Compose 默认 `VIDEO_PROVIDER=mock`，Provider base URL/key 只传入 Worker。
+
+选择原因：一个公开 HTTPS host 不能替代内部对象存储地址；分离签名 client 既让浏览器可上传/播放，也避免 API/Worker 经公网读取私有对象。临时 edge 登录使单人实际验证不把固定开发 workspace 暴露为无认证的公网服务，同时不冒充未来 Veyra 登录。
+
+影响：本地行为保持不变，未设置 `S3_PUBLIC_ENDPOINT` 时预签名 URL 仍使用 `S3_ENDPOINT` 和本地 3031 CORS。部署包必须在新、专用 Video VPS 上使用私有环境文件；不得用于 Sub2API、Alchemy 或其他已运行主机。部署执行前仍需明确 VPS、DNS、TLS、Provider 点击次数、费用上限与素材范围。
+
+迁移/回滚：无数据库迁移。回滚时删除 `S3_PUBLIC_ENDPOINT` 即回到单 endpoint；对已提交任务先设 `VIDEO_PROVIDER=mock`，保留 TaskRun、ProviderAttempt、资产和数据库卷，不通过重提交流程恢复。
+
+审计证据：Storage client 单测/类型检查、Control API 类型检查、`docker compose ... config --quiet`、Nginx 容器语法检查、Docker 镜像构建、根回归、敏感值扫描与部署包静态边界扫描。任何真实 DNS、SSH、证书、Provider 或 Veyra 交互另行记录。
+
+## ADR-0036：C09-C 默认参考素材绑定与确定性创作编译
+
+状态：ACCEPTED
+
+日期：2026-08-16
+
+影响章节：C09-C；不改变公开生成命令、数据库 schema、TaskRun 状态机、Veyra、VPS 或默认 Mock。
+
+上下文：真实任务诊断显示，图片可在项目中 READY 却没有任何 `ReferenceBinding`，导致平台正确地创建了 TEXT 快照，但对非专业用户而言“上传完成”与“本次会使用”之间的隐式复选步骤不可理解。诊断还显示 Studio 将原始想法直接传入 Provider，`creative_preferences` 没有进入执行提示词，且文本中的时长要求会被固定 `1s / 480p` 运行时参数覆盖。实际加载的 `aiself-grok` MCP 已证实 JSON 图片字段、一至七张参考素材和 `5s / 720p / 16:9` 路径；它不是原 C08 一次最低成本文生认证的同一请求。
+
+决策：确认上传的图片默认以 `REFERENCE_SET` 选中；存在分镜时立即通过既有 Shot PATCH 持久化，之后用户的选择修改同样持久化。无已保存绑定的旧 READY 图片在本页首次载入时也默认选中。新增 `VideoPromptCompiler` 到现有 `provider-video` 内部边界：它只接受已保存的 Shot 想法、创作偏好和运行 profile，生成执行提示词并提取明确的 `1..15` 秒、`480p|720p` 参数。默认真实参数为 `5s / 720p / 16:9`；不支持的明确要求在提交前被安全拒绝。生成命令仍为 `{}`，浏览器不获得 Provider/model/key/relay URL，TaskRun 重试仍严格使用冻结快照。
+
+选择原因：把“上传即会被使用”的用户心智模型落实为持久化事实，避免图像输入被静默遗漏；让用户自然语言中的有限时长/清晰度意图与实际请求一致；在不引入外部文本 Agent、队列或新公开契约的前提下，使现有偏好真正参与 Provider 指令。
+
+影响：修改 Studio 参考图状态和失败说明、Control API 建立 TaskRun 的内部输入、Provider runtime profile 和新增确定性编译器及回归测试。公开 TaskRun、SSE、日志、错误、ProviderAttempt 与对象存储边界不增加 prompt 以外的新敏感字段；不设置 4096 本地硬限制，也不自动重试上游拒绝。
+
+迁移/回滚：旧项目不重写已存在 TaskRun；页面首次打开时将未绑定 READY 图片显示为默认参考素材，下一次保存或新版本生成才产生绑定事实。回滚可停止默认选择和编译器调用；已创建 TaskRun 的快照、尝试、结果和审计事实保持不变。
+
+审计证据：Provider 编译器单测、Control API 内部快照测试、Studio 默认选中/持久化和失败文案回归、Mock 浏览器 E2E、类型/构建/公开边界扫描。真实 Provider 只由用户页面点击发起，不由本变更的测试自动触发。
+
+## ADR-0037：C09-C 真实请求与已认证 MCP 路径对齐
+
+状态：ACCEPTED
+
+日期：2026-08-16
+
+影响章节：C09-C；不改变公开生成命令、数据库 schema、TaskRun 状态机、Veyra、VPS 或默认 Mock。
+
+上下文：用户页面发起的两图参考任务已形成正确的 `REFERENCE_SET` 快照，Worker 的两条短时 HTTPS relay URL 也可由外部读取。Aiself/SUB2API 在提交时返回 `202`，并在异步 `GET /videos/{id}` 轮询中返回过多次 `200`，最后以 `failed` 状态和泛化消息 `Grok video query failed.` 结束。当前网关不持久化可安全取回的具体终态原因，短期会话绑定过期后也不能重新查询；因此不能把这次失败臆断为图片、内容或某一个参数的问题。诊断同时发现，平台的确定性编译器将用户文本中的 `15 秒/480p` 提取为实际 Provider 参数，并在原描述外追加模板；这些请求与本地 MCP 已认证的 `5s / 720p / 16:9` 原始描述路径不同。
+
+决策：`aiself-grok` 真实运行时固定 `16:9`，但 Studio 第三步明确显示、保存并允许用户选择 `1..15` 秒与 `480p|720p`，默认已认证的 `5s / 720p`。编译器只检查非空并保留用户创作描述（首尾空白除外），不从自然语言提取参数，也不追加模板、翻译、偏好或隐含工程指令。`createRuntimeVideoInputSnapshot` 只接受由 `Shot.generation_settings.video_settings` 解析并范围校验后的设置，避免其他调用方绕过受控选择写出未知结构。Studio 对 `PROVIDER_REJECTED` 只陈述任务已进入生成阶段但未完成；它不再要求用户重新确认已绑定素材。
+
+选择原因：面向非专业用户的界面不应把创作语言中的数字误解为隐藏模型设置，且规格必须在点击前可见、可调整并随项目保存。时长使用 `1..15` 秒下拉菜单，清晰度使用 `480p/720p` 单选项，避免输入过程产生隐式重置；`5s / 720p` 保留为已认证默认，同时不把其他协议允许值表述成已完成同等真实验收。该决策不凭空声称已查明上游失败原因。
+
+影响：修改内部编译器、真实 profile 输入校验、Studio 失败文案及对应 Provider/Control API/Studio 回归测试。`REFERENCE_SET` 的一至七张有序 URL 映射、短时 relay、请求幂等、重启后 GET-only 恢复、公开 DTO/SSE 脱敏保持不变。ProviderAttempt 仍不持久化原始响应或 relay URL；TaskRun 仍只保存既有安全错误码、消息和可重试标识。
+
+迁移/回滚：已失败或已提交 TaskRun 的不可变 snapshot 不修改、不重放。后续用户选择“调整后生成新版本”才使用新行为创建新的 TaskRun。回滚仅恢复旧编译器实现；不得通过重复 submit 取代已提交请求的恢复。
+
+审计证据：两图任务的快照/绑定、relay 外部可读性、网关 `202` 和 `GET 200` 审计日志、同 profile 的 MCP 认证记录、离线 Provider/Control API/Studio 测试、Mock 浏览器 E2E、敏感字段与公开边界扫描。真实验证由用户点击后观察，不由本修正自动触发。
+
+## ADR-0038：长叙事先规划、后逐镜制作与受控连续性
+
+状态：PROPOSED
+
+日期：2026-08-16
+
+影响章节：C10、C11、C12；不改变 C09-C 的单镜头接口、当前数据库或真实运行时。
+
+上下文：当前本地产品已经证明单项目、已绑定参考素材、单 Shot 真实生成、结果归档和项目内播放可用，但原始长小说或多事件故事仍会整体进入一个 Shot。把它按固定字数或固定时长切块后循环提交，会丢失事件完整性、角色/场景连续性、成本控制、版本追溯和失败恢复。当前 `aiself-grok` profile 已认证一张首帧或一至七张独立参考素材，二者互斥，且没有已认证尾帧、混合参考或帧级连续性能力。
+
+决策：从 C11 起，所有“从故事制作完整视频”的路径先创建 `CreativeBriefRevision -> ScriptRevision -> StoryboardRevision`，并由独立的 `PlanningModelPort` 输出受 schema 校验的有序 ShotSpec。用户先看到“故事计划”，在确认“开始制作完整视频”后创建并冻结 `ProductionRun`。C11 的确认**不**创建或提交 Shot `TaskRun`；C12 的依赖调度器才按已确认计划和前序条件创建可执行 Shot/TaskRun。使用 `ProductionRun` 管理整体计划与进度，保留 TaskRun 作为单 Shot 的不可变执行事实。前段接受后可提取 `HandoffAsset` 供后段使用；视觉连续性等级必须依 profile 能力公开说明，不能将叙事连续表述成帧级保证。最终合成、字幕、音频和 Final QC 产生不可覆盖的 VideoVersion。
+
+考虑过的方案：
+
+1. 按字符数截断原文并自动提交多个视频。
+2. 继续让用户手工创建所有 Shot。
+3. 先自动产生可审阅的故事计划，再按依赖图逐段制作并合成。
+
+选择原因：方案 3 既保留非专业用户的极简操作，又把高成本的视频提交放在一次明确确认之后；它将叙事、连续性、局部重做、质量检查和成片来源建立为持久化事实。方案 1 无法判断故事事件边界，也无法处理相邻镜头依赖；方案 2 将影视工程细节转嫁给用户。
+
+影响：C11 需增加 revision、ProductionRun、ShotSpec、PromptPackage、PlanningModelPort、Workflow Worker、版本化公开 DTO/事件及对应迁移；C12 需增加交接帧、依赖调度、QC、受控渲染和 VideoVersion。C09-C 保持现有一至七参考素材、单 Shot、短时 relay、幂等和恢复契约。规划和最终成片不向浏览器泄露 Provider、模型、密钥、对象 key、签名 URL 或内部任务信息。
+
+迁移/回滚：现有 Project/Shot/TaskRun 继续可用，不回填或修改历史输入快照。新工作流以 feature boundary 引入；未确认的计划不创建视频任务。回滚时停止新规划命令，保留已产生 revision、TaskRun 和 VideoVersion 的只读可追溯性。
+
+审计证据：`AI企业内容生产平台_长叙事自动编排与连续成片设计.md`（范围与交付顺序）、`AI企业内容生产平台_长叙事后端领域与编排开发设计.md`（schema、状态、事件、Worker 与媒体运行时）、`AI企业内容生产平台_长叙事前端项目工作台交互设计.md`（用户流程与浏览器验收），以及 C11/C12 的 schema、领域、集成和浏览器 E2E；长叙事 fixture 的叙事拆分、依赖阻塞、局部重做、最终播放和公开边界扫描。真实多段制作另行获得 profile、次数、额度和素材范围授权。
+
+## ADR-0039：真实 Veyra 与三 VPS 联动后移至 C13-A
+
+状态：ACCEPTED
+
+日期：2026-08-16
+
+影响章节：C09、C10、C11、C12、C13。
+
+上下文：C09 已完成本地 CreditPort、注入式 Veyra transport/mapper、金额精度、usage receipt 幂等和离线契约，C09-B 已完成三 VPS 联动设计，C09-C 已形成单 Shot 本地运行时证据。其余 C09 事项需要真实 Veyra 账户、ticket/debit、`video` intent、VPS、DNS、TLS、跨系统会话与发布/回滚；这些操作既依赖外部系统，也不应在长叙事、QC、合成等本地能力完成前提前执行。
+
+决策：C09 的章节范围收敛为本地共享积分与运行时边界，满足本地证据后可进入审计。真实 Veyra 身份、账户预检、成功后 debit、扣费重试、feature flag、Sub2API/Alchemy/Video OS 三 VPS 联动、网络/TLS、上线监控和回滚统一归入新的 C13-A。C13-A 必须等待 C09、C10、C11、C12 全部 `ACCEPTED`，并在用户分别明确授权测试用户、调用/扣费次数、额度上限、素材范围、网络变更和维护窗口后才可执行。
+
+选择原因：先完成本地的结构化创作、镜头依赖、QC 和成片链，可以在不消耗共享积分、不修改外部服务的条件下验证大部分业务逻辑；随后一次性进行真实跨系统集成，避免在未完成产品形态时反复更改 Veyra、VPS 或生产边界。
+
+影响：C09 不再以真实 debit、Token 或 VPS 为 Exit Gate；现有 CreditPort 和 `BILLING_PENDING` 语义保留，不能伪造扣费成功。C10/C11/C12 仍按既有依赖顺序执行，并且每次真实视频调用继续需要独立、有界授权。C13 增加真实共享积分与部署联动 Gate，发布前审计增加跨 VPS、扣费幂等和回滚验证。
+
+迁移/回滚：没有数据库、API 或运行时代码变更；不会重放、修改或删除既有 TaskRun、ProviderAttempt、usage receipt、部署包或本地环境。若恢复旧顺序，必须以新的 ADR 和总控审计记录恢复 C09 的外部 Exit Gate，不能以文档默认为由跳过。
+
+审计证据：C09-A/C09-B/C09-C 的既有离线、Mock、浏览器与本地真实运行证据；`AI企业内容生产平台_C09-B三VPS联动设计.md`；C13-A 后续的真实账户/扣费/恢复/网络/回滚受控验证记录。当前 ADR 不授权任何外部操作。
+
+## ADR-0040：C10 使用独立 DocumentConversion 与 stream-only MarkItDown Runtime
+
+状态：ACCEPTED
+
+日期：2026-08-16
+
+影响章节：C10、C11
+
+上下文：平台已有 `Asset(kind=DOCUMENT)`，但现有 `TaskRun` 强制绑定 Shot，并携带视频 Provider、结果 Asset 和计费状态机。企业资料转换需要异步、可恢复和可追溯，但不能把文件解析伪装为视频任务，也不能将用户给出的 URL、对象 key 或本地路径交给 MarkItDown。
+
+决策：新增独立 `Document` 与 `DocumentConversion` 实体、状态机、专属 Outbox/队列事件及 Worker。原始文件仍是 USER_UPLOAD Document Asset，转换成功时生成不可替换的 DERIVED Markdown Document Asset。Python Runtime 只接收经内部鉴权的受限字节流和最小 MIME/文件名元数据，固定调用 `MarkItDown.convert_stream(..., stream_info=StreamInfo(...))`；禁止 `convert_uri`、`convert_url`、`convert_local`、对象 key、数据库访问和浏览器直连。C11 只引用 C10 成功资料产物，不回写它们。
+
+选择原因：独立实体保持视频状态机、ProviderAttempt、计费和资料转换语义互不污染；流式受控入口消除服务端 URL 抓取、任意文件路径和跨模块存储耦合；派生 Asset 保留既有 workspace 授权、存储和下载边界。
+
+影响：将新增 contracts、domain、persistence migration/repository、Document Runtime、Document Worker、Control API/Studio 资料 UI 与 E2E。公开 API/SSE 只投影转换状态和已授权 Asset ID，不暴露对象 key、Runtime token/address、堆栈、converter 原始诊断或 Markdown 的内部存储位置。
+
+迁移/回滚：迁移只前向增加 tables/indexes；现有 Asset、Shot、TaskRun、ProviderAttempt 和视频闭环不修改。回滚时停止创建新 conversion，保留已成功 Markdown Asset、DocumentConversion 和来源链，只读可追溯。
+
+审计证据：`AI企业内容生产平台_C10企业资料转换与Artifact设计.md`、MarkItDown 固定来源 `fd239d5d2be43d9b68329730206b9312c7d5a388`、Runtime 无网络/stream-only 夹具、Repository/Worker/HTTP/SSE/Studio 回归、公开字段扫描和 C10 Exit Gate。
+
+## ADR-0041：统一“叙事点—生成片段—最终成片”编排模型
+
+状态：ACCEPTED
+
+日期：2026-08-16
+
+影响章节：C11、C12，以及之后所有新增的视频生成、媒体合成和多段内容能力。
+
+上下文：当前长叙事设计把可见 Shot 与实际 Provider 生成单元基本等同。这样会把 18 个逻辑镜头错误地变成 18 次真实调用，即使目标总时长只有 30 秒，也会产生大量过短、昂贵且连续性较差的任务。前端还会把历史成功片段数量误认为当前制作计划的镜头数量。这个问题不属于某一个题材，而是所有长文本、广告、短剧、产品宣传和未来 Provider 的共同编排问题。
+
+决策：平台统一采用三层模型：
+
+```text
+NarrativeBeat（叙事点）
+  -> GenerationSegment（实际生成片段）
+  -> VideoVersion（最终成片）
+```
+
+`NarrativeBeat` 负责故事事件、人物状态、场景和情绪，不直接创建 Provider TaskRun。`GenerationSegment` 按目标总时长、Provider capability、预算和叙事边界分组，每个生成片段恰好对应一次可恢复的 Video TaskRun。所有已验收生成片段由 Media Runtime 合成新的不可覆盖 `VideoVersion`。
+
+30 秒内容默认优先规划为 3 段 × 10 秒；复杂内容可规划为 6 段 × 5 秒。实际结果必须满足 Provider 的安全时长范围、片段总时长等于目标时长，并且按场景、动作和情绪边界分组，不能按字符数或逻辑镜头数量机械切片。
+
+`ProductionRun` 的公开进度显示生成片段数量，不显示历史 TaskRun 数量。旧的 Shot/TaskRun/VideoVersion 保持只读兼容；新的长叙事 revision 通过独立的叙事点、生成片段映射和版本化 ProductionRun 迁移，不原地改写旧快照。
+
+连续性仍分为叙事连续、画面交接连续和最终成片连续。后续生成片段只能使用前一段通过 QC 的交接事实；如果 Provider 不支持多参考图和交接首帧并用，必须显式记录风险，不能静默降级或承诺逐帧无缝。
+
+考虑过的方案：
+
+1. 保持一个逻辑 Shot 对应一个真实 Provider 调用。
+2. 按字符数或固定秒数把故事切成大量短任务。
+3. 让浏览器按逻辑镜头循环提交 Provider。
+4. 先生成叙事点，再按能力和叙事边界合并为生成片段，最后统一合成。
+
+选择原因：方案 4 把非专业用户看到的故事结构与 Provider 的工程限制解耦，能控制真实调用次数、保留长故事的叙事顺序、支持局部失败重试，并且为任何 Provider 和题材复用同一套规则。
+
+影响：需要在后续实现中补充 `NarrativeBeat`、`GenerationSegmentSpec` 及其映射契约，更新 Storyboard/ProductionRun 公开投影、C12 调度、交接帧、QC、合成和 Studio 进度展示。C09 的单 Shot 兼容接口暂不删除；真实 Provider、Veyra、VPS、DNS、部署和 Git 操作边界不因本 ADR 改变。
+
+迁移/回滚：旧项目不回填、不修改历史输入快照。重新生成时创建新的 StoryboardRevision 和 ProductionRun；新版本成功后与旧版本并列保留。若实现回滚，只能停止新编排命令，不能把新片段任务重新解释为旧 Shot 或重复提交已有 Provider request ID。
+
+审计证据：`AI企业内容生产平台_通用叙事点与生成片段编排规范.md`、C11/C12 的契约与领域测试、18 叙事点/30 秒分组测试、实际 TaskRun 数量与 GenerationSegment 数量一致性测试、连续性交接和最终成片 E2E。
+
+## ADR-0042：C12 成片保留音轨并在未验证边界使用受限转场
+
+状态：ACCEPTED
+
+日期：2026-08-17
+
+影响章节：C11、C12；不改变 C13-A、Veyra、VPS、DNS、部署或公开 API。
+
+上下文：真实多段生成已经证明单段上游视频可带音轨，但原 C12 合成命令使用 `-an`，将音频从最终成片中移除。前一版还把派生交接帧误保存在后续创作 revision 的来源列表中，使蓝色或未验收画面可作为多参考输入再次送入 Provider。当前确定性编译器仅传入叙事状态，没有把用户已有的风格偏好、人物身份、服装、场景、人体结构和边界连续性约束写入每段不可变 PromptPackage。
+
+决策：C12 受控 Media Runtime 对含音轨来源段必须保留可解码音轨；多段合成默认将未经过语义级首尾验收的边界视为不连续，采用固定、可复现的画面/音频淡变转场，并通过末帧和音频尾部延展避免减少规划总时长。该转场只遮蔽硬切，不宣称修复模型画面内容。新的 CreativeBriefRevision 只接受同项目、READY 的用户上传图片或文档；`DERIVED` 的交接帧、海报和缩略图不能回流为新的 `REFERENCE_SET`。规划器必须剔除可识别的“把以上内容写成剧本/分镜/视频”等创作元指令，不能让它成为最后一个叙事点。Workflow Worker 必须把已有 `style_preferences` 与连续性护栏编译进每段 PromptPackage，强调参考图身份、服装、场景、角色数、空间关系与自然人体结构；这些是内部提示词，不进入公开 DTO。
+
+选择原因：先修复可以确定性验证的链路错误，避免把真实生成质量问题掩盖为前端展示问题；同时保持用户面对的一键创作流程不增加工程配置，也不把未认证的尾帧或独立身份通道伪装成 Provider 能力。
+
+限制：当前 Provider profile 没有认证的“多参考图 + 前段尾帧”并用能力，也没有语义视觉 QC。因此转场和 Prompt 锚点只能降低场景/服装/人体漂移风险，不能保证模型逐帧正确。需要严格首尾一致时，后续应在独立能力认证后增加受控关键帧/桥接片段和语义 QC。
+
+迁移/回滚：不迁移或修改历史 TaskRun、ProviderAttempt、Asset、HandoffAsset 或 VideoVersion。用户重新生成时创建新的 immutable brief/storyboard/ProductionRun/VideoVersion；回滚仅停止新编译和新合成策略，历史事实继续只读可追溯。
+
+审计证据：Media Runtime 音轨/转场回归、CreativePlanning source eligibility 回归、PromptPackage 编译回归、C12 本地 E2E、成片 ffprobe 抽查和公开边界扫描。
+
 ## 新决策模板
 
 ```text

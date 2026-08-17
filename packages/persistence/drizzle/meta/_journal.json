@@ -50,6 +50,48 @@
       "when": 1786613054659,
       "tag": "0006_overjoyed_captain_cross",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786711850015,
+      "tag": "0007_sleepy_jubilee",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786825497480,
+      "tag": "0008_amazing_reavers",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1786836541762,
+      "tag": "0009_sad_magma",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1786844383051,
+      "tag": "0010_brown_toad_men",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1786895666714,
+      "tag": "0011_daily_lord_tyger",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1786905571180,
+      "tag": "0012_previous_sleeper",
+      "breakpoints": true
     }
   ]
 }

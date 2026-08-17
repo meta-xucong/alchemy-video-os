@@ -14,6 +14,12 @@ import {
   UtcTimestampSchema,
   WorkspaceIdSchema,
 } from "./primitives.js";
+import { CreditProviderSchema } from "./credit.js";
+import {
+  CreativeBriefRevisionSchema,
+  ProductionRunSchema,
+  StoryboardRevisionSchema,
+} from "./creative-planning.js";
 
 export const UserStatusSchema = z.enum(["ACTIVE", "DISABLED"]);
 export const WorkspaceRoleSchema = z.enum(["OWNER", "ADMIN", "EDITOR", "VIEWER"]);
@@ -137,6 +143,23 @@ export const AssetRecordSchema = z.object({
 // object_key is internal storage routing data and must never be a browser DTO.
 export const AssetSchema = AssetRecordSchema.omit({ object_key: true });
 
+export const VideoSettingsSchema = z.object({
+  duration_seconds: z.number().int().min(1).max(15),
+  resolution: z.enum(["480p", "720p"]),
+  ratio: z.literal("16:9"),
+}).strict();
+
+export const GenerationSettingsSchema = JsonObjectSchema.superRefine((settings, context) => {
+  if (!("video_settings" in settings)) return;
+  const parsed = VideoSettingsSchema.safeParse(settings.video_settings);
+  if (parsed.success) return;
+  context.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: ["video_settings"],
+    message: "Video settings must include a 1-15 second duration, 480p or 720p resolution, and a 16:9 ratio.",
+  });
+});
+
 export const ShotSchema = z.object({
   id: ShotIdSchema,
   workspace_id: WorkspaceIdSchema,
@@ -144,7 +167,7 @@ export const ShotSchema = z.object({
   position: z.number().int().nonnegative(),
   prompt: z.string(),
   model: z.string().min(1).nullable(),
-  generation_settings: JsonObjectSchema,
+  generation_settings: GenerationSettingsSchema,
   status: ShotStatusSchema,
   selected_asset_id: AssetIdSchema.nullable(),
   revision: z.number().int().positive(),
@@ -166,13 +189,30 @@ export const ReferenceBindingInputSchema = ReferenceBindingSchema.pick({
   position: true,
 });
 
+export const VisualInputModeSchema = z.enum(["TEXT", "FIRST_FRAME", "REFERENCE_SET"]);
+export const VisualInputReferenceSchema = z.object({
+  asset_id: AssetIdSchema,
+  sha256: Sha256Schema,
+  mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]),
+  position: z.number().int().nonnegative(),
+}).strict();
+export const VisualInputSnapshotSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("TEXT"), references: z.tuple([]) }).strict(),
+  z.object({ mode: z.literal("FIRST_FRAME"), references: z.tuple([VisualInputReferenceSchema]) }).strict(),
+  z.object({ mode: z.literal("REFERENCE_SET"), references: z.array(VisualInputReferenceSchema).min(1).max(7) }).strict(),
+]);
+
 export const VideoGenerationInputSnapshotSchema = z.object({
   model: z.string().min(1),
   prompt: z.string().min(1),
   duration: z.number().int().positive(),
   resolution: z.string().min(1),
   ratio: z.string().min(1),
-  reference_asset_ids: z.array(AssetIdSchema).max(8),
+  reference_asset_ids: z.array(AssetIdSchema).max(7),
+  generation_segment_sequence: z.number().int().positive().optional(),
+  narrative_beat_sequences: z.array(z.number().int().positive()).min(1).max(60).optional(),
+  // Optional only while already-persisted Mock snapshots are drained after deployment.
+  visual_input: VisualInputSnapshotSchema.optional(),
 });
 
 export const TaskRunErrorSchema = z.object({
@@ -196,8 +236,10 @@ export const TaskRunRecordSchema = z.object({
   updated_at: UtcTimestampSchema,
 });
 
-// The browser sees a normalized lifecycle status, not the internal Provider phase.
-export const TaskRunSchema = TaskRunRecordSchema.extend({
+// The browser sees a normalized lifecycle status, not the internal Provider phase or immutable execution input.
+export const TaskRunSchema = TaskRunRecordSchema.omit({
+  input_snapshot: true,
+}).extend({
   status: PublicTaskRunStatusSchema,
 });
 
@@ -229,6 +271,7 @@ export const TaskRunAttemptSchema = ProviderAttemptSummarySchema.omit({
 
 export const UsageRecordSchema = z.object({
   id: UsageRecordIdSchema,
+  credit_provider: CreditProviderSchema,
   task_run_id: TaskRunIdSchema,
   external_user_id: z.string().min(1),
   amount: DecimalStringSchema,
@@ -300,6 +343,9 @@ export const ProjectDetailSchema = z.object({
   assets: z.array(AssetSchema),
   reference_bindings: z.array(ReferenceBindingSchema),
   task_runs: z.array(TaskRunSchema),
+  creative_brief_revisions: z.array(CreativeBriefRevisionSchema).default([]),
+  storyboard_revisions: z.array(StoryboardRevisionSchema).default([]),
+  production_runs: z.array(ProductionRunSchema).default([]),
 });
 
 export const UploadRequestSchema = z.object({
@@ -339,7 +385,14 @@ export const CreateUploadRequestCommandSchema = z.object({
   const allowedMimeTypes = {
     IMAGE: ["image/jpeg", "image/png", "image/webp", "image/gif"],
     AUDIO: ["audio/mpeg", "audio/ogg", "audio/wav"],
-    DOCUMENT: ["application/pdf", "text/markdown", "text/plain"],
+    DOCUMENT: [
+      "application/pdf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "text/markdown",
+      "text/plain",
+    ],
   } as const;
 
   if (!allowedMimeTypes[command.kind].includes(mimeType as never)) {
@@ -383,7 +436,7 @@ export const CreateShotCommandSchema = z.object({
   position: z.number().int().nonnegative(),
   prompt: z.string().default(""),
   model: z.string().min(1).nullable().optional(),
-  generation_settings: JsonObjectSchema.default({}),
+  generation_settings: GenerationSettingsSchema.default({}),
   reference_bindings: ReferenceBindingsInputSchema.default([]),
 });
 
@@ -392,16 +445,19 @@ export const UpdateShotCommandSchema = z
     position: z.number().int().nonnegative().optional(),
     prompt: z.string().optional(),
     model: z.string().min(1).nullable().optional(),
-    generation_settings: JsonObjectSchema.optional(),
+    generation_settings: GenerationSettingsSchema.optional(),
     status: z.enum(["DRAFT", "READY", "ARCHIVED"]).optional(),
     selected_asset_id: AssetIdSchema.nullable().optional(),
     reference_bindings: ReferenceBindingsInputSchema.optional(),
   })
   .refine((command) => Object.keys(command).length > 0, "At least one shot field is required.");
 
-export const CreateTaskRunCommandSchema = VideoGenerationInputSnapshotSchema;
+// The Control API creates the immutable provider snapshot from the saved Shot and its bindings.
+export const CreateTaskRunCommandSchema = z.object({}).strict();
 export const RetryTaskRunCommandSchema = z.object({}).strict();
 
 export type TaskRunStatus = z.infer<typeof TaskRunStatusSchema>;
 export type TaskRun = z.infer<typeof TaskRunSchema>;
 export type VideoGenerationInputSnapshot = z.infer<typeof VideoGenerationInputSnapshotSchema>;
+export type VisualInputMode = z.infer<typeof VisualInputModeSchema>;
+export type VisualInputSnapshot = z.infer<typeof VisualInputSnapshotSchema>;

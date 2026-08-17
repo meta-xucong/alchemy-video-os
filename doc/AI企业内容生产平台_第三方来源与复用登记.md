@@ -78,3 +78,22 @@
 | huobao-drama | `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` | `packages/provider-video/src/sub2api/` | `backend/src/services/adapters/types.ts` 的 `VideoGenerationRecord` / `VideoProviderAdapter` 适配职责；`backend/src/services/generation.ts` 的 submit/poll 阶段划分 | 只借鉴 adapter 边界，复用平台既有 `VideoProviderPort`；下载 metadata 与 typed failure 是平台内部薄适配；舍弃 `AIConfig`、MySQL、全局 registry、直接 Provider HTTP、定时器、短剧业务与密钥配置。 | `sub2api-*.test.ts` 22/22、task-worker C07 cross-package 5 cases、typecheck |
 
 `AI企业内容生产平台_C07上游复用矩阵.md` 是 C07 的逐文件实施与审计记录。C07 未从 `upstream/` 复制源码；该目录仍只供本机溯源且不得进入 Git 索引。
+
+## 9. C08 认证准备来源登记
+
+| 来源 | 固定 commit | C08 使用方式 | 不可直接当作事实的内容 | 认证前回归 |
+| --- | --- | --- | --- | --- |
+| sub2api-video-mcp | `3f2d885b79630f50b9cf4ae62251596cc37bbd18` | 三段式路径、`model`/`prompt`/`duration`/`resolution`/`ratio`/`image.image_url` 字段和轮询节奏的待认证协议假设 | 实际 model ID、账号可用范围、状态字段、下载响应 headers、计费与线路可用性；它们只能由 C08 受控 live evidence 确认 | C07 `CONTRACT-001` 至 `CONTRACT-008`、metadata 与 typed failure 跨包回归 |
+| 平台 C07 adapter 与合成 fixtures | `c07-accepted^{}` = `41d414cf1b6767c39f251445278831328e1620cf` | 作为无网络 mapper、脱敏和恢复不重提的基线 | 任何 fixture response、disabled capability snapshot 或候选 Grok 名称都不是已认证 profile | Provider `23/23`、本机服务 Worker `23/23`（C07 审计证据） |
+| [xAI 官方模型与定价文档](https://docs.x.ai/docs/models)（审计复核） | 审计员于 2026-08-14 访问并复核；A 段禁止联网重抓 | `grok-imagine-video-1.5` 文生、duration `1..15`、480p `USD 0.08/秒`，仅用于选择固定 `1s/480p/16:9` 与十进制 `USD 1.00` budget guard | 不是 SUB2API 协议/能力证据，不能推断其请求字段、模型路由、status/state、ratio、下载 headers 或账号资格 | certifier budget/guard tests；真实认证只在 C08 A 段独立复审后执行 |
+
+C08 当前没有迁入任何上游源码，也没有采集真实响应、请求 ID、下载 URL 或媒体二进制。受控认证计划和离线测试矩阵见 `AI企业内容生产平台_C08认证准备与测试矩阵.md`；`upstream/` 继续被 `.gitignore` 忽略，不得加入平台 Git。
+
+## 10. C09 离线共享积分来源登记
+
+| 来源 | 本地目标路径 | 保留的语义/字段 | 平台改动与不可复用边界 | 回归测试 |
+| --- | --- | --- | --- | --- |
+| `D:\AI\SSH\sub2api` 的 `backend/internal/veyra/routes.go`、`billing.go` | `packages/credit-veyra/`、`packages/contracts/`、`packages/persistence/` | `data` 包装、`user_id`、`amount`、`idempotency_key`、`source`、`reference_id`、`balance_after`、`replayed`，以及 `402/409` 与 request fingerprint 语义 | 不复制 Go handler、用户/余额/ledger 表、原子余额服务、Token guard 或浮点业务计算；以注入 fake transport、十进制字符串和平台 receipt 适配。 | fake transport contract、decimal、receipt replay/conflict、workspace persistence |
+| `D:\AI\Alchemy Media Agent System\custom_media_agent_2_0` 的 `VeyraSub2APIClient`、generation billing 调用顺序 | `packages/credit-veyra/` 与 C09 文档 | account/debit 路径映射及“产物验证后 debit，成功后 usage receipt”职责顺序 | 不复制 Python HTTP client、环境读取、自签 session、Cookie、JSONL 账本、图片固定费率或 `float` 比较；C09-A 不装配真实 client/Worker。 | transport path/header/body assertions、无 env/fetch/static scans |
+
+C09-A 不从 `upstream/` 迁入源码；本机事实参考只用于薄适配语义。`upstream/` 继续受 `.gitignore` 保护，绝不进入索引、submodule 或 gitlink。

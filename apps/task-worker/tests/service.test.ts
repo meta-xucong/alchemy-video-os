@@ -197,7 +197,7 @@ test("TaskRunEventConsumer finalizes exhausted C06 execution without relying on 
     workspaceId: queuedEvent.workspace_id,
     taskRunId: queuedEvent.data.task_run_id,
     code: "PROVIDER_UNAVAILABLE",
-    message: "Mock video execution exhausted its recoverable delivery attempts.",
+    message: "Video execution exhausted its recoverable delivery attempts.",
     now: finalized[0]?.now,
   }]);
   assert.ok(finalized[0]?.now instanceof Date);

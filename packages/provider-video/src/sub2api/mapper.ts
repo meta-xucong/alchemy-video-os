@@ -10,15 +10,38 @@ export type Sub2ApiGenerationRequest = {
   image?: {
     image_url: string;
   };
+  reference_images?: Array<{
+    url: string;
+  }>;
+};
+
+const providerReadableUrl = (value: string) => {
+  const normalized = value.trim();
+  if (!normalized) throw new VideoProviderProtocolError("The resolved reference URL must not be empty.");
+  let url: URL;
+  try {
+    url = new URL(normalized);
+  } catch {
+    throw new VideoProviderProtocolError("The resolved reference URL must be an HTTPS URL.");
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.hash) {
+    throw new VideoProviderProtocolError("The resolved reference URL must be an HTTPS URL without credentials or fragment.");
+  }
+  return url.toString();
 };
 
 export const mapSub2ApiGenerationRequest = (input: VideoGenerationInput): Sub2ApiGenerationRequest => {
   const { model, prompt, duration, resolution, ratio } = input.inputSnapshot;
-  const referenceImageUrl = input.referenceImageUrl?.trim();
-
-  if (input.referenceImageUrl !== undefined && !referenceImageUrl) {
-    throw new VideoProviderProtocolError("The reference image URL must not be empty when supplied to the provider.");
-  }
+  const visualFields = input.visualInput.mode === "TEXT"
+    ? {}
+    : input.visualInput.mode === "FIRST_FRAME"
+      ? { image: { image_url: providerReadableUrl(input.visualInput.url) } }
+      : (() => {
+          if (input.visualInput.urls.length < 1 || input.visualInput.urls.length > 7) {
+            throw new VideoProviderProtocolError("Reference-to-video requires one to seven resolved reference URLs.");
+          }
+          return { reference_images: input.visualInput.urls.map(providerReadableUrl).map((url) => ({ url })) };
+        })();
 
   return {
     model,
@@ -26,6 +49,6 @@ export const mapSub2ApiGenerationRequest = (input: VideoGenerationInput): Sub2Ap
     duration,
     resolution,
     ratio,
-    ...(referenceImageUrl ? { image: { image_url: referenceImageUrl } } : {}),
+    ...visualFields,
   };
 };

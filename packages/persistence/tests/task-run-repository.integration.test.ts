@@ -131,7 +131,19 @@ test("Drizzle TaskRunRepository persists outbox facts, leases, deduplication, an
     );
 
     const leaseStart = new Date(Date.now() + 1_000);
-    const firstClaim = await reconstructed.claimOutboxEvents({ relayId: "relay-a", now: leaseStart, leaseMs: 100, limit: 10 });
+    const firstClaim = await reconstructed.claimOutboxEvents({
+      relayId: "relay-a",
+      now: leaseStart,
+      leaseMs: 100,
+      limit: 10,
+      eventTypes: [
+        "document_conversion.queued",
+        "document_conversion.started",
+        "document_conversion.succeeded",
+        "document_conversion.failed",
+        "task_run.queued",
+      ],
+    });
     assert.deepEqual(firstClaim.map((event) => event.id), [firstEvent.eventId]);
     assert.equal((await reconstructed.claimOutboxEvents({ relayId: "relay-b", now: leaseStart, leaseMs: 100, limit: 10 })).length, 0);
     const recoveredClaim = await reconstructed.claimOutboxEvents({ relayId: "relay-b", now: new Date(leaseStart.getTime() + 101), leaseMs: 100, limit: 10 });

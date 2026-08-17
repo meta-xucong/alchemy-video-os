@@ -2,6 +2,7 @@ import type {
   CommandConflict,
   CommandExecution,
   ControlPlaneStore,
+  ControlIdentitySeed,
   ControlProject,
   ControlUser,
   ControlWorkspace,
@@ -26,7 +27,7 @@ export class InMemoryControlPlaneStore implements ControlPlaneStore {
   private readonly projects = new Map<string, ControlProject>();
   private readonly commands = new Map<string, StoredCommand>();
 
-  async ensureDevIdentity(seed: DevIdentitySeed) {
+  async ensureIdentity(seed: ControlIdentitySeed) {
     const now = new Date().toISOString();
     if (!this.users.has(seed.user.id)) {
       this.users.set(seed.user.id, {
@@ -47,6 +48,10 @@ export class InMemoryControlPlaneStore implements ControlPlaneStore {
       });
     }
     this.memberships.add(this.membershipKey(seed.workspace.id, seed.user.id));
+  }
+
+  async ensureDevIdentity(seed: DevIdentitySeed) {
+    await this.ensureIdentity(seed);
   }
 
   async getDatabaseStatus() {
