@@ -13,6 +13,12 @@ importers:
       '@alchemy-video/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@alchemy-video/credit-veyra':
+        specifier: workspace:*
+        version: link:../../packages/credit-veyra
+      '@alchemy-video/document-intelligence':
+        specifier: workspace:*
+        version: link:../../packages/document-intelligence
       '@alchemy-video/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -22,6 +28,9 @@ importers:
       '@alchemy-video/provider-video':
         specifier: workspace:*
         version: link:../../packages/provider-video
+      '@alchemy-video/reference-analysis':
+        specifier: workspace:*
+        version: link:../../packages/reference-analysis
       '@alchemy-video/reference-delivery':
         specifier: workspace:*
         version: link:../../packages/reference-delivery
@@ -65,6 +74,9 @@ importers:
       '@alchemy-video/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@alchemy-video/document-intelligence':
+        specifier: workspace:*
+        version: link:../../packages/document-intelligence
       '@alchemy-video/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -96,6 +108,9 @@ importers:
       '@alchemy-video/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@alchemy-video/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@alchemy-video/persistence':
         specifier: workspace:*
         version: link:../../packages/persistence
@@ -201,12 +216,21 @@ importers:
       '@alchemy-video/creative-planning':
         specifier: workspace:*
         version: link:../../packages/creative-planning
+      '@alchemy-video/document-intelligence':
+        specifier: workspace:*
+        version: link:../../packages/document-intelligence
       '@alchemy-video/domain':
         specifier: workspace:*
         version: link:../../packages/domain
       '@alchemy-video/persistence':
         specifier: workspace:*
         version: link:../../packages/persistence
+      '@alchemy-video/provider-video':
+        specifier: workspace:*
+        version: link:../../packages/provider-video
+      '@alchemy-video/storage-client':
+        specifier: workspace:*
+        version: link:../../packages/storage-client
       '@alchemy-video/task-queue':
         specifier: workspace:*
         version: link:../../packages/task-queue
@@ -251,6 +275,9 @@ importers:
       '@alchemy-video/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@alchemy-video/domain':
+        specifier: workspace:*
+        version: link:../domain
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -263,6 +290,22 @@ importers:
         version: 5.9.3
 
   packages/credit-veyra:
+    dependencies:
+      '@alchemy-video/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+      tsx:
+        specifier: ^4.21.0
+        version: 4.23.12
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+
+  packages/document-intelligence:
     dependencies:
       '@alchemy-video/contracts':
         specifier: workspace:*
@@ -299,6 +342,9 @@ importers:
       '@alchemy-video/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@alchemy-video/document-intelligence':
+        specifier: workspace:*
+        version: link:../document-intelligence
       '@alchemy-video/domain':
         specifier: workspace:*
         version: link:../domain
@@ -336,6 +382,22 @@ importers:
       ffprobe-static:
         specifier: ^3.1.0
         version: 3.1.0
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+      tsx:
+        specifier: ^4.21.0
+        version: 4.23.12
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+
+  packages/reference-analysis:
+    dependencies:
+      '@alchemy-video/contracts':
+        specifier: workspace:*
+        version: link:../contracts
     devDependencies:
       '@types/node':
         specifier: ^24.0.0

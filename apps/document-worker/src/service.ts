@@ -1,6 +1,6 @@
-import { InternalDocumentConversionQueueMessageSchema, type InternalDocumentConversionQueueMessage } from "@alchemy-video/contracts";
+import { InternalDocumentConversionQueueMessageSchema, InternalDocumentKnowledgeQueueMessageSchema, type InternalDocumentConversionQueueMessage, type InternalDocumentKnowledgeQueueMessage } from "@alchemy-video/contracts";
 import type { DocumentConversionEventResult, DocumentConversionStore, OutboxRelayStore, PersistedOutboxEvent } from "@alchemy-video/persistence";
-import type { DocumentConversionQueuePort } from "@alchemy-video/task-queue";
+import type { DocumentConversionQueuePort, DocumentKnowledgeQueuePort } from "@alchemy-video/task-queue";
 
 import type { DocumentConversionExecutor } from "./execution-service.js";
 
@@ -26,6 +26,20 @@ export const createDocumentConversionQueueMessage = (outbox: PersistedOutboxEven
     project_id: outbox.event.project_id,
     conversion_id: outbox.event.data.conversion_id,
     source_asset_id: outbox.event.data.source_asset_id,
+    correlation_id: outbox.event.correlation_id,
+  });
+};
+
+export const createDocumentKnowledgeQueueMessage = (outbox: PersistedOutboxEvent): InternalDocumentKnowledgeQueueMessage | undefined => {
+  if (outbox.event.event_type !== "document_knowledge.queued") return undefined;
+  if (outbox.id !== outbox.event.event_id || outbox.workspaceId !== outbox.event.workspace_id || !outbox.event.project_id) throw new Error("Knowledge outbox row and event envelope scope do not match.");
+  return InternalDocumentKnowledgeQueueMessageSchema.parse({
+    contract_version: outbox.event.contract_version,
+    event_id: outbox.id,
+    workspace_id: outbox.workspaceId,
+    project_id: outbox.event.project_id,
+    knowledge_revision_id: outbox.event.data.knowledge_revision_id,
+    conversion_id: outbox.event.data.conversion_id,
     correlation_id: outbox.event.correlation_id,
   });
 };
@@ -64,6 +78,26 @@ export class DocumentOutboxRelay {
         });
         if (outbox.publishAttempts >= this.input.maxAttempts) result.deadLettered += 1;
         else result.retried += 1;
+      }
+    }
+    return result;
+  }
+}
+
+export class DocumentKnowledgeOutboxRelay {
+  constructor(private readonly store: OutboxRelayStore, private readonly queue: DocumentKnowledgeQueuePort, private readonly input: { relayId: string; leaseMs: number; retryDelayMs: number; maxAttempts: number; batchSize: number }) {}
+  async runOnce(now = new Date()) {
+    const claimed = await this.store.claimOutboxEvents({ relayId: this.input.relayId, now, leaseMs: this.input.leaseMs, limit: this.input.batchSize, eventTypes: ["document_knowledge.queued"] });
+    const result = { published: 0, retried: 0, deadLettered: 0 };
+    for (const outbox of claimed) {
+      try {
+        const message = createDocumentKnowledgeQueueMessage(outbox);
+        if (message) await this.queue.enqueue(message);
+        await this.store.markOutboxPublished({ eventId: outbox.id, workspaceId: outbox.workspaceId, relayId: this.input.relayId, now });
+        result.published += 1;
+      } catch (error) {
+        await this.store.releaseOutboxEvent({ eventId: outbox.id, workspaceId: outbox.workspaceId, relayId: this.input.relayId, now, retryDelayMs: this.input.retryDelayMs, maxAttempts: this.input.maxAttempts, reason: failureReason(error) });
+        if (outbox.publishAttempts >= this.input.maxAttempts) result.deadLettered += 1; else result.retried += 1;
       }
     }
     return result;

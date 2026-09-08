@@ -180,6 +180,9 @@ export class InMemoryTaskRunStore implements TaskRunStore {
       if (attempt.taskRunId === retried.id && !attempt.providerRequestId && !["FAILED", "DOWNLOAD_FAILED", "ABANDONED"].includes(attempt.status)) {
         this.attempts.set(attemptId, { ...attempt, status: "ABANDONED", updatedAt: now });
       }
+      if (attempt.taskRunId === retried.id && current.error?.code === "PROVIDER_REJECTED" && attempt.providerRequestId && !["SUCCEEDED", "ABANDONED"].includes(attempt.status)) {
+        this.attempts.set(attemptId, { ...attempt, status: "ABANDONED", updatedAt: now });
+      }
     }
     await this.assets.setShotGenerationState({ workspaceId: input.workspaceId, shotId: retried.shotId, status: "GENERATING" });
     this.addEvent(queuedEvent({ command: input, taskRun: retried, now }));
@@ -231,7 +234,7 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     const attempts = await this.listTaskRunAttempts(input.workspaceId, input.taskRunId);
     // A persisted Provider request is a durable submit boundary. Prefer it over
     // any later unsubmitted row, which may have been left by an interrupted run.
-    const submitted = [...attempts].reverse().find((attempt) => Boolean(attempt.providerRequestId));
+    const submitted = [...attempts].reverse().find((attempt) => Boolean(attempt.providerRequestId) && attempt.status !== "ABANDONED");
     if (submitted) return submitted;
     const existing = attempts.at(-1);
     if (existing && !["FAILED", "DOWNLOAD_FAILED", "ABANDONED"].includes(existing.status)) return existing;
@@ -335,6 +338,33 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     const source = this.queuedSource(current.id);
     if (source) this.addEvent(executionEvent(source, { type: "task_run.succeeded", now, assetId: ready.id, sha256: input.sha256 }));
     return completed;
+  }
+
+  async markBillingSucceeded(input: { workspaceId: string; taskRunId: string; usageRecordId: string; now: Date }) {
+    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
+    if (!current || current.status === "SUCCEEDED") return;
+    assertTaskRunTransition(current.status, "SUCCEEDED");
+    const generated = [...this.generatedAssets.values()].find((asset) => asset.workspaceId === input.workspaceId && asset.metadata.task_run_id === input.taskRunId && asset.status === "READY");
+    if (!generated) throw new Error("Generated asset is missing before billing completion.");
+    const completed = { ...current, status: "SUCCEEDED" as const, resultAssetId: generated.id, error: null, updatedAt: input.now.toISOString() };
+    this.taskRuns.set(completed.id, completed);
+    await this.assets.setShotGenerationState({ workspaceId: input.workspaceId, shotId: current.shotId, status: "GENERATED", selectedAssetId: generated.id });
+    const source = this.queuedSource(current.id);
+    if (source) this.addEvent(executionEvent(source, { type: "task_run.succeeded", now: input.now.toISOString(), assetId: generated.id, sha256: generated.sha256 ?? "" }));
+  }
+
+  async markBillingFailed(input: { workspaceId: string; taskRunId: string; code: string; safeMessage: string; now: Date }) {
+    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
+    if (!current || current.status === "BILLING_FAILED") return;
+    assertTaskRunTransition(current.status, "BILLING_FAILED");
+    this.taskRuns.set(current.id, { ...current, status: "BILLING_FAILED", error: { code: input.code, message: input.safeMessage, retryable: false }, updatedAt: input.now.toISOString() });
+  }
+
+  async scheduleBillingRetry(input: { workspaceId: string; taskRunId: string; code: string; safeMessage: string; retryAt: Date; now: Date }) {
+    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
+    if (!current || current.status === "RETRY_SCHEDULED") return;
+    assertTaskRunTransition(current.status, "RETRY_SCHEDULED");
+    this.taskRuns.set(current.id, { ...current, status: "RETRY_SCHEDULED", retryAt: input.retryAt.toISOString(), error: { code: input.code, message: input.safeMessage, retryable: true }, updatedAt: input.now.toISOString() });
   }
 
   async finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; code: string; message: string; now: Date }) {
@@ -472,6 +502,10 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     row.leaseExpiresAt = undefined;
     row.lastError = safeReason(input.reason);
     if (input.deadLetter) row.deadLetteredAt = input.now.toISOString();
+  }
+
+  appendExternalEvent(event: InternalEventEnvelope) {
+    this.addEvent(event);
   }
 
   private store(input: { scope: string; idempotencyKey: string; requestHash: string }, outcome: TaskRunCommandExecution) {

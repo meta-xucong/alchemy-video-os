@@ -136,6 +136,7 @@ test("Drizzle TaskRunRepository persists outbox facts, leases, deduplication, an
       now: leaseStart,
       leaseMs: 100,
       limit: 10,
+      workspaceId: workspaceA,
       eventTypes: [
         "document_conversion.queued",
         "document_conversion.started",
@@ -145,8 +146,8 @@ test("Drizzle TaskRunRepository persists outbox facts, leases, deduplication, an
       ],
     });
     assert.deepEqual(firstClaim.map((event) => event.id), [firstEvent.eventId]);
-    assert.equal((await reconstructed.claimOutboxEvents({ relayId: "relay-b", now: leaseStart, leaseMs: 100, limit: 10 })).length, 0);
-    const recoveredClaim = await reconstructed.claimOutboxEvents({ relayId: "relay-b", now: new Date(leaseStart.getTime() + 101), leaseMs: 100, limit: 10 });
+    assert.equal((await reconstructed.claimOutboxEvents({ relayId: "relay-b", now: leaseStart, leaseMs: 100, limit: 10, workspaceId: workspaceA })).length, 0);
+    const recoveredClaim = await reconstructed.claimOutboxEvents({ relayId: "relay-b", now: new Date(leaseStart.getTime() + 101), leaseMs: 100, limit: 10, workspaceId: workspaceA });
     assert.deepEqual(recoveredClaim.map((event) => event.id), [firstEvent.eventId]);
     assert.equal(recoveredClaim[0]?.publishAttempts, 2);
     await reconstructed.releaseOutboxEvent({
@@ -158,7 +159,7 @@ test("Drizzle TaskRunRepository persists outbox facts, leases, deduplication, an
       maxAttempts: 3,
       reason: "controlled relay failure",
     });
-    const finalClaim = await reconstructed.claimOutboxEvents({ relayId: "relay-c", now: new Date(leaseStart.getTime() + 112), leaseMs: 100, limit: 10 });
+    const finalClaim = await reconstructed.claimOutboxEvents({ relayId: "relay-c", now: new Date(leaseStart.getTime() + 112), leaseMs: 100, limit: 10, workspaceId: workspaceA });
     assert.deepEqual(finalClaim.map((event) => event.id), [firstEvent.eventId]);
     await reconstructed.releaseOutboxEvent({
       eventId: firstEvent.eventId,

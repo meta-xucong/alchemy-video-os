@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { Client } from "pg";
 
 import { createDatabase } from "../src/db.js";
 import { DrizzleAssetWorkspaceRepository, type CreateShotInput, type UpdateShotInput } from "../src/asset-workspace-repository.js";
@@ -73,6 +74,23 @@ test("Drizzle AssetWorkspaceRepository replays C04 terminal outcomes and scopes 
     assert.equal(createdAsset.kind, "NEW");
     if (createdAsset.kind !== "NEW") return;
     assert.equal(createdAsset.value.status, "PENDING_UPLOAD");
+
+    const musicAssetId = `ast_c04_pg_music_${suffix}`;
+    const musicCreated = await firstRepository.createUploadAsset({
+      ...uploadInput,
+      assetId: musicAssetId,
+      kind: "AUDIO",
+      objectKey: `${workspaceA}/${projectA}/${musicAssetId}/music.mp3`,
+      filename: "music.mp3",
+      mimeType: "audio/mpeg",
+      audioRole: "MUSIC",
+      metadata: { audio_role: "PROVIDER_AMBIENCE", source: "fixture" },
+      scope: `${baseScope}:POST:/api/v1/projects/${projectA}/assets/upload-requests:music`,
+      idempotencyKey: "music-upload-1",
+      requestHash: fingerprintRequest({ music: true }),
+    });
+    assert.equal(musicCreated.kind, "NEW");
+    if (musicCreated.kind === "NEW") assert.equal(musicCreated.value.metadata.audio_role, "MUSIC");
 
     const confirmedAsset = await firstRepository.confirmAssetUpload({
       scope: `${baseScope}:POST:/api/v1/assets/${assetA}/confirm-upload`,
@@ -158,6 +176,37 @@ test("Drizzle AssetWorkspaceRepository replays C04 terminal outcomes and scopes 
     const createdShot = await firstRepository.createShot(createShotInput);
     assert.equal(createdShot.kind, "NEW");
     if (createdShot.kind !== "NEW") return;
+
+    // A durable active task snapshot protects its source asset. Once the task
+    // is terminal, the normal soft-delete path remains available.
+    const guardTaskId = `tsk_c04_pg_asset_guard_${suffix}`;
+    const guardClient = new Client({ connectionString: databaseUrl });
+    await guardClient.connect();
+    try {
+      await guardClient.query(
+        `INSERT INTO task_runs (id, workspace_id, project_id, shot_id, kind, status, input_snapshot)
+         VALUES ($1, $2, $3, $4, 'VIDEO_GENERATION', 'QUEUED', $5::jsonb)`,
+        [guardTaskId, workspaceA, projectA, shotA, JSON.stringify({ reference_asset_ids: [assetA] })],
+      );
+    } finally {
+      await guardClient.end();
+    }
+    const guardedDeleteInput = {
+      scope: `${baseScope}:DELETE:/api/v1/assets/${assetA}:active-task`,
+      idempotencyKey: "delete-active-task-1",
+      requestHash: fingerprintRequest({}),
+      workspaceId: workspaceA,
+      assetId: assetA,
+    };
+    assert.deepEqual(await firstRepository.deleteAsset(guardedDeleteInput), { kind: "ASSET_IN_USE" });
+    assert.deepEqual(await firstRepository.deleteAsset(guardedDeleteInput), { kind: "ASSET_IN_USE" });
+    const releaseClient = new Client({ connectionString: databaseUrl });
+    await releaseClient.connect();
+    try {
+      await releaseClient.query("UPDATE task_runs SET status = 'FAILED' WHERE id = $1", [guardTaskId]);
+    } finally {
+      await releaseClient.end();
+    }
 
     const positionConflictInput: CreateShotInput = {
       ...createShotInput,
@@ -311,8 +360,32 @@ test("Drizzle AssetWorkspaceRepository replays C04 terminal outcomes and scopes 
       const concurrentPositionResults = await Promise.all(concurrentPositionInputs.map((input) => secondRepository.createShot(input)));
       assert.deepEqual(concurrentPositionResults.map((result) => result.kind).sort(), ["NEW", "POSITION_CONFLICT"]);
 
+      const deleteAssetInput = {
+        scope: `${baseScope}:DELETE:/api/v1/assets/${assetA}`,
+        idempotencyKey: "delete-asset-1",
+        requestHash: fingerprintRequest({}),
+        workspaceId: workspaceA,
+        assetId: assetA,
+      };
+      const deletedAsset = await secondRepository.deleteAsset(deleteAssetInput);
+      assert.equal(deletedAsset.kind, "NEW");
+      if (deletedAsset.kind === "NEW") assert.equal(deletedAsset.value.status, "DELETED");
+      const replayedDelete = await secondRepository.deleteAsset(deleteAssetInput);
+      assert.equal(replayedDelete.kind, "REPLAY");
+      const deletedReferenceAttempt = await secondRepository.createShot({
+        ...createShotInput,
+        scope: `${baseScope}:POST:/api/v1/projects/${projectA}/shots:deleted-reference`,
+        idempotencyKey: "deleted-reference-1",
+        requestHash: fingerprintRequest({ position: 4, prompt: "Deleted reference" }),
+        shotId: `sht_c04_pg_deleted_reference_${suffix}`,
+        position: 4,
+        prompt: "Deleted reference",
+      });
+      assert.deepEqual(deletedReferenceAttempt, { kind: "INVALID_REFERENCE" });
+
       const detail = await secondRepository.findProjectDetail(workspaceA, projectA);
       assert.equal(detail?.assets[0]?.id, assetA);
+      assert.equal(detail?.assets[0]?.status, "DELETED");
       assert.equal(detail?.shots[0]?.id, shotA);
       assert.deepEqual(detail?.referenceBindings.map((binding) => binding.assetId), [assetA]);
       assert.equal(await secondRepository.findAsset(workspaceB, assetA), undefined);
@@ -321,7 +394,6 @@ test("Drizzle AssetWorkspaceRepository replays C04 terminal outcomes and scopes 
       await secondDatabase.close();
     }
 
-    const { Client } = await import("pg");
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
     try {
@@ -336,17 +408,16 @@ test("Drizzle AssetWorkspaceRepository replays C04 terminal outcomes and scopes 
       await client.end();
     }
   } finally {
-    const { Client } = await import("pg");
-    const client = new Client({ connectionString: databaseUrl });
-    await client.connect();
+    const cleanupClient = new Client({ connectionString: databaseUrl });
+    await cleanupClient.connect();
     try {
-      await client.query("DELETE FROM command_deduplications WHERE scope LIKE $1", [`${baseScope}%`]);
-      await client.query("DELETE FROM projects WHERE id = ANY($1::text[])", [[projectA, projectB, missingProject]]);
-      await client.query("DELETE FROM workspace_members WHERE workspace_id = ANY($1::text[])", [[workspaceA, workspaceB]]);
-      await client.query("DELETE FROM workspaces WHERE id = ANY($1::text[])", [[workspaceA, workspaceB]]);
-      await client.query("DELETE FROM users WHERE id = ANY($1::text[])", [[userA, userB]]);
+      await cleanupClient.query("DELETE FROM command_deduplications WHERE scope LIKE $1", [`${baseScope}%`]);
+      await cleanupClient.query("DELETE FROM projects WHERE id = ANY($1::text[])", [[projectA, projectB, missingProject]]);
+      await cleanupClient.query("DELETE FROM workspace_members WHERE workspace_id = ANY($1::text[])", [[workspaceA, workspaceB]]);
+      await cleanupClient.query("DELETE FROM workspaces WHERE id = ANY($1::text[])", [[workspaceA, workspaceB]]);
+      await cleanupClient.query("DELETE FROM users WHERE id = ANY($1::text[])", [[userA, userB]]);
     } finally {
-      await client.end();
+      await cleanupClient.end();
       await database.close();
     }
   }

@@ -89,3 +89,5 @@ Key 只能由用户放入未提交的本地安全环境或操作系统密钥存�
 ## 8. 当前阻塞与下一步
 
 `LIVE-GROK-001` 已在用户提供的本地安全环境中完成唯一一次提交及同一 request 的 GET-only 恢复；报告结果为 `SUCCEEDED`，regular recovery 与 active claim 已清理，仅保留无 raw ID 的 submission reservation 以永久阻止第二 POST。hash-only 成功报告已生成 local capability snapshot，并完成重新审计后接受 C08。不得再执行 stop-after-submit、resume、图生、Seedance或部署。后续 C09 只可先实现离线 adapter、fake server 和状态机，不得读取 Veyra 凭据或访问外部积分接口。
+
+> **2026-09-01 当前音频口径**：C08 认证不要求用户上传旁白/样音；自动视频的原生 Provider 音频优先，显式 Doubao 替换由最新自动音频文档单独约束。本文历史的真实调用限制、认证状态和 Veyra 禁止项仍有效；当前本机对照不构成 C08 新认证或部署授权。

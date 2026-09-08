@@ -6,6 +6,7 @@ import type {
   ControlProject,
   ControlUser,
   ControlWorkspace,
+  DeleteProjectCommandInput,
   DevIdentitySeed,
   ProjectCommandInput,
   UpdateProjectCommandInput,
@@ -15,7 +16,8 @@ type StoredCommand = {
   requestHash: string;
   result:
     | { kind: "PROJECT"; value: ControlProject; status: 200 | 201 }
-    | { kind: "NOT_FOUND"; status: 404 };
+    | { kind: "NOT_FOUND"; status: 404 }
+    | { kind: "IN_USE"; status: 409 };
 };
 
 const commandKey = (scope: string, idempotencyKey: string) => `${scope}:${idempotencyKey}`;
@@ -74,20 +76,20 @@ export class InMemoryControlPlaneStore implements ControlPlaneStore {
 
   async listProjects(workspaceId: string) {
     return [...this.projects.values()]
-      .filter((project) => project.workspaceId === workspaceId)
+      .filter((project) => project.workspaceId === workspaceId && project.status !== "DELETED")
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
   async findProject(workspaceId: string, projectId: string) {
     const project = this.projects.get(projectId);
-    return project?.workspaceId === workspaceId ? project : undefined;
+    return project?.workspaceId === workspaceId && project.status !== "DELETED" ? project : undefined;
   }
 
   async createProject(input: ProjectCommandInput): Promise<CommandExecution<ControlProject> | CommandConflict> {
     const existing = this.commands.get(commandKey(input.scope, input.idempotencyKey));
     if (existing) {
       const replay = this.resolveExisting(existing, input.requestHash);
-      return replay.kind === "NOT_FOUND" ? { kind: "CONFLICT" } : replay;
+      return replay.kind === "NOT_FOUND" || replay.kind === "IN_USE" ? { kind: "CONFLICT" } : replay;
     }
 
     const now = new Date().toISOString();
@@ -112,7 +114,8 @@ export class InMemoryControlPlaneStore implements ControlPlaneStore {
   ): Promise<CommandExecution<ControlProject> | CommandConflict | { kind: "NOT_FOUND"; status: 404 }> {
     const existing = this.commands.get(commandKey(input.scope, input.idempotencyKey));
     if (existing) {
-      return this.resolveExisting(existing, input.requestHash);
+      const replay = this.resolveExisting(existing, input.requestHash);
+      return replay.kind === "IN_USE" ? { kind: "CONFLICT" } : replay;
     }
 
     const current = await this.findProject(input.workspaceId, input.projectId);
@@ -138,6 +141,35 @@ export class InMemoryControlPlaneStore implements ControlPlaneStore {
     return { kind: "NEW", value: project, status: 200 } as const;
   }
 
+  async deleteProject(input: DeleteProjectCommandInput) {
+    const existing = this.commands.get(commandKey(input.scope, input.idempotencyKey));
+    if (existing) return this.resolveExisting(existing, input.requestHash);
+
+    const current = await this.findProject(input.workspaceId, input.projectId);
+    if (!current) {
+      this.commands.set(commandKey(input.scope, input.idempotencyKey), {
+        requestHash: input.requestHash,
+        result: { kind: "NOT_FOUND", status: 404 },
+      });
+      return { kind: "NOT_FOUND", status: 404 } as const;
+    }
+    if (input.activeWork) {
+      this.commands.set(commandKey(input.scope, input.idempotencyKey), {
+        requestHash: input.requestHash,
+        result: { kind: "IN_USE", status: 409 },
+      });
+      return { kind: "IN_USE", status: 409 } as const;
+    }
+
+    const project: ControlProject = { ...current, status: "DELETED", updatedAt: new Date().toISOString() };
+    this.projects.set(project.id, project);
+    this.commands.set(commandKey(input.scope, input.idempotencyKey), {
+      requestHash: input.requestHash,
+      result: { kind: "PROJECT", value: project, status: 200 },
+    });
+    return { kind: "NEW", value: project, status: 200 } as const;
+  }
+
   private membershipKey(workspaceId: string, userId: string) {
     return `${workspaceId}:${userId}`;
   }
@@ -145,11 +177,11 @@ export class InMemoryControlPlaneStore implements ControlPlaneStore {
   private resolveExisting(
     existing: StoredCommand,
     requestHash: string,
-  ): CommandExecution<ControlProject> | CommandConflict | { kind: "NOT_FOUND"; status: 404 } {
+  ): CommandExecution<ControlProject> | CommandConflict | { kind: "NOT_FOUND"; status: 404 } | { kind: "IN_USE"; status: 409 } {
     if (existing.requestHash !== requestHash) {
       return { kind: "CONFLICT" };
     }
-    if (existing.result.kind === "NOT_FOUND") {
+    if (existing.result.kind === "NOT_FOUND" || existing.result.kind === "IN_USE") {
       return existing.result;
     }
     return { kind: "REPLAY", value: existing.result.value, status: existing.result.status };

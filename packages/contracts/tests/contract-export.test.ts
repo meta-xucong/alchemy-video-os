@@ -9,6 +9,7 @@ import {
   ApiFailureEnvelopeSchema,
   AssetSchema,
   CreateCreativeBriefRevisionCommandSchema,
+  CreateDeliveryPlanRevisionCommandSchema,
   CreateProductionRunCommandSchema,
   CreateShotCommandSchema,
   CreateUploadRequestCommandSchema,
@@ -28,10 +29,29 @@ import {
   RequestIdSchema,
   TaskRunAttemptSchema,
   TaskRunDetailSchema,
+  TaskRunSchema,
+  VideoAudioOwnerSchema,
+  VideoGenerationInputSnapshotSchema,
   TASK_RUN_STATUSES,
   TASK_RUN_TERMINAL_STATUSES,
   MediaRuntimeCompositionInputSchema,
+  MediaRuntimeCompositionPlanSchema,
+  MediaRuntimeNarrationRequestSchema,
+  MediaRuntimeNarrationDurationFeedbackSchema,
   MediaRuntimeOperationSchema,
+  GenerationSegmentMotionPlanSchema,
+  BrandPolicyRevisionSchema,
+  BudgetReservationSchema,
+  CapabilityProfileRevisionSchema,
+  DeliveryPlanRevisionSchema,
+  NarrationAssetVersionSchema,
+  NarrationPlanRevisionSchema,
+  OutputProfileRevisionSchema,
+  PronunciationGlossaryRevisionSchema,
+  ProductionRunSchema,
+  QualityGateDecisionSchema,
+  VoiceAuthorizationSchema,
+  publicContractSchemas,
   createContractDocuments,
 } from "../src/index.js";
 import { CONTRACT_ARTIFACT_NAMES, writeContractDocuments } from "../src/write-contract-documents.js";
@@ -53,6 +73,7 @@ test("the exported application error code set includes internal failures", () =>
   assert.equal(ApplicationErrorCodeSchema.parse("INTERNAL_ERROR"), "INTERNAL_ERROR");
   assert.equal(ApplicationErrorCodeSchema.parse("SHOT_POSITION_CONFLICT"), "SHOT_POSITION_CONFLICT");
   assert.equal(ApplicationErrorCodeSchema.parse("CREDIT_REJECTED"), "CREDIT_REJECTED");
+  assert.equal(ApplicationErrorCodeSchema.parse("ASSET_IN_USE"), "ASSET_IN_USE");
 });
 
 test("the C03 health response distinguishes the API process and database dependency", () => {
@@ -225,6 +246,196 @@ test("C11 creative planning commands and public DTOs preserve user intent withou
   assert.throws(() => CreateProductionRunCommandSchema.parse({ storyboard_revision_id: "sbr_01J4N8QZ8PCW2N2G6D2XJXJXJX", prompt: "not public" }));
 });
 
+test("audio owner is an internal immutable snapshot fact and never a public TaskRun field", () => {
+  assert.equal(VideoAudioOwnerSchema.parse("NATIVE_PROVIDER"), "NATIVE_PROVIDER");
+  const snapshot = VideoGenerationInputSnapshotSchema.parse({
+    model: "grok-imagine-video-1.5",
+    prompt: "Native audio fixture.",
+    duration: 5,
+    resolution: "720p",
+    ratio: "16:9",
+    reference_asset_ids: [],
+    audio_owner: "NATIVE_PROVIDER",
+  });
+  assert.equal(snapshot.audio_owner, "NATIVE_PROVIDER");
+  assert.throws(() => VideoGenerationInputSnapshotSchema.parse({
+    ...snapshot,
+    audio_owner: "UNSUPPORTED",
+  }));
+  assert.equal("input_snapshot" in TaskRunSchema.shape, false);
+});
+
+test("narration duration feedback stays a private, strict source-shaped fact", () => {
+  const feedback = MediaRuntimeNarrationDurationFeedbackSchema.parse({
+    narration_durations: [{ section_id: "section-1", planned_duration_seconds: 10, actual_duration_seconds: 10.5 }],
+    total_narration_seconds: 10.5,
+    decision: "ADJUST_SCENE_PLAN",
+    decision_reason: "WITHIN_25_PERCENT",
+  });
+  assert.equal(feedback.narration_durations[0]?.section_id, "section-1");
+  assert.throws(() => MediaRuntimeNarrationDurationFeedbackSchema.parse({
+    narration_durations: [{ planned_duration_seconds: 10, actual_duration_seconds: Number.NaN }],
+    total_narration_seconds: 10,
+    decision: "MEASURED",
+    decision_reason: "WITHIN_PLAN",
+  }));
+  assert.throws(() => MediaRuntimeNarrationDurationFeedbackSchema.parse({
+    narration_durations: [{ planned_duration_seconds: 10, actual_duration_seconds: 10 }],
+    total_narration_seconds: 10,
+    decision: "MEASURED",
+    decision_reason: "WITHIN_PLAN",
+    visual_extension_seconds: 2,
+  }));
+  assert.throws(() => MediaRuntimeNarrationDurationFeedbackSchema.parse({
+    narration_durations: [{ planned_duration_seconds: 10, actual_duration_seconds: 12 }],
+    total_narration_seconds: 12,
+    decision: "SOURCE_DECISION_REQUIRED",
+    decision_reason: "SOURCE_OPTIONS_OVERLAP",
+  }));
+  assert.throws(() => MediaRuntimeNarrationDurationFeedbackSchema.parse({
+    narration_durations: [{ planned_duration_seconds: 10, actual_duration_seconds: 10.5 }],
+    total_narration_seconds: 10.5,
+    decision: "ADJUST_SCENE_PLAN",
+    decision_reason: "WITHIN_25_PERCENT",
+    source_actions: ["SEND_BACK"],
+  }));
+});
+
+test("C11.7 delivery preflight contracts keep approval and authorization facts explicit", () => {
+  const base = {
+    workspace_id: "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    project_id: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    created_at: "2026-08-29T00:00:00.000Z",
+    updated_at: "2026-08-29T00:00:00.000Z",
+  };
+  const deliveryPlan = DeliveryPlanRevisionSchema.parse({
+    ...base,
+    id: "dpr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    creative_brief_revision_id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    storyboard_revision_id: "sbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    revision: 1,
+    status: "APPROVED",
+    duration_policy: "FLEXIBLE",
+    flexible_duration_percent: 20,
+    target_duration_seconds: 30,
+    requires_sample_approval: true,
+    caption_policy: "REQUIRED",
+    lip_sync_requirement: "OFF",
+    voice_mode: "PLATFORM_GENERIC",
+    safe_summary: "交付预检通过。",
+    block_reasons: [],
+    approved_at: "2026-08-29T00:00:00.000Z",
+    consumed_by_production_run_id: null,
+  });
+  assert.equal(deliveryPlan.duration_policy, "FLEXIBLE");
+  assert.throws(() => DeliveryPlanRevisionSchema.parse({ ...deliveryPlan, status: "PREFLIGHT_BLOCKED", block_reasons: [] }));
+  assert.deepEqual(CreateDeliveryPlanRevisionCommandSchema.parse({
+    creative_brief_revision_id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    storyboard_revision_id: "sbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    budget_limit: "0",
+  }), {
+    creative_brief_revision_id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    storyboard_revision_id: "sbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    duration_policy: "FLEXIBLE",
+    flexible_duration_percent: 20,
+    caption_policy: "REQUIRED",
+    lip_sync_requirement: "OFF",
+    voice_mode: "PLATFORM_GENERIC",
+    budget_limit: "0",
+  });
+
+  assert.throws(() => NarrationPlanRevisionSchema.parse({
+    ...base,
+    id: "npr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    delivery_plan_revision_id: deliveryPlan.id,
+    revision: 1,
+    status: "AWAITING_APPROVAL",
+    voice_mode: "AUTHORIZED_CLONE",
+    voice_authorization_id: null,
+    pronunciation_glossary_revision_id: null,
+    requires_sample_approval: true,
+    sample_asset_id: null,
+    canonical_script_hash: null,
+    safe_summary: "等待样音。",
+    block_reasons: [],
+    approved_at: null,
+  }));
+  assert.equal(VoiceAuthorizationSchema.parse({
+    ...base,
+    id: "vau_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    source_asset_id: null,
+    consent_evidence_asset_id: null,
+    subject_name: "品牌代表",
+    allowed_uses: ["NARRATION"],
+    status: "ACTIVE",
+    expires_at: null,
+    safe_summary: "授权有效。",
+  }).allowed_uses[0], "NARRATION");
+  assert.equal(CapabilityProfileRevisionSchema.parse({
+    id: "cpr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    workspace_id: base.workspace_id,
+    project_id: base.project_id,
+    provider_family: "LOCAL",
+    model_or_tool: "piper",
+    status: "OFFLINE_CERTIFIED",
+    features: { piper_preview: { certified: true, limits: { free: true } } },
+    certification_fixture_version: "fixture-v1",
+    safe_summary: "本地预览可用。",
+    last_verified_at: "2026-08-29T00:00:00.000Z",
+    created_at: base.created_at,
+  }).features.piper_preview?.certified, true);
+  assert.equal(PronunciationGlossaryRevisionSchema.parse({
+    ...base,
+    id: "pgr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    revision: 1,
+    status: "APPROVED",
+    entries: [{ term: "AI", spoken_form: "人工智能", language: "zh-CN", source: "USER" }],
+    content_hash: "a".repeat(64),
+    approved_at: "2026-08-29T00:00:00.000Z",
+  }).entries[0]?.spoken_form, "人工智能");
+  assert.equal(BrandPolicyRevisionSchema.parse({
+    ...base,
+    id: "bpr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    revision: 1,
+    status: "APPROVED",
+    approved_names: ["JUNHE"],
+    approved_logo_asset_ids: ["ast_01J4N8QZ8PCW2N2G6D2XJXJXJX"],
+    forbidden_identifiers: ["其他品牌"],
+    claims_policy: "只用已批准文案。",
+    content_hash: "b".repeat(64),
+    approved_at: "2026-08-29T00:00:00.000Z",
+  }).approved_names[0], "JUNHE");
+  assert.equal(BudgetReservationSchema.parse({
+    ...base,
+    id: "bgr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    delivery_plan_revision_id: deliveryPlan.id,
+    status: "APPROVED",
+    estimated_amount: "100.00000000",
+    approved_limit: "120.00000000",
+    currency: "CREDIT",
+    reason: "预检预算。",
+  }).status, "APPROVED");
+  assert.equal(OutputProfileRevisionSchema.parse({
+    ...base,
+    id: "opr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    delivery_plan_revision_id: deliveryPlan.id,
+    revision: 1,
+    status: "APPROVED",
+    variants: [{ id: "default_16_9", aspect_ratio: "16:9", resolution: "848x480", codec: "h264", caption_mode: "BURNED", reframe_policy: "NONE" }],
+  }).variants[0]?.caption_mode, "BURNED");
+  assert.equal(QualityGateDecisionSchema.parse({
+    id: "qgd_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    workspace_id: base.workspace_id,
+    project_id: base.project_id,
+    video_version_id: "vvr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    checks: [{ code: "TECHNICAL_OK", severity: "INFO", confidence: 1, action: "PRESENT" }],
+    final_action: "PRESENT",
+    decided_by: "RUNTIME",
+    safe_summary: "终检通过。",
+    created_at: base.created_at,
+  }).final_action, "PRESENT");
+});
+
 test("C11 planning queue messages carry only persisted revision identities", () => {
   const message = {
     contract_version: "1.0" as const,
@@ -236,6 +447,101 @@ test("C11 planning queue messages carry only persisted revision identities", () 
   };
   assert.deepEqual(InternalCreativePlanningQueueMessageSchema.parse(message), message);
   assert.throws(() => InternalCreativePlanningQueueMessageSchema.parse({ ...message, source_text: "must stay in persistence" }));
+});
+
+test("C11.7 production runs retain the plan identity while public confirmation stays safe", () => {
+  const productionRun = ProductionRunSchema.parse({
+    id: "prd_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    workspace_id: "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    project_id: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    storyboard_revision_id: "sbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    delivery_plan_revision_id: "dpr_01J4N8QZ8PCW2N2G6D2XJXJXX",
+    status: "CONFIRMED",
+    total_shot_count: 2,
+    accepted_shot_count: 0,
+    total_segment_count: 2,
+    accepted_segment_count: 0,
+    total_duration_seconds: 30,
+    continuity_status: "NOT_CHECKED",
+    planned_segment_count: 2,
+    max_auto_repair_count: 2,
+    auto_repair_count: 0,
+    created_at: "2026-08-29T00:00:00.000Z",
+    updated_at: "2026-08-29T00:00:00.000Z",
+  });
+  assert.equal(productionRun.delivery_plan_revision_id, "dpr_01J4N8QZ8PCW2N2G6D2XJXJXX");
+
+  const confirmed = InternalEventEnvelopeSchema.parse({
+    contract_version: "1.0",
+    message_id: "msg_01J4N8QZ8PCW2N2G6D2XJXJXX",
+    event_id: "evt_01J4N8QZ8PCW2N2G6D2XJXJXW",
+    event_type: "production_run.confirmed",
+    occurred_at: "2026-08-29T00:00:00.000Z",
+    trace_id: "trc_01J4N8QZ8PCW2N2G6D2XJXJXX",
+    correlation_id: "cor_01J4N8QZ8PCW2N2G6D2XJXJXX",
+    idempotency_key: "idem_01J4N8QZ8PCW2N2G6D2XJXJXX",
+    producer: "control-api",
+    workspace_id: productionRun.workspace_id,
+    project_id: productionRun.project_id,
+    aggregate: { type: "production_run", id: productionRun.id },
+    version: 1,
+    data: {
+      production_run_id: productionRun.id,
+      storyboard_revision_id: productionRun.storyboard_revision_id,
+      delivery_plan_revision_id: productionRun.delivery_plan_revision_id,
+      total_shot_count: productionRun.total_shot_count,
+    },
+  });
+  const projected = projectPublicWorkspaceEvent(confirmed);
+  assert.deepEqual(projected?.data, {
+    production_run_id: productionRun.id,
+    storyboard_revision_id: productionRun.storyboard_revision_id,
+    delivery_plan_revision_id: productionRun.delivery_plan_revision_id,
+    status: "CONFIRMED",
+    total_shot_count: 2,
+  });
+  assert.doesNotMatch(JSON.stringify(projected), /provider|prompt|object_key|trace_id|idempotency_key/i);
+});
+
+test("C12.7B keeps transcript accuracy private while exposing only a safe status", () => {
+  assert.equal("canonical_transcript_accuracy" in publicContractSchemas.NarrationAssetVersion.shape, false);
+  assert.equal("canonical_transcript_status" in publicContractSchemas.NarrationAssetVersion.shape, true);
+  assert.equal("canonical_transcript_check" in NarrationAssetVersionSchema.shape, true);
+});
+
+test("C11.5 keeps object handoff state single-instance and private", () => {
+  const plan = GenerationSegmentMotionPlanSchema.parse({
+    version: "c11.5-motion-plan-v1",
+    duration_seconds: 15,
+    scene_lock: "same scene",
+    character_locks: [],
+    prop_locks: [],
+    key_visual_objects: [{
+      name: "手机",
+      description: "黑色手机",
+      relation: "人物手持",
+      prohibited_changes: ["不得复制"],
+      instance_count: 1,
+      transfer: { from: "LEFT_HAND", to: "RIGHT_HAND" },
+    }],
+    motion_beats: [
+      { sequence: 1, start_seconds: 0, end_seconds: 5, action: "释放", subject_refs: ["primary_subject"], start_pose: "左手持有", end_pose: "左手释放", shot_size: "中景", camera_movement: "固定", continuity_locks: [], prohibited_changes: [], source_narrative_beat_sequences: [1], object_states: [{ name: "手机", instance_count: 1, holder: "LEFT_HAND", phase: "RELEASE" }] },
+      { sequence: 2, start_seconds: 5, end_seconds: 10, action: "接触", subject_refs: ["primary_subject"], start_pose: "接触", end_pose: "交接", shot_size: "中景", camera_movement: "固定", continuity_locks: [], prohibited_changes: [], source_narrative_beat_sequences: [1], object_states: [{ name: "手机", instance_count: 1, holder: "BOTH_HANDS", phase: "CONTACT" }] },
+      { sequence: 3, start_seconds: 10, end_seconds: 15, action: "接收", subject_refs: ["primary_subject"], start_pose: "交接", end_pose: "右手持有", shot_size: "中景", camera_movement: "固定", continuity_locks: [], prohibited_changes: [], source_narrative_beat_sequences: [1], object_states: [{ name: "手机", instance_count: 1, holder: "RIGHT_HAND", phase: "TRANSFERRED" }] },
+    ],
+    opening_state: "start",
+    closing_state: "end",
+    transition_in: "in",
+    transition_out: "out",
+    complexity_score: 10,
+    source_narrative_beat_sequences: [1],
+  });
+  assert.equal(plan.motion_beats[1]!.object_states?.[0]?.instance_count, 1);
+  assert.throws(() => GenerationSegmentMotionPlanSchema.parse({
+    ...plan,
+    motion_beats: plan.motion_beats.map((beat, index) => index === 1 ? { ...beat, object_states: [{ name: "手机", instance_count: 2, holder: "BOTH_HANDS", phase: "CONTACT" }] } : beat),
+  }));
+  assert.doesNotMatch(JSON.stringify(createContractDocuments().openApi), /object_states|instance_count|KeyVisualObjectHolder/);
 });
 
 test("C12 production queue messages carry only the durable scheduling identities", () => {
@@ -264,6 +570,10 @@ test("C12 Media Runtime accepts only fixed local tools and durable scheduling id
     expected_sha256: "a".repeat(64),
   });
   assert.equal(operation.tool, "EXTRACT_HANDOFF_FRAME");
+  assert.equal(MediaRuntimeOperationSchema.parse({
+    operation_id: operation.operation_id,
+    tool: "BURN_CAPTIONS",
+  }).tool, "BURN_CAPTIONS");
   assert.throws(() => MediaRuntimeOperationSchema.parse({ ...operation, tool: "shell" }));
   assert.throws(() => MediaRuntimeOperationSchema.parse({ ...operation, object_key: "must-not-cross-runtime-boundary" }));
   assert.deepEqual(MediaRuntimeCompositionInputSchema.parse({
@@ -271,6 +581,60 @@ test("C12 Media Runtime accepts only fixed local tools and durable scheduling id
     tool: "COMPOSE_VIDEO",
     segment_count: 2,
   }).segment_count, 2);
+  assert.equal(MediaRuntimeCompositionPlanSchema.parse({
+    target_duration_ms: 30_000,
+    transitions: ["PASS", "PASS"],
+    bridge_durations_ms: [],
+    audio_policy: "CONTINUOUS_NARRATION",
+    audio_tracks: [{ track_id: "platform", ownership: "PLATFORM_NARRATION", start_ms: 0, end_ms: 30_000 }],
+  }).audio_policy, "CONTINUOUS_NARRATION");
+  assert.equal(MediaRuntimeCompositionPlanSchema.parse({
+    target_duration_ms: 10_000,
+    transitions: [],
+    bridge_durations_ms: [],
+    audio_policy: "CONTINUOUS_NARRATION",
+    audio_tracks: [
+      { track_id: "platform", ownership: "PLATFORM_NARRATION", start_ms: 0, end_ms: 10_000 },
+      { track_id: "provider-ambience", ownership: "PROVIDER_AMBIENCE", start_ms: 0, end_ms: 10_000, duck_under_narration: true },
+    ],
+    music_segments_ms: [{ start_ms: 0, end_ms: 5_000 }],
+  }).audio_tracks?.find((track) => track.track_id === "provider-ambience")?.ownership, "PROVIDER_AMBIENCE");
+  assert.throws(() => MediaRuntimeCompositionPlanSchema.parse({
+    target_duration_ms: 10_000,
+    transitions: [],
+    audio_policy: "CONTINUOUS_NARRATION",
+    audio_tracks: [{ track_id: "segment-1", ownership: "PROVIDER_DIALOGUE", start_ms: 0, end_ms: 10_000 }],
+  }));
+  assert.throws(() => MediaRuntimeCompositionPlanSchema.parse({
+    target_duration_ms: 10_000,
+    transitions: [],
+    audio_policy: "CONTINUOUS_NARRATION",
+    audio_tracks: [
+      { track_id: "platform", ownership: "PLATFORM_NARRATION", start_ms: 0, end_ms: 10_000 },
+      { track_id: "platform", ownership: "PROVIDER_DIALOGUE", start_ms: 1_000, end_ms: 2_000 },
+    ],
+  }));
+  assert.throws(() => MediaRuntimeCompositionPlanSchema.parse({
+    target_duration_ms: 10_000,
+    transitions: [],
+    bridge_durations_ms: [],
+    music_segments_ms: [{ start_ms: 5_000, end_ms: 5_000 }],
+  }));
+  assert.throws(() => MediaRuntimeCompositionPlanSchema.parse({
+    target_duration_ms: 10_000,
+    transitions: [],
+    bridge_durations_ms: [],
+    music_segments_ms: [{ start_ms: 0, end_ms: 11_000 }],
+  }));
+  assert.throws(() => MediaRuntimeNarrationRequestSchema.parse({
+    text: "完整脚本",
+    segments: [{ text: "分段脚本", start_ms: 0 }],
+  }));
+  const providerTextRequest = MediaRuntimeNarrationRequestSchema.parse({
+    segments: [{ text: "旧字段兼容", provider_text: "规范口播文本", start_ms: 0 }],
+    target_duration_ms: 2_000,
+  });
+  assert.equal(providerTextRequest.segments?.[0]?.provider_text, "规范口播文本");
 
   const qcMessage = {
     contract_version: "1.0" as const,
@@ -285,6 +649,95 @@ test("C12 Media Runtime accepts only fixed local tools and durable scheduling id
   };
   assert.deepEqual(InternalMediaRuntimeQueueMessageSchema.parse(qcMessage), qcMessage);
   assert.throws(() => InternalMediaRuntimeQueueMessageSchema.parse({ ...qcMessage, prompt: "must stay in persistence" }));
+});
+
+test("C12.4 complete AudioPlan carries source identity, mix fields and private transcript facts", () => {
+  const parsed = MediaRuntimeCompositionPlanSchema.parse({
+    target_duration_ms: 2_000,
+    transitions: ["PASS"],
+    bridge_durations_ms: [],
+    audio_policy: "CONTINUOUS_NARRATION",
+    audio_plan: {
+      version: 1,
+      target_duration_ms: 2_000,
+      narration_asset_id: "ast_narration",
+      narration_sections: [{ section_id: "sec_1", start_ms: 0, end_ms: 2_000, visual_role: "PRIMARY" }],
+      stitch_policy: "CONTINUOUS_NARRATION",
+      transcript_script: "第一句。第二句。",
+      transcript_timing_asset_id: "ast_timing",
+      tracks: [
+        {
+          track_id: "platform-narration",
+          ownership: "PLATFORM_NARRATION",
+          asset_id: "ast_narration",
+          start_ms: 0,
+          end_ms: 2_000,
+          gain_db: "0",
+          duck_under_narration: false,
+          fade_in_ms: 100,
+          fade_out_ms: 200,
+        },
+        {
+          track_id: "segment-1",
+          ownership: "PROVIDER_AMBIENCE",
+          asset_id: "ast_video_1",
+          start_ms: 0,
+          end_ms: 2_000,
+          gain_db: "-3",
+          duck_under_narration: true,
+        },
+      ],
+    },
+  });
+  assert.equal(parsed.audio_plan?.version, 1);
+  assert.equal(parsed.audio_plan?.tracks[1]?.gain_db, "-3");
+  assert.equal(parsed.audio_plan?.transcript_timing_asset_id, "ast_timing");
+  assert.throws(() => MediaRuntimeCompositionPlanSchema.parse({
+    target_duration_ms: 2_000,
+    transitions: ["PASS"],
+    bridge_durations_ms: [],
+    audio_policy: "CONTINUOUS_NARRATION",
+    audio_plan: {
+      version: 1,
+      target_duration_ms: 2_000,
+      narration_sections: [{ section_id: "sec_1", start_ms: 0, end_ms: 2_000, visual_role: "PRIMARY" }],
+      stitch_policy: "CONTINUOUS_NARRATION",
+      tracks: [{
+        track_id: "platform-narration",
+        ownership: "PLATFORM_NARRATION",
+        start_ms: 0,
+        end_ms: 2_000,
+        duck_under_narration: false,
+      }],
+    },
+  }));
+  assert.throws(() => MediaRuntimeCompositionPlanSchema.parse({
+    target_duration_ms: 2_000,
+    transitions: ["PASS"],
+    bridge_durations_ms: [],
+    audio_policy: "CONTINUOUS_NARRATION",
+    audio_tracks: [{ track_id: "legacy", ownership: "PROVIDER_DIALOGUE", start_ms: 0, end_ms: 2_000 }],
+    audio_plan: {
+      version: 1,
+      target_duration_ms: 2_000,
+      narration_sections: [{ section_id: "sec_1", start_ms: 0, end_ms: 2_000, visual_role: "PRIMARY" }],
+      stitch_policy: "CONTINUOUS_NARRATION",
+      tracks: [{ track_id: "platform", ownership: "PLATFORM_NARRATION", asset_id: "ast-narration", start_ms: 0, end_ms: 2_000, gain_db: "0" }],
+    },
+  }));
+  assert.throws(() => MediaRuntimeCompositionPlanSchema.parse({
+    target_duration_ms: 2_000,
+    transitions: ["PASS"],
+    bridge_durations_ms: [],
+    audio_policy: "CONTINUOUS_NARRATION",
+    audio_plan: {
+      version: 1,
+      target_duration_ms: 2_000,
+      narration_sections: [{ section_id: "sec_1", start_ms: 0, end_ms: 1_500, visual_role: "PRIMARY" }],
+      stitch_policy: "CONTINUOUS_NARRATION",
+      tracks: [{ track_id: "platform", ownership: "PLATFORM_NARRATION", asset_id: "ast-narration", start_ms: 0, end_ms: 2_000, gain_db: "0" }],
+    },
+  }));
 });
 
 test("C11 planning failure is publicly actionable without exposing the story source", () => {
@@ -603,19 +1056,30 @@ test("OpenAPI declares the C03 control-plane surface before later route implemen
   const openApi = createContractDocuments().openApi as { paths: Record<string, unknown> };
 
   assert.deepEqual(Object.keys(openApi.paths).sort(), [
+    "/api/v1/assets/{asset_id}",
     "/api/v1/assets/{asset_id}/confirm-upload",
     "/api/v1/assets/{asset_id}/download-url",
     "/api/v1/creative-brief-revisions/{creative_brief_revision_id}/plan",
+    "/api/v1/delivery-plan-revisions/{delivery_plan_revision_id}/approve",
+    "/api/v1/delivery-plan-revisions/{delivery_plan_revision_id}/narration-scripts",
     "/api/v1/document-conversions/{conversion_id}",
     "/api/v1/document-conversions/{conversion_id}/retry",
+    "/api/v1/document-knowledge-revisions/{knowledge_revision_id}",
+    "/api/v1/document-knowledge-revisions/{knowledge_revision_id}/retry",
     "/api/v1/events",
     "/api/v1/health",
     "/api/v1/me",
+    "/api/v1/narration-script-revisions/{narration_script_revision_id}/approve",
+    "/api/v1/narration-script-revisions/{narration_script_revision_id}/timeline-plans",
+    "/api/v1/production-runs/{production_run_id}/composition/retry",
     "/api/v1/production-runs/{production_run_id}/segments/{sequence}/retry",
     "/api/v1/projects",
     "/api/v1/projects/{project_id}",
     "/api/v1/projects/{project_id}/assets/upload-requests",
+    "/api/v1/projects/{project_id}/audio-capabilities",
+    "/api/v1/projects/{project_id}/audio/pixabay/import",
     "/api/v1/projects/{project_id}/creative-brief-revisions",
+    "/api/v1/projects/{project_id}/delivery-plan-revisions",
     "/api/v1/projects/{project_id}/documents",
     "/api/v1/projects/{project_id}/documents/{source_asset_id}/conversions",
     "/api/v1/projects/{project_id}/production-runs",

@@ -10,6 +10,13 @@
 
     <progress class="production-progress-meter" :value="completedCount" :max="totalSegments">{{ completedCount }} / {{ totalSegments }}</progress>
     <p class="section-copy">{{ progressSummary }}</p>
+    <button
+      v-if="canRetryComposition"
+      class="secondary-button"
+      type="button"
+      :disabled="busy"
+      @click="emit('retry-composition')"
+    >{{ busy ? "正在重新合成" : "重新合成成片" }}</button>
 
     <details v-if="progress.segments.length" class="production-segment-details">
       <summary>查看制作细节（{{ progress.segments.length }}）</summary>
@@ -38,16 +45,34 @@
 import type { ProductionRunProgress, ProductionSegment } from "../../composables/useControlApi";
 
 const props = defineProps<{ progress?: ProductionRunProgress; busy?: boolean }>();
-const emit = defineEmits<{ retry: [sequence: number] }>();
+const emit = defineEmits<{ retry: [sequence: number]; 'retry-composition': [] }>();
 
 const completedCount = computed(() => props.progress?.segments.filter((segment) => segment.status === "ACCEPTED").length ?? 0);
 const totalSegments = computed(() => props.progress?.production_run.total_segment_count ?? props.progress?.production_run.total_shot_count ?? props.progress?.segments.length ?? 0);
+const canRetryComposition = computed(() => Boolean(
+  props.progress?.production_run.status === "FAILED"
+  && totalSegments.value > 0
+  && completedCount.value === totalSegments.value,
+));
 const progressSummary = computed(() => {
   const run = props.progress?.production_run;
   if (!run) return "";
   if (run.status === "SUCCEEDED") return "完整成片已经整理好，右侧可以直接查看。";
-  if (run.status === "FAILED" || run.status === "BLOCKED") return "这次没有完整完成，可以查看制作细节并按提示处理。";
-  return `AI 正在后台制作完整视频，预计成片约 ${run.total_duration_seconds} 秒。`;
+  if (run.status === "FAILED" || run.status === "BLOCKED") {
+    const blockedSegment = props.progress?.segments.find((segment) => segment.status === "FAILED" || segment.status === "WAITING");
+    if (run.status === "FAILED" && completedCount.value === totalSegments.value && totalSegments.value > 0) {
+      return "所有片段已完成，但成片整理未完成，可以直接重新合成。";
+    }
+    return blockedSegment?.safe_summary ?? "这次没有完整完成，可以查看制作细节并按提示处理。";
+  }
+  const continuity = run.continuity_status === "AUTO_REPAIRING"
+    ? "正在自动优化片段衔接。"
+    : run.continuity_status === "CHECKING"
+      ? "正在检查片段衔接。"
+      : run.continuity_status === "NEEDS_ATTENTION"
+        ? "有一处衔接需要留意，系统已使用安全转场。"
+        : "";
+  return `AI 正在后台制作完整视频，预计成片约 ${run.total_duration_seconds} 秒。${continuity}`;
 });
 const statusLabel = computed(() => {
   const status = props.progress?.production_run.status;

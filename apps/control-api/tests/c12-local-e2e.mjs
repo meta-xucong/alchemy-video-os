@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { DeleteObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { clearCreativePlanningQueues, clearInternalEventQueues, clearMediaRuntimeQueues, clearProductionQueues } from "@alchemy-video/task-queue";
 import { Client } from "pg";
 
@@ -44,7 +45,15 @@ const storageConfig = {
 };
 const ffmpegPath = resolve(repoRoot, "node_modules", ".pnpm", "ffmpeg-static@5.3.0", "node_modules", "ffmpeg-static", "ffmpeg.exe");
 const ffprobePath = resolve(repoRoot, "node_modules", ".pnpm", "ffprobe-static@3.1.0", "node_modules", "ffprobe-static", "bin", "win32", "x64", "ffprobe.exe");
+// Keep the media Runtime on the same controlled Python environment that owns
+// faster-whisper/Piper.  Falling back to the system interpreter is safe for
+// video-only smoke tests but cannot silently claim caption/TTS capability.
+const controlledRuntimePython = resolve(repoRoot, ".codex-longrun", "c10-document-runtime-venv", "Scripts", "python.exe");
+const mediaRuntimePython = existsSync(controlledRuntimePython)
+  ? controlledRuntimePython
+  : process.platform === "win32" ? "python.exe" : "python3";
 const resultPrefix = "C12_STUDIO_UI_E2E_RESULT=";
+const artifactDirectory = process.env.C12_E2E_ARTIFACT_DIR?.trim() || "";
 
 const sleep = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 
@@ -196,6 +205,10 @@ const assertFinalProduction = async (projectId, databaseUrl) => {
         (SELECT count(*)::integer FROM production_segments WHERE workspace_id = $1 AND project_id = $2 AND status = 'ACCEPTED') AS accepted_segments,
         (SELECT count(*)::integer FROM task_runs WHERE workspace_id = $1 AND project_id = $2 AND status = 'SUCCEEDED') AS completed_tasks,
         (SELECT count(*)::integer FROM video_versions WHERE workspace_id = $1 AND project_id = $2 AND status = 'SUCCEEDED') AS completed_versions,
+        (SELECT asset.object_key FROM video_versions version JOIN assets asset ON asset.workspace_id = version.workspace_id AND asset.project_id = version.project_id AND asset.id = version.asset_id WHERE version.workspace_id = $1 AND version.project_id = $2 AND version.status = 'SUCCEEDED' ORDER BY version.created_at DESC LIMIT 1) AS final_object_key,
+        (SELECT count(*)::integer FROM handoff_reviews WHERE workspace_id = $1 AND project_id = $2) AS handoff_reviews,
+        (SELECT count(*)::integer FROM transition_repairs WHERE workspace_id = $1 AND project_id = $2 AND strategy = 'BLEND' AND status = 'ACCEPTED') AS safe_blend_repairs,
+        (SELECT continuity_status FROM production_runs WHERE workspace_id = $1 AND project_id = $2 ORDER BY created_at DESC LIMIT 1) AS continuity_status,
         (SELECT target_resolution FROM creative_brief_revisions WHERE workspace_id = $1 AND project_id = $2 ORDER BY revision DESC LIMIT 1) AS target_resolution,
         (SELECT array_agg(DISTINCT input_snapshot ->> 'resolution') FROM task_runs WHERE workspace_id = $1 AND project_id = $2) AS task_resolutions,
         (SELECT array_agg(object_key) FROM assets WHERE workspace_id = $1 AND project_id = $2) AS object_keys`,
@@ -203,12 +216,15 @@ const assertFinalProduction = async (projectId, databaseUrl) => {
     );
     const row = result.rows[0];
     assert.equal(row.completed_runs, 1, "C12 E2E did not complete the production run.");
-    assert.equal(row.accepted_segments, 3, "C12 E2E did not accept all planned segments.");
-    assert.equal(row.completed_tasks, 3, "C12 E2E did not complete exactly one TaskRun per planned segment.");
+    assert.equal(row.accepted_segments, 2, "C12 E2E did not accept all planned segments.");
+    assert.equal(row.completed_tasks, 2, "C12 E2E did not complete exactly one TaskRun per planned segment.");
     assert.equal(row.completed_versions, 1, "C12 E2E did not create one immutable final video version.");
+    assert.equal(row.handoff_reviews, 1, "C12.1 E2E did not persist every adjacent handoff review.");
+    assert.equal(row.safe_blend_repairs, 0, "C12.1 E2E created a transition repair without an available semantic evaluation.");
+    assert.equal(row.continuity_status, "NEEDS_ATTENTION", "C12.1 E2E did not safely project the unavailable evaluator.");
     assert.equal(row.target_resolution, "480p", "C12 E2E did not persist the selected target resolution.");
     assert.deepEqual(row.task_resolutions, ["480p"], "C12 E2E did not propagate the selected resolution to every TaskRun snapshot.");
-    return row.object_keys ?? [];
+    return { objectKeys: row.object_keys ?? [], finalObjectKey: row.final_object_key ?? "" };
   } finally {
     await database.end();
   }
@@ -223,7 +239,8 @@ const assertPublicPlaybackProjection = async (projectId) => {
   assert.equal(versionsResponse.status, 200);
   const [progress, versions] = await Promise.all([progressResponse.json(), versionsResponse.json()]);
   assert.equal(progress.data[0].production_run.status, "SUCCEEDED");
-  assert.equal(progress.data[0].segments.filter((segment) => segment.status === "ACCEPTED").length, 3);
+  assert.equal(progress.data[0].production_run.continuity_status, "NEEDS_ATTENTION");
+  assert.equal(progress.data[0].segments.filter((segment) => segment.status === "ACCEPTED").length, 2);
   assert.equal(versions.data.length, 1);
   assert.equal(versions.data[0].status, "SUCCEEDED");
   const serialized = JSON.stringify({ progress, versions });
@@ -256,6 +273,17 @@ const removeObjects = async (storage, objectKeys) => {
   }
 };
 
+const preserveFinalArtifact = async (storage, objectKey, projectId) => {
+  if (!artifactDirectory || !objectKey) return;
+  const object = await storage.send(new GetObjectCommand({ Bucket: storageConfig.bucket, Key: objectKey }));
+  if (!object.Body?.transformToByteArray) throw new Error("C12 artifact response did not expose a readable body.");
+  const bytes = await object.Body.transformToByteArray();
+  await mkdir(artifactDirectory, { recursive: true });
+  const outputPath = resolve(artifactDirectory, `c12-local-${projectId}.mp4`);
+  await writeFile(outputPath, bytes);
+  console.log(`C12_LOCAL_ARTIFACT=${outputPath}`);
+};
+
 const run = async () => {
   const suffix = randomUUID();
   const compactSuffix = suffix.replaceAll("-", "").slice(0, 8);
@@ -279,6 +307,9 @@ const run = async () => {
     MEDIA_RUNTIME_TOKEN: `c12-runtime-${compactSuffix}`,
     MEDIA_RUNTIME_FFMPEG_PATH: ffmpegPath,
     MEDIA_RUNTIME_FFPROBE_PATH: ffprobePath,
+    PIPER_PYTHON_PATH: mediaRuntimePython,
+    MEDIA_TRANSCRIBER_PYTHON_PATH: mediaRuntimePython,
+    HF_HOME: resolve(repoRoot, ".codex-longrun", "hf-cache"),
     TASK_QUEUE_NAME: `${queuePrefix}-task`,
     TASK_DEAD_LETTER_QUEUE_NAME: `${queuePrefix}-task-dead-letter`,
     CREATIVE_PLANNING_QUEUE_NAME: `${queuePrefix}-planning`,
@@ -336,7 +367,7 @@ const run = async () => {
     await waitFor(`${apiOrigin}/api/v1/health`, "C12 Control API", [apiProcess]);
     workflowWorkerProcess = startService(process.execPath, ["--import", "tsx", "src/index.ts"], workflowWorkerRoot, environment);
     taskWorkerProcess = startService(process.execPath, ["--import", "tsx", "src/index.ts"], taskWorkerRoot, environment);
-    runtimeProcess = startService(process.platform === "win32" ? "python.exe" : "python3", ["-m", "uvicorn", "main:app", "--host", host, "--port", String(runtimePort)], mediaRuntimeRoot, environment);
+    runtimeProcess = startService(mediaRuntimePython, ["-m", "uvicorn", "main:app", "--host", host, "--port", String(runtimePort)], mediaRuntimeRoot, environment);
     await waitForTcp(runtimePort, "Media Runtime", [runtimeProcess]);
     productionWorkerProcess = startService(process.execPath, ["--import", "tsx", "src/index.ts"], productionWorkerRoot, environment);
     await sleep(1_000);
@@ -348,9 +379,11 @@ const run = async () => {
     await waitFor(`${studioOrigin}/api/v1/health`, "C12 Studio API proxy", [apiProcess, workflowWorkerProcess, taskWorkerProcess, productionWorkerProcess, runtimeProcess, studioProcess]);
 
     const browserResult = runStudioUiTest({ projectName, environment });
-    assert.equal(browserResult.segment_count, 3);
+    assert.equal(browserResult.segment_count, 2);
     assert.equal(browserResult.mobile_viewport, "390x844");
-    objectKeys = await assertFinalProduction(browserResult.project_id, databaseUrl);
+    const production = await assertFinalProduction(browserResult.project_id, databaseUrl);
+    objectKeys = production.objectKeys;
+    await preserveFinalArtifact(storage, production.finalObjectKey, browserResult.project_id);
     await assertPublicPlaybackProjection(browserResult.project_id);
   } catch (error) {
     const diagnostic = databaseCreated

@@ -1,4 +1,5 @@
-import type { ControlAsset, ControlCreativeBriefRevision, ControlDocumentConversion, ControlProductionRun, ControlProductionRunProgress, ControlProject, ControlProviderAttempt, ControlReferenceBinding, ControlShot, ControlStoryboardRevision, ControlTaskRun, ControlUser, ControlVideoVersion, ControlWorkspace } from "@alchemy-video/persistence";
+import type { ControlAsset, ControlCreativeBriefRevision, ControlDeliveryPlanRevision, ControlDocumentConversion, ControlDocumentKnowledgeRevision, ControlProductionRun, ControlProductionRunProgress, ControlProject, ControlProviderAttempt, ControlReferenceBinding, ControlShot, ControlStoryboardRevision, ControlTaskRun, ControlUser, ControlVideoVersion, ControlWorkspace } from "@alchemy-video/persistence";
+import type { DocumentUnderstandingSummary } from "@alchemy-video/contracts";
 
 const toUtcTimestamp = (value: string) => new Date(value).toISOString();
 
@@ -28,7 +29,13 @@ export const serializeProject = (project: ControlProject) => ({
 });
 
 const serializeAssetMetadata = (metadata: Record<string, unknown>) => {
-  const { task_run_id: _taskRunId, generated_by: _generatedBy, ...publicMetadata } = metadata;
+  const {
+    task_run_id: _taskRunId,
+    generated_by: _generatedBy,
+    visual_analysis: _visualAnalysis,
+    visual_analysis_status: _visualAnalysisStatus,
+    ...publicMetadata
+  } = metadata;
   return publicMetadata;
 };
 
@@ -55,7 +62,7 @@ export const serializeTaskRunAttempt = (attempt: ControlProviderAttempt) => ({
   created_at: toUtcTimestamp(attempt.createdAt),
   updated_at: toUtcTimestamp(attempt.updatedAt),
 });
-export const serializeDocumentConversion = (conversion: ControlDocumentConversion) => ({
+export const serializeDocumentConversion = (conversion: ControlDocumentConversion, understanding?: DocumentUnderstandingSummary) => ({
   id: conversion.id,
   document_id: conversion.documentId,
   workspace_id: conversion.workspaceId,
@@ -66,6 +73,7 @@ export const serializeDocumentConversion = (conversion: ControlDocumentConversio
   markdown_asset_id: conversion.markdownAssetId,
   warnings: conversion.warnings,
   attempt_count: conversion.attemptCount,
+  ...(understanding ? { understanding } : {}),
   created_at: toUtcTimestamp(conversion.createdAt),
   updated_at: toUtcTimestamp(conversion.updatedAt),
 });
@@ -79,6 +87,13 @@ export const serializeCreativeBriefRevision = (brief: ControlCreativeBriefRevisi
   target_resolution: brief.targetResolution,
   style_preferences: brief.stylePreferences,
   source_asset_ids: brief.sourceAssetIds,
+  document_contexts: brief.documentContexts.map((context) => ({
+    document_id: context.documentId,
+    conversion_id: context.conversionId,
+    source_asset_id: context.sourceAssetId,
+    markdown_asset_id: context.markdownAssetId,
+    max_content_characters: context.maxContentCharacters,
+  })),
   status: brief.status,
   created_at: toUtcTimestamp(brief.createdAt),
   updated_at: toUtcTimestamp(brief.updatedAt),
@@ -114,17 +129,74 @@ export const serializeStoryboardRevision = (storyboard: ControlStoryboardRevisio
   created_at: toUtcTimestamp(storyboard.createdAt),
   updated_at: toUtcTimestamp(storyboard.updatedAt),
 });
+export const serializeDocumentKnowledgeRevision = (revision: ControlDocumentKnowledgeRevision) => ({
+  id: revision.id,
+  workspace_id: revision.workspaceId,
+  project_id: revision.projectId,
+  document_id: revision.documentId,
+  conversion_id: revision.conversionId,
+  status: revision.status,
+  retryable: revision.retryable,
+  analysis_quality: revision.analysisQuality,
+  section_count: revision.sectionCount,
+  fact_count: revision.factCount,
+  created_at: toUtcTimestamp(revision.createdAt),
+  updated_at: toUtcTimestamp(revision.updatedAt),
+});
+export const serializeDocumentKnowledgeDetail = (revision: ControlDocumentKnowledgeRevision, sections: readonly { id: string; sequence: number; heading: string; locator: string; evidenceKind: string }[], facts: readonly { id: string; sectionSequence: number; category: string; statement: string; confidence: string; statementHash: string }[]) => ({
+  revision: serializeDocumentKnowledgeRevision(revision),
+  sections: sections.map((section) => ({ id: section.id, sequence: section.sequence, heading: section.heading, locator: section.locator, evidence_kind: section.evidenceKind })),
+  facts: facts.map((fact) => ({
+    id: fact.id,
+    section_sequence: fact.sectionSequence,
+    category: fact.category,
+    statement: fact.statement,
+    confidence: fact.confidence,
+    source: {
+      document_id: revision.documentId,
+      conversion_id: revision.conversionId,
+      locator: sections.find((section) => section.sequence === fact.sectionSequence)?.locator ?? `第 ${fact.sectionSequence} 节`,
+    },
+  })),
+});
+export const serializeDeliveryPlanRevision = (plan: ControlDeliveryPlanRevision) => ({
+  id: plan.id,
+  workspace_id: plan.workspaceId,
+  project_id: plan.projectId,
+  creative_brief_revision_id: plan.creativeBriefRevisionId,
+  storyboard_revision_id: plan.storyboardRevisionId,
+  revision: plan.revision,
+  status: plan.status,
+  duration_policy: plan.durationPolicy,
+  flexible_duration_percent: plan.flexibleDurationPercent,
+  target_duration_seconds: plan.targetDurationSeconds,
+  requires_sample_approval: plan.requiresSampleApproval,
+  caption_policy: plan.captionPolicy,
+  lip_sync_requirement: plan.lipSyncRequirement,
+  voice_mode: plan.voiceMode,
+  safe_summary: plan.safeSummary,
+  block_reasons: plan.blockReasons,
+  approved_at: plan.approvedAt ? toUtcTimestamp(plan.approvedAt) : null,
+  consumed_by_production_run_id: plan.consumedByProductionRunId,
+  created_at: toUtcTimestamp(plan.createdAt),
+  updated_at: toUtcTimestamp(plan.updatedAt),
+});
 export const serializeProductionRun = (productionRun: ControlProductionRun) => ({
   id: productionRun.id,
   workspace_id: productionRun.workspaceId,
   project_id: productionRun.projectId,
   storyboard_revision_id: productionRun.storyboardRevisionId,
+  ...(productionRun.deliveryPlanRevisionId ? { delivery_plan_revision_id: productionRun.deliveryPlanRevisionId } : {}),
   status: productionRun.status,
   total_shot_count: productionRun.totalShotCount,
   accepted_shot_count: productionRun.acceptedShotCount,
   total_segment_count: productionRun.totalSegmentCount,
   accepted_segment_count: productionRun.acceptedSegmentCount,
   total_duration_seconds: productionRun.totalDurationSeconds,
+  continuity_status: productionRun.continuityStatus,
+  planned_segment_count: productionRun.plannedSegmentCount,
+  max_auto_repair_count: productionRun.maxAutoRepairCount,
+  auto_repair_count: productionRun.autoRepairCount,
   created_at: toUtcTimestamp(productionRun.createdAt),
   updated_at: toUtcTimestamp(productionRun.updatedAt),
 });
@@ -161,6 +233,20 @@ export const serializeVideoVersion = (version: ControlVideoVersion) => ({
     status: version.qcReport.status,
     safe_summary: version.qcReport.safeSummary,
     created_at: toUtcTimestamp(version.qcReport.createdAt),
+    ...(version.qcReport.audioSummary ? {
+      audio_summary: {
+        has_audio: version.qcReport.audioSummary.hasAudio,
+        music_applied: version.qcReport.audioSummary.musicApplied,
+        ...(version.qcReport.audioSummary.musicTitle ? { music_title: version.qcReport.audioSummary.musicTitle } : {}),
+        ...(version.qcReport.audioSummary.musicArtist ? { music_artist: version.qcReport.audioSummary.musicArtist } : {}),
+        ...(version.qcReport.audioSummary.musicTags ? { music_tags: version.qcReport.audioSummary.musicTags } : {}),
+        ...(version.qcReport.audioSummary.sampleRate ? { sample_rate: version.qcReport.audioSummary.sampleRate } : {}),
+        ...(version.qcReport.audioSummary.integratedLufs !== undefined ? { integrated_lufs: version.qcReport.audioSummary.integratedLufs } : {}),
+        ...(version.qcReport.audioSummary.truePeakDb !== undefined ? { true_peak_db: version.qcReport.audioSummary.truePeakDb } : {}),
+        ...(version.qcReport.audioSummary.loudnessRangeLu !== undefined ? { loudness_range_lu: version.qcReport.audioSummary.loudnessRangeLu } : {}),
+        ...(version.qcReport.audioSummary.unexpectedSilence !== undefined ? { unexpected_silence: version.qcReport.audioSummary.unexpectedSilence } : {}),
+      },
+    } : {}),
   },
   created_at: toUtcTimestamp(version.createdAt),
 });

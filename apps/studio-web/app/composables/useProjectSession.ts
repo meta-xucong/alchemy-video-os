@@ -10,7 +10,7 @@ export function useProjectSession() {
   const projectError = ref("");
   const previewAssetId = ref<string>();
   const previewUrl = ref("");
-  const uploadFile = shallowRef<File>();
+  const uploadFiles = shallowRef<File[]>([]);
   const selectedReferenceIds = ref<string[]>([]);
   const requestSequence = ref(0);
   let activeRequest: AbortController | undefined;
@@ -27,7 +27,7 @@ export function useProjectSession() {
     requestSequence.value += 1;
     releasePreview();
     detail.value = undefined;
-    uploadFile.value = undefined;
+    uploadFiles.value = [];
     selectedReferenceIds.value = [];
     projectError.value = "";
   }
@@ -76,7 +76,7 @@ export function useProjectSession() {
     projectError,
     previewAssetId,
     previewUrl,
-    uploadFile,
+    uploadFiles,
     selectedReferenceIds,
     requestSequence,
     clearProjectState,

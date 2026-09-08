@@ -17,11 +17,38 @@ assets.video.aiself.vip   A/AAAA -> Video VPS
 
 Open only TCP `80`, `443`, and the VPS SSH administration port. PostgreSQL, Redis, MinIO API/Console, Control API, Worker, and Studio remain inside the Compose network.
 
+## Relay-only local verification
+
+Before the full Video OS is deployed, the Video VPS can be used as an isolated HTTPS
+relay for the local real-provider worker. This mode does not start the Compose stack and
+does not expose the local API, MinIO, Redis, or PostgreSQL ports. The relay edge is kept
+in the separate `nginx/video.aiself.vip.relay.conf` file and proxies only
+`/provider-input/` to `127.0.0.1:18080`; every other path returns `404`.
+
+The current target host is Debian 12 at `43.251.227.106` (SSH `31467`, user
+`shaihaoagent`). Its existing SSH policy now permits **remote TCP forwarding only** for
+this account; agent forwarding, stream-local forwarding, and TUN remain disabled. The
+local tunnel is:
+
+```powershell
+ssh -N -T -o ExitOnForwardFailure=yes `
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 `
+  -R 127.0.0.1:18080:127.0.0.1:3133 `
+  shaihaoagent@43.251.227.106 -p 31467
+```
+
+The relay-only Nginx site and ACME webroot have been installed on the otherwise empty
+host, but a trusted certificate cannot be issued until `video.aiself.vip` has an
+authoritative `A` record pointing at `43.251.227.106`. Do not enable the full-stack
+`video.aiself.vip.conf` on this host until the complete Video OS deployment gate is
+accepted. The relay path is intentionally HTTP-only until Certbot succeeds; real
+reference-image requests must remain disabled until HTTPS is active.
+
 ## Private Environment
 
 1. Copy `.env.video.example` to a root-owned private directory outside this Git checkout, for example `/opt/alchemy-video/secrets/video.env`.
-2. Replace every `REPLACE_...` value with a unique random value. Do not copy a local `.env.local`, do not put a Provider key in the Control API, and do not commit this file.
-3. Create the Basic Auth file at the absolute `VIDEO_EDGE_HTPASSWD_FILE` path. Use an interactive command so the password is never written into shell history or deployment logs:
+2. Replace every placeholder with a unique value. Keep `AUDIO_FREE_ONLY=true` for the local MVP; workspace-owned READY MUSIC assets remain the only music source. Do not put the video Provider key in the Control API, and do not commit this file.
+4. Create the Basic Auth file at the absolute `VIDEO_EDGE_HTPASSWD_FILE` path. Use an interactive command so the password is never written into shell history or deployment logs:
 
 ```sh
 install -d -m 0700 /opt/alchemy-video/secrets
@@ -52,7 +79,9 @@ Set `EDGE_NGINX_CONFIG=./nginx/video.aiself.vip.conf` in the private environment
 docker compose --env-file /opt/alchemy-video/secrets/video.env -f infrastructure/deploy/docker-compose.video.yml --profile edge up -d --force-recreate edge
 ```
 
-The same certificate must contain both host names because this package uses one renewal command. Renew it with the same webroot mount and recreate `edge` after a successful renewal.
+The same certificate must contain both host names because this package uses one renewal command. The active Compose mount is `infrastructure/deploy/certbot/conf`; if Certbot is run from a separate host directory, copy the resulting `conf` tree into that mount before recreating `edge`. The production deployment installs a daily `alchemy-video-renew.timer` which performs this copy and recreates `edge` after a successful renewal.
+
+The edge container must be able to read the Basic Auth file. Keep the file root-owned with mode `0640` and grant read access to the container's Nginx UID (101); mode `0600` on the host makes Nginx return a misleading HTTP 500 because the mounted file is unreadable inside the container.
 
 ## Real Provider Gate
 
@@ -74,6 +103,8 @@ docker compose --env-file /opt/alchemy-video/secrets/video.env -f infrastructure
 docker compose --env-file /opt/alchemy-video/secrets/video.env -f infrastructure/deploy/docker-compose.video.yml ps
 docker compose --env-file /opt/alchemy-video/secrets/video.env -f infrastructure/deploy/docker-compose.video.yml logs --tail=100 control-api task-worker edge
 ```
+
+The deployed Control API must report the workspace music library as the default source. If no authorized READY MUSIC asset exists, AUTO/MANUAL requests must report an actionable unavailable result rather than silently adding external audio.
 
 Health paths are intentionally internal diagnostics. Verify the browser experience only through `https://video.aiself.vip/projects` after Basic Auth. Do not expose `/internal/*`, database ports, MinIO Console, Worker logs, Provider URLs, Provider request IDs, signing tokens, or private environment files.
 

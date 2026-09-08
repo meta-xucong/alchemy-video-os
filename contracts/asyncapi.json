@@ -100,6 +100,7 @@
                       "asset",
                       "document",
                       "document_conversion",
+                      "document_knowledge_revision",
                       "creative_brief_revision",
                       "script_revision",
                       "storyboard_revision",
@@ -107,7 +108,19 @@
                       "production_segment",
                       "asset_derivation",
                       "qc_report",
-                      "video_version"
+                      "video_version",
+                      "handoff_review",
+                      "transition_repair",
+                      "delivery_plan_revision",
+                      "timeline_plan",
+                      "narration_plan_revision",
+                      "capability_profile_revision",
+                      "voice_authorization",
+                      "pronunciation_glossary_revision",
+                      "brand_policy_revision",
+                      "budget_reservation",
+                      "output_profile_revision",
+                      "quality_gate_decision"
                     ]
                   },
                   "id": {
@@ -1317,6 +1330,361 @@
               "event_type": {
                 "type": "string",
                 "enum": [
+                  "document_knowledge.queued"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "knowledge_revision_id": {
+                    "type": "string",
+                    "pattern": "^dkr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "conversion_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/9/properties/data/properties/conversion_id"
+                  },
+                  "document_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/9/properties/data/properties/document_id"
+                  }
+                },
+                "required": [
+                  "knowledge_revision_id",
+                  "conversion_id",
+                  "document_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "document_knowledge.started"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "knowledge_revision_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/13/properties/data/properties/knowledge_revision_id"
+                  },
+                  "conversion_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/9/properties/data/properties/conversion_id"
+                  }
+                },
+                "required": [
+                  "knowledge_revision_id",
+                  "conversion_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "document_knowledge.succeeded"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "knowledge_revision_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/13/properties/data/properties/knowledge_revision_id"
+                  },
+                  "conversion_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/9/properties/data/properties/conversion_id"
+                  },
+                  "analysis_quality": {
+                    "type": "string",
+                    "enum": [
+                      "COMPLETE",
+                      "PARTIAL",
+                      "NEEDS_CONFIRMATION"
+                    ]
+                  }
+                },
+                "required": [
+                  "knowledge_revision_id",
+                  "conversion_id",
+                  "analysis_quality"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "document_knowledge.failed"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "knowledge_revision_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/13/properties/data/properties/knowledge_revision_id"
+                  },
+                  "conversion_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/9/properties/data/properties/conversion_id"
+                  },
+                  "error_code": {
+                    "type": "string",
+                    "enum": [
+                      "DOCUMENT_KNOWLEDGE_INVALID",
+                      "DOCUMENT_RUNTIME_UNAVAILABLE",
+                      "DOCUMENT_OUTPUT_INVALID"
+                    ]
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "knowledge_revision_id",
+                  "conversion_id",
+                  "error_code",
+                  "retryable"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
                   "creative_brief.planning_requested"
                 ]
               },
@@ -1403,7 +1771,7 @@
                 "type": "object",
                 "properties": {
                   "creative_brief_revision_id": {
-                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/13/properties/data/properties/creative_brief_revision_id"
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/creative_brief_revision_id"
                   },
                   "error_code": {
                     "type": "string",
@@ -1586,11 +1954,854 @@
                 "type": "object",
                 "properties": {
                   "storyboard_revision_id": {
-                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/15/properties/data/properties/storyboard_revision_id"
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/19/properties/data/properties/storyboard_revision_id"
                   }
                 },
                 "required": [
                   "storyboard_revision_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "delivery_plan.preflight_requested"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "delivery_plan_revision_id": {
+                    "type": "string",
+                    "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "creative_brief_revision_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/creative_brief_revision_id"
+                  },
+                  "storyboard_revision_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/19/properties/data/properties/storyboard_revision_id"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "DRAFT",
+                      "PREFLIGHT_BLOCKED",
+                      "AWAITING_APPROVAL",
+                      "APPROVED",
+                      "CONSUMED",
+                      "SUPERSEDED"
+                    ]
+                  }
+                },
+                "required": [
+                  "delivery_plan_revision_id",
+                  "creative_brief_revision_id",
+                  "storyboard_revision_id",
+                  "status"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "delivery_plan.blocked"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "delivery_plan_revision_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/21/properties/data/properties/delivery_plan_revision_id"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PREFLIGHT_BLOCKED"
+                    ]
+                  },
+                  "reason_codes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    },
+                    "minItems": 1,
+                    "maxItems": 20
+                  }
+                },
+                "required": [
+                  "delivery_plan_revision_id",
+                  "status",
+                  "reason_codes"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "delivery_plan.approved"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "delivery_plan_revision_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/21/properties/data/properties/delivery_plan_revision_id"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "APPROVED"
+                    ]
+                  }
+                },
+                "required": [
+                  "delivery_plan_revision_id",
+                  "status"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "narration_script.normalized"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "narration_script_revision_id": {
+                    "type": "string",
+                    "pattern": "^nsr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "delivery_plan_revision_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/21/properties/data/properties/delivery_plan_revision_id"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "NORMALIZED",
+                      "NEEDS_DECISION"
+                    ]
+                  },
+                  "decision_reasons": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 240
+                    },
+                    "maxItems": 50
+                  }
+                },
+                "required": [
+                  "narration_script_revision_id",
+                  "delivery_plan_revision_id",
+                  "status",
+                  "decision_reasons"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "narration_script.approved"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "narration_script_revision_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/24/properties/data/properties/narration_script_revision_id"
+                  },
+                  "sample_asset_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/data/properties/asset_id"
+                  },
+                  "canonical_script_hash": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/data/properties/sha256"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "APPROVED"
+                    ]
+                  }
+                },
+                "required": [
+                  "narration_script_revision_id",
+                  "sample_asset_id",
+                  "canonical_script_hash",
+                  "status"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "narration_audio.generation_requested"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "narration_script_revision_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/24/properties/data/properties/narration_script_revision_id"
+                  },
+                  "generation_kind": {
+                    "type": "string",
+                    "enum": [
+                      "SAMPLE",
+                      "FORMAL"
+                    ]
+                  },
+                  "section_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "asset_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/data/properties/asset_id"
+                  },
+                  "narration_asset_version_id": {
+                    "type": "string",
+                    "pattern": "^nav_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "sample_asset_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/data/properties/asset_id"
+                  },
+                  "provider": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "voice_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "provider_settings": {
+                    "type": "object",
+                    "properties": {
+                      "resource_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      },
+                      "format": {
+                        "type": "string",
+                        "enum": [
+                          "mp3",
+                          "ogg_opus",
+                          "pcm"
+                        ]
+                      },
+                      "sample_rate": {
+                        "type": "integer"
+                      },
+                      "speech_rate": {
+                        "type": "integer",
+                        "minimum": -50,
+                        "maximum": 100
+                      },
+                      "enable_timestamp": {
+                        "type": "boolean"
+                      },
+                      "disable_markdown_filter": {
+                        "type": "boolean"
+                      },
+                      "return_usage": {
+                        "type": "boolean"
+                      },
+                      "poll_interval_seconds": {
+                        "type": "number",
+                        "minimum": 0.5
+                      },
+                      "timeout_seconds": {
+                        "type": "integer",
+                        "minimum": 30
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "canonical_script_hash": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/data/properties/sha256"
+                  },
+                  "object_key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024
+                  }
+                },
+                "required": [
+                  "narration_script_revision_id",
+                  "generation_kind",
+                  "section_id",
+                  "asset_id",
+                  "provider",
+                  "voice_id",
+                  "provider_settings",
+                  "canonical_script_hash",
+                  "object_key"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "project_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "narration_asset_version.ready"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "narration_asset_version_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/26/properties/data/properties/narration_asset_version_id"
+                  },
+                  "narration_script_revision_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/24/properties/data/properties/narration_script_revision_id"
+                  },
+                  "asset_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/data/properties/asset_id"
+                  },
+                  "duration_ms": {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  },
+                  "sample_approved": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "narration_asset_version_id",
+                  "narration_script_revision_id",
+                  "asset_id",
+                  "duration_ms",
+                  "sample_approved"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "timeline_plan.created"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "timeline_plan_id": {
+                    "type": "string",
+                    "pattern": "^tlp_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "narration_script_revision_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/24/properties/data/properties/narration_script_revision_id"
+                  },
+                  "delivery_plan_revision_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/21/properties/data/properties/delivery_plan_revision_id"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "READY",
+                      "NEEDS_DECISION",
+                      "FAILED"
+                    ]
+                  },
+                  "effective_duration_ms": {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "timeline_plan_id",
+                  "narration_script_revision_id",
+                  "delivery_plan_revision_id",
+                  "status",
+                  "effective_duration_ms"
                 ],
                 "additionalProperties": false
               }
@@ -1668,7 +2879,10 @@
                     "pattern": "^prd_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
                   },
                   "storyboard_revision_id": {
-                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/15/properties/data/properties/storyboard_revision_id"
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/19/properties/data/properties/storyboard_revision_id"
+                  },
+                  "delivery_plan_revision_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/21/properties/data/properties/delivery_plan_revision_id"
                   },
                   "total_shot_count": {
                     "type": "integer",
@@ -1753,7 +2967,7 @@
                 "type": "object",
                 "properties": {
                   "production_run_id": {
-                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/production_run_id"
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/29/properties/data/properties/production_run_id"
                   },
                   "status": {
                     "type": "string",
@@ -1783,6 +2997,25 @@
                     "exclusiveMinimum": true,
                     "minimum": 0,
                     "nullable": true
+                  },
+                  "continuity_status": {
+                    "type": "string",
+                    "enum": [
+                      "NOT_CHECKED",
+                      "CHECKING",
+                      "GOOD",
+                      "AUTO_REPAIRING",
+                      "NEEDS_ATTENTION"
+                    ]
+                  },
+                  "max_auto_repair_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 20
+                  },
+                  "auto_repair_count": {
+                    "type": "integer",
+                    "minimum": 0
                   }
                 },
                 "required": [
@@ -1864,7 +3097,7 @@
                 "type": "object",
                 "properties": {
                   "production_run_id": {
-                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/production_run_id"
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/29/properties/data/properties/production_run_id"
                   },
                   "sequence": {
                     "type": "integer",
@@ -1961,7 +3194,7 @@
                 "type": "object",
                 "properties": {
                   "production_run_id": {
-                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/production_run_id"
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/29/properties/data/properties/production_run_id"
                   },
                   "production_segment_id": {
                     "type": "string",
@@ -2048,7 +3281,7 @@
                 "type": "object",
                 "properties": {
                   "production_run_id": {
-                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/production_run_id"
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/29/properties/data/properties/production_run_id"
                   },
                   "sequence": {
                     "type": "integer",
@@ -2146,7 +3379,7 @@
                 "type": "object",
                 "properties": {
                   "qc_report_id": {
-                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/21/properties/data/properties/qc_report_id"
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/33/properties/data/properties/qc_report_id"
                   },
                   "subject_type": {
                     "type": "string",
@@ -2246,7 +3479,7 @@
                 "type": "object",
                 "properties": {
                   "production_run_id": {
-                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/production_run_id"
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/29/properties/data/properties/production_run_id"
                   }
                 },
                 "required": [
@@ -2328,7 +3561,7 @@
                     "pattern": "^vvr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
                   },
                   "production_run_id": {
-                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/production_run_id"
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/29/properties/data/properties/production_run_id"
                   },
                   "asset_id": {
                     "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/data/properties/asset_id"
@@ -2339,7 +3572,7 @@
                     "minimum": 0
                   },
                   "qc_report_id": {
-                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/21/properties/data/properties/qc_report_id"
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/33/properties/data/properties/qc_report_id"
                   }
                 },
                 "required": [
@@ -2421,7 +3654,7 @@
                 "type": "object",
                 "properties": {
                   "production_run_id": {
-                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/17/properties/data/properties/production_run_id"
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/29/properties/data/properties/production_run_id"
                   },
                   "error_code": {
                     "type": "string",
@@ -2437,6 +3670,517 @@
                 },
                 "required": [
                   "production_run_id",
+                  "error_code",
+                  "retryable"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "handoff_review.requested"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "production_run_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/29/properties/data/properties/production_run_id"
+                  },
+                  "handoff_review_id": {
+                    "type": "string",
+                    "pattern": "^hrv_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "from_sequence": {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  },
+                  "to_sequence": {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "production_run_id",
+                  "handoff_review_id",
+                  "from_sequence",
+                  "to_sequence"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "handoff_review.completed"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "production_run_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/29/properties/data/properties/production_run_id"
+                  },
+                  "handoff_review_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/38/properties/data/properties/handoff_review_id"
+                  },
+                  "from_sequence": {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  },
+                  "to_sequence": {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  },
+                  "result": {
+                    "type": "string",
+                    "enum": [
+                      "PASS",
+                      "BLEND",
+                      "BRIDGE_REQUIRED",
+                      "UNAVAILABLE",
+                      "FAILED"
+                    ]
+                  },
+                  "reason_codes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "IDENTITY_DRIFT",
+                        "WARDROBE_DRIFT",
+                        "SCENE_DRIFT",
+                        "COMPOSITION_JUMP",
+                        "ACTION_DIRECTION_BREAK",
+                        "EVALUATOR_UNAVAILABLE",
+                        "EVALUATOR_FAILED"
+                      ]
+                    },
+                    "maxItems": 8
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "production_run_id",
+                  "handoff_review_id",
+                  "from_sequence",
+                  "to_sequence",
+                  "result",
+                  "reason_codes",
+                  "retryable"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "transition_repair.requested"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "production_run_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/29/properties/data/properties/production_run_id"
+                  },
+                  "transition_repair_id": {
+                    "type": "string",
+                    "pattern": "^trp_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "boundary_sequence": {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  },
+                  "strategy": {
+                    "type": "string",
+                    "enum": [
+                      "BLEND",
+                      "BRIDGE"
+                    ]
+                  }
+                },
+                "required": [
+                  "production_run_id",
+                  "transition_repair_id",
+                  "boundary_sequence",
+                  "strategy"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "transition_repair.succeeded"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "production_run_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/29/properties/data/properties/production_run_id"
+                  },
+                  "transition_repair_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/40/properties/data/properties/transition_repair_id"
+                  },
+                  "boundary_sequence": {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  },
+                  "strategy": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/40/properties/data/properties/strategy"
+                  }
+                },
+                "required": [
+                  "production_run_id",
+                  "transition_repair_id",
+                  "boundary_sequence",
+                  "strategy"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "contract_version",
+              "message_id",
+              "event_id",
+              "occurred_at",
+              "trace_id",
+              "correlation_id",
+              "idempotency_key",
+              "producer",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "contract_version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/contract_version"
+              },
+              "message_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/message_id"
+              },
+              "event_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "trace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/trace_id"
+              },
+              "correlation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/correlation_id"
+              },
+              "causation_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/causation_id"
+              },
+              "idempotency_key": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/idempotency_key"
+              },
+              "producer": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/producer"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/InternalEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "transition_repair.failed"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "production_run_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/29/properties/data/properties/production_run_id"
+                  },
+                  "transition_repair_id": {
+                    "$ref": "#/definitions/InternalEventEnvelope/anyOf/40/properties/data/properties/transition_repair_id"
+                  },
+                  "boundary_sequence": {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  },
+                  "error_code": {
+                    "type": "string",
+                    "enum": [
+                      "MEDIA_RUNTIME_UNAVAILABLE",
+                      "MEDIA_RENDER_FAILED",
+                      "QC_FAILED"
+                    ]
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "production_run_id",
+                  "transition_repair_id",
+                  "boundary_sequence",
                   "error_code",
                   "retryable"
                 ],
@@ -2549,6 +4293,51 @@
           "project_id",
           "conversion_id",
           "source_asset_id",
+          "correlation_id"
+        ],
+        "additionalProperties": false
+      },
+      "InternalDocumentKnowledgeQueueMessage": {
+        "type": "object",
+        "properties": {
+          "contract_version": {
+            "type": "string",
+            "enum": [
+              "1.0"
+            ]
+          },
+          "event_id": {
+            "type": "string",
+            "pattern": "^evt_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "knowledge_revision_id": {
+            "type": "string",
+            "pattern": "^dkr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "conversion_id": {
+            "type": "string",
+            "pattern": "^dcv_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "correlation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "contract_version",
+          "event_id",
+          "workspace_id",
+          "project_id",
+          "knowledge_revision_id",
+          "conversion_id",
           "correlation_id"
         ],
         "additionalProperties": false

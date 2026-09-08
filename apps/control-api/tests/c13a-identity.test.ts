@@ -4,6 +4,7 @@ import test from "node:test";
 import { createApp } from "../src/app.js";
 import { createVeyraCurrentIdentity, type CurrentIdentity, type IdentityPort } from "../src/identity.js";
 import { createInMemoryControlPlaneStore } from "../src/repository.js";
+import { VideoSessionCodec } from "../src/veyra-session.js";
 
 const readJson = async (response: Response) => response.json() as Promise<Record<string, any>>;
 
@@ -76,4 +77,36 @@ test("C13-A rejects a tampered bootstrap that does not match the resolved identi
   assert.equal(response.status, 503);
   assert.equal(body.error.code, "AUTH_UNAVAILABLE");
   assert.equal(JSON.stringify(body).includes("video_canary_20260816"), false);
+});
+
+test("C13-A exposes the Sub2API account through a public, provider-neutral credit DTO", async () => {
+  const app = createApp({
+    identity: new StaticIdentityAdapter(canaryIdentity),
+    videoVeyraBridge: {
+      getAccount: async () => ({ externalUserId: 20260816, email: "video_canary_20260816@example.test", role: "owner", balance: "12.5", status: "active", concurrency: 2 }),
+    } as never,
+  });
+  const response = await app.request("http://localhost/api/v1/me/credits");
+  const body = await readJson(response);
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.data, { external_user_id: 20260816, email: "video_canary_20260816@example.test", role: "owner", balance: "12.5", status: "active", concurrency: 2 });
+});
+
+test("C13-A callback exchanges a video ticket with POST and establishes an HttpOnly session cookie", async () => {
+  const codec = new VideoSessionCodec("01234567890123456789012345678901");
+  const app = createApp({
+    videoSessionCodec: codec,
+    videoVeyraBridge: {
+      exchangeVideoTicketAndGetAccount: async ({ ticket }) => ({
+        identity: { ...canaryIdentity, externalUserId: 20260816 },
+        account: { externalUserId: 20260816, email: "video_canary_20260816@example.test", role: "owner", balance: "12.5", status: "active", concurrency: 2 },
+      }),
+    } as never,
+  });
+  const form = new URLSearchParams({ ticket: "a-valid-video-ticket-123456" });
+  const response = await app.request("http://localhost/auth/veyra/callback", { method: "POST", body: form });
+  assert.equal(response.status, 303);
+  assert.match(response.headers.get("set-cookie") ?? "", /video_session=/);
+  assert.match(response.headers.get("set-cookie") ?? "", /HttpOnly/i);
+  assert.equal((await app.request("http://localhost/auth/veyra/callback?ticket=a-valid-video-ticket-123456")).status, 404);
 });

@@ -2,7 +2,9 @@
 
 状态：`DESIGN_BASELINE`
 
-关联章节：C11、C12。本文只约束 Studio 中用户可见的长叙事创作体验；后端领域、API、Worker 与媒体 Runtime 以 `AI企业内容生产平台_长叙事后端领域与编排开发设计.md`、`AI企业内容生产平台_长叙事自动编排与连续成片设计.md` 为准。所有当前和未来项目均遵循 `AI企业内容生产平台_通用叙事点与生成片段编排规范.md`。
+> **2026-09-01 当前口径**：长叙事自动视频不要求用户上传旁白、样音或其它 spoken audio；服务端按 native Provider/显式 Doubao 生成。默认/CI 仍为 Mock，本机真实对照只按最新自动音频文档授权；通用参考图片、资料、Logo、MUSIC 上传仍有效。
+
+关联章节：C11、C11.3、C12。本文只约束 Studio 中用户可见的长叙事创作体验；后端领域、API、Worker 与媒体 Runtime 以 `AI企业内容生产平台_长叙事后端领域与编排开发设计.md`、`AI企业内容生产平台_长叙事自动编排与连续成片设计.md` 为准。所有当前和未来项目均遵循 `AI企业内容生产平台_通用叙事点与生成片段编排规范.md`。C11.3 的 MotionBeat、时间轴和 PromptPackage 仍是后台私有执行细节，不增加用户步骤。
 
 ## 1. 产品目标
 
@@ -37,7 +39,7 @@
 1. 用户进入项目，看到一个文本框，以及“成片设置”中的可选总时长、清晰度和风格。
 2. 上传参考图后，该图片默认勾选为本次参考素材；用户可取消，但无需理解“首帧/参考集”等模型模式。
 3. 用户点击唯一主按钮“开始生成视频”。
-4. Studio 显示自然语言进度，并提示“预计生成若干段，最后合成为完整成片”；实际数量由后台根据总时长和内容复杂度自动决定。
+4. Studio 显示自然语言进度，并提示“预计生成若干段，最后合成为完整成片”；后台会自动检查相邻片段的人物、场景和动作衔接，必要时补一个短过渡画面。实际主片段数量由后台根据总时长和内容复杂度自动决定。
 5. 完成后，成片显示在右侧“成片版本”，并长期保留在该项目内；用户可调整描述后生成新版本，不覆盖旧成片。
 
 制作细节可以折叠查看，但默认不把后台编排当作用户必须理解的工作步骤。
@@ -67,7 +69,7 @@ POST /projects/:id/production-runs
 | 内容输入 | 写想法、故事、小说情节或产品描述 | 本地编辑，提交时写入 CreativeBriefRevision |
 | 希望成片大约多长 | 成片意图，不是单个模型调用时长 | 受控为 15-600 秒 |
 | 成片清晰度 | 选择标准清晰或高清 | 受控为 `480p` 或 `720p`，默认高清；随 CreativeBriefRevision 冻结，并用于后续每段任务快照 |
-| 预计生成片段 | 用户只需知道工作量和进度 | 输入总时长后实时显示预计段数和每段约多少秒，例如“30 秒预计 3 段，每段约 10 秒”；最终仍以后台计算为准，不允许手工绕过能力校验 |
+| 预计生成片段 | 用户只需知道工作量和进度 | 输入总时长后实时显示按总时长计算的预估段数和每段约多少秒，例如“30 秒预计 2 段，每段约 15 秒”；15 秒内提示会在同一视频时间轴中完成多次动作；正式生成时后台还会结合内容、段落和口播容量重新规划，最终段数与每段时长可能不同，以实际生成结果为准，不允许手工绕过能力校验 |
 | 想要的感觉 | 可选风格偏好 | 作为后台创作参考 |
 | 参考图 | 可选视觉素材 | 上传确认后默认勾选，最多 7 张 |
 | 项目资料 | 可选企业资料/文档 | 上传后触发资料整理；已整理的资料自动作为 source asset，不在故事卡重复勾选 |
@@ -87,6 +89,8 @@ POST /projects/:id/production-runs
 | ProductionRun confirmed | 正在准备视频内容 |
 | ProductionRun generating | 正在生成视频 |
 | Segment N/M | 正在生成第 N/M 段 |
+| Continuity reviewing | 正在检查片段衔接 |
+| Continuity repairing | 正在优化一处片段衔接 |
 | Reviewing / rendering | 正在整理成片 |
 | Succeeded | 完整成片已生成 |
 | Failed / blocked | 本次制作未完成 |
@@ -104,10 +108,11 @@ POST /projects/:id/production-runs
 ## 8. 验收矩阵
 
 - Studio 静态测试必须拒绝旧双输入、旧手动计划按钮、内部字段和模型模式。
-- 18 个叙事点、30 秒目标的计划必须显示为后台自动计算的 3 个或 6 个生成片段，而不是 18 个 Provider 任务。
+- 18 个叙事点、30 秒目标的计划默认显示为后台自动计算的 2 个 15 秒生成片段，而不是 18 个 Provider 任务；后台可进一步将每段编译为 2-4 个 MotionBeat，但前端不显示动作工程字段。
 - C11 浏览器 E2E：用户只点一次“开始生成视频”，前端仍通过公开 API 自动创建 brief、计划、批准 storyboard 并创建 production run；无旧 TaskRun。
 - C12 浏览器 E2E：同一单按钮流程完成 Mock 分段生成、检查、合成、VideoVersion 成片、播放、下载、公开字段脱敏与 `390x844` 移动布局。
 - C12 浏览器 E2E 必须断言真实可执行 TaskRun 数量等于 GenerationSegment 数量，并且历史片段数量不会改变当前 ProductionRun 进度。
+- C12.1 浏览器 E2E：只显示“检查片段衔接 / 正在优化一处片段衔接”等中文投影；桥接修复不会改变主片段数量，也不泄漏评估器、Provider、内部 ID 或评分。
 - 项目切换、刷新和成片选择不得泄漏上一个项目的输入、参考图或播放地址。
 
 ## 9. 本轮验证证据
@@ -119,4 +124,4 @@ POST /projects/:id/production-runs
 - `pnpm --filter @alchemy-video/studio-web typecheck`：通过。
 - `pnpm --filter @alchemy-video/studio-web build`：通过，仅 Nuxt 既有 DEP0155 warning。
 - `pnpm --filter @alchemy-video/control-api test:c11-e2e`：通过，单按钮自动编排、选择的 `480p` 刷新后仍保留，且不提前创建 TaskRun。
-- `C12_E2E_RUNTIME_PORT=3435 pnpm --filter @alchemy-video/control-api test:c12-e2e`：通过，所选 `480p` 进入全部三段 Mock TaskRun 快照，最终成片播放/下载和移动布局通过。
+- `C12_E2E_RUNTIME_PORT=3435 pnpm --filter @alchemy-video/control-api test:c12-e2e`：通过，所选 `480p` 进入全部两段 Mock TaskRun 快照，最终成片播放/下载和移动布局通过。

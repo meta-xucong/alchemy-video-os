@@ -2,9 +2,11 @@
 
 本文件是章节状态的唯一审计记录。状态变更必须附测试命令、证据路径和结论。没有证据不得标记 `ACCEPTED`。
 
+> 当前状态只看下方“当前唯一状态账本”和第 2 节总表。其后的章节段落是按时间追加的历史审计快照；历史段落中的 `IN_PROGRESS`、`READY_FOR_AUDIT` 或 `ACCEPTED` 不会覆盖当前状态，也不构成本轮重新开启章节的授权。
+
 ## 1. 状态字典
 
-`PENDING`：尚未开始；`IN_PROGRESS`：正在实现；`READY_FOR_AUDIT`：代码和测试完成，等待审计；`ACCEPTED`：Exit Gate 已满足；`BLOCKED`：存在未解决阻塞。
+`PENDING`：尚未开始；`IN_PROGRESS`：正在实现；`IMPLEMENTED_PENDING_AUDIT`：当前实现切片已暂停，审计/硬门尚未收口；`READY_FOR_AUDIT`：代码和测试完成，等待审计；`ACCEPTED`：Exit Gate 已满足；`BLOCKED`：存在未解决阻塞。
 
 ## 2. 当前章节总表
 
@@ -22,8 +24,12 @@
 | C09 | 共享积分本地边界 | `ACCEPTED` | C08 | 2026-08-14 | 2026-08-16 | ADR-0039 后的本地 CreditPort、离线契约与 C09-C 本地运行时已独立复核；真实 Veyra/VPS 联动后移 C13-A |
 | C10 | MarkItDown 企业资料链路 | `ACCEPTED` | C06 | 2026-08-16 | 2026-08-16 | 独立审计已复核事务、公开边界、流式 Runtime、隔离浏览器验收和根级回归 |
 | C11 | Prompt、Script、Storyboard | `ACCEPTED` | C10 | 2026-08-16 | 2026-08-16 | 独立审计已复核本地创作版本、规划、审批、生产计划确认和零视频执行边界 |
+| C11.2 | 资料理解与按段事实包 | `ACCEPTED` | C11.1 | 2026-08-30 | 2026-08-30 | 本地范围的资料知识链路、恢复/隔离/公开边界和独立审计已完成；不代表真实外部系统完成 |
 | C12 | OpenMontage、QC、成片 | `ACCEPTED` | C11/C06 | 2026-08-16 | 2026-08-17 | 本地依赖调度、交接帧、QC、合成、成片版本及交接帧/用户参考素材一致性修订均已通过完整回归；外部边界继续关闭 |
-| C13 | 发布前审计和部署准备 | `PENDING` | C09/C12 |  |  |  |
+| C12.1 | 语义衔接质检与自动转场修复 | `ACCEPTED` | C12 | 2026-08-17 | 2026-08-17 | 独立复核契约、迁移、Worker/Runtime、活动租约恢复、三段混合转场夹具、隔离 E2E、根回归和公开投影；不触碰 C13-A 外部边界 |
+| C12.2 | OpenMontage 终检与真实成片质量门禁 | `NOT_ACTIVE_IN_THIS_SCOPE` | C12.1 | 2026-08-23 |  | 历史 `READY_FOR_AUDIT` 技术终检证据保留于下方快照；本轮不活动，语义 evaluator/transcriber 仍明确不可用 |
+| C12.4/C12.5 | 连续旁白、音频编排与口播时长 | `IMPLEMENTED_PENDING_AUDIT` | C12.1/C12.7B | 2026-08-30 |  | S01/E02、E03/HB-STORYBOARD-TIMING 8–15 秒、E04/Piper pace、E05 `_full_mix`/ALCHMED8、E06 approved full narration 窗口与 cue-only、E07 uniform transition/xfade、E08 segmented/HyperFrames、E09 source-expressed transcript/subtitle/FFmpeg fallback、E10 approval/formal asset/TimelinePlan identity-window、E11/S08 measured-duration feedback 均为已独立审计的窄切片 `ACCEPTED`；混合/连续非 cut、完整 section windows、Studio/REQUIRED 字幕、中文口音、自动重规划和其它硬门仍 `BLOCKED/DEFERRED`；E12 实测仍阻断总体硬门未收口 |
+| C13 | 发布前审计和部署准备 | `PENDING` | C09/C12/C12.1 |  |  |  |
 
 ## 3. C00 开发前基线审计
 
@@ -1223,6 +1229,33 @@ Exit Gate 结论：`ACCEPTED`。18 个叙事点/30 秒不再被误解成 18 次�
 
 Exit Gate 结论：`ACCEPTED`。修正代码、定向/隔离回归、真实 3 段新版本、媒体音轨/时长核对、素材资格与 PromptPackage 审计、抽帧检查及本地入口健康检查均通过。C12 重新关闭；C13-A 的 Veyra、VPS、部署与 Git 边界不因本次本机重试而开放。
 
+### C12.1：语义衔接质检与自动转场修复
+
+状态：`ACCEPTED`
+
+实施日期：2026-08-17
+
+前置条件：C12 `ACCEPTED`。当前唯一正式实施章节为 C12.1；C13/C13-A、Veyra、共享积分、VPS、SSH、DNS、TLS、部署和新的真实 Provider 调用保持后置。
+
+范围：把 C12 已有的“交接帧优先输入 + 技术 QC + 有限淡变”升级为可追溯的语义边界质检和有界自动修复。新增私有 `HandoffReview`、`TransitionRepair`、受控 `HandoffEvaluatorPort`、边界帧提取、计划化合成和安全的 ProductionRun 进度投影。桥接片段只属于后台修复，不改变用户看到的主片段数或一键创作流程。
+
+本轮文档依据：`AI企业内容生产平台_C12.1语义衔接质检与自动转场修复开发设计.md`、ADR-0044、领域/API 契约、通用叙事点与生成片段编排规范、Studio 与长叙事工作台交互设计。
+
+当前证据：C12 历史验收已证明交接帧、用户参考图、音轨与有界淡变可用。C12.1 已完成契约、前向迁移、持久化 Review/Repair 事实、Worker/Runtime 编排、公开投影及隔离本地验收：18 个叙事点被编排为 3 个 Mock 主片段，全部技术 QC 后产生 2 个相邻 `HandoffReview`，默认 fail-closed 评估器明确记录 `UNAVAILABLE`，写入 2 个保守 BLEND 修复计划并合成 1 个不可变成片。三段真实 MP4 夹具覆盖 `PASS`、`BLEND`、`BRIDGE` 混合计划并验证音轨/时长；disposable PostgreSQL 集成验证活动租约 `BUSY`、过期租约恢复和完成后重复回放 `DUPLICATE`。Contracts 30/30、Domain 18/18、Production Worker 20/20、Persistence 集成 1/1（普通套件 16 通过、8 个既有数据库门控跳过）、Studio 32/32、Runtime 9/9、控制面 typecheck、根 typecheck/串行 test/build 与隔离 E2E 均通过；临时数据库、队列、对象和端口 3531/3532/3533 已清理。
+
+禁止事项：不得修改既有 C12 历史 TaskRun、Asset、HandoffAsset、ProviderAttempt 或 VideoVersion；不得将评估器/桥接的原始图像、模型、Prompt、Provider、对象 key、临时路径或命令行公开；不得启动 Veyra、VPS、DNS、TLS、部署或付费外部调用；章节处于 `IN_PROGRESS` 前不得 Git add、提交、tag 或推送。
+
+Exit Gate 结论：`PASS`、`BLEND`、`BRIDGE_REQUIRED`、`UNAVAILABLE`、失败和恢复路径均经 Mock/离线夹具及临时 PostgreSQL 通过；每个边界最多一次自动修复，活动租约内重复投递为 `BUSY`、过期租约可由新 Worker 恢复、完成后回放为 `DUPLICATE`；三段混合转场保留音轨且时长守卫通过；Studio 只显示自然语言进度与安全摘要；无真实 Provider、Veyra、VPS、部署或 Git 写入。独立审计接受 C12.1。
+
+独立审计记录（2026-08-17）：
+
+- 只读复核 `packages/contracts`、`packages/domain`、`packages/persistence`、`apps/production-worker`、`services/media-runtime`、Control API serializer 和 Studio progress projection：内部评估结果、边界帧、修复计划、对象 key、临时路径、Provider/模型字段未进入公开 DTO/SSE。
+- 复核 `0013_perpetual_jimmy_woo.sql` 与 schema：Review/Repair 具备 workspace/project/run 复合约束、相邻边界约束、唯一边界索引、转场时长上限和本地修复 `task_run_id = null` 事实。
+- 复核 Worker：缺失源片段或边界帧能力时抛出可重试错误，不再确认事件；重复 durable delivery 在 `DUPLICATE` 时不调用 Runtime/Store；终态死信沿既有安全 FAILED Review 路径。
+- 复核 Runtime：ALCHMED2 composition plan 限制过渡枚举、桥接数量与 1-3 秒时长；仅 loopback、字节流、服务自有临时目录；三段 `PASS/BRIDGE` 混合夹具验证音轨与时长。
+- 复核证据：Production Worker 20/20、Domain 18/18、Runtime 9/9、Persistence disposable PostgreSQL 1/1、Studio 32/32、Contracts 30/30、根 typecheck/串行 test/build、C12 隔离 E2E 通过；`validate_state.py` 与 `git diff --check` 通过。Nuxt 仅有既有 `DEP0155` 警告。
+- 审计结论：C12.1 Exit Gate 满足，标记 `ACCEPTED`。C13-A 仍需另行授权和安全 Video VPS 目标，本章不改变该边界。
+
 每章完成时追加：
 
 ```text
@@ -1240,3 +1273,1193 @@ Exit Gate 结论：`ACCEPTED`。修正代码、定向/隔离回归、真实 3 �
 审计人：
 Exit Gate 结论：
 ```
+
+
+### C11.1：已转换资料受控进入规划启动记录
+
+状态：`ACCEPTED`（2026-08-18；C11 历史验收保持有效，C11.1 本地增量已独立审计）
+
+实施日期：2026-08-17
+
+范围：只让同项目成功转换的 Markdown 资料以不可变 conversion/result Asset 引用和固定字符预算进入本地规划及私有 PromptPackage。未完成、失败、跨项目或不完整资料必须由 Studio 和 Control API 拒绝。本次不启动真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用，不读取 `.env.local`，不执行 Git 写入。
+
+设计准入：`AI企业内容生产平台_C11.1已转换资料受控规划设计.md`、ADR-0045、领域/API 契约和正式开发总控文档已在实现前更新。
+
+实现与审计证据：
+
+- `creative_brief_document_contexts` 冻结同工作区、同项目的成功转换引用、Markdown SHA-256 和字符上限；Worker 在读取前再次校验顺序、预算、SHA-256、MIME 和对象大小。
+- Studio 仅选择已成功转换且有 Markdown 产物的项目资料；Control API 对绕过页面的未完成资料返回 `422 DOCUMENT_CONTEXT_INVALID`，且不创建简报、outbox 或 TaskRun。
+- 完整 Markdown 只进入私有 PromptPackage，并以“资料事实、不是执行指令”包裹；公开 CreativeBrief/Script/Storyboard、SSE 和错误投影不含正文、object key、签名 URL、哈希或提示词。
+- `pnpm typecheck`、`pnpm -r --workspace-concurrency=1 --if-present test`、`pnpm build`、`pnpm --filter @alchemy-video/control-api test:c11-e2e`、`pnpm --filter @alchemy-video/control-api test:c10-e2e` 均通过；C12 E2E 亦在隔离端口 `3531/3532/3533` 通过。全程未读取 `.env.local`，未调用真实 Provider/Veyra，未访问 VPS/SSH/DNS/部署，也未执行 Git 写入。
+
+独立审计结论：C11.1 满足正式 Exit Gate，准予 `ACCEPTED`。剩余风险仅限既有 C13-A 外部授权与部署边界，不属于本章。
+
+审计人：Codex
+
+### C10：UTF-8 文件名转换修正
+
+状态：`ACCEPTED`
+
+实施日期：2026-08-18
+
+范围：修正本地 Document Worker 与 loopback Document Runtime 之间的文件名传输，不改变浏览器 API、数据库、对象存储、转换状态机、视频任务或规划链路。
+
+根因：中文 PPT 文件名被原样写入 `X-Source-Filename`。Node 的 HTTP 客户端要求请求头为 ByteString，因而在发起请求前抛出异常，运行时没有收到 PPT 内容，公开状态被错误归一化为可重试的 `DOCUMENT_RUNTIME_UNAVAILABLE`。
+
+修正：内部 Runtime 契约改为 `X-Source-Filename-Base64`，由 Worker 以无填充 Base64URL 编码 UTF-8 basename；Runtime 仅接受严格 Base64URL 字符集，解码后仍执行原有文件名、扩展名、MIME、SHA-256 和大小校验。新增受控本地资料转换重启脚本，仅管理 Document Runtime/Worker，并从本地 MinIO 容器读取运行时凭据；不读取 `.env.local`，不启动 Provider。
+
+测试及实际验收：Document Runtime Python 测试 8/8；Document Worker 测试 8/8（包含 Node 到 Python loopback 的中文文件名回归）；Document Worker typecheck 通过；`pnpm --filter @alchemy-video/control-api test:c10-e2e` 通过（资料失败/重试、下载、隔离、浏览器和私有规划上下文）；`git diff --check` 通过，仅有既有 Windows 换行警告。通过公开 Control API 对用户项目的既有中文 PPT 执行一次受控重试，转换在第 3 次尝试变为 `SUCCEEDED` 并产生 Markdown Asset；Studio 页面刷新后显示该文件及“已可用于这次创作”。
+
+边界：没有创建视频任务或真实 Provider 调用；未使用 Veyra、VPS、SSH、DNS、部署或 Git 写入。用户原始 PPT 内容、对象 key、签名 URL、凭据和 Markdown 正文均未进入公开记录。
+
+审计人：Codex
+
+Exit Gate 结论：`ACCEPTED`。C10 现在支持 UTF-8 文件名的 PPTX、PDF、DOCX、XLSX、Markdown 和纯文本资料，且现有项目资料已完成转换。
+
+### C12/C11：新版本制作锁与来源素材保护修正
+
+状态：`ACCEPTED`（验收后的可靠性修正，不重开 C12/C11 章节）
+
+实施日期：2026-08-18
+
+根因：用户调整故事后，新的简报、规划和审批均已成功，但 `POST /production-runs` 将历史 `BLOCKED` 批次误判为活动批次，返回 `409 PRODUCTION_RUN_ACTIVE_CONFLICT`；因此没有创建新的 TaskRun，也没有到达 Provider。此前删除仍在运行任务引用的参考素材还可能使旧 TaskRun 快照失效。
+
+修正：统一内存 Repository、Drizzle Repository、Schema 与 `0015_vengeful_gargoyle.sql` 的活动批次集合，`BLOCKED` 只保留历史/重试语义，不再占用新版本锁。删除 USER_UPLOAD 素材前检查活动 TaskRun、活动 ProductionRun、活动文档转换和可重试失败段；命令结果以 `ASSET_IN_USE` 写入去重快照并返回 HTTP 409。Studio 为 `PROVIDER_PROTOCOL_INVALID` 与 `ASSET_IN_USE` 提供明确中文提示。
+
+测试及证据：Contracts 30/30；隔离 PostgreSQL 串行 Persistence 全套 27/27（含 BLOCKED 新版本回归、迁移索引断言和活动素材保护）；Control API 定向生成/素材测试及完整套件通过（32 通过、1 个既有服务门控跳过）；Studio 33/33、根 typecheck、Studio build 和 `git diff --check` 通过；迁移 0015 已应用到受控本地数据库并完成真实 sub2api 栈健康检查。未自动发起新的真实 Provider 请求，未访问 Veyra/VPS/DNS/TLS，未执行 Git 写入。
+
+审计人：Codex
+
+Exit Gate 结论：`ACCEPTED`。用户刷新当前 Studio 后可再次点击“调整后生成新版本”；旧失败/阻塞记录保持不可变历史。
+
+### C09-C/C12：真实 profile 出站 Prompt 上限修正
+
+状态：`ACCEPTED`（真实失败诊断后的运行时可靠性修正）
+
+实施日期：2026-08-18
+
+根因：旧 BLOCKED 锁修正后，新版本已经成功创建 ProductionRun、TaskRun 和两张参考图的 `REFERENCE_SET` 快照，但真实 `aiself-grok / grok-imagine-video-1.5` 在提交阶段拒绝 13,457 字节 Prompt，返回“Grok 视频最多支持 4096 字节的 UTF-8 文本”。这不是参考图丢失，也不是 xAI 官方文档公布的通用上限；官方文档没有公布 Prompt 字节限制，4096 是当前 SUB2API/profile 的实测能力事实。
+
+修正：保留平台 20,000 字节资料/执行预算和原始 Shot 描述，不恢复前端 4096 硬拒绝；在内部 `VideoProviderRuntimeProfile` 为当前真实 profile 声明 4,096 字节出站压缩上限。TaskRun 快照生成时使用配置预算与 profile 上限的较小值进行确定性 UTF-8 安全压缩，确保 Worker 实际提交内容与持久化快照一致。Mock profile 不受该限制。
+
+测试及证据：Provider Video 35/35；Production Worker 22/22；Provider/Worker typecheck 通过；Studio/Control API 现有回归保持通过；真实失败 TaskRun、ProviderAttempt、ProductionSegment 和参考素材快照已只读核验；未自动重试真实任务，未访问 Veyra/VPS/DNS/TLS，未执行 Git 写入。
+
+审计人：Codex
+
+Exit Gate 结论：`ACCEPTED`。下一次点击将以不超过当前 profile 实测上限的冻结 Prompt 发起新的真实 TaskRun；旧失败记录保持不可变历史。
+
+### C09-C：参考图角色视觉分析与用户说明优先修正
+
+状态：`ACCEPTED`（本地可靠性修正，不重开 C09/C11/C12）
+
+实施日期：2026-08-19
+
+范围：彻底弃用按上传位置推断人物/场景/风格。用户在故事/想法中的明确图片职责说明优先；无明确说明时，由可选的服务端多模态视觉分析单元识别 `SUBJECT`、`SCENE`、`STYLE`；没有分析结果或置信度不足时，C09/C11/C12 统一进入安全等待，不静默生成。
+
+实现与边界：新增 `@alchemy-video/reference-analysis` OpenAI-compatible 适配器，确认图片时由 Control API 服务端读取已确认对象并保存最小化视觉分析元数据；浏览器、公开 DTO、SSE、Worker 和日志不接触密钥、原始模型响应或视觉摘要。`HANDOFF` 首帧仍为最高优先级，显式主体绑定仅在用户未提出冲突说明时生效。既有用户上传素材不被按位置回填角色。
+
+测试及证据：Domain 24/24；Reference Analysis 2/2；Creative Planning 6/6；Provider Video 36/36；Studio 33/33；Control API 参考素材确认/角色快照回归、Persistence typecheck、Control API typecheck 通过；C12 PostgreSQL 持久化集成 1/1（临时 workspace 自动清理）；根 `pnpm typecheck` 与 `pnpm build` 通过；`git diff --check` 仅有 Windows 换行提示。未执行真实视觉模型调用、真实视频调用、Veyra、VPS、SSH、DNS、部署或 Git 写入。
+
+未完成项：当前本地 `.env.local` 未配置 `REFERENCE_VISION_*`，因此未配置视觉服务时系统会按设计等待；配置受控视觉端点后需另行做一次有界的图片分析能力认证。
+
+审计结论：位置规则已从运行时代码删除，用户说明优先和视觉分析兜底逻辑已覆盖 Control API、C11/C12 快照、Studio 提示与离线回归；本项 `ACCEPTED`。
+
+### C11.4：关键对象连续性与视觉道具锁
+
+状态：`ACCEPTED`
+
+实施日期：2026-08-21
+
+范围：把参考图中的关键对象从泛化 `主要道具` 锁升级为通用对象级连续性约束，覆盖用户文字优先、视觉分析兜底、MotionBeat 绑定和 Provider 出站 Prompt。旧 C11/C12/C12.1 事实保持不变；真实 Provider、Veyra、VPS、部署和 Git 写入保持后置。
+
+设计依据：`AI企业内容平台_C11.4关键对象连续性与视觉道具锁开发设计.md`。
+
+实现与审计证据：
+
+- `KeyVisualObjectLockSchema`、可选 `key_visual_objects` 和每节拍对象锁字段已加入内部契约；旧快照缺少字段时按空数组解析，无数据库迁移。
+- 用户故事中的对象说明由确定性解析器提取；参考视觉分析器返回最多 12 个受限对象摘要；两者只保留服务端私有字段，不进入公开 OpenAPI、AsyncAPI、SSE 或浏览器 DTO。
+- Workflow Worker 通过 workspace/project 范围的素材查询读取视觉对象摘要，将对象锁冻结到每个 PromptPackage、GenerationSegmentMotionPlan 和 MotionBeat；直接 Control API 生成路径同样把已确认素材对象锁编译进出站 Prompt。
+- Prompt 顺序将对象锁置于参考语义、风格和背景之前，并明确禁止替换、消失、合并或变形；对象锁没有拂尘特例，适用于产品、道具、服装配件和车辆等对象。
+- 定向与串行全仓回归通过：Contracts 30/30、Domain 29/29、Creative Planning 12/12、Provider Video 37/37、Reference Analysis 2/2、Workflow Worker 12/12、Control API 33/34（1 个既有服务门控跳过）、Persistence 19/27（8 个既有数据库门控跳过）、Studio 33/33、Document Worker 8/8、Production Worker 22/22、Task Worker 30/35（5 个既有 BullMQ 门控跳过）；根 typecheck/build 通过。
+- 独立审计复核了旧快照兼容、对象字段预算、workspace/project 查询边界、PromptPackage 私有性和公开契约脱敏；未发现真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用或 Git 写入。
+
+Exit Gate 结论：`ACCEPTED`。逐帧对象语义 QC 仍作为后续 C12 媒体质量增量，不伪装为本轮已完成能力。
+
+### C11.5：单实例持有与换手约束
+
+状态：`ACCEPTED`
+
+实施日期：2026-08-21
+
+范围：在已验收的 C11.4 对象连续性锁上补充通用单实例数量、持有者和明确换手阶段约束。前端不增加设置；不重开 C11/C11.1/C12/C12.1/C11.4，不触碰真实 Provider、Veyra、VPS、部署或 Git。
+
+设计依据：`AI企业内容平台_C11.5单实例持有与换手约束开发设计.md`。
+
+实现与审计证据：
+
+- `KeyVisualObjectLockSchema` 增加可选 `instance_count`、`holder`、`transfer`；`MotionBeat` 增加可选 `object_states`。旧 C11.3 MotionPlan 夹具无新增字段仍可解析，无数据库迁移。
+- 确定性解析器仅在用户明确表达左右手转移、交给或接过时生成 transfer；默认单实例和持有关系在同句多物体场景下保持局部；跨句代词换手有回归，视觉分析不能自行臆测换手。
+- 规划器在明确换手时至少生成释放、双手接触、目标手接收三个阶段，并把数量固定为 1、禁止复制/双持/残影写入每个 MotionBeat；无换手时只生成稳定状态。
+- Prompt 编译器将单实例与原子换手约束置于参考语义之前；Workflow Worker 私有 PromptPackage、MotionPlan 和 object_states 均有回归。用户文字字段覆盖同名视觉分析字段，公开 OpenAPI/AsyncAPI/JSON Schema 不含这些内部字段。
+- 定向测试：Contracts 31/31、Domain 32/32、Creative Planning 13/13、Provider Video 38/38、Workflow Worker 12/12；串行全仓测试通过：Studio 33/33、Control API 33 通过/1 个既有服务门控跳过、Persistence 19 通过/8 个既有数据库门控跳过、Document Worker 8/8、Production Worker 22/22、Task Worker 30 通过/5 个既有 BullMQ 门控跳过；根 `pnpm typecheck`、`pnpm build` 通过（仅既有 Nuxt `DEP0155` 警告），`git diff --check` 仅有 Windows 换行提示。
+- 独立审计复核了旧快照兼容、单实例数量守卫、换手顺序守卫、同句多物体隔离、用户优先级、Workflow Worker 私有边界和公开契约脱敏。未执行真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用或 Git 写入。
+
+未完成项：逐帧对象数量/持有者语义 QC 仍属于后续 C12 媒体质量增量，不在本章伪装为完成。
+
+审计人：Codex
+
+Exit Gate 结论：`ACCEPTED`。用户不需要新增设置；明确换手自动使用同一物体的释放—接触—接收约束，未明确换手则保持原持有关系。
+
+### C11.3：动作节拍与时间轴提示词开发增量
+
+状态：`READY_FOR_AUDIT`（根据真实项目“茅山地产内容运营”的规划审计重新打开后完成修正；不改变 C11/C11.1/C12/C12.1 的历史 `ACCEPTED`，也不改变 C11.2 的待实现状态）
+
+实施日期：2026-08-19
+
+范围：补充 `NarrativeBeat -> MotionBeat -> GenerationSegment` 的私有动作执行层，解决现有规划只形成句子/等分片段、缺少动作顺序、时间位置、起止姿态和连续性锁的问题。前端不增加工程化步骤；旧 Storyboard、TaskRun、VideoVersion 和公开投影保持兼容。
+
+实现与证据：`packages/contracts/src/creative-planning.ts` 新增 `MotionBeat` 与 `GenerationSegmentMotionPlan` 的完整时间轴 schema 和连续性校验；`packages/contracts/src/resources.ts` 为执行快照增加成对的版本/哈希/时间轴私有字段，并验证时间轴覆盖完整任务时长。`packages/creative-planning/src/index.ts` 以确定性规则生成 1 个短片段或 2-4 个长片段动作节拍、编译时间轴提示词并生成且核对 SHA-256 哈希；`apps/workflow-worker/src/execution-service.ts` 持久化动作计划；`packages/persistence/src/creative-planning-repository.ts` 将其放入既有私有 capability snapshot，避免破坏旧数据库结构；`packages/persistence/src/production-repository.ts` 与 `apps/production-worker/src/video-input-snapshot.ts` 在创建 TaskRun 时冻结动作计划版本、哈希和时间轴；旧 PromptPackage 没有动作计划时继续走兼容路径。
+
+测试及证据：根 `pnpm test` 通过；Contracts 30/30、Creative Planning 8/8、Domain 24/24、Persistence 19 通过/8 个既有数据库门控跳过、Provider Video 36/36、Production Worker 22/22、Workflow Worker 11/11、Control API 33 通过/1 个既有服务门控跳过；根 `pnpm typecheck`、根 `pnpm build`、`git diff --check` 通过。公开 OpenAPI、AsyncAPI 和平台 schema 扫描未发现 `MotionBeat`、`motion_plan` 或 `motion_timeline`；没有真实 Provider、Veyra、VPS、SSH、DNS、TLS、部署、付费调用或 Git 写入。
+
+2026-08-19 追加修正：审计发现真实项目的 15 秒输入将七个句子等同处理，包含“第一张图为人物原型、第二张图为场景、生成视频”的控制说明也进入了最后一个 MotionBeat。现已修正：参考图说明仅服务于角色解析；状态和文学解释成为有限视觉锁；混合句保留可执行动作，同时拆出状态与禁止项；明确禁止项在锁预算内优先；动作数量按真实可见动作而非原文句数限定。针对性回归已通过，恢复 `READY_FOR_AUDIT`。
+
+2026-08-19 修正验收证据：
+
+- `packages/domain`：28/28；覆盖控制说明剥离、用户图片职责、混合动作句保留、状态/禁止项视觉约束和状态迁移回归。
+- `packages/creative-planning`：10/10；覆盖茅山类素材说明不进入剧情、动作节拍、视觉锁、Prompt 顺序/哈希，以及混合句不丢动作。
+- `apps/workflow-worker`：11/11；规划快照、资料事实包和规划失败路径通过。
+- `apps/production-worker`：22/22；动作计划快照、Provider 输入边界和失败恢复通过。
+- `packages/provider-video`：36/36；Prompt 编译、参考图 1-7 张、profile 上限和协议错误归一化通过。
+- 串行根回归 `pnpm -r --workspace-concurrency=1 --if-present test`：全量通过；仅既有服务条件测试按环境跳过。根 `pnpm typecheck` 与 `pnpm build` 通过，构建仅保留既有 Nuxt `DEP0155` 警告。
+
+本轮未发起真实 Provider、视觉模型、Veyra、VPS、SSH、DNS、部署、付费调用或 Git 写入。独立审计仍待完成，当前不得标记 `ACCEPTED`。
+
+独立审计待核：需要复核旧快照兼容、TaskRun 快照不可变、Worker 重启不重复提交、跨工作区隔离，以及公开契约脱敏证据后才能标记 `ACCEPTED`。外部边界仍不授权真实 Provider、Veyra、共享积分、VPS、SSH、DNS、TLS、部署、付费调用或 Git 写入。
+
+### C11.6：真实镜头分段与运镜稳定性
+
+2026-08-22 C11.6 semantic camera-boundary revision：自动编排不再只识别显式“转场”词，也不把动作数量直接当成生成片段数量。对话/情绪落点、特殊视觉变化、地点/时间变化和叙事连接词进行保守评分，15 秒以内达到阈值时最多拆成两个有依赖的片段；普通连续动作继续保留为一个片段并由 MotionBeat 承担时间轴。茅山模式实测规划为 8 秒 + 7 秒、多机位；普通“进入-观察-取资料-交给同伴”实测保持单段。Creative Planning 16/16、Workflow Worker 13/13、Production Worker 22/22、Control API 33 passed/1 existing skip、typecheck 与 build 通过；未执行新的真实 Provider、Veyra、VPS、部署或 Git 写入。C11.6 仍为 `READY_FOR_AUDIT`，等待独立审计。
+
+状态：`ACCEPTED`
+
+实施日期：2026-08-21
+
+设计依据：`doc/AI企业内容平台_C11.6真实镜头分段与运镜稳定性开发设计.md`。
+
+范围：将复杂叙事中的多个运镜节拍提升为真正的 `GenerationSegment`，复用 huobao-drama、Seedance-2.5、OpenMontage 和现有 Sub2API ProviderPort 的成熟语义。前端不增加工程参数；本地默认 Mock；不触碰真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用或 Git。
+
+当前门禁：文档、代码和本地测试已完成。规划分段、Prompt 4096 字节保护、TaskRun 快照一致性、Mock 三片段 E2E 均已通过；现进入独立审计，审计通过后才能标记 `ACCEPTED`。
+
+2026-08-21 实现证据：复杂 15 秒输入已由规划器拆为 3 个 5 秒 `GenerationSegment`；每段保存独立 PromptPackage、依赖序列、唯一主运镜和起止状态。Workflow Worker、Provider runtime 和生产快照保持私有边界，旧 MotionPlan 仍可解析。Creative Planning 13/13、Provider Video 39/39、Workflow Worker 13/13、Production Worker 22/22、串行全仓测试、根 typecheck/build 通过；构建仅有既有 Nuxt `DEP0155` 警告。隔离 C12 Mock E2E（3631/3632/3633）通过，覆盖三片段生成、QC/交接、合成、播放、下载、脱敏和清理。当前进入独立审计，未执行真实 Provider、Veyra、VPS、部署或 Git 写入。
+
+2026-08-21 C11.6/C12.1 corrective audit revision：上述“复杂 15 秒固定拆为 3 个 5 秒片段”实现已标记为 `SUPERSEDED`，不再作为当前规则或验收依据。根因是把 MotionBeat/运镜节拍误当成 Provider 生成单元，造成相邻片段重复建立场景；同时，`UNAVAILABLE` 评估默认创建 BLEND 修复没有语义依据。当前规则恢复为：15 秒以内默认一个 Provider 片段，动作和运镜保留在同一段的时间轴；超过 15 秒按能力上限最少拆分，只有明确编辑性场景切换才额外拆分。交接 Prompt 使用已验收尾部状态作为连续性参考，禁止重演前段动作，不承诺逐像素首尾一致。`UNAVAILABLE` / `FAILED` 只写 `NEEDS_ATTENTION` 并直切，不创建 `TransitionRepair`；明确 `BLEND` / `BRIDGE_REQUIRED` 才允许修复。Creative Planning 14/14、Domain 32/32、Workflow Worker 13/13、Production Worker 22/22、Persistence 19 通过/8 个既有数据库门控跳过、Studio 33/33、Studio typecheck、隔离 `C12_E2E_RUNTIME_PORT=3533` 浏览器与数据库 E2E 均通过；E2E 断言 18 叙事点/30 秒为 2 个 15 秒片段、1 个边界 Review、0 个不可用评估修复，并完成播放、下载、脱敏和清理。未执行新的真实 Provider、Veyra、VPS、部署或 Git 写入。C11.6 保持 `READY_FOR_AUDIT`，待独立审计复核后再决定 Exit Gate。
+### C11.6/C12.1：参考仓库能力吸收独立审计
+
+状态：`ACCEPTED`
+
+实施/审计日期：2026-08-23
+
+逐文件复核 Huobao `storyboard-breaker`、Seedance `long-video`/`editing`/`prompting`、OpenMontage `source_media_review`/`variation_checker`/`final_review`/`video_stitch`，并核对本地 sub2api-video-mcp 协议登记与离线 certifier 夹具。高价值规则已通过薄适配吸收：对白时长与段内子镜头进入私有 MotionPlan；时间轴、起止状态、连续性锁、参考归属和物理转场进入 Prompt/交接编排；ffprobe、音频探测、首尾帧、重复镜头审计、音频保留及时长校验进入 Media Runtime/QC；三段式视频协议由现有 adapter/fixtures 保持。
+
+兼容性复核通过：新增字段可选，旧 MotionPlan/TaskRun/运行时 JSON 仍可解析；镜头审计只输出安全连续性提示，不改变用户输入、Provider 调用数或公开 DTO；未认证 Provider 能力、transcript 和视觉语义 evaluator 显式降级为 unavailable/needs attention，不伪造实现。
+
+证据：Creative Planning 19/19、Contracts 31/31、Production Worker 22/22、Production Worker typecheck、Media Runtime 10/10、根 typecheck/build、diff check 通过（仅既有 Nuxt DEP0155 与 Windows 换行提示）。未执行真实 Provider、Veyra、VPS、DNS、部署、付费调用或 Git 写入。
+
+Exit Gate：`ACCEPTED`。后续仅在有新的来源证据或用户明确需求时新增适配。
+
+### C11.6/C12.1：真实成片背景漂移修正复核
+
+日期：2026-08-23
+
+根因：当前真实 profile 的 4,096 字节出站压缩只保护了对白、机位和起止状态，长 Prompt 中的 `Scene lock` 与禁止背景变化约束可能被丢弃，导致上游模型在个别帧重新解释场景；参考素材上传、relay、ProviderAttempt 和下载链路均正常。
+
+修正：压缩器将场景锁和禁止变化契约提升为与对白、机位、起止状态相同的受保护指令。新增 42/42 Provider Video 回归；没有新增公开字段或项目专用背景规则。
+
+真实复核：固定 `video.aiself.vip` relay 下重新生成茅山项目最新两段规划；两次 ProviderAttempt、两条 TaskRun、两段 ProductionSegment 均成功，最终成片合成 QC `PASS`，总时长约 15 秒。连续性仍按现有语义评估规则记录 `NEEDS_ATTENTION`，未伪造视觉语义通过。
+
+结论：修正具有跨项目通用性，保持旧快照兼容和真实 Provider 边界；本项复核通过。
+
+### C11.6/C12.1：MotionBeat 片段内时间轴与直切降级独立审计
+
+状态：ACCEPTED
+
+实施/审计日期：2026-08-23
+
+本轮复核确认：15 秒以内普通连续动作保持一个 Provider 片段，MotionBeat 在该片段内覆盖从 0 到目标时长的连续时间轴；超过 15 秒按 ceil(duration / 15) 做最少分段；显式编辑性场景切换或保守语义切点评分达到阈值时最多增加一个短内容片段。动作数量、换手、运镜和多镜头描述本身不增加 Provider 调用。交接 Prompt 只引用前段验收尾部状态并禁止重演已完成动作。
+
+C12.1 评估结果为 PASS 时直切，明确 BLEND/BRIDGE_REQUIRED 才创建受控本地修复；UNAVAILABLE/FAILED 只持久化 NEEDS_ATTENTION 告警并直切，未创建 TransitionRepair。
+
+兼容与边界复核：GenerationSegmentMotionPlanSchema 的新字段（包括对白时长）均为可选，旧 MotionPlan JSON 可解析；Workflow/Production 快照使用冻结的 MotionPlan 与 hash，不在 Worker 重启时重新编排；公开 OpenAPI/SSE 不含 Prompt、MotionBeat、camera contract、Provider 或对象存储字段，内部 AsyncAPI 保留诊断字段仅供服务间使用；workspace/project 查询仍在 Repository 条件内完成。未修改历史 TaskRun、VideoVersion、公开 API 或外部系统。
+
+验证证据：Creative Planning 18/18、Domain 11/11、Production Worker 13/13、Contracts 28/28、Provider Video 17/17、Workflow Worker 10/10、Persistence 18 通过/1 个既有 PostgreSQL 门控跳过；六个受影响包 typecheck 通过；旧 MotionPlan 直接兼容解析通过。隔离 C12 E2E 在本轮因默认用户服务占用 3433 且两次 3531/3532/3533 runner 超时未取得新输出，但历史同版本隔离 E2E 已通过并覆盖 18 叙事点/30 秒两段生成、边界 Review、0 个不可用评估修复、播放下载和清理；本轮确认隔离端口已释放，未触碰 3433 用户服务。
+
+外部边界：未执行真实 Provider、视觉模型、Veyra、VPS、SSH、DNS、TLS、部署、付费调用或 Git 写入。
+
+审计人：Codex
+
+Exit Gate 结论：ACCEPTED。
+
+### C12.2：OpenMontage 终检与真实成片质量门禁
+
+状态：`READY_FOR_AUDIT`
+
+实施日期：2026-08-23
+
+设计依据：`doc/AI企业内容生产平台_C12.2_OpenMontage终检与真实成片质量门禁开发设计.md`、OpenMontage `final_review.schema.json`、`source_media_review.py`、`variation_checker.py` 与现有 C12 Media Runtime/Production Worker 契约。
+
+实施范围：新增私有 `FINAL_REVIEW_VIDEO` 工具和内部 `/internal/v1/media/final-review` 边界；对最终 MP4 做技术探测、四点代表帧抽样、黑帧/音频检查，并把语义承诺、转写/字幕和视觉语义能力不可用明确记录为 `UNAVAILABLE`。规划阶段另以私有 mapper 接入 OpenMontage `variation_checker` 与 `slideshow_risk` 的原始检查阈值。Production Worker 在写入不可变成片前执行终检；技术失败或 `BLOCK` 不发布，`NEEDS_ATTENTION/PRESENT_WITH_REVIEW` 只发布安全摘要并保留内部详情。公开 DTO 不暴露 Prompt、Provider、对象 key、临时路径或原始响应。
+
+测试证据：Media Runtime Python 12/12；Production Worker 23/23；Production Worker typecheck；Persistence typecheck/test/migration；Contracts build。组合回归证明 `NEEDS_ATTENTION` 不会被误写成 `PASS`。
+
+真实验收证据：本地全栈使用 `VIDEO_PROVIDER=sub2api`，对无参考图的“奇幻漫剧”15秒版本执行一次真实生成。既有 ProductionRun `prd_01M0P1844Q33F97DQ3BMZAG7FP` 和本轮复验 `prd_01M0PFYX4R1QV8VBCD0QK6271T` 均 1/1 分段成功；复验成片资产 `ast_01M0PG0VHY7RN3T29JWXRRK5FE` 为 15.042 秒、848x480、24fps、H.264/AAC 双声道；四点抽样无黑帧，最终 QC 为 `NEEDS_ATTENTION`，原因仅为语义 evaluator 与转写器未配置，推荐 `PRESENT_WITH_REVIEW`。产物路径：`.codex-longrun/media-review/c12.2-real-final-rerun.mp4`，接触表：`.codex-longrun/media-review/c12.2-final-rerun-frames/contact.jpg`。
+
+未完成项与风险：本轮已通过受控 SSH 反向隧道恢复固定 `video.aiself.vip/provider-input/` relay，并完成一次 2 段真实参考图生成；relay 不是平台代码的持久进程，正式部署仍需按 C13-A 运维方案持久化。OpenMontage 的视觉语义能力只认证到 CLIP 关键帧分类，不宣称逐像素连续性；没有绑定脚本文本时，转写虽可运行但脚本比对仍返回 `UNAVAILABLE`。技术 QC 已达标，完整语义质量仍不能宣称自动通过。
+
+审计人：Codex
+
+Exit Gate 结论：实现与真实技术验收证据齐全，进入独立审计；在 evaluator/transcriber 能力认证前保持 `READY_FOR_AUDIT`，不得标记 `ACCEPTED`。
+
+### C12.3：来源转写与语义终检适配
+
+状态：`READY_FOR_AUDIT`
+
+实施日期：2026-08-23
+
+设计依据：`doc/AI企业内容生产平台_C12.3来源转写与语义终检适配开发设计.md`、OpenMontage `tools/analysis/transcriber.py`、`tools/video/video_compose.py` 与 `tools/analysis/video_understand.py`。本轮只迁入来源已有的 faster-whisper CPU/int8、VAD、word timestamps、语言/时长输出、CLIP 关键帧分类，以及原始 token 清洗、标点泄漏和 0.9 词准确率比较逻辑。
+
+实现证据：Media Runtime 新增内部 `/internal/v1/media/transcribe` 与 `TRANSCRIBE_VIDEO` DTO；Production Worker 客户端只发送受限 MP4 bytes 和 SHA-256，不发送路径、对象 key 或浏览器字段。依赖不存在、模型执行异常或没有脚本时明确返回 `UNAVAILABLE`，不伪造语义通过，不改变 C12.2 的 `NEEDS_ATTENTION/PRESENT_WITH_REVIEW` 语义。
+
+验证证据：Media Runtime Python 17/17、Production Worker 24/24、Contracts build、Production Worker typecheck、root typecheck/build 均通过。受控本地运行时安装 faster-whisper 1.2.1、CPU torch 2.13.0 与 `openai/clip-vit-base-patch32`，对真实 15 秒成片完成中文转写（语言 `zh`、词级时间戳）和四点 CLIP 关键帧分类，`FINAL_REVIEW_VIDEO` 返回 `semantic_evaluation=CHECKED` 且无语义问题。另以真实参考素材执行 `prd_01M0PXQD9S62GT01SXHGDJ44RH`，2/2 分段 `ACCEPTED`。
+
+毕业复验：再次使用同一最新批准 storyboard 执行 `prd_01M0PZAVX04829F439K8WZAF6Q`，2/2 分段 `ACCEPTED`；最终资产 `ast_01M0PZEE4P91J6JE47NK1TP5MN` 为 15.125 秒、848x480 H.264/AAC 双声道。抽帧显示场景、服装和人物主体稳定，镜头由远至中至近有明确变化；音频平均音量 -26.7dB、峰值 -4.5dB。ProductionRun 仍按设计保留 `NEEDS_ATTENTION`，因为视觉承诺和逐像素连续性不是 CLIP 关键帧分类可以虚构的能力；对白比对现在由后台自动上下文驱动。
+
+自动绑定修正：Production Repository 现在从已批准 Creative Brief 自动抽取明确标记的对白/旁白，Worker 以 UTF-8 Base64 私有头传给 Media Runtime；用户不需要选择或绑定脚本。纯画面描述、故事梗概和营销文案不再作为应说出的台词；没有明确声音意图时不执行台词匹配。旧事件没有上下文时仍显式降级，且不会把长文直接放入 HTTP 头。
+
+对白判定复核：Huobao `storyboard-breaker` 只对分镜中显式对白/旁白计算台词时长，Seedance 规则要求声音意图明确声明；参考仓库没有把整段叙事自动视为对白的机制。平台已撤掉此前“无对白时回退整段原始想法”的错误兼容路径，并新增持久化回归覆盖引号对白、旁白提示和纯视觉叙述三类输入。纯视觉叙述的终检状态为 `NOT_EXPECTED`，不会再报虚假的 0% 台词匹配。
+
+兼容与边界：Transcript 字段全部为内部/可选扩展，旧运行时响应和旧快照可解析；公开 API、SSE、Provider、Veyra、VPS、DNS、TLS、部署和 Git 均未改变。视觉语义 evaluator 仍是独立的 `UNAVAILABLE` 能力，不以转写适配替代视觉判断。
+
+审计人：Codex
+
+Exit Gate 结论：来源适配、运行时认证、真实参考图链路和回归测试完成；保持 `READY_FOR_AUDIT`，唯一未自动宣称通过的边界是明确对白与实际人声不匹配时的内容复核，以及 CLIP 不代表逐像素连续性。
+
+### C12.3 最终复核补充（2026-08-24）
+
+- 来源规则复核：huobao-drama 的 storyboard-breaker 与 Seedance-2.5 的 sound-intent 只把明确写出的对白、旁白或配音作为语音预期；纯视觉叙述不得被当作台词。
+- 兼容修正：自动脚本上下文只从引号对白或明确语义提示提取；没有对白时 Media Runtime 返回 `NOT_EXPECTED`，不再制造“匹配度 0%”误报。公开 DTO、Provider、Worker 和 Media Runtime 边界保持不变。
+- 独立验证：Contracts 31/31；Persistence 23 pass/8 existing skips；Media Runtime 19/19；Production Worker 25/25；typecheck、状态校验和 diff 检查通过。
+- 真实复验：首轮片段生成及段 QC 成功，但合成因 `MEDIA_RUNTIME_UNAVAILABLE` 失败；重建契约依赖并重启正确 Worker 后，复用同一已批准分镜完成 `prd_01M0QPBH4BX85RGF6HWCF7HKN1`，1/1 段成功，15.042 秒 848x480 MP4 可播放且含 AAC 音频。对比旧样片，人物、服装、庭院和拂尘保持稳定，多机位推进仍在；本次实质提升是来源一致的终检语义，不宣称 Provider 视觉质量已因该修正普遍提升。
+
+### C12.4：连续旁白轨道与分段视频音频编排实现审计
+
+状态：`READY_FOR_AUDIT`
+
+实施日期：2026-08-25
+
+设计依据：`doc/AI企业内容生产平台_C12.4连续旁白轨道与分段视频音频编排开发设计.md`；OpenMontage `video-stitching.md`、explainer `compose-director.md`；huobao-drama 分镜/视频提示词技能；Seedance-2.5 `long-video.md`。
+
+实现范围：
+
+- `MediaRuntimeCompositionPlan` 增加可选 `audio_policy`，支持 `LEGACY_PRESERVE` 与 `CONTINUOUS_NARRATION`；旧 `ALCHMED1` 和 `ALCHMED2` 二进制 bundle 继续按旧行为解码。
+- 新的带有效完整脚本的 ProductionRun（单段或多段）由 Persistence 生成 `CONTINUOUS_NARRATION` 计划；无脚本/历史任务继续 `LEGACY_PRESERVE`。
+- 新增 `ALCHMED3` 内部 bundle 标记。连续旁白模式中，Media Runtime 对片段音频执行边界静音清理，采用顺序 concat，不在口播边界使用会截断音节的 acrossfade，最后按目标总时长 pad/trim。
+- 该阶段没有伪造独立 TTS Provider；连续轨道由已生成片段口播音频重组成单条最终音轨，后续可在同一 AudioPlan 位置接入独立 narration Asset。
+- 公开 DTO、SSE、Provider 请求、对象 key、密钥和历史资产均未扩大或改写。
+
+测试证据：Contracts 31/31；Production Worker 26/26；Production Worker typecheck/build；Persistence 23 通过、9 个 PostgreSQL 条件跳过；Media Runtime Python 23/23（含连续策略不使用会截断段内停顿的 `stop_periods` 回归）；`pnpm contracts:generate` 后契约导出无漂移；`git diff --check` 通过。
+
+兼容性审计：
+
+- 旧无计划 bundle：保持来源音轨原样拼接。
+- 旧历史 ProductionRun：没有 AudioPlan 时不重混、不覆盖、不重新提交 Provider。
+- 新连续旁白路径：只接管被标记为 Provider dialogue 的片段音频；用户源音频、环境声、音乐和音效的所有权规则仍由后续 AudioPlan 扩展承载。
+- TaskRun 状态矩阵、Provider request ID 恢复、交接帧、C12.1 画面 PASS/BLEND/BRIDGE_REQUIRED 语义均未改变。
+
+缺陷修复证据：首轮连续策略真实合成曾因 HTTP bundle gate 未接纳 `ALCHMED3` 返回 `MEDIA_RUNTIME_UNAVAILABLE`，未重复提交 Provider；随后修复入口并完成真实端到端复验。修复前的离线输出在约 10.68 秒后出现 19.46 秒静音，根因是 `silenceremove stop_periods=1` 在每段第一次自然停顿处截断后续台词；改为首尾双向 `areverse + silenceremove` 后，3 段真实 Provider 任务重新合成成功，VideoVersion `vvr_01M0TQ6T7047Q7FZ99J6VFZHS7`，30.126 秒、848x480、AAC。
+
+时长/对白诊断与修复：30 秒文案原先被机械规划为 3x10 秒；第三段 36 字对白仅有 10 秒预算，且第二段 Provider 实际无可识别口播，合成终检覆盖率降至 52%。规划器现按“最少 Provider 段数 + 每段对白字符时长下限 + 单段不超过 15 秒”选择 2x15 秒；编译器把 `AUDIO PRIORITY` 和逐字台词契约提升到提示词首部，并按 huobao storyboard-breaker 源规则保留对白缓冲 `字数 / 4.5 + 2s`。真实复验 `prd_01M0TSHB4KKDQM9GMRXNA5800K` / `vvr_01M0TSRB26BK3WE4XKXWTY6SCM` 完成 2/2 段，30.084 秒；两段及合成视频的脚本终检均为 `transcript_matches_script=true`、`word_accuracy=1.0`。
+
+音画不同步复核：前一版连续音频使用双向 `silenceremove`，会改变 Provider 原始音频相对画面的时间轴，并可能削弱首尾音节。现已移除该裁剪；`CONTINUOUS_NARRATION` 只执行 `aresample + concat`，保留每段原始音频与对应画面的时间关系。使用同一批真实 Provider 原片重新合成 `c124-sync-preserved-compose.mp4`，30.084 秒，脚本终检仍为完整匹配、ASR 1.0，且未再发生合成器切音。该输出是媒体 Runtime 隔离复验结果，未重复提交 Provider。
+
+BGM 混音实现与真实复验：新增 `ALCHMED4` 受控 composition bundle。Worker 只从当前工作区、当前项目中 `metadata.audio_role=MUSIC` 的 READY `AUDIO` Asset 读取音乐字节，Media Runtime 按 OpenMontage `full_mix` 思路执行音乐淡入/淡出、旁白 `asplit` sidechain ducking、目标时长裁剪和 `loudnorm`，不接受本地路径或 URL。离线证据为 Production Worker 27/27、Media Runtime 29/29；首次真实合成暴露了重复消费旁白滤镜标签的问题，已按 OpenMontage `asplit` 模式修复并重新构建整栈。第二次真实复验使用音乐资产 `ast_01M0WPSSXBCJ9QBS0VTK9GC43T`，生产任务 `prd_01M0WQHZYM3HK8MFB1FD0VRC8H`，VideoVersion `vvr_01M0WQSYQNHHJZ28J391FQKJPY`，30.084 秒、848x480、AAC，任务 `SUCCEEDED`。输出文件为 `.codex-longrun/media-review/local-30s-bgm-prd_01M0WQHZYM3HK8MFB1FD0VRC8H.mp4`；ffprobe 确认单条最终混音 AAC 音轨，响度检测 `mean_volume=-20.0 dB`、`max_volume=-9.4 dB`，未出现超过 0.45 秒的长静音。该样本证明 BGM 已进入最终成片，但音乐创作 Provider 和前端音乐选择 UI 仍是后续能力，不宣称已完成自动选曲产品化。
+
+参考素材与跨段道具复核：一次本地诊断脚本仍硬编码旧项目/旧 asset ID，造成诊断样本错误使用旧参考图；该脚本现改为只在显式传入 `CANARY_PROJECT_ID`、`CANARY_SOURCE_ASSET_IDS` 和可选 `CANARY_SOURCE_TEXT` 时切换项目/素材，不再把旧 ID 当作当前项目事实。另一次后台生成 `prd_01M0VBBRQGMA9CRCKMK3JEPFAT` 已携带最新的“禁止插入词”口播约束，但道具契约仅存在于源码、未进入当时的已编译 Worker 产物，故该次不会验证该契约。重新构建 `@alchemy-video/creative-planning`、重启本地栈后，真实复验 `prd_01M0VCEXSATY21J4FMVP4ZMMDG` / `vvr_01M0VCNW5529AWRTAGFXWFQCD8` 使用项目 `prj_01M0STQRM7SHPDTV2WR0QCBW8C` 的 6 张当前参考图；两段请求均记录 `PROP CONTINUITY CONTRACT`，第二段同时携带首段交接帧及当前参考图。成片为 30.084 秒、848x480、音频存在，脚本终检 `transcript_matches_script=true`、`word_accuracy=1.0`。道具的视觉一致性仍需人工观看确认，当前自动语义评估不证明逐帧道具一致。
+
+新旧成片对比：旧版 `vvr_01M0TK4A0HS8CV24G1TB9W1DYK` 为 30.125 秒；修复后的新版本为 30.126 秒。两者均通过容器、视频、音频和脚本一致性检查；旧版在段间/尾部可检测到 5 秒级静音，新版不再发生段内首次停顿导致的整段截断，但仍可能因 Provider 片段本身的口播长度不足而在目标时长末尾保留画面无声区。该剩余问题属于“独立 narration Asset/智能时长分配”范围，不能伪称已由本次重组完全解决。
+
+未完成项与风险：当前本地 profile 没有独立 TTS/narration 资产生成器；本实现先把各段真实口播音频重组成单条最终音轨，需通过人工观看确认口型与画面动作时间是否仍匹配。若旁白资产或音频语义评估不可用，不能宣称完整连续口播质量已自动通过。
+
+审计人：Codex
+
+Exit Gate 结论：代码、契约、兼容路径、离线测试和受控真实样本已完成；连续策略已修复首轮真实样本发现的音频截断问题。由于独立 narration Asset、智能时长分配和人工画面审查仍未完成，保持 `READY_FOR_AUDIT`，不标记 `ACCEPTED`。
+
+### C12.5：口播语速优先与弹性总时长编排复验
+
+状态：`READY_FOR_AUDIT`
+
+实施日期：2026-08-25
+
+来源与复用：直接复用 huobao-drama `storyboard-breaker` 的 8–15 秒段界、台词容量估算和语义边界拆分；复用 Seedance-2.5 的连续声音/端点约束；复用 OpenMontage 的“实际旁白优先、剩余时间由视觉承载”规则。本轮只改现有 `DeterministicPlanningModel` 和 Prompt Compiler，没有新增 Provider、TaskRun 或公开 API。
+
+代码证据：规划器在有明确口播时按台词容量选择最少 Provider 段数，禁止目标 30 秒机械触发 3 段；每段仍保持现有 8–15 秒能力边界。口播段提示词明确逐字、自然一致语速、禁止慢放/重复/填充词；剩余时间仅允许动作、环境声或干净视觉尾拍；纯视觉段不再携带跨段口播连续性指令。现有总时长契约保持不变，避免破坏 `assertStoryboardPlan` 的状态和持久化边界。
+
+离线验证：Creative Planning 27/27、Provider Video 43/43、Production Worker 26/26、Media Runtime Python 24/24；相关包 build/typecheck 通过，`git diff --check` 无错误。
+
+真实验证：本地全栈 `VIDEO_PROVIDER=sub2api` 使用项目 `prj_01M0STQRM7SHPDTV2WR0QCBW8C` 当前人物/场景参考素材和完整中文口播。首轮固定域名因不持有本地 MinIO 资产而按预期失败并归一化为 `PROVIDER_UNAVAILABLE`；随后使用仓库既有临时 HTTPS reference-delivery tunnel 重跑。生产任务 `prd_01M0VHSW8NFECH4FWBSBZ4PHY8` 状态 `SUCCEEDED`，2/2 段接受，30 秒总计划，每段 Provider 请求为 480p、16:9、15 秒；产物为两个 848x480、约 15.042 秒 MP4。该结果证明新版规划和真实 Provider 链路均已生效。
+
+兼容与剩余风险：当前真实入口尚无独立 TTS narration Asset，因此“视觉尾拍”由同一 Provider 段承载，不能宣称已实现跨段独立旁白的完整自动对齐；ProductionRun 的连续旁白和最终人工观看仍保持 `READY_FOR_AUDIT`，不标记 `ACCEPTED`。本轮未改 VPS、Veyra、DNS、TLS 或部署。
+
+审计人：Codex
+
+Exit Gate 结论：来源规则已落代码，离线回归和真实参考图 Provider 复验通过；保持 `READY_FOR_AUDIT`，待独立审计员确认后再进入 `ACCEPTED`。
+
+### C12.6：源仓库能力完整吸收与兼容优化复验
+
+状态：`READY_FOR_AUDIT`
+
+实施日期：2026-08-25
+
+设计依据：`doc/AI企业内容生产平台_源仓库能力完整吸收与兼容优化方案.md`；Huobao storyboard-breaker/video-prompt、Seedance-2.5 prompting/long-video、OpenMontage script Artifact、verify_scene_pacing 与 explainer EP。
+
+实现证据：
+
+- `StoryboardShotSpec`、`MotionBeat` 和 `GenerationSegmentMotionPlan` 增加可选 source binding、reference anchor、narration cue 与 `voice_performance` 字段，旧 snapshot 仍可解析。
+- Planner 移除按片段序号固定的“侧向跟拍/推近/环境反打”数组，改为从可观察源事件推导一个主运镜；同一源动作不再凭空增加第二运镜。
+- Prompt Compiler 记录 source reference anchors 和 voice performance contract；Worker reference delivery 同时返回 URL 与语义 role 顺序，保持 Prompt image 编号和 Provider 临时输入一致。
+- Media Runtime 新增 `check_narration_alignment`，复用 OpenMontage 的 gap/overlap/scene overflow 与 `±0.5s` 对齐原则；无 cue/landmark 时明确返回 `UNAVAILABLE`。
+
+验证证据：Creative Planning 27/27；Provider Video 43/43；Production Worker 26/26；Task Worker 32 通过、5 个已有 BullMQ 条件跳过；Media Runtime Python 26/26；Contracts 31/31；相关包 typecheck/build 通过；`pnpm contracts:generate` 后契约导出无漂移。
+
+二次审计：未发现旧固定运镜数组、公共 DTO 泄露 Provider URL/密钥、旧 snapshot 不兼容或新增字段穿透错误。参考图 role 仍是内部语义，不改变公开 `ReferenceBinding.role` 枚举。真实独立 TTS 时长反馈仍未实现，按设计保持后置，不把估算时长冒充实际时长。
+
+真实 Provider 复验补充：首轮运行暴露固定 `video.aiself.vip` reference relay 当前不可达，任务在提交前按预期归一化为 `PROVIDER_UNAVAILABLE` 且没有 Provider request ID；随后发现 Control API 对已由 Workflow 编译的 PromptPackage 又追加了一次对白契约，已增加幂等保护和回归测试。使用临时 HTTPS relay 重启新构建后，复用同一生产批次显式重试，任务 `prd_01M0VNZQGE0QX4BPG1V5XA0NTJ` 最终 `2/2 ACCEPTED`、`SUCCEEDED`；VideoVersion `vvr_01M0VPWYNKZ856K1ET8C2PM59X`，Asset `ast_01M0VPW84SVGJ3V286YET29SP6`，30.084 秒、848x480、H.264/AAC、双声道 48kHz，下载 9,608,908 bytes。Media Runtime 技术终检通过，四点抽样无黑帧、无异常静音；语义 evaluator/transcriber 当前未配置，最终状态保持 `NEEDS_ATTENTION/PRESENT_WITH_REVIEW`，不虚构人物/场景/逐字口播自动通过。
+
+审计人：Codex
+
+Exit Gate 结论：文档、代码、契约、测试和冲突处理已完成；保持 `READY_FOR_AUDIT`，真实 TTS feedback loop 是明确后置项，不阻塞本轮 Provider 质量取样。
+
+### C12.6-E：台词结束后的视觉尾段声音边界复验
+
+状态：`READY_FOR_AUDIT`
+
+实施日期：2026-08-25
+
+来源依据：Huobao `prompt-generator/video-prompt/SKILL.md` 的无对白段使用环境/动作声；Seedance-2.5 `references/prompting.md` 的显式声音意图；OpenMontage `talking-head/compose-director.md` 与 `tools/video/silence_cutter.py` 的长静音标记和超过 5 秒建议缩短规则。
+
+实现证据：
+
+- `packages/creative-planning` 的完整对白契约新增 `POST-DIALOGUE SOUND POLICY`，尾段明确为 `SILENCE/AMBIENT-ONLY`，禁止继续对白、旁白、发声、口型同步和说话动作。
+- MotionPlan 的既有 `prop_locks` 和时间轴文本同步携带该声音边界，未新增公开字段、Provider 状态或视觉模型。
+- `packages/provider-video` 的兼容 Dialogue contract 同步追加无对白视觉保持和稳定结束姿态约束。
+- `services/media-runtime` 继续保留大段异常静音判定，并对单个超过 5 秒长静音添加源仓库式质量提醒，不把有意视觉 hold 伪造为技术失败。
+
+验证证据：Provider Video 44/44；Creative Planning 27/27；Media Runtime Python 27/27；类型检查通过；`git diff --check` 无错误（仅既有换行符提示）。
+
+真实样本复核：`c126-real-prd_01M0VNZQGE0QX4BPG1V5XA0NTJ.mp4` 的尾段从约 22.86 秒至片尾约 7.2 秒无语音而人物仍有口型/动作，确认原问题是“视觉尾拍已有但声音边界未编译”为机制缺口；本轮只补来源规则和回归，不重复消耗真实 Provider 调用。
+
+冲突处理：不删除源仓库允许的视觉呼吸时间，不把所有静音一律判错；按 OpenMontage 的做法保留可审阅的视觉 hold，同时要求明确非说话画面，历史快照和 `LEGACY_PRESERVE` 行为不变。
+
+审计人：Codex
+
+Exit Gate 结论：源仓库应对机制已吸收，代码和测试通过；保持 `READY_FOR_AUDIT`，口型逐帧语义评估仍因本地缺少视觉模型而未宣称自动通过。
+
+真实效果复验补充：重启新构建并使用正确的 Control API HTTPS reference relay 后，真实 Provider 生产任务 `prd_01M0WJH86AY5SYDFZWRCET5ET9` 成功，2/2 段 `ACCEPTED`，VideoVersion `vvr_01M0WJS3PNEPQF3QD0Z078GWJY`，30.084 秒、848x480、H.264/AAC，下载 9,058,796 bytes。新片尾 `28.3324s-30.1013s` 静音约 1.77 秒；27–29 秒抽帧为无人出镜的场景空镜，未复现旧版最后两秒人物继续张嘴和无意义动作。该结果说明新增的无对白尾段策略已在真实 Provider 上生效，但 Provider 仍属于随机模型，保留人工复核要求。
+-
+### C12.4/C12.5 恢复复验补充（2026-08-29）
+
+- 从中断会话恢复后补齐音频导入 `selection_hint`，保存受限检索风格到项目音乐资产元数据；自动选曲评分读取该字段，公开搜索结果仍不暴露导入命令字段。
+- Control API 45/45、Contracts 31/31、Studio 35/35、Production Worker 26/26、Media Runtime Python 32/32、根级 typecheck/build 和契约导出均通过；构建仅保留既有 Nuxt DEP0155 警告。
+- 重启本地 Media Runtime 后，使用既有两段 MP4 与已授权 BGM 完成纯 loopback `ALCHMED6` 合成，输出 30.084 秒、848x480、H.264/AAC、48kHz 双声道，-14.0 LUFS、-1.5 dBFS；没有新 Provider 请求、TaskRun、计费或外部部署操作。
+- C12.4/C12.5 仍保持 `READY_FOR_AUDIT`，独立 narration Asset、逐帧口型/语义质量和人工成片审查仍是明确的后置审计边界。
+-
+### 保险AI介绍完整制作失败修复复验（2026-08-29）
+
+- 项目 `prj_01M14H87JKQV2PJHRQ70JFX7FQ` 的 `prd_01M14HKSNY3K0YHR6ZTST0E5FN` 诊断确认：3/3 分段 `ACCEPTED`、3/3 技术 QC `PASS`；失败只发生在最终合成后的终检，首个真实异常为 `QC_FAILED` 黑帧检测（第 3 段约 8.875–9.583 秒，合成后约 28.958–29.667 秒）。
+- 按 OpenMontage 允许的 0.5–1.0 秒 fade-through-black 规则，Runtime 将不超过 1 秒的短淡黑记录为 `NEEDS_ATTENTION` 而不阻断；超过 1 秒仍 `BLOCK`。Media Runtime Consumer 异常时释放 durable lease，避免 BullMQ 的 `BUSY` 重试覆盖原始 `QC_FAILED`。
+- 规划器修复无引号 `口播文案` 区块识别，并使用原始换行提取对白。保险文案新规划实测为 2x15 秒，完整台词分为约 14.278 秒和 10.722 秒自然语速预算；不再按旧 3x10 秒硬塞末段。
+- 旧 `历史成片03` 的 Prompt 属于不可变历史快照，未含显式对白契约，不能原地修写；其末段语言混乱与旧规划把视觉意图和口播混排、且末段容量不足相符。新版本必须重新规划/生成，旧分段不会自动重渲染。
+- 复用三个已成功分段进行纯本地合成+终检得到 `NEEDS_ATTENTION/PRESENT_WITH_REVIEW`，短淡黑约 0.708 秒且 `black_frames_detected=false`，证明不再触发 `FAILED/BLOCK`。未执行新的 Provider、Veyra、VPS、部署或 Git 操作。
+
+### 工作区共享配乐曲库修复（2026-08-29）
+
+- 根因：Studio 的项目详情资产列表和 Production Repository 自动选曲都带有 `project_id` 限定，导致其他项目导入的 READY 音乐无法显示或参与成片。
+- 修复：新增受项目访问校验保护的 `GET /api/v1/projects/{project_id}/audio-library`，查询条件为当前 `workspace_id`、`AUDIO`、`READY`、`metadata.audio_role=MUSIC`；Studio 合并共享列表并按 ID 去重，Worker 自动选曲同步改为工作区查询。
+- 边界：音乐对象仍按来源项目保存 `project_id` 和对象 key，仅在同一工作区复用；API 序列化继续隐藏 `object_key`，不同工作区不会返回资产。
+- 验证：Contracts 31/31、Control API 45/45 加 1 个既有 skip、Studio 35/35、Studio typecheck、Persistence typecheck、Production Worker 30/30、根级 typecheck/build 均通过；重启本地全栈后保险项目实际返回 19 首共享音乐。未执行 Provider、Veyra、VPS、部署或 Git 操作。
+
+### 保险项目口播完整性修复（2026-08-29）
+
+- 对最新运行 `prd_01M14SHYWRWRHKG9VVPT2HJR8V` 的原始分段做实际转写：第 1 段只覆盖前半台词，第 2 段 `segments=[]`；问题不是拼接丢音，而是 Provider 生成的分段原声本身不可靠。
+- 按 OpenMontage explainer 的“完整 narration 先生成、再进入合成”规则，Media Runtime 新增受保护的 Piper 本地旁白接口。Production Worker 从持久化的完整 `口播文案` 派生脚本，在合成前生成并校验 WAV，通过 `ALCHMED5` 传入；Provider 音频只保留为生成时的口型/画面参考，不再作为成片主口播。
+- `deriveTranscriptScript` 现在识别无引号的 `口播文案/旁白文案/配音文案/对白文案` 区块，终检会真实比较该脚本；Runtime 对片尾不超过 2 秒的终端淡黑降级为提醒，片中黑帧仍阻断。
+- 离线与本地验证通过：Media Runtime 36/36、Production Worker 31/31、Persistence 24/9、根级 typecheck/build；既有两段视频重合成得到 30.084 秒成片，ASR 覆盖率 86.7%，最终 `NEEDS_ATTENTION/PRESENT_WITH_REVIEW` 而非 `FAILED/BLOCK`。未执行新的 Provider、Veyra、VPS、部署或 Git 操作。
+
+### 保险项目真实验收补充（2026-08-29）
+
+- 使用修复后流水线实际创建 `prd_01M14WJY4AMT4ET4KP92E1WQJP`，2 个 15 秒分段均由当前 `sub2api / grok-imagine-video-1.5` 成功生成并通过分段 QC；最终 `VideoVersion vvr_01M14WTRSJCVJW9JXQZMP5SDEN` 已保存，ProductionRun 为 `SUCCEEDED`。
+- 最终成片 `30.084s`，H.264/AAC、48 kHz，BGM 已混入。faster-whisper 实际转写 4 段/66 词，完整脚本比较 `transcript_matches_script=true`；四帧技术抽样无黑帧。终检仅将约 13.1 秒计划性无对白视觉尾段标为 `NEEDS_ATTENTION/PRESENT_WITH_REVIEW`，没有阻断完整制作。
+- 本次真实调用没有启用 Veyra 共享积分扣费，未改 VPS、DNS、部署或 Git 历史。
+
+### 保险项目口播节奏与无口型错配复验（2026-08-29）
+
+- 问题根因：原实现把 Provider 自带音频当作主旁白，并从片头单轨覆盖，导致第二段没有可靠口播；FFmpeg 的音乐时间门控默认只初始化求值，旁白结束后把中后段配乐错误静音。由于独立 TTS 与 Provider 人脸没有共同驱动，要求模型同时口播也必然造成口型错配。
+- 实现：旁白改为 Piper 分段绝对时间轨道，保险文案在两个 15 秒视觉段中按 44/46 字均衡拆分；Provider Prompt 为纯画面契约，禁止可听语音、说话动作和口型，画面优先手部/侧后方/UI；音乐 `volume` 使用 `eval=frame` 并以 `amix=duration=longest` 贯穿成片；跨段逗号由 TTS 收束为句号。源文案剥离在原始换行文本中完成，避免误删后续画面描述。
+- 质量边界：当前 Provider/平台没有受控的音素级驱动接口，因此不再对独立 TTS 宣称逐帧口型同步；该版本以“画面非说话 + 权威旁白”消除错配。未来若要真人正脸说话，必须接入可接受同一音轨或音素时间轴的口型同步模型，并增加逐帧验收。
+- 验收：真实运行 `prd_01M15XZ7M20TE2ZYBHWS5H0DH4` 2/2 分段 `ACCEPTED`，最终 `vvr_01M15Y5EAPV4E14ZP0RNJW41NT` 为 30.084 秒、848x480、H.264/AAC；持久化终检 `PASS`，脚本转写匹配 `true`、准确度 `0.973`，无异常静音，-15.1 LUFS/-1.5 dB true peak，工作区共享配乐已混入。Creative Planning 28/28、Provider 44/44、Production Worker 31/31、Media Runtime 39/39 通过。
+
+审计人：Codex
+
+Exit Gate 结论：本轮真实项目已通过完整制作和音频终检；保留“无可控 lip-sync 模型时不承诺逐帧口型同步”的产品边界，章节继续 `READY_FOR_AUDIT`。
+
+### 保险项目成片合成失败与无重生恢复复验（2026-08-29）
+
+- 诊断对象：`prd_01M164Z8T9J03YWXV9SZS89D8V`。两个 `TaskRun`、ProviderAttempt 和分段技术 QC 均成功；失败仅在 `video_version.composition_requested` 的 Media Runtime 终检。持久化消费错误为 `QC_FAILED: 黑帧检测发现连续黑帧。Low transcript-to-script match: 0%.`。
+- 根因：第一段末尾约 1.17 秒为黑底但中央存在 `JUNHE` 可见文字的片尾卡，旧 `blackdetect` 仅凭暗像素误判为无内容黑屏；脚本内数字与 `AI` 被 ASR 写成中文口语/同音字，旧比较器把语义等价读法误报为 0% 匹配。另发现 Windows 上 Uvicorn 监听子进程可能继承基础 Python，启动脚本此前只终止父进程，存在端口被旧服务接管的风险。
+- 修复：Runtime 对黑场候选抽取三个内部帧，只有均为近全黑才阻断；深色文字/品牌卡改为 `NEEDS_ATTENTION` 提示。脚本比较增加中文数字口语规范化及既有缩写同音边界。启动脚本递归终止受管进程树，并为 Piper 指定本地解释器。
+- 恢复契约：新增幂等 `POST /api/v1/production-runs/{production_run_id}/composition/retry`，仅适用于 `FAILED` 且所有片段 `ACCEPTED` 的运行；它恢复为 `REVIEWING` 并写新的 composition outbox 事件，不创建 Shot、TaskRun 或 ProviderAttempt。Studio 对该状态显示“重新合成成片”。
+- 验收：实际调用该恢复端点后，运行转为 `SUCCEEDED`，生成 `vvr_01M168NT316KRM0GN53P7FCYP8`，30.084 秒、848x480、H.264/AAC；终检确认完整转写、无异常静音、-15.3 LUFS/-1.5 dB true peak。ProviderAttempt 数仍为 2，证明没有重提视频。Media Runtime 41/41、Domain 35/35、Contracts 31/31、Control API 45/45（1 个既有 skip）、Studio 35/35 通过。
+
+审计人：Codex
+
+Exit Gate 结论：成片失败现可在不浪费 Provider 调用的前提下恢复；真实黑屏仍阻断，深色文字卡保留人工复核提示。保持 `READY_FOR_AUDIT`。
+
+### 源仓库全量迁入实施启动前决策阻塞（2026-08-29）
+
+状态：`BLOCKED`
+
+前置条件：已完成《源仓库全量能力迁入与冲突治理总实施设计》的编写和二次审计；本轮按长任务 supervisor worker 模式执行，没有启动新的 supervisor。
+
+阻塞原因：P0 `C11.7/C12.7A` 将新增 DeliveryPlan/NarrationPlan、CapabilityProfile、VoiceAuthorization、PronunciationGlossary、BrandPolicy、BudgetReservation、CreativeDecisionLog、QualityGateDecision 等公共契约和状态机。设计文档第 11 节明确要求默认时长策略、样音审批、术语读法、云 TTS/Avatar、字幕、真实人声/头像/Logo 授权、预算上限和输出变体在写代码前由用户确认。按 AGENTS.md 第 13 节，这些属于不能自行假设的公开 API、状态和模块边界决策。
+
+本轮验证：已读取 AGENTS.md、`.codex-longrun/state.json`、roadmap/progress/test-log/blockers、正式开发总控文档、章节审计记录和源仓库全量迁入设计；`git status --short` 显示大量既有未提交差异，未回滚、未暂存、未提交。
+
+未执行事项：未修改产品代码、契约导出物、数据库迁移、Provider、Veyra、VPS、DNS、TLS、部署或 Git 索引；未运行产品测试，因为没有产品行为改动。
+
+Exit Gate 结论：当前不能进入 P0 代码实现。用户确认第 11 节 8 个实施决策后，下一轮应先在正式总控文档注册唯一 `IN_PROGRESS` 章节，再补 ADR/契约/schema/事件并开始最小 P0 实现。
+
+### C11.7/C12.7A：交付与语音预检基础
+
+状态：`READY_FOR_AUDIT`
+
+实施日期：2026-08-29
+
+设计依据：`doc/AI企业内容生产平台_源仓库全量能力迁入与冲突治理总实施设计.md` P0、P1/P3 前置依赖、冲突裁决和第 11 节保守默认授权；新增 ADR-0053 至 ADR-0058。
+
+当前范围：先实现 Provider 提交前的 Delivery/Narration preflight、授权、能力、预算、输出 profile 与质量 action 的最小契约、状态机和持久化事实。当前不启用真实 Provider、云 TTS、Avatar、Veyra、VPS、DNS、TLS、部署或 Git 写入。
+
+实现文件：`packages/contracts/src/delivery-preflight.ts`、`packages/contracts/src/events.ts`、`packages/contracts/src/primitives.ts`、`packages/contracts/src/errors.ts`、`packages/contracts/src/specifications.ts`、`packages/domain/src/delivery-preflight.ts`、`packages/persistence/src/schema.ts`、`packages/persistence/src/delivery-preflight-repository.ts`、`packages/persistence/drizzle/0017_absurd_reptil.sql`、`apps/control-api/src/app.ts`、`apps/control-api/src/serializers.ts`，以及对应的契约、领域、schema 和 Control API 回归测试。新增内容包含预检实体契约、状态转换、workspace/project 作用域、幂等命令快照、内部安全事件和公开投影；默认路径不创建 TaskRun，不调用 Provider/Veyra。`
+
+验证证据：
+
+- `pnpm --filter @alchemy-video/contracts test`：32/32 通过；`contracts generate` 与 tracked export drift 通过。
+- `pnpm --filter @alchemy-video/domain test`：41/41 通过。
+- `pnpm --filter @alchemy-video/persistence test`：25 通过，9 个既有数据库服务门控跳过；schema contract 含 C11.7/C12.7A 新表和复合外键检查。
+- `pnpm --filter @alchemy-video/control-api test`：46 通过，1 个既有服务门控跳过；新增路由覆盖创建、审批、阻断、重复请求、幂等冲突、事件数量和无 TaskRun 副作用。
+- `pnpm typecheck`、`pnpm build`、`git diff --check`：通过；构建仅保留既有 Nuxt `DEP0155` deprecation warning，diff check 仅有既有 LF/CRLF 提示。
+
+验收路径：已批准的 CreativeBrief/Storyboard 可创建 `AWAITING_APPROVAL` DeliveryPlan；批准后转为 `APPROVED` 并追加安全内部事件；非通用声音或 REQUIRED lip-sync 在本地未认证条件下转为 `PREFLIGHT_BLOCKED`；同一幂等键重放不重复创建计划或事件；整个路径不提交视频任务。
+
+剩余边界：历史兼容的 ProductionRun 命令仍允许无 preflight 的旧调用；将 `delivery_plan_revision_id` 强制接入新的 ProductionRun/Provider submit 是后续 P1，完成前不宣称完整生产提交门禁。独立审计员确认前不得标记 `ACCEPTED`。
+
+### C11.7/C12.7A P1：ProductionRun 与 Provider 快照接线
+
+状态：`ACCEPTED`
+
+实施日期：2026-08-29
+
+实现提交或工作区快照：当前工作区快照；章节处于开发和审计阶段，未执行 Git staging、提交或推送。
+
+修改文件：
+
+- `packages/contracts/src/creative-planning.ts`、`packages/contracts/src/events.ts`、`packages/contracts/src/resources.ts` 及生成的 `contracts/` 导出物。
+- `packages/persistence/src/schema.ts`、`packages/persistence/src/creative-planning-repository.ts`、`packages/persistence/src/delivery-preflight-repository.ts`、`packages/persistence/src/production-repository.ts`。
+- `packages/persistence/drizzle/0018_shiny_scrambler.sql` 及对应 Drizzle snapshot/journal。
+- `apps/control-api/src/app.ts`、`apps/control-api/src/index.ts`、`apps/control-api/src/serializers.ts`。
+- `apps/production-worker/src/video-input-snapshot.ts`、`packages/provider-video/src/runtime-profile.ts`、`apps/studio-web/app/composables/useControlApi.ts`、`apps/studio-web/app/pages/projects/[project_id].vue`。
+- 对应 Contracts、Persistence、Control API、Worker 和 Studio 回归测试；ADR-0059。
+
+新增 API / 事件 / 数据库变更：
+
+- `CreateProductionRunCommand` 要求 `delivery_plan_revision_id`。
+- `ProductionRun`、`production_run.confirmed` 和私有视频输入快照保存可选的计划引用，以兼容历史事实。
+- 新增 nullable `production_runs.delivery_plan_revision_id`；当前不声明反向数据库复合外键，生产创建事务以 workspace/project/storyboard 作用域查询、计划行锁和领域状态门禁保证一致性。
+- `APPROVED` DeliveryPlan 在同一生产创建事务内转为 `CONSUMED`；幂等重放只返回原 ProductionRun，已消费计划不能被第二个运行复用。
+
+测试命令与结果：
+
+- `pnpm --filter @alchemy-video/contracts test`：32/32 通过；新增计划引用和公开确认事件投影回归通过。
+- `pnpm --filter @alchemy-video/persistence test`：26 通过，9 个既有数据库服务门控跳过。
+- `pnpm --filter @alchemy-video/control-api test`：46 通过，1 个既有服务门控跳过；C11.7 覆盖批准、消费、重放和重复消费阻断。
+- `pnpm --filter @alchemy-video/production-worker test`：31/31 通过；Worker 快照保留计划引用。
+- `pnpm --filter @alchemy-video/provider-video test`：44/44 通过。
+- `pnpm --filter @alchemy-video/studio-web test`：35/35 通过；Studio typecheck 通过。
+- 受影响包 typecheck/build、根级 `pnpm typecheck`/`pnpm build` 和 `git diff --check` 通过；构建只保留既有 Nuxt `DEP0155` 警告，diff check 只保留既有换行提示。
+
+验收证据路径：
+
+- `apps/control-api/tests/c11-creative-planning-routes.test.ts`
+- `packages/contracts/tests/contract-export.test.ts`
+- `packages/persistence/tests/schema-contract.test.ts`、`packages/persistence/tests/creative-planning-repository.test.ts`
+- `apps/production-worker/tests/video-input-snapshot.test.ts`
+- `.codex-longrun/test-log.md`
+
+未完成项：
+
+- 历史无计划 ProductionRun 行和旧确认事件保持只读兼容，未回填。
+- C06 旧的直接 Shot 生成端点仍是历史兼容路径；新的 Studio 自动 ProductionRun 流程不经过该路径。
+- 无 `DATABASE_URL`，Drizzle 事务集成测试按既有规则跳过；本轮未启动外部数据库。
+- 旁白质量闭环、字幕、Avatar/lip-sync、共享扣费、多输出导出仍未完成。
+
+风险与后续动作：当前计划引用的一致性由应用事务和行锁保证，数据库层没有反向复合外键；如需升级为数据库约束，必须另立 schema/迁移 ADR 并先解决循环表初始化与历史校验。下一章进入 C12.7B 本地 narration quality loop，继续保持真实 Provider、Veyra、VPS、DNS、TLS、部署和 Git 写入关闭。
+
+审计人：Codex（独立源代码、契约和安全边界复核）
+
+Exit Gate 结论：新公开 ProductionRun 命令已强制携带并消费批准 DeliveryPlan；确认事件、Worker 快照和 Studio 类型保留安全计划身份；workspace/project/status/幂等/历史兼容测试通过；章节 `ACCEPTED`。
+
+### C12.7B：本地旁白质量闭环（历史审计快照，2026-08-29）
+
+历史状态：`READY_FOR_AUDIT`
+
+实施范围：在 C11.7/C12.7A P0/P1 事实之上，新增本地旁白脚本规范化、显示文案/播音稿分离、数字与时间规范化、术语表歧义门禁、样音批准、Piper provider facts、实测时长、TimelinePlan 绝对时间轴和 canonical transcript 私有质量事实。保持本地 Mock/loopback 边界，不启用云 TTS、Avatar、真实视频 Provider、Veyra、VPS、DNS、部署或 Git 写入。
+
+实现文件：
+
+- `packages/contracts/src/narration-quality.ts`、`packages/contracts/src/events.ts`、`packages/contracts/src/specifications.ts` 及生成的 `contracts/` 导出物。
+- `packages/domain/src/narration-quality.ts`、`packages/creative-planning/src/narration-quality.ts`。
+- `packages/persistence/src/schema.ts`、`packages/persistence/src/narration-quality-repository.ts`、`packages/persistence/drizzle/0019_luxuriant_celestials.sql`、`packages/persistence/drizzle/0020_perpetual_donald_blake.sql`。
+- `apps/control-api/src/app.ts`、`apps/control-api/src/index.ts`、`apps/control-api/src/task-run-repository.ts`。
+- `apps/control-api/tests/c12.7b-narration-quality.test.ts`、`packages/creative-planning/tests/narration-quality.test.ts`、`packages/persistence/tests/narration-quality-repository.test.ts`、`packages/persistence/tests/schema-contract.test.ts`、`packages/contracts/tests/contract-export.test.ts`。
+
+行为证据：
+
+- 创建脚本保存不可变 `source_script_hash`，显示文案保持原样，spoken/provider 文案按确定性规则生成；未映射 `AI` 等缩写进入 `NEEDS_DECISION`，审批被拒绝。
+- 样音审批检查 workspace/project、AUDIO、READY，并记录固定本地 Piper `length_scale=1`、样音 Asset 和实测毫秒时长；公开响应不包含 `piper-local` 或 Provider transport 字段。
+- TimelinePlan 只允许批准脚本和批准样音，按实测 section 时长编译 15 秒 Provider 上限的绝对视觉段；样音声明时长和 section duration 总和必须匹配已持久化音频实测时长，重复命令重放原结果，不重复资产或事件。
+- canonical transcript 只保存私有质量事实：无文本为 `UNAVAILABLE`，足够匹配为 `CHECKED`，低匹配为 `NEEDS_REVIEW`；公共 `NarrationAssetVersion` 仅可暴露状态，不暴露内部准确率。
+
+验证证据：
+
+- `pnpm --filter @alchemy-video/contracts test`：34/34 通过；`pnpm --filter @alchemy-video/contracts generate` 和 tracked export drift 通过。
+- `pnpm --filter @alchemy-video/domain test`：41/41 通过。
+- `pnpm --filter @alchemy-video/creative-planning test`：34/34 通过。
+- `pnpm --filter @alchemy-video/persistence test`：30 通过，9 个既有数据库服务门控跳过；包含 C12.7B repository、migration/schema、private transcript facts、时长防伪和内存事件 sink 回归。
+- `pnpm --filter @alchemy-video/control-api test`：48 通过，1 个既有服务门控跳过。
+- `pnpm typecheck`：通过；`pnpm build`：通过，仅保留既有 Nuxt `DEP0155` warning；`git diff --check`：通过，仅有既有 LF/CRLF 提示。
+
+未完成项与风险：
+
+- 本轮没有 `DATABASE_URL`，Drizzle 事务集成测试未启动真实数据库，依既有规则保留 9 个 skip；需要独立审计或集成环境复验迁移与事务。
+- Control API 消费已生成并校验的本地 Piper 资产事实；样音生成仍由受控 Media Runtime 负责，不在浏览器或公开 Control API 内直接执行 TTS。
+- AudioPlan 的完整 track ownership、字幕、Avatar/lip-sync、共享扣费和多输出导出仍是后续章节。
+
+审计人：Codex（实现与本地验证）
+
+独立审计补充（2026-08-29）：复核 C12.7B contracts/domain/persistence/Control API/public SSE 投影和测试后，发现两个实现缺口并已修复：内存版 `timeline_plan.created` 事件没有走统一 `eventSink`，会影响本地 SSE/事件替身；TimelinePlan 创建接受客户端 section durations 但未校验其与已批准样音版本的实测总时长一致。修复后样音审批在真实 asset duration 缺失或不匹配时 fail closed，TimelinePlan 拒绝伪造 section duration，内存和 Drizzle 路径均保持 workspace/project 约束和安全 outbox/事件投影。
+
+独立审计复测：`pnpm --filter @alchemy-video/creative-planning test` 34/34 通过；`pnpm --filter @alchemy-video/persistence test` 30 通过、9 个既有数据库门控跳过；`pnpm --filter @alchemy-video/control-api test` 48 通过、1 个既有服务门控跳过；`pnpm --filter @alchemy-video/contracts test` 34/34 通过；`pnpm typecheck` 通过；`pnpm build` 通过，仅既有 Nuxt `DEP0155` warning；`git diff --check` 通过，仅既有 LF/CRLF 提示。未执行真实 Provider、云 TTS、Avatar、Veyra、VPS、DNS、部署或 Git staging/commit。
+
+Exit Gate 结论：C12.7B 本地旁白质量闭环经独立源代码、契约、安全边界和回归审计后通过，章节 `ACCEPTED`。后续进入 P2/C11.2 资料知识与事实包或 P3 Delivery Proposal/成本门禁时，必须另立唯一 `IN_PROGRESS` 章节并先更新契约/ADR。
+
+### C11.2：资料理解、事实包与按段检索（历史启动快照）
+
+历史状态：`IN_PROGRESS`
+
+实施日期：2026-08-29
+
+范围：按既有 C11.2 后端/前端设计启动本地确定性资料理解链路。首个切片只允许新增契约、领域状态机和无网络 `document-intelligence` 规则分析器基础；暂不接真实文本模型、OCR、视觉资料理解、Provider、Veyra、VPS、DNS、部署或 Git 写入。
+
+前置审计：C11.1 已实现受控 Markdown 冻结但仍会在 Workflow Worker 内读取有界原文；C11.2 的目标是逐步替换为 `DocumentKnowledgeRevision -> DocumentFact -> CreativeBriefFactContext -> SegmentFactPack`。C12.7B 已 `ACCEPTED`，不会与 C11.2 的资料事实链路共享状态机。
+
+Exit Gate 目标：公开 DTO/SSE 不暴露 Markdown、object key、Prompt、模型、检索分数或内部 hash；所有事实有 workspace/project、conversion、section locator；冲突、视觉缺失和未完成理解 fail closed；后续 Worker/API/Studio 接线必须在本章后续切片单独验证。
+
+P1 实施审计（2026-08-30）：
+
+- 新增 `document_knowledge_revisions`、`document_knowledge_sections`、`document_facts` 和 `creative_brief_fact_contexts` schema/前向迁移；Drizzle 与内存 Repository 均按 workspace/project/conversion 约束，成功结果不可覆盖，失败仅可显式重试。
+- `DocumentKnowledgeExecutor` 通过受限 Markdown 流调用无网络确定性理解器，按标题/幻灯片/表格保留章节定位；视觉缺失、注入文本和冲突数字不进入营销事实。
+- `DeterministicFactSelector` 将最多 24 条候选冻结为 Brief 快照，每个片段最多 8 条相关事实与 12 条品牌/合规锁；无关键词匹配时不跨段复制无关事实。
+- Control API 新增安全理解详情与重试路由；公开响应不含 Markdown、对象 key、analyzer、Prompt、Provider 原文或内部 hash。OpenAPI/JSON Schema 已同步生成。
+- `pnpm --filter @alchemy-video/contracts test`：35/35；`pnpm --filter @alchemy-video/persistence test`：34 通过、9 个既有数据库门控跳过；`pnpm --filter @alchemy-video/document-intelligence test`：3/3；`pnpm --filter @alchemy-video/document-worker test`：9/9；`pnpm --filter @alchemy-video/control-api test`：49 通过、1 个既有服务门控跳过；根 `pnpm typecheck` 与 `git diff --check` 通过。
+
+P1 Exit Gate：`READY_FOR_AUDIT` 前置切片完成，C11.2 仍保持 `IN_PROGRESS`。剩余 P2 为真实 conversion-success 到 knowledge queue 的 relay/恢复接线、CreativeBrief READY-only 门禁和 Studio/Workflow E2E；本轮未执行真实 Provider、Veyra、付费调用、VPS、部署或 Git 写入。
+
+P2 实施审计（2026-08-30）：
+
+- Conversion 成功事务现在同步创建 `DocumentKnowledgeRevision=QUEUED` 与 `document_knowledge.queued` Outbox；独立 `BullMqDocumentKnowledgeQueue`、死信处理和 `DocumentKnowledgeOutboxRelay` 已接入 Document Worker 前台启动路径，队列消息只携带持久化身份。
+- Worker 读取 Markdown 仅通过 workspace-scoped 知识仓储解析对象 key，再调用 StoragePort；服务端校验 `text/markdown` MIME 与冻结 SHA-256，成功后才写入 Section/Fact/READY 事件，Control API 不暴露对象 key。
+- Drizzle CreativePlanning 在选中文档资料时强制检查同项目、同 Conversion、同 Markdown SHA 的 READY KnowledgeRevision；通过确定性 selector 冻结最多 24 条 Brief 事实快照。Workflow/Prompt Compiler 优先使用冻结事实，不再把原始 Markdown 块写入新 PromptPackage；缺少 READY 或快照不一致分别返回 `DOCUMENT_KNOWLEDGE_NOT_READY` / `DOCUMENT_FACT_CONTEXT_INVALID`。
+- 新增 Relay scope/发布失败回退测试及事实编译安全测试；`pnpm --filter @alchemy-video/contracts test` 35/35、`pnpm --filter @alchemy-video/document-worker test` 11/11、`pnpm --filter @alchemy-video/creative-planning test` 35/35、`pnpm --filter @alchemy-video/persistence test` 34 通过/9 个既有数据库门控跳过、`pnpm --filter @alchemy-video/control-api test` 49 通过/1 个既有服务门控跳过、根 `pnpm build` 通过，`git diff --check` 通过。Workflow Worker 全量回归仍有 3 个此前已有的时长/镜头/口播断言失败，未由本 P2 事实路径引入。
+
+P2 Exit Gate：后端队列、Relay、READY-only 门禁、新 Prompt 事实边界和前台重启时 QUEUED/RUNNING 知识任务恢复已实现，但 C11.2 暂不进入 `READY_FOR_AUDIT`。尚缺真实 PostgreSQL/Redis/MinIO 联调、Studio“整理 -> 理解 -> 可用于创作”E2E，以及上述 Workflow 旧回归断言的独立归因与修复；本轮未执行真实 Provider、Veyra、付费调用、VPS、部署或 Git 写入。
+
+收口审计基线（2026-08-30 04:16）：
+
+- 按最新用户约束，唯一活动章节明确保持 C11.2；正式总控页首已从 C12.2 纠正为 C11.2，历史章节条目仅作为审计轨迹，不得据此开启新章节。
+- 工作区复核发现根目录未忽略的 0 字节临时文件 `({duration` 与 `inspect-production-run.json`；未删除用户文件，已列入清理建议。`upstream/` 未被 Git 跟踪；`.env.local` 仍由 `.gitignore` 忽略。
+- 本轮只允许验证 C11.2 剩余 Exit Gate；真实 Provider、Veyra、VPS、部署、付费调用和 Git 发布保持关闭。状态仍为 `IN_PROGRESS`，在剩余证据完成前不得标记 `READY_FOR_AUDIT` 或 `ACCEPTED`。
+
+### C11.2：真实联调、总回归与独立收口复核（2026-08-30）
+
+复核范围：仅 C11.2 剩余 Exit Gate；不启动 C11.3/C12.2-C12.7B、免费音频、真实 Provider、Veyra/共享积分、VPS/DNS/部署或 Git 写入。
+
+真实本地证据：
+
+- PostgreSQL `video_root_final_20260830`、Redis `127.0.0.1:6380`、MinIO `127.0.0.1:9002` 均健康并完成迁移。
+- `pnpm --filter @alchemy-video/control-api test:c10-e2e` 通过；Studio 浏览器闭环实际覆盖资料“整理 -> 理解 -> 可用于创作”、刷新/项目隔离/移动布局，并断言 conversion-success -> knowledge Outbox -> BullMQ -> Document Worker -> READY、Section/Fact/SHA、READY Brief fact snapshot、Prompt 不回退 Markdown 和公开详情脱敏。
+- `packages/persistence/tests/document-knowledge-repository.integration.test.ts` 在真实数据库通过 1/1，覆盖幂等重放/冲突、跨 workspace 隔离、conversion SHA 错配、RUNNING 恢复、FAILED retry、READY 结果不可覆盖和 Outbox 事件类型。
+- Document Worker 12/12 通过，包含 QUEUED/RUNNING 重启恢复；Workflow Worker 15/15 通过，事实选择、段作用域和历史兼容回归均独立归因，无当前失败。
+
+串行回归证据：
+
+- 根 `pnpm typecheck`、`pnpm build`、`git diff --check` 通过；构建仅有既有 Nuxt `DEP0155` 警告。
+- 根 `pnpm test` 在显式本地服务环境完成 18 个工作区项目：426 passed、5 个明确环境门控 skipped、0 failed。skipped 原样保留（1 个 MinIO CORS 场景、4 个需专用 BullMQ/C06 恢复 fixture 的场景），没有将 skip 改写为通过。
+- 受影响包复核：Contracts 35/35、Domain 43/43、Persistence 47/47、Document Intelligence 4/4、Document Worker 12/12、Workflow Worker 15/15、Creative Planning 35/35、Control API 51/51、Provider Video 44/44、Production Worker 31/31、Studio Web 36/36、Task Queue Redis 1/1；无真实 Provider/Veyra/网络调用。
+
+独立边界复核：
+
+- 事实均带 workspace/project/conversion/section locator；SHA、历史 revision 和 READY 结果不可原地覆盖。
+- 冲突数字、视觉缺失和注入指令 fail closed；Brief/Workflow/Prompt 只消费 READY 冻结事实，公开 DTO/SSE/OpenAPI 不暴露 Markdown、object key、Prompt、analyzer、模型、Provider 或内部 hash。
+- `production_runs.delivery_plan_revision_id` 仍是已知 schema 风险（应用事务/行锁保证当前不变量，未伪称数据库反向复合外键）；默认 shell 未配置 `DATABASE_URL` 的门控事实已记录。根目录 `({duration` 与 `inspect-production-run.json` 两个 0 字节临时文件未删除，待用户确认清理。
+
+Exit Gate 结论（独立审计确认，2026-08-30）：C11.2 本地实现、真实服务联调、恢复/隔离/公开边界和串行总回归证据齐全；根 typecheck/build、显式本地服务根 test（426 pass / 5 explicit skip / 0 fail）、本地黑盒 smoke 和 README 状态纠偏均已复核。章节标记为 `ACCEPTED`，仅表示 C11.2 本地范围完成，不代表平台长期目标或真实 Provider/Veyra/VPS/Git 边界完成。`production_runs.delivery_plan_revision_id` 反向复合外键缺口、5 个明确 skip、真实外部系统未测试等风险继续保留；不得据此开启后续章节或外部系统工作。
+# C12.4/C12.5 旁白编排复核（历史快照，已由文末 2026-08-30 14:22 对账 supersede）
+
+本标题以下至最新对账前的计数和路径描述保留为审计轨迹，不作为当前证据；当前可复核测试计数、状态和来源口径只以文末 14:22 记录为准。
+
+- 完整 `scriptText` 优先于历史 `narrationSegments`；没有已批准 TimelinePlan 时，Worker 只接受已有绝对起点 cues，不再从 0 秒整轨合成后用 padding 遮盖缺口。
+- Piper 参数与 OpenMontage 对齐（length_scale=1.0、sentence_silence=0.3）；多行中文引号解析、长尾静音阻断和无音频 BLOCK 均有测试证据。
+- `pnpm --filter @alchemy-video/creative-planning test`：36/36；`pnpm --filter @alchemy-video/production-worker test`：34/34；media-runtime：44/44；`pnpm --filter @alchemy-video/persistence test`：41 通过、10 个既有 DATABASE_URL 门控 skip。
+- Python 测试必须从 `services/media-runtime` 工作目录执行（模块依赖 `main`/`runtime` 的本地导入）；从仓库根目录直接指定文件会产生入口路径错误，不视为产品失败。
+- 本轮实现与定向复核完成，C12.4/C12.5 当前保持 `IMPLEMENTED_PENDING_AUDIT`，尚未标记 ACCEPTED。
+- 口音边界（历史快照，已 superseded）：当时仅使用 OpenMontage Piper 离线 fallback；`sentence-silence`/`length-scale` 只改善节奏，不保证中文口音。现行自动流程不要求用户上传音频，已按用户授权保留 Grok native 优先并支持显式 Doubao profile；本条不替代当前真实产物与人工听感审计。
+- OpenMontage TTS selector/provider 代码已完成只读审计；由于本平台尚无对应安全 Port 且无授权凭据，本轮不移植外部网络调用，避免越过本地 MVP 边界。
+- 已补独立 production-worker 行为夹具：approved narration asset 通过 StoragePort 读取并直接进入 compose、Piper synthesis 不调用；缺 approved timeline/cues 与 target+1001ms 超长旁白均在 compose/finalReview/落库前拒绝；不使用静态源码检查。
+- 超长判定已对齐 OpenMontage explainer 规则：仅当旁白超出视频超过 1 秒才阻断；轻微超出保留 warning/复核路径，不再使用无出处的 500ms 阈值。
+- `narrationTextForSynthesis` 不再无来源地把尾逗号改成句号；仅做 trim，保留源文案标点与段落停顿。
+- 设计边界纠偏：C12.7B 的 READY TimelinePlan、APPROVED script、精确 asset-version、样音批准和 AUDIO/READY asset 已由 persistence helper 按 workspace/project 校验；approved AUDIO bytes 由 Worker 通过 StoragePort 读取后作为 authoritative track 进入 ALCHMED5，并以 asset `durationMs` 与 Runtime 的实际 ffprobe 时长共同做超长门禁。
+- 无独立 approved asset 的 READY plan 走已有 delivery-cue `narrationSegments` 绝对起点合成；连续模式先将 Provider 段音频替换为静音，再叠加权威旁白，避免双播。ALCHMED5 对 approved full track 仍从 t=0 播放，尚未把 section-level TimelinePlan windows 编码进 full-track bundle，因此本章保持 `IMPLEMENTED_PENDING_AUDIT`，不宣称绝对时间轴设计全部完成。
+
+## C12.4/C12.5 当前复核更正（2026-08-30）
+
+- 当前状态仍为 `IMPLEMENTED_PENDING_AUDIT`，不得据此标记 `ACCEPTED`。本轮没有真实 Provider/TTS/Veyra、外部网络、VPS 或 Git 操作。
+- 规划器与持久化层统一使用同一行标题解析语义：`视频生成意图描述：...` 等同一行 heading 不会被吞入口播；新增 creative-planning 回归后为 38/38。
+- `provider_duration_seconds` 按 Provider 请求上限解释，接受实测编码时长在该上限外的既有 250ms 共享容差；15.042s 片段回归通过，超过容差仍 fail-closed。Persistence 当前显式本地 PostgreSQL 回归为 57/57（无数据库时仍有 10 个门控 skip）。
+- 当前根级显式本地服务串行回归 `pnpm test` 退出码 0；根 `pnpm typecheck` 与 `pnpm build` 均通过（仅既有 Nuxt DEP0155 警告）。Workflow Worker 15/15、Production Worker 40/40、Contracts 35/35、Provider Video 44/44、Media Runtime 64/64 通过。
+- 仍未完成的硬门：ALCHMED7 尚未传输完整 AudioPlan（version/asset_id/gain_db/fade）；approved full narration 的 section-level 绝对窗口仍以 t=0 整轨消费；cue-only 路径仍逐 cue 调用 Piper，不能宣称 full-narration-first 声学连续性；transition/xfade bridge 尚未与最终 effective duration 完整对账；Studio 尚无“自动生成样音→审批→正式资产→TimelinePlan”操作闭环（历史记录中的“样音上传”不是当前前提）。以上保持 pending，不能用绿色离线测试替代真实音频质量或 UI 审批事实。
+
+## C12.4/C12.5 当前复核更正（2026-08-30 10:13）
+
+- Worker 终检不再允许仅有 `narrationSegments` 的旁白绕过脚本/ASR 比对：当顶层 canonical script 缺失时，使用持久化 cue 的 `provider_text` 拼接作为私有终检 transcript；cue 文本为空则在 QC 阶段 fail-closed。
+- 连续旁白下若任一 accepted source segment 仅有 `LEGACY_PRESERVE`、却没有持久化 delivery/ownership 事实，Worker 在 Piper/compose/落库前返回 `QC_FAILED`，避免把未知 Provider 对白与平台旁白双播；这同时意味着当前仓储事实不足以可靠区分 ambience/user audio，不能宣称 ownership 已完整迁移。
+- 本轮定向 `pnpm --filter @alchemy-video/production-worker test`：41/41；`pnpm --filter @alchemy-video/production-worker typecheck`：通过。根 `pnpm typecheck`、`pnpm build` 均通过；显式本地 PostgreSQL/Redis/MinIO 的根 `pnpm test` 退出码 0，为 450 pass / 5 explicit skip / 0 fail（历史 426/5/0 记录保留为历史证据，不与当前计数混用）。
+- 5 个 skip 仍是既有环境/fixture 门控（storage-client MinIO CORS 1 项、task-worker C06 BullMQ recovery 4 项），未改写为通过；未调用真实 Provider/TTS/Veyra、外部网络、VPS/DNS 或 Git。
+- C12.4/C12.5 继续保持 `IMPLEMENTED_PENDING_AUDIT`。未完成硬门仍包括：ALCHMED7 完整 AudioPlan identity/gain/fade/version 传输、approved full-track 的 section-level 绝对窗口、transition/xfade coverage、cue-only full-narration-first 声学连续性、Studio 样音/审批/TimelinePlan UI 闭环，以及中文口音的真实 TTS profile 认证。
+
+### C12.4/C12.5 语速与外部音频范围复核（2026-08-30；历史快照，已由 E04 对账 supersede）
+
+- （历史快照，已 superseded）`services/media-runtime/adapters/openmontage_audio/piper.py` 曾依据 OpenMontage Piper 数值接口登记 `NATURAL=1.0`、`SLOW=1.15`、`FAST=0.85`；上游没有该 symbolic pace 映射，当前 E04 仅保留 `NATURAL=1.0`，SLOW/FAST/BRISK 在 Piper 前 fail-closed。`pause_before_ms` 必须已编码在绝对 `start_ms`，`pause_after_ms` 进入 Piper `sentence_silence`；Piper 不支持的 `energy` 仍阻断并要求批准样音/其他 provider。
+- 证据：media-runtime `test_runtime.py` 75/75，`adapters` 4/4；未调用真实 TTS、Provider 或网络。C12.4/C12.5 仍为 `IMPLEMENTED_PENDING_AUDIT`。
+- REQUIRED 字幕当前由 Runtime 明确 `UNAVAILABLE/BLOCK`，尚未接入 OpenMontage SubtitleGen/FFmpeg burn；Studio 审批闭环、approved full-track section-level offset、transition coverage 和 cue-only full-narration-first 连续韵律仍是阻断项，不能因定向测试通过而宣称完整完成。
+- Freesound 不是本轮指定上游；相关 catalog/deploy 代码已从本地 MVP 路径移除（历史记录保留），local stack/deploy 不注入或要求外部曲库密钥，本轮不以其作为 BGM 证据。
+
+### C12.4/C12.5 源音轨滤镜与 SSML 边界复核（2026-08-30）
+
+- 按 OpenMontage `audio_mixer.py::_track_filters` 的顺序，Runtime 在 `CONTINUOUS_NARRATION` 且已有明确来源 ownership 时，对 `PROVIDER_AMBIENCE`/`USER_SOURCE_AUDIO`/`LEGACY_PRESERVE` 段音频实际应用数值 gain 与非零 fade，再进入已审计的段落拼接；`LEGACY_PRESERVE` 策略不受新滤镜影响，`PROVIDER_DIALOGUE` 仍只按声明被替换。Runtime graph 行为测试覆盖 2 段 source track 的 gain/fade。
+- Piper 不支持 SSML；`provider_text` 中带明确时长的 `<break>` 只有在与批准 `pause_after_ms` 一致时才转为文本边界，缺失/冲突时显式 `MEDIA_RUNTIME_UNAVAILABLE`，不静默吞掉停顿时长。
+- ALCHMED8 解析新增 track-count 截断边界，统一返回 `MEDIA_RENDER_FAILED` 而非 `IndexError`。Runtime 定向回归为 78/78，OpenMontage adapter 为 4/4；Contracts 36/36、Production Worker 42/42、Worker typecheck 通过。
+- 本轮仍不宣称 C12.4/C12.5 完整验收：REQUIRED 字幕生成、Studio 样音/审批/TimelinePlan UI 闭环、approved full-track section-level 实际消费、transition coverage 与真实中文口音仍为阻断项。
+
+### C12.4/C12.5 字幕烧录与受控 Runtime 复核（2026-08-30）
+
+- 已按 OpenMontage `tools/subtitle/subtitle_gen.py` 与 `tools/video/remotion_caption_burn.py` 的边界接入最小 loopback 字幕烧录：仅消费已检查的 word timestamps，生成临时 SRT 并用 FFmpeg `subtitles` 滤镜输出；产物写入 `alchemy_captions=burned_srt` 标记，未从脚本文本臆造时间。
+- `DeliveryPlan.caption_policy=REQUIRED` 现在由 Production Worker 触发 captions endpoint，并由 final review 验证烧录标记；缺少已批准 timing 或 transcriber 能力仍返回可重试 `MEDIA_RUNTIME_UNAVAILABLE/BLOCK`，不是静默 `NOT_EXPECTED`。Studio 样音/TimelinePlan UI 闭环仍未完成，因此不能据此宣称完整验收。
+- C12 本地 E2E 使用 `.codex-longrun/c10-document-runtime-venv`（存在时）启动 Media Runtime，并注入同一 `MEDIA_TRANSCRIBER_PYTHON_PATH`、`PIPER_PYTHON_PATH` 与本地 `HF_HOME`。Runtime capability 先用该解释器探测 `faster_whisper`；配置解释器与服务解释器不一致或缺模块时 fail-closed。系统 Python fallback 仅可执行视频 smoke，不代表字幕/TTS 能力。
+- 本轮证据：在 `services/media-runtime` 工作目录执行 `python -m unittest discover -s tests -p 'test_runtime.py' -v` — 87/87；`python -m unittest discover -s adapters -p 'test_*.py' -v` — 4/4；`pnpm --filter @alchemy-video/production-worker test` — 43/43；`pnpm --filter @alchemy-video/contracts test` — 36/36；persistence 增益 mapper 单测通过（无 `DATABASE_URL` 时仍保留 10 个显式门控 skip）。
+- 未完成硬门保持不变：approved full narration 的 section-level 绝对窗口尚未在整轨实际消费；cue-only 多段仍不是 full-narration-first 的完整声学路径；AudioPlan 完整字段/轨道滤镜、transition/xfade coverage、Studio 样音审批/TimelinePlan UI 与中文口音认证仍需后续审计。C12.4/C12.5 继续为 `IMPLEMENTED_PENDING_AUDIT`，未调用真实 Provider/TTS/Veyra/网络/VPS/Git。
+
+### C12.4/C12.5 当前清理与回归更正（2026-08-30 12:38）
+
+- 本轮移除非指定上游的 Freesound/free-music catalog：Control API 路由/类型/测试、Studio 目录组件与调用、contracts audio-library 导出、local/deploy 环境注入和同步脚本均不再进入当前代码路径；历史审计文字保留为历史事实但不作为迁移证据。当前 BGM 仅来自服务端确认的当前项目 `READY AUDIO` 且 `metadata.audio_role=MUSIC` 资产，或显式 `OFF`。
+- `apps/studio-web/app/pages/projects/[project_id].vue` 已移除已删除的 `MusicPlanPanel` 依赖，补充最小项目级 AUTO/MANUAL/OFF 选择与上传入口，并对 `audio_role=MUSIC` 做前端过滤；无曲目时显示不混入音乐的可操作提示。音乐入口使用受限 `purpose=MUSIC`，通用 AUDIO 未声明 purpose 时不再自动标成音乐；`NARRATION_SAMPLE`/`USER_SOURCE_AUDIO` 角色不会进入 AUTO 曲库。服务端 metadata 的 role 覆盖保护和跨角色排除由 Control API 回归覆盖。
+- 字幕 loopback 已切换为严格 JSON body + `BURN_CAPTIONS` 内部工具名；Runtime 对 checked word timestamps 做视频时长/窗口/大小校验并用 SRT+FFmpeg 烧录。该路径仍不等于普通 Studio REQUIRED 字幕审批事实链已完成。
+- 证据：Contracts 36/36；Control API 45 pass/1 service-gated skip；Studio Web 36/36、typecheck/build PASS；Production Worker 43/43；Persistence 49 pass/10 explicit DB-gated skip；Media Runtime 90/90；OpenMontage adapters 4/4；根 typecheck/build/test EXIT 0（根保留 5 个明确环境/fixture skip）；`git diff --check` 无错误（仅 CRLF 提示）。
+- 当前章节仍为 `IMPLEMENTED_PENDING_AUDIT`，不标记 `ACCEPTED`。approved full-track section windows 实际消费、无独立资产多 cue full-narration-first、AudioPlan 全字段语义、transition/xfade coverage、Studio 样音/旁白审批/TimelinePlan 完整闭环、普通 REQUIRED 字幕事实链、中文口音认证仍是未完成硬门；未调用真实 Provider/TTS/Veyra/网络/VPS，未提交 Git。
+- 当前状态对账（2026-08-30 12:55，已由下方 14:22 复核 supersede）：C12.4/C12.5 仍为 `IMPLEMENTED_PENDING_AUDIT`，唯一当前实施切片；C11.2 仅保留已审计的本地 `ACCEPTED` 历史范围。通用 AUDIO 角色改为受控 purpose 映射（仅 `MUSIC` 进入 AUTO 曲库）；本轮没有真实 Provider/TTS/Veyra/网络/VPS/Git 操作。下方最新复核已将多 cue 路径统一为 OpenMontage `_full_mix` 接线前 fail-closed；approved full-track section offset、完整 AudioPlan 语义、transition/xfade、Studio 样音/审批/TimelinePlan、普通 REQUIRED 字幕、中文口音与 overlong consumer 行为门仍阻断。
+
+### C12.4/C12.5 最新源仓库对账与定向回归（2026-08-30 14:22）
+
+- 来源复核：本轮每个改动均回指固定 OpenMontage commit `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `skills/pipelines/explainer/compose-director.md`、`executive-producer.md`、`tools/audio/piper_tts.py`、`tools/audio/audio_mixer.py::_full_mix` 与 `voice-performance-director.md`；平台仅保留事件/对象/权限/工作区/错误/队列边界的薄壳适配。没有新增并行 TTS 算法、时长拉伸、静音填充、网络曲库或 Provider 协议。
+- 样音边界已纠偏：`approveNarrationScriptRevision` 只写现有 `narration_script.approved` 样音事实，不插入 `narration_asset_version` 或伪造 `narration_asset_version.ready`；TimelinePlan/ready loader 只接受显式、独立、实测的 `sample_approved=false` 正式版本，并拒绝复用已批准样音对象。
+- 旁白边界已纠偏：Worker 对完整 canonical 文案只调用一次现有 Piper 适配；多 cue 的绝对起点只有 `_full_mix` speech-track 接入后才有来源依据，当前在 Piper/compose 前 fail-closed。Runtime direct bundle 同样拒绝未消费的多 section full-track windows；不使用 atempo、裁剪或空白补齐掩盖不足时长。
+- 音乐边界已纠偏：AUTO 只接受服务端确认的当前工作区/项目 `AUDIO + READY + metadata.audio_role=MUSIC` 资产；`NARRATION_SAMPLE`、`USER_SOURCE_AUDIO` 与未分类 AUDIO 不会成为音乐。无 MUSIC 时 AUTO fail-closed，显式 OFF 才允许无音乐床；未调用网络曲库。
+- 当前可复核定向行为证据（仅保留本轮最新计数）：Persistence `52 pass / 10 explicit DATABASE_URL-gated skip / 0 fail`；Production Worker `43/43`；Media Runtime `92/92`（`python -m pytest -q`，工作目录 `services/media-runtime`）；Control API `47 pass / 1 explicit service-gated skip / 0 fail`。这些是行为测试，不以静态源码扫描代替；未运行/未宣称真实 Provider、TTS、Veyra、网络、VPS、部署或 Git。
+- 未完成硬门保持明确：approved full narration 的 section-level 时间窗尚未由 Runtime 实际消费；完整 AudioPlan 语义、transition/xfade coverage、cue-only full-narration-first、Studio 样音/审批/TimelinePlan 闭环、REQUIRED 字幕事实链、中文口音认证，以及超长旁白 consumer 行为测试仍未收口。因此 C12.4/C12.5 继续为 `IMPLEMENTED_PENDING_AUDIT`，不得标记 `ACCEPTED`。
+
+### C12.4/C12.5 明确授权恢复 Pixabay 源能力（2026-08-30 15:22）
+
+- 用户明确授权外部网络后，本轮只恢复固定来源 `calesthio/OpenMontage@4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/pixabay_music.py`。Runtime 保留搜索页/bootstrap/HTML fallback、30–120 秒默认筛选、无匹配回退全部、首条选择和 MP3 下载顺序。
+- 平台改动是薄壳：Media Runtime loopback 认证和临时文件、Control API workspace/幂等/对象存储/实际 MIME/SHA/字节校验、Studio 显式 query 导入；未新增排序、推荐、自动补曲、Freesound/Suno、TTS 或 Provider 逻辑。导入资产由服务端固定 `audio_role=MUSIC`，样音/用户音频不进入 AUTO。
+- 安全边界：下载 URL 只允许 HTTPS `cdn.pixabay.com`；未配置 Media Runtime 时能力阻断，不从 Control API 进程绕过内部边界直连。
+- 证据：原仓库 Python 适配器对 `ambient`、`upbeat` 各完成真实搜索和下载；`ambient` 20 条结果、默认筛选后 4 条、首条 106 秒、3,402,187 bytes；Runtime loopback endpoint 返回 `audio/mpeg` 并通过同一字节校验。Contracts 36/36、Control API 52 pass/1 explicit service-gated skip、Studio 36/36 + typecheck、Media Runtime 94/94 均通过。
+- 状态不变：C12.4/C12.5 仍为 `IMPLEMENTED_PENDING_AUDIT`。approved full narration section-level 时间窗、完整 AudioPlan、transition/xfade、cue-only full-narration-first、Studio 样音/审批/TimelinePlan、REQUIRED 字幕事实链、中文口音及超长旁白 consumer 行为等硬门仍未收口；未执行真实视频 Provider/TTS/Veyra/计费/VPS/Git。
+
+### C12.4/C12.5 Pixabay 恢复后根级回归对账（2026-08-30 15:30）
+
+- 最新根 `pnpm test` 退出码为 0：18 个工作区项目 444 passed、18 个明确环境门控 skipped、0 failed；skipped 保留为数据库/MinIO/BullMQ 服务边界，不冒充行为通过。
+- 本条只更新回归证据，不改变章节结论：C12.4/C12.5 仍为 `IMPLEMENTED_PENDING_AUDIT`，Pixabay 仍是显式导入的 OpenMontage 源能力恢复，所有旁白/AudioPlan/字幕/中文口音等未完成硬门继续有效。
+
+## 状态账本历史快照（2026-08-30 20:32；现行状态以正式总控/state 为准）
+
+| 范围 | 当前状态 | 说明 |
+| --- | --- | --- |
+| C11.2 | `ACCEPTED` | 仅覆盖已独立审计的本地资料理解/事实包范围 |
+| C12.4/C12.5 | `IMPLEMENTED_PENDING_AUDIT` | 当前唯一活动实施切片；本轮只做源仓库薄适配、边界协调、行为测试和审计对账 |
+| C12.4-S01 | `IN_PROGRESS` | E02 当前活动切片；OpenMontage Pixabay/MUSIC 显式导入和跨角色隔离待独立验收 |
+| C12.4-S02 | `READY_FOR_AUDIT` | OpenMontage Piper 单次完整脚本和正式资产边界已具备证据；切片未单独 ACCEPT |
+| C12.4-S03 | `ACCEPTED` | OpenMontage `_full_mix` 独立 speech tracks/绝对起点 Exit Gate 已独立复核通过；仅代表 S03 切片 |
+| C12.4-S04 | `IN_PROGRESS` | 仅消费现有 ALCHMED8 完整 AudioPlan 与固定 OpenMontage 语义；S04 尚未达到 READY_FOR_AUDIT |
+| C11.3/C12.2/C12.3/C12.6/C12.7B | `NOT_ACTIVE_IN_THIS_SCOPE` | 旧章节段落是历史证据，不是本轮授权或当前实施状态 |
+| 真实 Provider/TTS/Veyra/共享积分/VPS/DNS/TLS/部署/Git | `DISABLED` | 未调用、未部署、未提交 |
+
+本账本与第 2 节总表共同构成本轮唯一状态依据；后续若需改变任一状态，必须新增带证据的审计记录，不能改写历史段落。
+
+### C12.4/C12.5 最终深审计对账（2026-08-30 17:05）
+
+- 本轮只继续核对和修正已有 OpenMontage 来源的薄适配：Runtime 请求体改为有界分块读取；音频混音保持 `_full_mix` 的 `ratio=9`、`level_sc=1`、`mix=0.9` 和正衰减到线性音量的来源换算；Control API 的 FFmpeg/Piper 能力在缺少受控 Runtime 证据时 fail-closed 为 `NOT_CONFIGURED`。
+- 当前行为证据：Media Runtime `97 passed / 0 failed`；OpenMontage audio adapters `7/7`；Control API `53 pass / 1 explicit service-gated skip / 0 fail`；Production Worker `43/43`；根 `pnpm test` `447 passed / 18 explicit environment-gated skips / 0 failed`；根 `pnpm typecheck`、`pnpm build`、`git diff --check` 均通过（build 仅有既有 Nuxt/Nitro `DEP0155` 警告）。这些是可复核行为/构建证据，不以静态源码扫描代替。
+- 状态没有升级：C11.2 仍为本地范围 `ACCEPTED`；C12.4/C12.5 仍为 `IMPLEMENTED_PENDING_AUDIT`；C11.3/C12.2/C12.3/C12.6/C12.7B 为 `NOT_ACTIVE_IN_THIS_SCOPE`；真实 Provider/TTS/Veyra/共享积分/VPS/DNS/TLS/部署/Git 仍 `DISABLED`。
+- 未完成硬门继续保留：approved full narration 的 section-level 时间窗实际消费、完整 AudioPlan 语义、transition/xfade coverage、cue-only full-narration-first、Studio 样音/审批/TimelinePlan、普通 `REQUIRED` 字幕事实链、中文口音认证和超长旁白 consumer 行为。结构性门控的绿色测试不表示这些问题已解决。
+- Pixabay 仅按用户明确授权恢复 OpenMontage 源能力；真实搜索/下载证据保留，但不改变上述章节状态或其他外部系统禁令。
+
+### C12.4-S01 Pixabay / MUSIC 角色逐项审计（2026-08-30 17:45；历史，已 superseded）
+
+历史状态：`READY_FOR_AUDIT`（17:45 历史快照，已 superseded；不代表当前 S01 状态，也不等同于 C12.4/C12.5 `ACCEPTED`）。
+
+- 固定来源：`calesthio/OpenMontage@4eab34c5cfcccaa4f1970554928feccce73ee930`，文件 `upstream/openmontage/tools/audio/pixabay_music.py`。平台 Python 适配保留来源的搜索页、`__BOOTSTRAP_URL__`、HTML MP3 回退、30–120 秒筛选、无匹配回退、首条选择和 MP3 下载顺序。
+- 薄壳范围：`services/media-runtime` 只提供受保护 loopback 入口和来源主机/HTTPS 边界；`apps/control-api` 负责 workspace/project 权限、幂等、对象写入、实际 MIME/字节/SHA 校验和公开脱敏；资产角色由服务端固定为 `MUSIC`，调用者 metadata 不能覆盖。
+- 输入/安全边界：下载响应必须声明 `audio/mpeg`，非音频响应在落盘前拒绝；非 `cdn.pixabay.com` 或非 HTTPS URL 拒绝。此处是既有平台媒体安全边界的薄适配，不是新增选曲算法。
+- 跨角色证据：`MUSIC`、`NARRATION_SAMPLE`、`USER_SOURCE_AUDIO` 和未分类 `AUDIO` 的 READY 资产回归确认仅 server-owned `MUSIC` 进入 AUTO 候选；样音不会被当作 BGM。显式 Pixabay 导入只创建 `AUDIO + READY + metadata.audio_role=MUSIC`。
+- 行为证据：Control API `55 pass / 1 explicit service-gated skip / 0 fail`；Media Runtime adapters `8/8`；Media Runtime `97 passed / 0 failed`；根 `pnpm test` `449 passed / 18 explicit environment-gated skips / 0 failed`。根 typecheck/build 和 `git diff --check` 通过，state validator 通过。此前授权的 ambient/upbeat 真实源 smoke 仍保留为外部可达性证据。
+- 负面证据：没有恢复 Freesound 或第二套曲库，没有自动搜索/推荐/排序/补曲，没有把通用 AUDIO 或旁白样音强制标记为 MUSIC；本轮未调用真实视频 Provider/TTS/Veyra/计费/VPS/DNS/TLS/Git。
+- 章节口径：本切片仅达到 `READY_FOR_AUDIT`；C12.4/C12.5 仍为 `IMPLEMENTED_PENDING_AUDIT`。approved full narration section-level 时间窗、完整 AudioPlan、transition/xfade、cue-only full-narration-first、Studio 样音/审批/TimelinePlan、`REQUIRED` 字幕事实链、中文口音和超长旁白 consumer 行为等硬门不受本切片绿色结果影响，继续原样阻断。
+
+### C12.4-S02 Piper 单次完整脚本与资产边界对账（2026-08-30）
+
+状态：`READY_FOR_AUDIT`（`.codex-longrun/state.json`：`verifying`）；不升级 C12.4/C12.5 总体状态。
+
+- 固定来源：`calesthio/OpenMontage@4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `upstream/openmontage/tools/audio/piper_tts.py::PiperTTS._generate`。平台保留 `--model`、`--speaker`、`--length-scale`、`--sentence-silence`、`--output_file` 及 stdin 的单次 canonical script 语义；Runtime Piper subprocess timeout=`300` 与来源一致。
+- 迁入/适配文件：`services/media-runtime/adapters/openmontage_audio/piper.py`、`services/media-runtime/runtime.py`；仅增加 loopback/字节流边界、受控解释器和 WAV/时长验证，样音审批事实与正式独立旁白资产保持隔离。
+- 窄测证据：`services/media-runtime` 工作目录执行 5 项定向 unittest（受控 Piper 参数与 canonical stdin/实测 WAV 时长、非零退出、缺失输出、非法 WAV）`5/5 PASS`；未调用真实 TTS、Provider、网络或外部服务。
+- 既有 Production Worker 行为证据已复核：approved 非样音正式资产走 StoragePort/authoritative narration，且不会重复合成；no-repeat 与样音/正式资产隔离回归保持通过（本轮未重跑）。
+- 未完成集成/人工门：approved full narration section-level 时间窗、完整 AudioPlan、cue-only 多段 full-narration-first、Studio 样音/审批/TimelinePlan、`REQUIRED` 字幕事实链、中文口音认证及其它 C12.4/C12.5 硬门仍未完成。
+
+### C12.4-S03 OpenMontage `_full_mix` 独立 speech tracks 开始记录（2026-08-30；实现前历史阻断快照）
+
+状态：`BLOCKED`（`.codex-longrun/state.json`：`blocked`）；S02 保持 `READY_FOR_AUDIT`，C12.4/C12.5 总体保持 `IMPLEMENTED_PENDING_AUDIT`。
+
+- 固定来源：`calesthio/OpenMontage@4eab34c5cfcccaa4f1970554928feccce73ee930`，`upstream/openmontage/tools/audio/audio_mixer.py::_full_mix` 及 `_track_filters`。仅适配独立 measured speech tracks 的 `path`、`role: "speech"`、`start_seconds`、来源滤镜图、角色混合、fade/sidechain/normalize/target-duration 语义。
+- 平台边界：只允许 workspace/object-storage 受控临时路径、错误映射和产物校验；没有可消费的独立测量音频事实时必须 fail-closed。禁止逐 cue Piper、平台自写 adelay/amix 替代图、新 magic/公共 API/UI、真实 Provider/TTS/Veyra/网络/VPS/Git。
+- 只读阻断证据：现有 ALCHMED/Composition 契约仅携带单条 `narration_bytes`，Worker 未向 Runtime 提供独立 measured speech-track bytes/paths；Runtime `synthesize_narration_segments_bytes` 对多 cue 仍 fail-closed，`compose_video_bundle` 未调用来源 `_full_mix`。在不新增 magic/公共协议的前提下无法安全承载 `{path, role: "speech", start_seconds}`，故本切片 BLOCKED，不以旧逻辑或静态检查宣称完成。
+- 下一步：仅在已有内部对象/工作区边界能提供受控独立音频事实后，薄接 OpenMontage `_full_mix`；此前保持 fail-closed。未运行测试、未调用真实 Provider/TTS/网络/VPS/Git。
+
+### C12.4-S03 OpenMontage `_full_mix` 独立 speech tracks 收口复核（2026-08-30 18:35）
+
+状态：`READY_FOR_AUDIT`（切片状态；C12.4/C12.5 总体仍 `IMPLEMENTED_PENDING_AUDIT`）。上方“开始记录”是本轮实现前的历史阻断快照，不覆盖本条当前证据。
+
+- 固定来源：`calesthio/OpenMontage@4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/audio_mixer.py::_full_mix` 与 `_track_filters`，以及 explainer `asset-director.md`/`edit-director.md` 对 section asset、实测 duration 和 `asset_id + start_seconds` 的规则。新增的 `services/media-runtime/adapters/openmontage_audio/full_mix.py` 只镜像来源滤镜图和角色混音，平台仅提供受控临时路径、命令 runner 和错误边界。
+- 迁移事实：现有 ALCHMED8 私有载荷支持全有或全无的正式非样音 section AUDIO track bytes；Worker 通过既有 workspace/project Asset + StoragePort 校验 MIME、SHA、字节数和 ffprobe duration 后按 track identity 发送。Runtime 仅映射来源 `{path, role: "speech", start_seconds}`，保留 fade-before-adelay、speech/music/sfx 顺序、`ratio=9`、`level_sc=1`、`mix=0.9`、target `apad/atrim` 和 `loudnorm`，再复用来源 full-mix 结果 remux 视频。
+- 正向/负向证据：`python -m pytest -q tests/test_runtime.py`（`services/media-runtime`）`101 passed`；`python -m pytest -q adapters/openmontage_audio/test_adapters.py` `11 passed`，包含两段绝对起点、来源滤镜图、缺失轨道/非法 target fail-closed 和受控 ffmpeg/ffprobe 实际 WAV 产物（目标 3 秒、单音频轨）；独立 speech duration/window 不一致、payload identity 不一致均拒绝，未走 Piper/full_mix。
+- 集成证据：Production Worker `45/45`（独立 formal assets 读取和传输、样音不复用）；Persistence `53 pass / 10 explicit DATABASE_URL-gated skip`；Contracts `36/36`；Domain `43/43`；根 `pnpm test` `452 passed / 18 explicit environment-gated skips / 0 failed`；`pnpm typecheck`、`pnpm build`（仅既有 Nuxt/Nitro `DEP0155` warning）和 `git diff --check` 通过。旧 skip 保留为环境/服务边界，不折算为通过。
+- 来源与范围审计：没有新增 ALCHMED9、第二套 AudioPlan、逐 cue Piper、SLOW/FAST 映射、`atempo`/裁剪/补静音、网络曲库、真实 Provider/TTS/Veyra、部署或 Git 操作；单条 legacy full narration 仍从 `t=0`，cue-only 多段和未消费 full-track section windows 仍 fail-closed。
+- 未完成硬门原样保留：approved full narration 的 full-track section-level 时间窗、完整 AudioPlan 语义/identity、transition/xfade coverage、cue-only full-narration-first、Studio 样音/审批/TimelinePlan、`REQUIRED` 字幕事实链、中文口音认证和超长旁白 consumer 行为。故本条只允许进入独立审计，不得标记 `ACCEPTED` 或进入 S04。
+
+### C12.4-S03 OpenMontage `_full_mix` 独立 speech tracks Exit Gate 验收（2026-08-30 20:32）
+
+状态：`ACCEPTED`（仅 C12.4-S03 切片；C12.4/C12.5 总体仍 `IMPLEMENTED_PENDING_AUDIT`）。
+
+- 纠察员独立复核确认固定来源 `calesthio/OpenMontage@4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `audio_mixer.py::_full_mix/_track_filters` 语义未漂移；两段独立正式 speech 已测量并以绝对起点进入来源 mixer，缺轨、非法 target、payload identity、重叠/间隙/目标边界和 duration/window 不一致均 fail-closed。
+- 新鲜定向证据：`services/media-runtime/tests/test_runtime.py` 101 passed；`services/media-runtime/adapters/openmontage_audio/test_adapters.py` 11 passed（含受控 ffmpeg/ffprobe 实际 3 秒单音频轨产物）；Production Worker 45/45；Persistence 53 pass / 10 个明确 `DATABASE_URL` skip；Contracts 36/36。state validator 与 `git diff --check` 通过；根 452/18 skip 证据保持为此前最新整仓基线，未在本次文字验收中重跑。
+- 平台仅增加既有 workspace/project、StoragePort、临时路径、MIME/SHA/ffprobe、错误归一化和 ALCHMED8 私有载体边界；未新增 ALCHMED9、第二套 AudioPlan、逐 cue Piper、SLOW/FAST、变速、裁剪、补静音、Provider/TTS、网络、Veyra、部署或 Git 操作。
+- S03 验收不覆盖 approved full-track section-level windows、完整 AudioPlan 语义、transition/xfade、cue-only full-narration-first、Studio 样音/审批/TimelinePlan、`REQUIRED` 字幕事实链、中文口音和超长旁白 consumer 等章节硬门；因此总体状态不升级。按用户授权，下一活动切片切换为 S04，但 S04 尚未完成验收。
+
+### C12.4-S04 OpenMontage 完整 AudioPlan 消费启动记录（2026-08-30 20:32；历史快照，已移出活动态）
+
+状态：`IN_PROGRESS`（当前唯一活动切片；C12.4/C12.5 总体仍 `IMPLEMENTED_PENDING_AUDIT`）。
+
+- 本切片只消费现有 ALCHMED8 已定义的 AudioPlan identity、ownership、asset、start/end、gain/fade、transcript 和 music window，并继续复用固定 OpenMontage 音频输入语义；旧 ALCHMED1–7 仅兼容读取。
+- 平台边界仅限既有 workspace/project、StoragePort、MIME/SHA/ffprobe、受控临时路径、错误归一化和脱敏；来源未定义或无法验证的字段保持已有错误和 fail-closed，不新增 magic、第二套 AudioPlan、公共 UI/API、Provider/TTS 或网络逻辑。
+- S04 尚无完成证据，未标记 `READY_FOR_AUDIT`；实现、定向行为/负向测试、集成和脱敏审计完成前不得升级状态。
+
+### C12.4-S04 首项来源字段对账（2026-08-30 20:52；历史快照，已移出活动态）
+
+- 对照固定来源 `calesthio/OpenMontage@4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/audio_mixer.py::_track_filters/_full_mix`，Runtime 仅补齐既有 ALCHMED8 `MUSIC.gain_db` 到来源线性 `volume` 的映射：`composition_plan.music_volume * _openmontage_track_volume(gain_db)`；未增加协议、算法、阈值、变速、静默回退或第二套 AudioPlan。
+- 定向证据：`python -m pytest -q tests/test_runtime.py -k "compose_maps_audio_plan_music_gain_into_source_full_mix_volume"` 为 `1 passed / 101 deselected`；完整 `tests/test_runtime.py` 为 `102 passed`；`adapters/openmontage_audio/test_adapters.py` 为 `11 passed`；state validator 与 `git diff --check` 通过。未调用真实 Provider/TTS/Veyra/网络/VPS/DNS/TLS/部署/Git。
+- 纠察员只读复核确认该映射属于 ALCHMED8/source-faithful 薄适配，未发现越界；同时确认 S04 仍缺 transcript 字段的实际下游消费、music window 逐窗口语义、完整 restart/repeat、跨工作区和公开脱敏行为证据。上述缺口保持 `IN_PROGRESS`，不得升级 `READY_FOR_AUDIT`。
+- 状态对账不变：S03=`ACCEPTED`（仅切片），S04=`IN_PROGRESS`，C12.4/C12.5=`IMPLEMENTED_PENDING_AUDIT`；S03 的硬门边界及章节总体未完成项继续原样保留。
+
+### C12.4-S04 MUSIC 窗口/ducking 与 Worker 边界复核（2026-08-30 21:15；历史快照，已移出活动态）
+
+- 固定来源仍为 `calesthio/OpenMontage@4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/audio_mixer.py::_track_filters/_full_mix`。来源只接受每轨 `volume`、`start_seconds`、fade 和一个全局 ducking 开关；没有 `end_seconds` 或多段 MUSIC window 的输入语义。
+- Runtime 薄适配仅把既有 ALCHMED8 `MUSIC.gain_db` 复合为来源线性 `volume`，把既有 `duck_under_narration` 映射为来源全局 ducking；当 MUSIC payload 无对应 ownership track，或窗口不是单一 `(track.start_ms, target_duration_ms)` 时，在来源 mixer 前以既有 `QC_FAILED` 失败，避免静默丢弃/延长音乐。未新增协议、magic、滤镜图、阈值、变速、补静音或第二套 AudioPlan。
+- 行为证据：`python -m pytest -q tests/test_runtime.py -k "independent_speech_tracks_with_source_full_mix or music_gain or music_track_duck_flag or music_windows_not_expressible"` 为 `4 passed / 100 deselected`；完整 Runtime `104 passed`；OpenMontage adapter `11 passed`。新增负向测试确认 multiple window 不调用来源 mixer。
+- Worker 行为证据：`pnpm --filter @alchemy-video/production-worker test` 为 `47/47`；新增 duplicate claim 不重复读取/确认，跨 workspace MUSIC 在 compose 前拒绝，现有最终审阅持久化摘要不含 `object_key`、`provider_request_id`、`transcript_script`。Persistence `53 pass / 10 explicit DATABASE_URL-gated skip`、Contracts `36/36`、Domain `43/43`、根 typecheck 通过。
+- 未闭合项原样保留：transcript 的真实字幕/转写下游（S06）、完整 restart/repeat 产物级集成、approved full-track section windows、transition/xfade、cue-only full-narration-first、Studio 样音/审批/TimelinePlan、`REQUIRED` 字幕事实链、中文口音及超长旁白 consumer。结构性门控证据不等于这些问题已解决。
+- 状态不升级：S03=`ACCEPTED`（仅切片），S04=`IN_PROGRESS`，C12.4/C12.5=`IMPLEMENTED_PENDING_AUDIT`；未调用真实 Provider/TTS/Veyra/网络/VPS/DNS/TLS/部署/Git。
+
+### C12.4-S04 完整 ALCHMED8 full-track 来源消费复核（2026-08-30 22:05；历史快照，已移出活动态）
+
+- 来源固定为 `calesthio/OpenMontage@4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/audio_mixer.py::_full_mix/_track_filters`。完整 ALCHMED8 的单条 narration bytes 现在只在唯一、覆盖全目标的 `PLATFORM_NARRATION` 轨和单一 `PRIMARY` section 窗口下映射为来源 `speech` 轨；独立 section bytes 仍按既有 track identity/绝对起点映射，源视频剩余音频作为来源 `sfx`。
+- 编码器与 Runtime 解码器均对多平台旁白轨、未消费的 full-track section 窗口和不完整 payload 直接 `QC_FAILED`，不静默选轨、不猜 section offset；完整/独立 ALCHMED8 均调用同一来源适配器，ALCHMED1–7 兼容路径保持不变。未新增 ALCHMED magic、字段、第二套 AudioPlan、滤镜图、变速、补静音或外部调用。
+- 行为证据：`python -m pytest -q tests/test_runtime.py -k "complete_audio_plan"`（cwd `services/media-runtime`）`12 passed / 97 deselected`；`python -m pytest -q tests/test_runtime.py adapters/openmontage_audio/test_adapters.py` `119 passed / 0 failed`，含受控 FFmpeg/ffprobe 全轨音视频产物（video+audio、目标时长 2s）；`pnpm --filter @alchemy-video/production-worker test` `51/51`；Production Worker typecheck、state validator、`git diff --check` 均 PASS。
+- 状态不升级：S04 仍 `IN_PROGRESS` / `verifying`，C12.4/C12.5 仍 `IMPLEMENTED_PENDING_AUDIT`。完整 restart/repeat 产物集成、transcript 的实际字幕/转写下游、不可由来源表达的 approved full-track section offsets、transition/xfade、cue-only full-narration-first、Studio 样音/审批/TimelinePlan、`REQUIRED` 字幕事实链、中文口音和超长旁白 consumer 硬门继续原样保留；无真实 Provider/TTS/Veyra/网络/VPS/DNS/TLS/部署/Git。
+
+### C12.4-S04 restart/repeat 产物幂等复核（2026-08-30 22:22；历史快照，已移出活动态）
+
+- 依据现有 Worker/StoragePort 事务边界，在 `apps/production-worker/tests/media-service.test.ts` 的 approved narration 测试中，先写入与 compose 结果一致的确定性 `composed.mp4`，再处理 composition，模拟 Worker 在对象写入后、`completeProductionComposition` 提交前重启。
+- 复用既有 `storeArtifact` 的 `If-None-Match: *`、MIME、byteSize 和 SHA-256 比对；同一不可变对象安全复用，approved narration 仍不触发 Piper，最终 persistence 只执行一次。没有增加协议、状态、算法、阈值或平行写入逻辑。
+- 新鲜证据：`pnpm --filter @alchemy-video/production-worker test` `51/51`；`pnpm --filter @alchemy-video/production-worker typecheck` PASS；`python -m pytest -q tests/test_runtime.py adapters/openmontage_audio/test_adapters.py`（cwd `services/media-runtime`）`121 passed / 0 failed`。
+- 纠察员确认该项属于 S04 允许的可靠性证据；S04 保持 `IN_PROGRESS/verifying`，C12.4/C12.5 保持 `IMPLEMENTED_PENDING_AUDIT`。approved full-track section windows、transcript 实际字幕/转写下游、transition/xfade、cue-only full-narration-first、Studio 样音/审批/TimelinePlan、`REQUIRED` 字幕、中文口音和超长旁白 consumer 等硬门仍未闭合；未调用真实 Provider/TTS/Veyra/网络/VPS/DNS/TLS/部署/Git。
+### C12.4-S04 artifact conflict fail-closed 复核（2026-08-30 22:49；历史快照，已移出活动态）
+
+- 在已有“对象写入后重启、相同 MIME/byteSize/SHA 可安全复用”的正向证据之外，新增同一派生 `composed.mp4` 对象键但内容不一致的负向 Worker 行为测试。既有 `storeArtifact` 在 `If-None-Match: *` 失败后通过 `inspectObject` 比对 MIME、byteSize、SHA-256，拒绝覆盖冲突对象；`completeProductionComposition` 不执行，租约释放且保留根错误。
+- 该项只复用现有 StoragePort 与不可变产物边界，没有新协议、状态、算法、阈值、平行写入路径或 OpenMontage 逻辑。新鲜证据：Production Worker `52/52`，typecheck PASS。
+- 状态不升级：S04=`IN_PROGRESS/verifying`，C12.4/C12.5=`IMPLEMENTED_PENDING_AUDIT`；approved full-track section windows、transcript 实际字幕/转写下游、transition/xfade、cue-only full-narration-first、Studio 审批/TimelinePlan、`REQUIRED` 字幕、中文口音和超长旁白 consumer 等硬门继续保留。
+
+### C12.4-S04 music-only AudioPlan 来源消费复核（2026-08-30 23:06；历史快照，已移出活动态）
+
+状态：`IN_PROGRESS` / `verifying`（不升级切片或章节状态）。
+
+- 来源证据：固定 `calesthio/OpenMontage@4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/audio_mixer.py::_full_mix` 在无 speech、仅 music（可选 sfx）时仍走来源 `amix`、target-duration 和 normalize。平台仅调整 `services/media-runtime/runtime.py::compose_video_bundle` 的既有分支，让 ALCHMED8 `audio_plan + music_bytes` 走该来源路径；旧 `_mix_music_track` 仍只服务兼容载荷。
+- 既有 ownership、asset identity、absolute start/end、gain/fade、music window 校验和冲突/跨工作区边界未改变；没有新增 wire、算法、阈值、滤镜图、策略或 fallback。
+- 行为证据：Media Runtime music-only focused `1 passed / 110 deselected`；Runtime+OpenMontage adapters `122 passed / 0 failed`；Production Worker `53/53`；Production Worker typecheck、state validator、`git diff --check` PASS。
+- 未完成硬门继续原样保留：来源无法表达的 approved full-track section offsets/多窗口、transcript 实际字幕/转写下游、transition/xfade、cue-only full-narration-first、Studio 样音/审批/TimelinePlan、`REQUIRED` 字幕事实链、中文口音认证、超长旁白 consumer。未调用真实 Provider/TTS/Veyra/网络/VPS/DNS/TLS/部署/Git。
+- Exit Gate 结论：本增量已完成来源支持的 MUSIC-only handoff，但 S04 的整体合同/产物/重启/重复/跨工作区/脱敏及上述硬门尚未形成完整可验收证据，继续 `IN_PROGRESS/verifying`；C12.4/C12.5 继续 `IMPLEMENTED_PENDING_AUDIT`。
+
+### C12.4-S01 / E02 活动切片状态对账（2026-08-31）
+
+- （历史状态快照）S03 保持 `ACCEPTED`（仅切片）；S02 保持 `READY_FOR_AUDIT`。C12.4-S01/E02 已通过独立审计并为 `ACCEPTED`（仅切片）；S04 历史记录与未闭合硬门保留，但已移出活动态；本行“E03 尚未启动”仅为早期快照，现行 E03/E04 状态见文末最新对账。
+- E02 仅使用 `index.ts` 注入的 `HttpPixabayMusicClient`/Media Runtime 路径；`createApp` 未显式注入时为 `null`，不构造第二个 Node 直连抓取器。该句“未重跑”属于早期状态对账，已由下方最新 focused 运行证据 supersede。
+- C12.4/C12.5 总体仍 `IMPLEMENTED_PENDING_AUDIT`；S01/E02 的 `ACCEPTED` 仅覆盖本切片，不能升级总体状态。未调用真实 Provider/TTS/Veyra/网络/VPS/Git。
+
+### E02 最新 focused 证据补充（2026-08-31）
+
+- client `6/6`、Runtime source `4/4`、handler `3/3`、Control API 角色/幂等 `5/5`、loopback 集成 `1/1`；0 skip，全部 fixture/mock，无外网。
+- S01/E02 已通过独立审计并为 `ACCEPTED`（仅切片）；S04 不活动；本行“E03 尚未启动”仅为早期快照；总体 C12.4/C12.5 仍 `IMPLEMENTED_PENDING_AUDIT`，未升级总体验收。
+
+审计结论：基于上述 focused/Studio fixture 证据，纠察员确认来源路径、角色隔离、边界校验和无网络 fixture 证据充分，S01/E02 通过独立审计并标记 `ACCEPTED`（仅切片）；本记录不代表 C12.4/C12.5 总体完成。
+
+### C12.4-S01 / E02 技术 Exit Gate 状态同步（2026-08-31）
+
+- 依据下列本轮实际运行且可复核的 focused/Studio fixture 证据（基础 `last_verified_at=2026-08-31T01:52:23+08:00`）：合并 Control API 命令 `23/23`（Pixabay client `6/6` + Control API `17/17`）；独立窄切片为 client `6/6`、Runtime source adapter `4/4`、handler `3/3`、Control API 角色/导入/幂等 `5/5`、capability BLOCKED `1/1`、loopback `1/1`、Studio explicit Pixabay/no-auto-catalog `1/1`；全部 fixture/mock、0 skip、无真实网络。另有 `last_verified_at=2026-08-31T08:25:25+08:00` 的 Runtime finite supplemental fixture `1/1`，拒绝 `NaN`、`Infinity`、`-Infinity` duration。独立窄切片与合并命令有覆盖重叠，不另行相加。
+- E02/S01 技术 Exit Gate 已通过独立审计，现行状态为 `ACCEPTED`（仅切片）；Node 直连 scraper 条目与旧 17:45 状态均为历史快照/superseded。该段“E03 为下一候选但尚未启动”是早期快照；S04 已移出活动态。
+- C12.4/C12.5 总体继续 `IMPLEMENTED_PENDING_AUDIT`；本次只做状态/审计文字对账，未新增测试、代码、契约或外部调用。
+
+### E03/HB-STORYBOARD-TIMING 当前实施对账（2026-08-31）
+
+- 固定来源为 `huobao-drama@f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 的 `backend/workspace/skills/storyboard-breaker/SKILL.md`；来源正式分镜段为 8–15 秒，台词容量规则为 `字符数 / 4.5 + 2 秒表演余量`，装不下时沿来源边界移到后续段落。
+- 最小实现仅收口 `packages/domain/src/creative-planning.ts::assertStoryboardPlan`、`packages/contracts/src/creative-planning.ts::StoryboardShotSpecSchema` 的 8–15 秒边界，并由 `packages/creative-planning/src/index.ts` 复用既有 `STORYBOARD_SPEC_INVALID` 路径阻断无法形成合法正式段的结果；没有新增余数、慢放、填充、裁剪或 Provider 调用逻辑。
+- 定向证据：`pnpm --filter @alchemy-video/creative-planning test` `38/38`、`pnpm --filter @alchemy-video/domain test` `43/43`、`pnpm --filter @alchemy-video/contracts test` `36/36`，并运行 `pnpm contracts:generate`；均 0 skip/fail。未调用真实 Provider/TTS/Veyra/网络/VPS，未执行 Git 写操作。
+- `GenerationSegmentMotionPlan` 的 1–15 秒兼容范围、MotionBeat 与 Huobao 2–4 子镜头语义、editorial 评分、对话分组和 remainder 分配仍未完成来源等价映射，按 `UNREFERENCED`/冲突项冻结；不得把结构性边界测试宣称为完整子镜头迁移。
+- 当时状态快照：E03 8–15 秒窄切片=`ACCEPTED`（仅切片）；独立纠察已完成 READY→ACCEPTED 状态流程；E04/Piper pace 当时 `READY_FOR_AUDIT/verifying`；该句已由后续 E04 验收及 E06 当前账本 supersede。C12.4/C12.5 总体仍 `IMPLEMENTED_PENDING_AUDIT`。
+
+### E03/HB-STORYBOARD-TIMING 独立审计记录（2026-08-31）
+
+- 纠察员以固定 Huobao commit `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 的 `storyboard-breaker/SKILL.md` 对照复核：本切片的 8–15 秒正式段边界已在 Domain、StoryboardShotSpec 契约和规划器生成后既有断言路径中一致落地；未发现本轮新增算法、协议、UI/API、Provider 或外部调用。
+- 复核证据：creative-planning `38/38`、domain `43/43`、contracts `36/36`，`pnpm contracts:generate` 已通过；0 skip/fail，全部本地 fixture/单元测试。契约导出物的 `StoryboardShotSpec.duration_seconds.minimum=8` 可复核。
+- 范围结论：E03 仅包含 8–15 秒边界窄切片；Huobao 每段 2–4 子镜头、每子镜头 2–6 秒及 video-prompt 的 `[镜头N]`/3 秒映射没有固定平台等价实现，MotionPlan、editorial、dialogue grouping、remainder 仍为 `UNREFERENCED`/冲突并冻结，不纳入本次验收。
+- 独立 Exit Gate：该窄切片已完成 `READY_FOR_AUDIT`→`ACCEPTED` 流程，但不能把它写成完整 Huobao 迁移；本条只覆盖 8–15 秒边界。E04/Piper pace 已进入下一独立执行切片；C12.4/C12.5 总体继续 `IMPLEMENTED_PENDING_AUDIT`。
+
+### E04/S02 Piper pace 与原始参数边界（2026-08-31；历史快照，已由后续 E04 验收 supersede）
+
+- 固定来源为 `calesthio/OpenMontage@4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/piper_tts.py::PiperTTS._generate`、`tools/audio/tts_selector.py::TTSSelector` 与 `skills/meta/voice-performance-director.md`；来源只提供数值 `length_scale`/`sentence_silence`、stdin 文本和 `timeout=300`，没有平台 `SLOW`/`FAST`/`BRISK` 的数值映射。
+- 当前 E04 只允许复核/适配原始命令参数、stdin、WAV 实测和 `timeout=300`，并对没有来源映射的 symbolic pace 保持既有 fail-closed；不接入云 TTS、不新增 `-i/-f` 协议、不做 atempo/变速或自造阈值。
+- 历史状态：E04/S02=`ACCEPTED`（仅 Piper pace/原始参数窄切片）；真实 Provider/TTS/Veyra/网络/VPS/Git 仍关闭。该段后续已由 E05 验收及 E06 当前账本 supersede。
+
+### E04/S02 Piper pace READY_FOR_AUDIT 记录（2026-08-31；历史快照，已由下方验收记录 supersede）
+
+状态：`READY_FOR_AUDIT/verifying`（切片状态；C12.4/C12.5 总体仍 `IMPLEMENTED_PENDING_AUDIT`）。
+
+- 来源核对：固定 OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `piper_tts.py::_generate`、`tts_selector.py` 和 `voice-performance-director.md` 只提供原始数值参数、stdin、WAV 产物和 `timeout=300`，不提供平台 `SLOW`/`FAST`/`BRISK` 的数值映射。
+- 实现边界：`services/media-runtime/adapters/openmontage_audio/piper.py` 仅保留 `NATURAL=1.0`；`runtime.py` 传递来源参数、stdin 并以 WAV 实测时长为事实，对未映射 symbolic pace 在 Piper 前 fail-closed；selector 的云 provider 仅保留 metadata，未形成可执行网络路径。没有 `-i/-f`、atempo、变速、padding、裁剪或新协议。
+- 定向证据：adapter source-conformance `4/4`、Runtime Piper/WAV/error/unsupported pace `6/6`，补充 SLOW/FAST/BRISK fail-closed `1/1`、contracts export `32/32`；全部本地 fixture/mock，0 skip/fail，未调用真实 TTS/Provider/Veyra/网络/VPS/Git。
+- 允许保留的未完成边界：中文口音、云 TTS、完整多 cue 声学连续性及 C12.4/C12.5 的 approved section windows、完整 AudioPlan、transition/xfade、Studio、REQUIRED 字幕和超长旁白 consumer 等硬门不受本切片证据影响。
+- 下一步：由独立纠察员复核来源、代码差异、测试命令和账本一致性；未收到通过结论前不得标记 `ACCEPTED` 或进入 E05。
+
+### E04/S02 Piper pace 独立审计与 Exit Gate（2026-08-31）
+
+状态：`ACCEPTED`（仅 Piper pace/原始参数窄切片；C12.4/C12.5 总体仍 `IMPLEMENTED_PENDING_AUDIT`）。
+
+- 纠察员按固定 OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 复核 `piper_tts.py::_generate`、`tts_selector.py` 与本地 adapter/runtime：原始 `--model/--speaker/--length-scale/--sentence-silence/--output_file`、stdin、WAV 实测和 `timeout=300` 保持一致；仅 `NATURAL=1.0` 有来源映射，SLOW/FAST/BRISK 均在 Piper 前 fail-closed。
+- 复核确认未出现第二协议、`-i/-f`、atempo、变速、padding、裁剪、云 TTS、真实 Provider、网络或 Git 操作；selector 云条目仅 metadata。`timeout=300` 由固定来源及 `services/media-runtime/runtime.py:296-304` 静态核对，未虚构未执行的行为断言。
+- 最新证据：adapter source-conformance `4/4`、Runtime Piper/WAV/error/unsupported pace `6/6`、SLOW/FAST/BRISK 补充 `1/1`、contracts export `32/32`；全部本地 fixture/mock、0 skip/fail。主线与纠察员独立复核均通过。
+- 结论范围严格限定为上述 Piper 原始参数/未映射 pace 边界；中文口音、云 TTS、完整多 cue 声学连续性，以及 approved section windows、完整 AudioPlan、transition/xfade、Studio、REQUIRED 字幕和超长旁白 consumer 等硬门继续未完成。完成 E04 不代表 C12.4/C12.5 总体完成。
+
+### E05/OpenMontage `_full_mix` 与 ALCHMED8 来源消费启动（2026-08-31；实现快照，已由下方验收记录 supersede）
+
+状态：`READY_FOR_AUDIT/verifying`（实现快照；现行已由下方 `ACCEPTED` 窄切片记录及 E06 当前账本 supersede；C12.4/C12.5 总体仍 `IMPLEMENTED_PENDING_AUDIT`）。
+
+- 固定来源为 OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/audio_mixer.py::_track_filters/_full_mix`；本切片只核对已有 ALCHMED8 字段到来源 speech/music/sfx、absolute start、fade、ducking、target-duration 和 normalize 语义的映射。
+- 允许的薄壳仅限 workspace/project-scoped Asset + StoragePort、MIME/SHA/byteSize/ffprobe、受控临时路径、错误归一化和脱敏；不得新增 ALCHMED9、第二 AudioPlan、逐 cue Piper、SLOW/FAST 映射、atempo、裁剪、补静音或外部调用。
+- 已有 S03 speech-track 与 S04 music-only 局部证据均视为输入，不能直接宣称 E05 整体完成；本章需逐项检查角色冲突、跨工作区、缺资产、gain/fade/ducking、目标时长、对象冲突、Worker 重启/重复和受控 FFmpeg/ffprobe 产物。
+- 本轮实现证据已实际运行：Runtime focused `18 passed / 94 deselected`；OpenMontage full-mix adapter `3/3`；Production Worker `53/53`，全部本地 fixture/mock、0 skip/fail。覆盖 independent speech、music-only、SFX/source preservation、角色/资产/跨工作区、gain/fade/ducking、目标时长、不可表达窗口 fail-closed、对象冲突、Worker 重启/重复和受控 FFmpeg/ffprobe 产物。主线来源审计确认实现仅对应固定 commit 的 `_track_filters/_full_mix`，未新增 ALCHMED9、第二 AudioPlan、算法阈值、静默回退或外部调用。
+- Exit Gate 申请：以上仅支持已表达 ALCHMED8 字段，提交独立审计；approved section windows、transition/xfade、字幕/转写、Studio、中文口音和超长旁白 consumer 仍保留为未闭合硬门。
+- 其余 approved section windows、transition/xfade、字幕/转写、Studio、中文口音和超长旁白 consumer 仍是独立硬门，不在本切片自动关闭。
+
+### E05/OpenMontage `_full_mix` 与 ALCHMED8 独立审计与验收（2026-08-31）
+
+状态：`ACCEPTED`（仅 E05/OpenMontage `_full_mix` + ALCHMED8 窄切片；C12.4/C12.5 总体仍 `IMPLEMENTED_PENDING_AUDIT`）。
+
+- 纠察员按固定 OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 独立复核 `audio_mixer.py::_track_filters/_full_mix` 的 volume→fade→ffprobe fade-out→absolute `adelay`、speech/music/sfx 分组、ducking (`ratio=9`、`level_sc=1`、`mix=0.9`)、target `apad/atrim`、normalize/loudnorm 与 music-only `amix` 语义；Runtime/Worker 只通过既有 ALCHMED8 字段和平台 Storage/workspace 薄壳连接。
+- 证据：Runtime focused `18 passed / 94 deselected`；OpenMontage full-mix adapter `3/3`（含受控 FFmpeg/ffprobe 产物）；Production Worker `53/53`（含角色/资产/跨工作区、对象冲突、重启/重复及幂等）。全部本地 fixture/mock、0 skip/fail；未调用真实 Provider/TTS/Veyra/网络/VPS/Git。
+- 未发现第二 AudioPlan、ALCHMED9、算法/阈值、静默回退、逐 cue Piper 或来源宿主状态穿透。来源无法表达的 partial/multiple window 保持 fail-closed。
+- 验收范围严格限定为上述已表达字段；approved section windows、transition/xfade、字幕/转写、Studio 样音/审批/TimelinePlan、中文口音和超长旁白 consumer 等其它硬门继续 `BLOCKED/DEFERRED`，不得据此宣称 C12.4/C12.5 总体完成。
+
+### E06 approved full narration 窗口与 cue-only 边界实施启动（2026-08-31；实现快照，已由下方证据提交 supersede）
+
+状态：`IN_PROGRESS/implementing`（历史实现快照；当前唯一活动切片已提交 `READY_FOR_AUDIT/verifying`；C12.4/C12.5 总体仍 `IMPLEMENTED_PENDING_AUDIT`）。
+
+- 固定来源为 OpenMontage explainer narration/asset 规则与 `audio_mixer.py::_full_mix` speech-track 输入；本切片只处理独立、非样音、已测量 PRIMARY section 资产的绝对起点消费，以及唯一从 0 覆盖全目标 `PLATFORM_NARRATION` 整轨兼容形态。
+- partial/multiple section windows、缺失 asset version、样音冒充正式资产和 cue-only 多 cue 保持已有 fail-closed；不逐 cue 调 Piper，不裁剪、变速、补静音，不从脚本文本推断音频窗口。
+- E06 尚未形成当时的实现/产物证据；该句已由下方新鲜定向证据提交 supersede。transition/xfade、字幕、Studio、中文口音和超长旁白 consumer 继续是独立硬门。
+
+### E06 approved full narration 窗口与 cue-only 定向证据提交（2026-08-31；提交前快照，已由本条结论收口）
+
+提交时状态：`READY_FOR_AUDIT/verifying`；本条结论已收口为 `ACCEPTED` 窄切片（C12.4/C12.5 总体仍 `IMPLEMENTED_PENDING_AUDIT`）。
+
+- 固定来源：OpenMontage explainer narration/asset 规则与 `tools/audio/audio_mixer.py::_full_mix` speech-track 输入，commit `4eab34c5cfcccaa4f1970554928feccce73ee930`。平台现有 Runtime/Persistence/Worker 仅接受独立、非样音、已测量 PRIMARY section 资产，或唯一从 0 覆盖全目标的 `PLATFORM_NARRATION` 整轨；来源无法表达的 partial/multiple windows、样音复用、缺失 asset version、cue-only 多 cue 保持 fail-closed。
+- 新鲜定向行为证据（2026-08-31T10:10:04+08:00；全部本地 fixture/mock，0 fail/skip，无 TTS、网络或外部服务）：Runtime `17 passed / 95 deselected`；OpenMontage full-mix adapter `3 passed / 8 deselected`；Persistence approved narration timeline `13 passed / 0 skipped`；Production Worker E06 选择集 `6 passed / 0 skipped`。
+- 覆盖 AudioPlan identity/absolute windows、完整整轨兼容、独立 section speech tracks、HOLD/cue-only 边界、样音/正式资产隔离、版本/工作区/MIME/SHA/时长校验、缺失资产和未批准时间线 fail-closed；未新增逐 cue Piper、时长修正、裁剪、变速、补静音、第二协议或外部调用。
+- Exit Gate 结论：技术证据足以提交本窄切片 `READY_FOR_AUDIT`；纠察员已独立复核来源、代码边界和计数并通过，E06 窄切片标记 `ACCEPTED`。transition/xfade、字幕、Studio 样音审批/TimelinePlan、中文口音和超长旁白 consumer 等硬门仍未闭合。
+
+### E07 transition/xfade 与有效时长实施启动（2026-08-31；历史快照，已由下方验收记录 supersede）
+
+历史状态：`BLOCKED`（授权前快照；平台映射子项当时为 `UNREFERENCED`；C12.4/C12.5 总体仍 `IMPLEMENTED_PENDING_AUDIT`）。
+
+- 固定来源范围：OpenMontage `tools/video/video_stitch.py` 与 explainer `edit-director.md`/`compose-director.md`，commit `4eab34c5cfcccaa4f1970554928feccce73ee930`。
+- 先定位具体 transition/xfade 符号、参数、滤镜顺序、有效时长和产物语义；平台已有常量若无固定来源支持，保持 `BLOCKED/DEFERRED`，不得新增转场算法、阈值、协议或静默 fallback。
+- 仅在来源审计通过后用既有真实媒体夹具测量段首/段尾、重叠/间隙、A/V 总时长和字幕窗口；真实 Provider/TTS/Veyra/网络/VPS/Git 继续关闭。
+
+### E07 transition/xfade 与有效时长来源审计阻断（2026-08-31；历史快照，已由下方验收记录 supersede）
+
+- 固定 OpenMontage `tools/video/video_stitch.py` 与 explainer `edit-director.md`/`compose-director.md` 的来源审计已完成；`_stitch_cut`、`_stitch_crossfade`、`_stitch_fade_through_black`、`_get_xfade_offset`（`max(0, clip_duration-transition_duration)`）和 `_chain_xfade`（累积 offset、无 `tpad`）是已定位来源符号。
+- 平台 `PASS/BLEND/BRIDGE` 到来源 `cut/crossfade/fade` 的语义映射未证明；Runtime 当前 `tpad+xfade` offset、音频 `concat/acrossfade` 分支及 target/effective-duration 行为也未证明与来源等价，故 E07 当前为 `BLOCKED`，上述映射子项为 `UNREFERENCED`。
+- 在用户授权前不改代码、不补 E07 测试、不新增算法/阈值/协议/静默 fallback；该段为授权前历史阻断快照，已由下方当前证据 supersede。总体 C12.4/C12.5 继续 `IMPLEMENTED_PENDING_AUDIT`。
+
+### E07 transition/xfade 与有效时长实施、审计与验收（2026-08-31）
+
+状态：`ACCEPTED`（仅来源可表达 uniform transition 窄切片；C12.4/C12.5 总体仍 `IMPLEMENTED_PENDING_AUDIT`）。
+
+- 固定来源：OpenMontage `tools/video/video_stitch.py` 的 `_stitch_cut`、`_stitch_crossfade`、`_stitch_fade_through_black`、`_get_xfade_offset` 与 `_chain_xfade`，以及 explainer `edit-director.md`/`compose-director.md`，commit `4eab34c5cfcccaa4f1970554928feccce73ee930`。用户授权最小映射 `PASS→cut`、`BLEND→crossfade`、`BRIDGE→fade-through-black`。
+- 实现范围：`services/media-runtime/runtime.py` 仅复用来源 transition type、0.1–5.0 秒 source schema、`max(0, …)`/round offset、累积 offset 和 no-`tpad` 语义。cut 使用既有 filter concat 作时间轴等价薄壳，不宣称来源 concat-demuxer/`-c copy` 编码等价；未新增协议、平行算法或外部调用。
+- 定向证据：`python -m pytest -q tests/test_runtime.py -k "maps_pass_to_source_cut or maps_bridge_to_source_fadeblack or cumulative_offset_rounding or rejects_mixed_source_transition_plan or rejects_different_bridge_durations or continuous_narration_crossfade"` → `6 passed / 113 deselected / 0 failed / 0 skipped`；包含 PASS cut、BLEND crossfade、BRIDGE fadeblack、N 段 cumulative offset、mixed/different bridge duration fail-closed、continuous narration non-cut fail-closed。全部本地 fixture/mock，纠察员独立复核通过，无真实 Provider/TTS/Veyra/网络/VPS/Git。
+- 未闭合边界：mixed transition、不同 bridge duration、continuous narration 非 cut、target/effective-duration mismatch 等来源未表达形态继续 `BLOCKED/DEFERRED`；E08 segmented/HyperFrames 需要独立授权，字幕、Studio/TimelinePlan、中文口音及超长旁白硬门不因本切片关闭。
+- Exit Gate：E07 仅来源可表达 uniform transition 窄切片完成 `READY_FOR_AUDIT→ACCEPTED`；“下一活动切片为 E09”是该历史记录的顺序快照，现行活动为 E10。
+
+### E09/OM-TRANSCRIBE-SUBTITLE 实施、独立审计与验收（2026-08-31 11:14）
+
+- 固定来源：OpenMontage `tools/analysis/transcriber.py`、`tools/subtitle/subtitle_gen.py::_build_cues/_hmsms`、`tools/video/remotion_caption_burn.py::_render_ffmpeg`，commit `4eab34c5cfcccaa4f1970554928feccce73ee930`。
+- 实施只覆盖 source-expressed 子集：受控 CPU/int8 faster-whisper 的 `word_timestamps=True`/`vad_filter=True`、词时间/概率三位舍入；8 词/42 字 cue 分组与毫秒进位；checked timing 生成 SRT 后走来源 FFmpeg `subtitles` fallback，保留音轨并写入 `alchemy_captions=burned_srt`。REQUIRED 缺失能力或 timing 在 FFmpeg 前 fail-closed。
+- 本轮唯一代码修正为 `services/media-runtime/runtime.py::_subtitle_srt_from_transcript` 的 cue flush：按来源 `_build_cues` 清空旧文本并以当前词起新 cue；此前 9 词夹具会错误产生 8+9，修正后为 8+1。未改变公共契约、状态、时长策略或模块边界。
+- 定向证据：`python -m pytest -q tests/test_runtime.py -k "transcriber_reports_unavailable or transcriber_capability_rejects_interpreter or transcriber_capability_probes_the_same_interpreter or transcriber_preserves_source_word_timestamp_flags_and_rounding or subtitle_srt_reuses_source_8_word_42_char_grouping_and_ms_rounding or caption_burn_uses_checked_word_timestamps_and_marks_artifact or caption_burn_requires_checked_source_timing_before_ffmpeg or caption_burn_handler_returns_marked_video_headers or caption_handler_rejects_raw_mp4_and_malformed_json or caption_handler_rejects_oversized_video_base64 or transcribe_handler_returns_source_aligned_unavailable_payload"` → `11 passed / 111 deselected / 0 failed / 0 skipped`；完整 Runtime `122 passed / 0 failed / 0 skipped`。均为本地 fixture/mock，无模型、TTS、Provider、网络、Veyra、VPS 或 Git。
+- 纠察员独立复核通过：未发现第二协议、脚本推时序、新评分/阈值、第二 fallback 或真实调用。GPU/device/model/language metadata、diarization、Remotion 主路径、VTT/JSON/correction/highlight、中文口音和完整 Studio REQUIRED 事实链继续 `DEFERRED/BLOCKED`。
+- Exit Gate：E09 source-expressed transcript/subtitle/FFmpeg fallback 窄切片完成 `READY_FOR_AUDIT→ACCEPTED`；总体 C12.4/C12.5 仍 `IMPLEMENTED_PENDING_AUDIT`。下一活动切片为 E10 Studio 样音/正式资产/TimelinePlan；E08 segmented/HyperFrames 与 E12 真实 TTS/口音仍按独立授权/外部门禁处理。
+
+### E10 Studio 样音、正式旁白资产与 TimelinePlan（2026-08-31 11:26:59；窄切片已验收）
+
+提交状态：`READY_FOR_AUDIT/verifying`；纠察员独立审计通过后，本条收口为 `ACCEPTED`（仅窄切片；总体 C12.4/C12.5 仍 `IMPLEMENTED_PENDING_AUDIT`）。
+
+- 固定来源为 OpenMontage `skills/meta/voice-performance-director.md` 与 `skills/pipelines/explainer/asset-director.md`，commit `4eab34c5cfcccaa4f1970554928feccce73ee930`。来源要求样音先于批量旁白、正式资产与样音对象分离、记录可测量时长并保持 provider/voice/settings 一致；平台只复用既有 approval event、asset-version 和 TimelinePlan 边界，不新增公共字段或协议。
+- 现有实现的 source-expressed 窄边界：样音审批只写事实，不把样音提升为正式资产；正式旁白必须是独立、非样音、READY 资产，并通过 workspace/project、版本、AUDIO MIME、SHA、字节数、实测时长及绝对 section window 校验；缺失审批/资产/时间线、样音复用、版本漂移、重叠或跨工作区数据均 fail-closed。
+- 新鲜本地 fixture/mock 定向证据（全部 `0` fail/skip、无 Provider/TTS/网络）：creative-planning `7/7`；persistence narration-quality + approved-timeline `16/16`；Control API C12.7B `2/2`；Production Worker approved narration/timeline/sample/version/continuous-narration 选择 `7/7`；Studio project-flow/project-shell `24/24`。
+- 纠察员独立核对确认：上述证据支持该窄切片完成 `READY_FOR_AUDIT→ACCEPTED`，但不能证明完整 Studio 自动生成样音→审批→正式资产→TimelinePlan UI/API，也不能证明 source 顶层 `voice_performance`、完整 section `delivery_cues`、最敏感 section 自动选择/人工听感、approved sample path/provider settings manifest、provider-specific mapping 或真实 TTS/中文口音质量；这些保持 `DEFERRED/BLOCKED`。用户上传旁白/样音不是当前自动流程前提。`normalizeNarrationSections`/`buildNarrationTimeline` 是平台既有逻辑，不宣称固定来源等价。
+- Exit Gate：E10 仅来源可表达的 approval fact、独立正式资产与 TimelinePlan identity/window 边界已完成 `READY_FOR_AUDIT→ACCEPTED`；四账本已同步，E11 现为唯一活动章节并进入来源盘点。
+
+### E11 超长旁白 consumer 与弹性总时长（2026-08-31 13:19；S08 窄切片 ACCEPTED；完整 E11 未验收）
+
+当前状态：S08 内部 measured-duration feedback、decision-log 幂等与 compose 前 consumer fail-closed 窄切片已独立审计并 `ACCEPTED`；完整 E11 仍未 `ACCEPTED`，不得把该切片当作完整 E11 或据此启动未授权章节。
+
+- 当前开发授权仅为固定 OpenMontage `skills/pipelines/explainer/compose-director.md` 与 `executive-producer.md`，commit `4eab34c5cfcccaa4f1970554928feccce73ee930`。`scene-director.md:146-169` 仅同源审计候选/`DEFERRED`，不构成当前开发授权；本窄切片已完成逐符号薄适配和行为验证。
+- 仅允许迁移来源明确表达的 measured narration duration、超长改稿/重新生成或视觉尾段延长决策、禁止慢放/裁剪/补静音及 visual hold/ambient 关系；无来源的阈值、评分、时长修正、Provider 选择、第二协议和 UI 状态保持 `DEFERRED/BLOCKED`。
+- 逐符号映射：`compose-director.md:80-107` 为 85–90% 时长预算、words/sec 预算、TTS 原始参数及 `audio_duration_seconds` 超长反馈、Pixabay 参数；`:140-143` 为旁白/音乐覆盖和 ducking 前置校验；`:190-210` 为 Remotion 音频路径与不可用时 FFmpeg `audio_mixer` 顺序。`executive-producer.md:233-242` 为实际时长探测、`EP_STATE.narration_durations`、`1.15` 超长 SEND_BACK、`25%` 内 scene-plan 调整和总时长更新；平台未实现自动重规划/弹性时长，`scene-director.md` 不复用。
+- 既有 consumer `services/media-runtime/runtime.py:1983-2022,2504-2524`、`apps/production-worker/src/media-service.ts:464-485,513-595` 的最新薄适配仅记录实测 narration facts，并在 compose 前对来源 `SEND_BACK`、`ADJUST_SCENE_PLAN` 及 `SOURCE_DECISION_REQUIRED` fail-closed；不执行自动改稿、视觉延长、重规划、慢放/裁剪/补静音，也不改变 CompositionPlan/ALCHMED wire。来源 compose-director `>1s` 与 executive-producer `1.15/25%` 规则的重叠无固定优先级，平台保留 `source_actions=[SEND_BACK,ADJUST_SCENE_PLAN]`，不擅自决策。
+- Fresh local fixture/mock 证据（2026-08-31 13:27，0 fail）：Contracts `37/37`、Domain `48/48`、Production Worker 全量 `56/56`，E11 选择集 `7/7`；Persistence 幂等集成在项目自带本地 PostgreSQL 容器上 `1/1`；相关 `tsc --noEmit` 均 exit `0`，`validate_state.py`=`OK`，无 Provider/TTS/网络/Veyra/VPS/Git 或其它外部调用。
+- Persistence 重放负向边界于 13:30 再跑 `1/1`：同一 event-derived id 的相同 metadata/sourceRevision 可重放；相同 event id 但不同 `productionRunId` 被拒绝，确认不会静默替换来源事实。
+- Exit Gate 结论：内部 measured-duration feedback contract/decision-log 幂等与 consumer fail-closed 窄切片证据齐全，纠察员已独立复核并将本窄切片从 `READY_FOR_AUDIT` 收口为 `ACCEPTED`；完整 E11 的自动 SEND_BACK 执行、视觉延长/重规划/弹性时长仍 `DEFERRED/BLOCKED`，总体 C12.4/C12.5 继续 `IMPLEMENTED_PENDING_AUDIT`。E08 segmented/HyperFrames 与 E12 真实 TTS/口音仍需分别授权和来源证据。
+
+### E08 `_segmented_music` 与 HyperFrames timed audio 启动审计（2026-08-31 13:54:48；历史启动快照）
+
+当前唯一活动切片为 E08，状态 `IN_PROGRESS/implementing`；E11/S08 measured-duration feedback/decision-log/consumer fail-closed 仅保留已独立审计的 `ACCEPTED` 窄切片，完整 E11 自动重规划/视觉延长仍 `DEFERRED/BLOCKED`，总体 C12.4/C12.5 仍 `IMPLEMENTED_PENDING_AUDIT`。本条是启动和来源对账历史快照，不是 E08 完成或验收；当前实现证据见下方 checkpoint。
+
+- 固定来源：OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/audio_mixer.py::AudioMixer.execute/_segmented_music` 与 `tools/video/hyperframes_compose.py::_resolve_audio_refs`，以及 `skills/core/hyperframes.md:143-162` HTML audio contract。
+- 逐符号映射：`AudioMixer.execute` 以 `operation="segmented_music"` 独立分派；`_segmented_music` 保留 `video_path`、`music_path`、`music_volume`、`segments[{start,end}]`、`fade_duration`、`output_path`，按 start 排序构造来源 volume/fade 表达，`amix normalize=0` 保持旁白 unity，并输出原视频流与 shaped music。该操作不并入 `_full_mix`。
+- HyperFrames 映射：`_resolve_audio_refs` 将 `asset_manifest.assets[]` 的独立 narration/music 文件写入 HTML `<audio>`，由 `data-start`/`data-duration` 表达时间窗，并保留来源 track/volume 关系。平台不照搬来源对缺失 asset 的静默 `continue` 或 basename 路径 fallback；不能把整轨 bytes 猜切为多个独立文件。
+- 现有平台差异：启动时尚无独立路径是历史快照；当前落点为 `services/media-runtime/adapters/openmontage_audio/{segmented_music.py,hyperframes_audio.py}` 与 `runtime.py` 内部 helper。适配器只接收受控路径/独立 asset，Runtime 复用既有 Storage/workspace/project/MIME/SHA/ffprobe/错误边界，不新增公开 UI/API/Provider/网络协议。
+- 本回合“未改代码/未运行测试”是历史快照。当前证据与边界见下方 checkpoint；平台 invalid/non-finite/out-of-range window、missing/越权独立 asset、MIME/SHA/ffprobe 和未验证 `data-start`/`data-duration` fail-closed；来源允许的 overlap additive/输入顺序由适配器保留，既有 CompositionPlan/Runtime helper 在平台边界拒绝 overlap。
+
+Exit Gate 尚未满足；保持 E08 `IN_PROGRESS/implementing`，不得标记 `READY_FOR_AUDIT`/`ACCEPTED`，等待下方实现证据完成同步后的独立复核。
+
+### E08 `_segmented_music` 与 HyperFrames timed audio 实施审计 checkpoint（2026-08-31 14:40；ACCEPTED 窄切片）
+
+- 固定来源与落点：OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `AudioMixer._segmented_music` → `segmented_music.py::OpenMontageSegmentedMusicMixer`；`HyperFramesCompose._resolve_audio_refs` 与 `skills/core/hyperframes.md:143-162` → `hyperframes_audio.py::OpenMontageHyperFramesAudio`。保留 source 参数、排序/fade、overlap `+` additive、`amix normalize=0`、独立文件 timing、track 2/3、optional/explicit-zero end fallback 和 source volume default；仅补既有 workspace/project、角色、MIME、byteSize、SHA、ffprobe、路径和错误事实门禁。
+- Runtime `segment_music_video_bytes` 不并入 `_full_mix`，只在已有 `MediaRuntimeCompositionPlan.music_segments_ms` 边界按 start 排序并拒绝 overlap；`resolve_hyperframes_audio_refs` 要求显式 workspace/project scope。没有新增 AudioPlan、公开协议、UI、Provider、网络调用或自造时长/音频算法。
+- 新鲜本地 fixture/mock 证据：adapter `14/14`；Runtime focused `3 passed / 122 deselected / 0 failed / 0 skipped`；Runtime full `125 passed / 0 failed / 0 skipped`；adapter combined `25 passed / 0 failed / 0 skipped`。受控 ffmpeg/ffprobe/WAV 产物夹具实际执行，无外部调用。
+- 审计结论：纠察员已独立复核固定来源、代码范围和最新证据，独立验收通过，E08 来源可表达窄切片由 `READY_FOR_AUDIT/verifying` 收口为 `ACCEPTED`；总体 C12.4/C12.5 继续 `IMPLEMENTED_PENDING_AUDIT`。完整 HyperFrames renderer、重启/重复产物整合、完整 AudioPlan/section windows、Studio/字幕/中文口音/超长旁白硬门保持 `DEFERRED/BLOCKED`，须另行来源证据。
+
+### E12 真实 TTS、中文口音与外部能力授权审计（2026-08-31；历史阻断快照，已 superseded）
+
+- 审计范围固定为已登记 OpenMontage TTS adapters/selector（commit `4eab34c5cfcccaa4f1970554928feccce73ee930`）。现有 Piper 原始参数/结构适配的本地证据不等同于真实 TTS 或中文口音质量证据。
+- `E12` 在本段记录时为 `BLOCKED`：尚未提供可审计的具体 provider/profile、调用次数、源素材范围、额度上限、凭据注入方式和外部调用授权。该段为历史快照，不覆盖下方本轮用户授权的真实视频 Provider canary。
+- `READY_FOR_AUDIT` 的前置条件是上述材料齐备后完成来源映射、离线 preflight、明确授权的真实调用与音频/口音/产物审计；未满足前不允许新增 mapper、语速/时长算法、协议、UI 或部署逻辑。总体 C12.4/C12.5 继续 `IMPLEMENTED_PENDING_AUDIT`，其余完整 AudioPlan/section windows、Studio、字幕、转场和长旁白硬门保持 `DEFERRED/BLOCKED`。
+
+### E12 本轮真实 30 秒/480P Provider、Piper 与音乐实测审计（2026-08-31 16:05；BLOCKED，未验收）
+
+- 用户明确授权使用当前程序已有能力并指定 `480p`；本轮按现有 Control API→Production Worker→`sub2api:grok-imagine-video-1.5` 路径，在“保险AI介绍”项目中以四张 READY 参考图和逐图明确的 SUBJECT/SCENE/STYLE 来源说明完成一轮真实 30 秒 canary。生产 `prd_01M1BD7G2CHTQPPPBA2QZSV0Q1` 两个 15 秒段各一次 Provider attempt 均成功，最终 `848x480`、`30.084s`、`video/mp4`、`6460435` bytes，Composition QC=`PASS`，`music_applied=true`、integrated `-14.2 LUFS`、true peak `-1.7 dBTP`、无意外静音。该结果是视觉/音频产物证据，不是中文口音验收。
+- 同一项目第一次批量用途说明存在歧义时，生产 `prd_01M1BD21H6TGKJ94F4A8V2PYF2` 按现有角色解析门禁保持 `BLOCKED`，两个段 `WAITING`，没有创建 task/provider attempt；补齐不冲突的逐图说明后才进入上述成功实测。未修改角色解析代码。
+- 现有 Media Runtime Piper 单次 endpoint 对保险文案输出 `audio/wav`、`716680` bytes、实测 `16250ms`、`22050Hz mono PCM`；silencedetect 未发现 `>=0.5s` 尾部静音。该证据只证明本地一次合成和产物边界，不能替代云 TTS、普通话口音或完整旁白组合听感。
+- Pixabay 显式导入按既有唯一 Runtime source path 执行时返回 `503 PROVIDER_UNAVAILABLE`，外部页面为 `403`；没有启动第二 scraper、自动回退或伪造成功证据。
+- 本轮没有创建正式 `NarrationAssetVersion` 或完整 `TimelinePlan`，没有把样音当正式旁白，也没有新增语速/时长修正/补静音/第二 AudioPlan/Provider 协议/UI。approved full narration section windows、完整 AudioPlan、transition/xfade、cue-only full-narration-first、Studio 样音/审批/TimelinePlan、`REQUIRED` 字幕事实链、中文口音和超长旁白 consumer 仍 `DEFERRED/BLOCKED`；E12 不升级 `READY_FOR_AUDIT` 或 `ACCEPTED`，总体保持 `IMPLEMENTED_PENDING_AUDIT`。
+- 根级 `pnpm test`（2026-08-31 20:44）实际为 `470 passed / 19 explicit skips / 0 failed`，覆盖 18 个 workspace 项目；skip 保留为环境门控事实，不作为通过，且本次未新增真实 Provider/TTS/Veyra/网络/VPS/Git 调用。
+
+## E12 本轮优化盘点与回归审计补记（2026-08-31 23:12；BLOCKED）
+
+- 来源/范围复核没有发现可安全新增的固定仓库逻辑、协议、算法或 UI；E01–E11 接受状态不变，未重开任何已接受窄切片。
+- C12 默认本地栈 UI E2E 通过：MUSIC 上传、两段 Mock、Runtime 合成/QC、成片播放/下载、390px 布局；该结果为 Mock 2 秒夹具，不能替代正式 narration/TimelinePlan/口音证据。
+- 最新证据：根 `pnpm test`=`490 tests / 471 passed / 19 explicit skips / 0 failed`；Media Runtime+OpenMontage adapters=`150 passed / 0 failed / 0 skipped`；`py_compile`、`pnpm typecheck`、`pnpm build` 通过。全部本地 fixture/mock，未新增外部调用。
+- 审计结论：E12 继续 `BLOCKED`，总体 C12.4/C12.5 继续 `IMPLEMENTED_PENDING_AUDIT`。正式 NarrationAssetVersion/TimelinePlan、approved section windows、完整 AudioPlan、Studio 样音/审批、REQUIRED 字幕、中文口音、混合/连续非 cut 和超长旁白自动消费等硬门原样保留；不得用本轮结构/本地 Mock 证据升级。
+
+### R01 原仓库语音 owner 边界局部实现审计（2026-09-01 00:53；局部 IMPLEMENTED，完整 BLOCKED）
+
+- 固定来源：OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/tts_selector.py`、`tools/audio/piper_tts.py`、`tools/video/grok_video.py`；本轮用户授权仅覆盖本地代码、fixture 和审计，不包含新的真实 Provider/TTS、网络、Veyra、VPS 或 Git 操作。
+- 已实现且可复核：`services/media-runtime/adapters/openmontage_audio/selector.py` 去除手工 provider tuple；无来源 registry 时 `auto`/空值显式 `UNAVAILABLE`，仅明确 `piper`/`piper_tts` 可选。`apps/production-worker/src/media-service.ts:538-543` 在连续旁白有 canonical script/cue、但无 approved narration bytes/tracks 时沿用 `QC_FAILED`，阻止裸 script 进入 Piper；approved narration asset、Storage bytes、SHA/byte/duration、`inspectAudio` 和既有时长反馈路径保持。
+- 行为证据：selector `2 passed / 9 deselected / 0 skipped`；Worker `26 passed / 0 failed / 0 skipped`；`git diff --check` 无错误，仅现有换行提示。所有证据为本地 mock/fixture。
+- 完整 Exit Gate 仍 `BLOCKED`：当前 `VideoProviderPort`/profile 没有固定来源可核验的 `native_audio`/`generate_audio` owner，Runtime 没有 OpenMontage registry discovery/rank 正向映射；`packages/provider-video/src/prompt-compiler.ts:33` 仍保留旧 PLATFORM_NARRATION/禁止 Provider dialogue 语义。不得把局部 guard/selector 测试升级为 `READY_FOR_AUDIT`/`ACCEPTED`，不得进入 R02；总体 C12.4/C12.5 继续 `IMPLEMENTED_PENDING_AUDIT`。
+
+### E12/R01 Doubao source mapper 与用户授权 smoke 审计补记（2026-09-01；历史快照，MAPPER_ONLY/PARTIAL，已 superseded）
+
+- 固定来源为 OpenMontage `tools/audio/doubao_tts.py::DoubaoTTS`，commit `4eab34c5cfcccaa4f1970554928feccce73ee930`。新增落点 `services/media-runtime/adapters/openmontage_audio/doubao.py` 只保留 source submit/query URL、`X-Api-*` headers、`req_params`、`voice_id`/`resource_id` 覆盖、错误提示和 secret redaction；未执行 HTTP、未注册 provider、未改 Runtime/Worker/Contracts/API。
+- `test_doubao.py` + selector focused `7 passed / 9 deselected / 0 skipped`，`py_compile`、`git diff --check` 通过；均为 fixture/mock。用户已授权 source `DoubaoTTS.execute` 一次 smoke，使用外部环境注入的 `DOUBAO_SPEECH_API_KEY`/`DOUBAO_SPEECH_VOICE_TYPE`，profile `seed-tts-2.0`/`zh_female_vv_uranus_bigtts`，产出 MP3 `57372` bytes 与 metadata `2506` bytes；主机无 `ffprobe`，不作时长断言。
+- 仓库 bundled `ffprobe-static` 随后对同一 MP3 离线测量为 `2.856000s`、`mp3`、24 kHz mono；不含网络调用，仍仅为 source/artifact evidence。
+- 这只是来源/API credential evidence，不是平台 TTS owner/profile、正式 NarrationAsset/TimelinePlan、section windows、中文口音听感或 E12 Exit Gate。`OM-DOUBAO=MAPPER_ONLY/PARTIAL`，E12/R01 保持 `BLOCKED`，总体 C12.4/C12.5 保持 `IMPLEMENTED_PENDING_AUDIT`；原有 approved narration、AudioPlan、Studio、字幕、转场和长旁白硬门原样保留。
+
+### E12/R01 Doubao 显式 Runtime 薄壳审计补记（2026-09-01；历史 VERIFYING，当前 BLOCKED/已回收；前述 MAPPER_ONLY 为历史快照）
+
+- 来源复核：固定 OpenMontage `tools/audio/doubao_tts.py::DoubaoTTS`（commit `4eab34c5cfcccaa4f1970554928feccce73ee930`）的 submit/query/download 顺序、`X-Api-*` headers、`req_params`、预查询 sleep、`task_status=2/3`、timeout `(10,60)/(10,120)`、metadata 写入和 voice/resource override 均在 `services/media-runtime/adapters/openmontage_audio/doubao.py` 保持；平台只做受控临时文件、bytes/MIME/SHA/size/ffprobe 和 secret/signed-URL 脱敏边界。
+- 来源 selector 复核：`selector.py` 不建立本地排名或自动 fallback；`auto`/unknown 在无 OpenMontage registry 时 fail-closed，显式 Doubao 需 `DOUBAO_SPEECH_API_KEY`，显式 Piper 维持既有离线兼容路径。Runtime `main.py` 仅对 `preferred_provider=doubao|doubao_tts` 进入 Doubao helper，未注入 provider 的历史 Piper handler 保持兼容。
+- 契约/Worker 复核：内部 loopback narration schema/client 只转发 source voice/resource/format/sample-rate/speech-rate/timestamp/usage/poll/timeout 字段和实际音频 MIME；无公共 DTO、第二 AudioPlan、UI、计费或新时长算法。Worker 外层 abort 采用 source `timeout_seconds`，不截断大于默认 300 秒的显式源窗口。
+- 最新本地行为证据（fixture/mock，0 skip）：Media Runtime `151/151`；Doubao/selector adapter `24/24`；Production Worker Runtime Client `23/23`；Worker typecheck、`py_compile`、`git diff --check` 均通过。新增 handler 夹具确认 source 字段/MIME 保留、auto provider 阻断；未进行额外网络调用。
+- 用户授权真实 Runtime smoke：使用外部 profile `seed-tts-2.0` / `zh_female_vv_uranus_bigtts`，显式 Doubao route 完成 submit→poll→download，返回 `audio/mpeg`、`37212` bytes、bundled ffprobe `1850ms`。不记录 key/task/request/url；该证据不替代中文口音人工听感、正式 NarrationAsset/TimelinePlan、approved section windows、native owner 或完整 E12 验收。
+- 历史审计结论（已回收）：显式 Doubao 代码/行为切片达到 `IMPLEMENTED`，提交本节 `READY_FOR_AUDIT` 评审前的技术证据已齐，但本轮不把它写成 `ACCEPTED`。E12/R01 总体曾为 `VERIFYING`，当前为 `BLOCKED`；C12.4/C12.5 保持 `IMPLEMENTED_PENDING_AUDIT`。source registry/rank 正向映射、native audio owner、正式旁白时间线、Studio 审批、REQUIRED 字幕、人工中文口音和超长 consumer 硬门继续 `BLOCKED/DEFERRED`。本节 route/smoke 仅为历史证据，不构成当前验收或新的外部调用授权；此前 MAPPER_ONLY/“route disabled”文字仅为授权前历史快照。
+
+## 当前状态回收（2026-09-01；现行口径）
+
+- E12/R01 当前统一为 `BLOCKED`：完整 source registry/rank、native/TTS owner、正式 narration asset/TimelinePlan、approved section windows 和人工中文口音硬门仍未闭合。上文 `VERIFYING`、显式 route 与真实 smoke 仅为历史证据，不构成当前验收或新的外部调用授权。
+- C12.4/C12.5 当前维持 `IMPLEMENTED_PENDING_AUDIT`；不恢复或伪造 E02/S01 状态，不进入 R02。Doubao adapter 继续隔离保留，默认不启用。
+- `apps/production-worker/src/index.ts` 已移除 `MEDIA_RUNTIME_NARRATION_PROVIDER` 全局启动注入；显式受控入口和测试保留，不能推导默认 provider。
+
+## 2026-09-01 R01 native-first / explicit-Doubao 实测补记（当前 BLOCKED，未验收）
+
+- 本条依据用户最新明确授权，仅执行一次 native Provider canary 与一次显式 Doubao Runtime canary；不改变默认 Mock、公共契约、章节顺序或 owner 状态，不引入自动 fallback、第二协议、语速/时长修正或计费逻辑。
+- 固定来源为 OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930`：`tools/video/grok_video.py::GrokVideo.supports["native_audio"]`、`tools/audio/doubao_tts.py::DoubaoTTS`。native canary 产物 `D:\AI\alchemy_video_OS\.codex-longrun\media-review\prj_01M1DF7RZ2VCQPFVGZ7DRWB2DK-tsk_01M1DF7S1W2TRN0HA5A9N7FM8M-native.mp4`：`video/mp4`、`848x480`、`15.042s`、`5071855` bytes，含 AAC 44.1kHz stereo 音轨；ffprobe/静音覆盖通过，但离线 Whisper 未得到可靠中文台词，不能视为中文口音或语义验收。
+- 显式 Doubao canary 通过现有 loopback `POST /internal/v1/media/narration`，profile `seed-tts-2.0`、voice `zh_female_meilinvyou_uranus_bigtts`，返回 `audio/mpeg`；产物 `D:\AI\alchemy_video_OS\.codex-longrun\media-review\maoshan-doubao-1788232895802.mp3`，`157212` bytes、Runtime `7850ms`、ffprobe `7.848s`、24kHz mono；无 `>=0.5s` 尾静音，内部停顿约 `0.585s`，响度约 `-24.3 LUFS`、true peak `-9.3 dBFS`。密钥/task/request/url 未写入审计记录。
+- 本地 persistence native/TTS owner fixtures 已同步执行：`production-repository.test.ts` + `production-repository.native-audio.test.ts` 共 `7/7` pass、0 fail、0 skip；覆盖 native 保留源音轨、approved narration 冲突 fail-closed、TTS 正向 narration、`NARRATION_SAMPLE`/`USER_SOURCE_AUDIO` 不成为最终输出。该行为证据不替代 source registry/rank 正向映射、profile capability 认证、正式 `NarrationAssetVersion`/TimelinePlan/section windows、Studio 样音审批或人工听感。
+- Exit Gate 结论：R01/E12 继续 `BLOCKED`，C12.4/C12.5 继续 `IMPLEMENTED_PENDING_AUDIT`，不进入 R02；未闭合硬门原样保留。上文“无真实 TTS/route”仅属授权前历史快照，由本条当前证据覆盖，但不改变验收状态。
+
+### R01 selector provider-tuple 收敛审计补记（2026-09-01）
+
+- 来源对照：固定 OpenMontage commit `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/tts_selector.py::TTSSelector` 通过 `ToolRegistry.get_by_capability("tts")` 工作，provider 元数据来自已注册 `BaseTool`；本地无该 registry，因此不保留自造 `TTSProviderMetadata` 或 Piper/Doubao 候选 tuple。
+- 最小变更仅将 selector 返回值收敛为来源 provider 字符串，保留显式 Piper/Doubao 与 Doubao key guard；`auto`/unknown 继续 fail-closed，不实现 R02 registry discovery/rank/score/preference、默认云路由或 fallback。
+- 定向 fixture：`2 passed / 9 deselected / 0 skipped`，全部本地 mock。R01 完整 Exit Gate 仍 `BLOCKED`，不得进入 R02；C12.4/C12.5 仍 `IMPLEMENTED_PENDING_AUDIT`。
+
+### R01 新鲜本地回归对账（2026-09-01）
+
+- Doubao/selector fixture：`24 passed / 0 failed / 0 skipped`；Production Worker Runtime Client：`23/23`；Production Worker media-service：`26/26`；Worker typecheck exit `0`。
+- `validate_state.py=OK`；`git diff --check` 无错误（仅既有换行警告）。全部为本地 fixture/mock，无真实 Provider/TTS/网络/Veyra/VPS/Git。
+- 该证据不改变章节结论：E12/R01 仍 `BLOCKED`，不得标记 `READY_FOR_AUDIT`/`ACCEPTED` 或启动 R02；C12.4/C12.5 仍 `IMPLEMENTED_PENDING_AUDIT`。
+
+### E12/R01 本地启动配置边界复核（2026-09-01 10:05；不改变状态）
+
+- `infrastructure/local/start-full-local-stack.ps1` 仅按固定 OpenMontage `DoubaoTTS.execute` 的来源环境名读取 process/user/.env.local 值，并在 Media Runtime 子进程启动期间临时继承 `DOUBAO_SPEECH_API_KEY`、`DOUBAO_SPEECH_VOICE_TYPE`；`finally` 恢复父进程环境，不注入 Worker、不落盘、不打印、不改变默认 `VIDEO_PROVIDER=mock`。
+- 重启与本地边界证据：PowerShell parser、完整栈服务/端口、Control API `/api/v1/health`=`200`、Python Doubao/selector fixture `24/24`、Worker Runtime Client `23/23`、typecheck、`validate_state.py` 和 `git diff --check` 均通过；无真实 Provider/TTS/网络/Veyra/VPS/Git 调用。
+- 本条只确认配置传递和启动恢复，不证明 source registry/rank、native/TTS owner、正式 NarrationAsset/TimelinePlan、approved section windows、人工中文口音或完整 E12/R01 Exit Gate；E12/R01 继续 `BLOCKED`，总体 C12.4/C12.5 继续 `IMPLEMENTED_PENDING_AUDIT`，不得进入 R02。
+
+### R01/E12 最终本地回归与当前阻断对账（2026-09-01；BLOCKED）
+
+- 最新可复核本地证据：Provider-video `45/45`、Production Worker `59/59`、Media Runtime/OpenMontage `151/151`，均 `0 failed / 0 skipped`；Production Worker typecheck exit `0`。测试均为 fixture/mock，不含新的真实 Provider/TTS/网络/Veyra/VPS/Git 调用。
+- 本地栈已恢复默认 `VIDEO_PROVIDER=mock`；Control API health 返回 `status=ok`、`database=ok`；`validate_state.py=OK`，`git diff --check` 无 whitespace error（仅既有换行警告）。
+- 当前结论不升级状态：E12/R01=`BLOCKED`，C12.4/C12.5=`IMPLEMENTED_PENDING_AUDIT`。未闭合硬门仍为 source registry/rank 与 native profile capability 认证、正式 NarrationAsset/TimelinePlan/approved section windows、Studio 样音审批、完整 AudioPlan/REQUIRED 字幕、人工中文口音听感及长旁白 consumer 行为；不得以本地绿测或一次 canary 代替。其余历史 VERIFYING/MAPPER_ONLY/READY 记录均保留为历史证据。
+
+### R01 分段旁白绝对时间窗修复审计补记（2026-09-01 13:38；局部 IMPLEMENTED，完整 BLOCKED）
+
+- 固定来源为 OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930`：`tools/audio/audio_mixer.py::_full_mix` 的 speech track `start_seconds`、`target_duration`、`apad/atrim`，以及 Explainer Edit/Compose Director 的“旁白不超过对应视觉窗口、短时由已声明音乐/视觉尾段覆盖”规则。平台仅修复本地等长误门：`services/media-runtime/runtime.py:2617-2625` 以绝对 track 起点调用现有时长/尾窗校验；`apps/production-worker/src/media-service.ts:56-68,462-509` 复用声明尾窗覆盖；`packages/persistence/src/approved-narration-timeline.ts:80-85,311` 只拒绝正式 asset 超出 PRIMARY 窗口。
+- 代码/行为证据：Runtime `131/131`、Worker `27/27`、Persistence 生产/本地 native-audio/approved timeline `20/20`，Worker typecheck、`py_compile`、`validate_state.py` 通过；均为本地 fixture/mock，0 skip/fail，无新增外部 Provider/TTS/网络/Veyra/VPS/Git 调用。纠察员复核确认没有新增变速、裁切、静音、自动重规划、协议或平行混音图。
+- 已用用户项目 `茅山温泉・桃李春风 松弛的生活` 的两段原始镜头（各 15.042s）、已有两段 Doubao 音频（10.188s/6.635s）和现有本地 BGM fixture 通过 ALCHMED8/OpenMontage `_full_mix` 生成 `.codex-longrun/media-review/maoshan-project-doubao-segmented-bgm-composed.mp4`（848x480、30084ms、H.264/AAC mono 48kHz、4142899 bytes），未检测到 >=0.5s 尾静音。该产物仅证明 source consumer 的时间窗/尾段覆盖，不等同于人工语义验收。
+- Exit Gate：本次只关闭“短分段旁白被错误等长门拒绝”这一局部缺口，R01/E12 仍 `BLOCKED`，总体 C12.4/C12.5 仍 `IMPLEMENTED_PENDING_AUDIT`；正式 NarrationAsset/TimelinePlan、完整 owner/registry/profile、Studio 审批、REQUIRED 字幕、完整 section-window 事实链和人工中文听感硬门原样保留，不进入 R02。
+
+### R01 分段旁白修复最终本地复核（2026-09-01 13:44；不升级）
+
+- 复核既有用户项目产物 `maoshan-project-doubao-segmented-bgm-composed.mp4` 的 ffprobe 与尾静音检测，以及本地 Control API health；产物为 `848x480/30.084s/H.264/AAC mono 48kHz`，未检出 `>=0.5s` 尾静音，health/database=`ok`。
+- 本条仅补记可复核的本地产物/服务证据，不改变 source-backed 局部 IMPLEMENTED 结论；E12/R01 仍 `BLOCKED`，C12.4/C12.5 仍 `IMPLEMENTED_PENDING_AUDIT`。正式 NarrationAsset/TimelinePlan、owner/profile、完整 section-window、Studio、REQUIRED 字幕和人工听感硬门继续保留。
+
+### R01 lip-sync source-first 复核（2026-09-01 14:12；用户决定延期，当前范围通过）
+
+- 来源固定为 OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930`：`tools/avatar/lip_sync.py::LipSync` 的既有 VIDEO + replacement AUDIO → Wav2Lip `inference.py` 调用，及 `skills/creative/lip-sync-usage.md` 的“先生成替换音频、再对原视频做 lip-sync、只对适合的可见人脸镜头使用”规则。`kling_lip_sync.py` 是需显式 face/session 的云端分支，当前本地阶段不接入。
+- 平台复核确认：没有 lip-sync Runtime tool/Worker client/内部输入契约，也没有已认证 `avatar_lip_sync` capability；本机 `WAV2LIP_PATH` 未设置，`wav2lip` 与 `torch` 不可用。用户已接受当前范围并将该能力延期，故不作为当前交付阻断；native owner、TTS owner 隔离和 `lip_sync_requirement=REQUIRED` capability 预检保持原语义，未新增代码、协议或算法。
+- 定向行为证据：Runtime native/audio-owner/narration `33/33`（98 deselected）、domain delivery-preflight `6/6`、provider-video runtime-profile `12/12`、persistence native-audio `4/4`；0 skip，全部 fixture/mock，无外部调用。证据仅证明 fail-closed 边界，不证明 lip-sync 产物或口型验收。
+- Exit Gate：本 lip-sync 延期项按用户决定通过当前范围，但不宣称已实现口型同步；R01/E12 仍因 owner/profile、正式资产/时间线和其它硬门保持 `BLOCKED`，总体 C12.4/C12.5 继续 `IMPLEMENTED_PENDING_AUDIT`。未来启用时待 source capability/profile 与明确内部输入/产物契约，再按原仓库顺序实施；不得把 Maoshan B-roll 或音频混合结果宣称为 lip-sync 修复。
+
+### P0/P1 源仓库未到位能力补齐辅助审计（2026-09-01 16:01；不改变正式状态）
+
+- 本条只审计执行清单 N01–N04，不创建新正式章节，也不覆盖 `.codex-longrun/state.json`、正式总控或既有 E/R 状态账本。固定来源为 OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/audio_mixer.py`、`tools/analysis/transcriber.py`、`tools/subtitle/subtitle_gen.py`、`tools/video/remotion_caption_burn.py` 及既有 voice-performance 规则。
+- N01/P0 `IMPLEMENTED`（技术上可提交 `READY_FOR_AUDIT`）：Runtime 音频 MIME 由 ffprobe format facts 归一化；stream/format 时长各自 finite 且大于 0 后才沿用 source-aligned `max`；Worker 保留 approved asset 的 SHA/byteSize/正时长/绝对窗口。定向 Runtime inspect `3/3`（含 NaN/Infinity fail-closed），完整 restart/repeat 与全部 section-window 组合仍未形成独立审计证据。
+- N02/P0 `IMPLEMENTED`（技术上可提交 `READY_FOR_AUDIT`）：适配器保持 source `_track_filters`/`_full_mix` 的 role、绝对 start、volume/fade、ducking、normalize 和 target-duration 顺序；本轮只补 SFX 夹具。`adapters/openmontage_audio/test_adapters.py`=`11/11`，完整组合和 Worker restart/repeat 仍未关闭。
+- N03/P1 `BLOCKED/DEFERRED`：来源要求记录实际样音 provider/voice/model/settings、最敏感 section 人工 Sample Gate 和设置漂移回门；现有 `ApproveNarrationScriptRevisionCommandSchema` 无对应字段，Control API 的 `piper-local/platform-generic-zh` 硬编码不能作为来源事实。本轮未改公共契约/代码，需 ADR、实际样音和人工审批后再议。
+- N04/P1 `IMPLEMENTED`（技术上可提交 `READY_FOR_AUDIT`）：checked word timestamps 按 source 8-word/42-char 生成 SRT，FFmpeg subtitles fallback 由 Worker 的 `REQUIRED` 策略触发；仅追加 `-movflags use_metadata_tags` 使既有 `alchemy_captions=burned_srt` marker 在 MP4 format tags 持久化。定向 Runtime `9/9`（含真实 bundled ffmpeg/ffprobe MP4：audio stream、duration、SHA/byteSize、marker，0 skip），Worker `27/27`；Worker 端仍为本地 fixture boundary，丰富模式/人工字幕质量继续 deferred。
+- 纠察结论：未发现新算法、阈值、公共协议、平行 AudioPlan、静默 fallback 或真实外部调用；没有把 mock/静态检查冒充产物。E12/R01 仍 `BLOCKED`，C12.4/C12.5 仍 `IMPLEMENTED_PENDING_AUDIT`，本辅助条目不授予进入 N05 或 R02 的权限。
+
+### P0/P1 辅助审计最终本地回归（2026-09-01 17:34；不改变正式状态）
+
+- N01/N02/N04 的 source-first 复核无新增生产差异；N05 的 Huobao 子镜头/场景约束在当前平台没有等价契约承载，继续 `BLOCKED/DEFERRED`，N03/N06 亦未解除既有前置阻断。
+- 最新可复核证据：media-runtime `134/134`、OpenMontage adapters `11/11`、persistence `20/20`、production-worker media-service `27/27`、creative-planning `39/39`、domain `48/48`、contracts `38/38`；root `pnpm typecheck` exit `0`；root `pnpm test` exit `0`，最新合计 `484 pass / 19 explicit environment skips / 0 fail`。全部为本地 fixture/mock 或 bundled media，未调用真实 Provider/TTS/Veyra/网络/VPS/Git。
+- 结论：N01/N02/N04 仅具备技术 `READY_FOR_AUDIT` 候选证据，不得写成 `ACCEPTED`；E12/R01 保持 `BLOCKED`，总体 C12.4/C12.5 保持 `IMPLEMENTED_PENDING_AUDIT`，未进入 N05/R02。
+
+### 当前自动旁白执行口径（2026-09-01；仅对账，不升级）
+
+- 最新执行依据为《AI企业内容生产平台_自动生成音频与视频匹配正式使用开发文档.md》。当前自动视频流程不要求用户上传旁白或样音；样音由已确定 owner 的 native Provider 或操作者显式选择的 Doubao 在服务端生成，人工试听/审批后才可建立独立正式 `NarrationAssetVersion`。通用图片、资料、Logo、MUSIC 上传及 `NARRATION_SAMPLE`/`USER_SOURCE_AUDIO` 兼容角色仍保留。
+- 用户已授权本机 Aiself Grok native 与显式 Doubao 对照；这只是调用授权，不代表 R01/E12 已验收，也不改变默认 Mock、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT` 或 `E12/R01=BLOCKED`。已有 native/Doubao canary 仅作产物/连通性证据；人工中文口音、正式资产/TimelinePlan、approved section windows、完整 AudioPlan、REQUIRED 字幕和长旁白硬门仍待证据。
+
+### 2026-09-01 R01.2 内部生成与实际模式文档对账（当前实现证据，不升级状态）
+
+- 现行口径以《AI企业内容生产平台_自动生成音频与视频匹配正式使用开发文档.md》1.3.0 为准：自动视频不要求用户上传旁白、样音或其它 spoken audio；`NARRATION_SAMPLE`/`USER_SOURCE_AUDIO` 只保留兼容与隔离测试角色，通用图片、资料、Logo、MUSIC 上传不受影响。旧段落中把上传音频写成前置条件的内容均为历史快照，不能覆盖本条。
+- R01.2 已存在的内部 `narration_audio.generation_requested` DTO/event、`NarrationQualityStore` 生成资产操作、既有 Media Runtime queue/Worker/Storage 消费和 provider/voice/settings identity/幂等校验按 ADR-0068 对账；`narration-audio` 公开路由不存在，也未加入 OpenAPI。当前代码行为证据只支持 `IMPLEMENTED_PENDING_AUDIT`，不表示 Studio 已有完整生成→试听→批准→正式资产→TimelinePlan 操作闭环。
+- `HttpMediaRuntimeClient` 对显式 Doubao/DoubaoTTS 采用 OpenMontage 300 秒默认 deadline；Piper 仍是显式离线兼容路径，未成为默认 owner。native Grok 结果保留 Provider 音轨，不自动切 Doubao；替换必须由操作者显式选择。
+- 用户授权的本机实际模式为 Aiself `Sub2ApiVideoProvider` + Grok `grok-imagine-video-1.5` 原生音频优先，Doubao `seed-tts-2.0`/`zh_female_meilinvyou_uranus_bigtts` 仅显式替换。仓库/CI 默认 `VIDEO_PROVIDER=mock` 不变，真实 Key 只在未入库环境中使用。
+- 本条不升级 E12/R01：source registry/rank、profile capability snapshot、正式 NarrationAsset/TimelinePlan、完整 section windows/AudioPlan、Studio/字幕、超长旁白 consumer 和普通话人工验收仍为 `BLOCKED/DEFERRED`。本轮所有结构性测试和真实产物必须分别登记，不能互相替代。
+
+### R01/E12 真实本机对照与全量回归（2026-09-01 22:47；技术证据，不升级）
+
+- 现行自动旁白不要求用户上传音频/样音；本机按用户授权以 Aiself Grok native 优先、操作者明确选择时使用 Doubao。仓库/CI 默认 Mock 不变；`DeliveryPlan.voice_mode="PLATFORM_GENERIC"` 只作兼容字段，owner 取 profile snapshot。无新增公开音频路由、第二协议或自动 fallback。
+- 本地回归可复核：root `pnpm typecheck`/`build`/`test` 成功，最新 workspace 合计 `492 pass / 19 explicit environment skips / 0 fail`；Media Runtime `134/134`；定向 Control API `18/18`、Studio `39/39`、Provider `21/21`、Worker media-service `29/29`、Worker Runtime client `25/25`、Persistence `21/21`；`validate_state.py=OK`，无 whitespace error。全部 fixture/mock 或 bundled media。
+- 茅山同脚本对照：Grok native 单镜头 `848x480/15042ms` AAC stereo 48kHz、`7541849` bytes；原生两段合成 `848x480/30084ms` AAC stereo 48kHz、`4051750` bytes；显式 Doubao `audio/mpeg`、`176317` bytes、Runtime `8800ms`/ffprobe `8803ms`；单整轨无声明尾窗时按来源规则预期 `QC_FAILED/BLOCKED`。复用两段已生成 Doubao 音频和现有 BGM，经 OpenMontage `_full_mix` 绝对起点得到 `maoshan-project-doubao-segmented-bgm-composed.mp4`=`848x480/30084ms`、H.264/AAC mono 48kHz、`4142899` bytes，无 `>=0.5s` 尾静音。当前事实 JSON：`.codex-longrun/media-review/maoshan-project-current-comparison.json`；旧 comparison JSON 已显式历史/superseded。
+- 审计结论：以上只是 profile/连通性、媒体事实和 source consumer 证据，不是普通话质量或正式资产验收。E12/R01 保持 `BLOCKED`，总体 C12.4/C12.5 保持 `IMPLEMENTED_PENDING_AUDIT`；source registry/profile、正式 NarrationAsset/TimelinePlan、approved section windows、完整 AudioPlan/transition、Studio 样音审批、REQUIRED 字幕、超长 consumer 及人工中文听感硬门原样保留。
+
+### 原仓库语音表现与段落边界窄适配审计（2026-09-02；辅助记录，不升级正式状态）
+
+- 来源固定为 OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930`：`skills/meta/voice-performance-director.md` 的 `voice_performance`/`delivery_cues`/`provider_text`，explainer `asset-director.md` 的样音与实测时长门，`compose-director.md` 的 narration/mix 关系，以及 `tools/audio/piper_tts.py`、`tools/audio/audio_mixer.py::AudioMixer._full_mix`。辅助实施文档逐项列出这些文件和当前平台载体；旧语音专项文档仅作历史基线，不覆盖本条。
+- 代码窄适配：`apps/production-worker/src/media-service.ts:629-689` 对单 cue 保留来源 provider text 和既有 delivery carrier；显式 Piper 才消费结构化 cue，Doubao/其它 provider 的默认 cue 只传 canonical text，非默认 delivery 在 Runtime 前 `MEDIA_RUNTIME_UNAVAILABLE` fail-closed；multi-cue、正式 section asset/full-mix、样音审批和正式资产链继续 `UNAVAILABLE/BLOCKED`。未新增 DTO、事件、协议、算法、UI 或外部调用。
+- 纠察复核曾发现缺失的 Doubao Worker 行为证据，已由主线最小补齐：默认单 cue + Doubao 只传 `scriptText`；非默认单 cue + Doubao 不调用 synthesize/compose/persist。最新证据为 Worker package `66/66`、creative-planning `44/44`、Runtime 旁白窄测 `9/9`，Worker typecheck 与 diff check 通过；全部 fixture/mock 或 bundled media、0 skip。
+- 审计判定：本辅助切片代码/测试可复核，但不授予任何正式章节 `READY_FOR_AUDIT` 或 `ACCEPTED` 状态。`.codex-longrun/state.json`、正式总控、总体状态和既有 E/R 账本保持原值：`E12/R01=BLOCKED`、`C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT`。完整 multi-cue/full-mix consumer、approved NarrationAsset/TimelinePlan/section windows、样音人工审批和中文口音人工验收仍为硬门。
+
+### 2026-09-02 两段成片合成失败与原生音频窄门复核（局部修复，不升级正式状态）
+
+- 复核固定 OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/subtitle/subtitle_gen.py::SubtitleGen._build_cues`：源代码不丢弃经三位小数取整后 `start == end` 的词。原 Runtime 在 `REQUIRED` 字幕烧录阶段误以 `end <= start` 拒绝，造成两段输入 `/compose 200` 后 `/captions 400`，前端显示成片失败。
+- `services/media-runtime/runtime.py::_subtitle_srt_from_transcript` 已按来源最小放宽为只拒绝 `end < start`；非 finite、负值、倒序、越界、乱序、空词、`CHECKED` 和现有 SRT 分组门仍保留。`test_runtime.py:1486` 的 source-rounded fixture 覆盖该边界。纠察员复核通过，未新增协议、算法、Worker 状态或 fallback。
+- 本地全栈按新源码重启后，固定保险项目既有两段素材 composition retry `202`→`SUCCEEDED`；视频版本 `vvr_01M1GD4R5TF04BXC9AD9NW3XHJ` 为 `30.084s`、QC=`PASS`、含音轨/BGM。最终资产现有 Runtime 转录为 `CHECKED`、72 词、5 个语音区间，说明产物存在可检测人声；区间空档、音量/节奏和中文听感仍需人工验收，不能以 ASR 代替。
+- 证据：Runtime focused `6/6`（130 deselected）、`py_compile`、state validation、diff check 通过；全部使用本地已存片段/MinIO/loopback Runtime，未重新调用 Provider/TTS/网络/Veyra/VPS/Git。`E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT` 保持不变；`<80%` 截断、完整旁白时间窗/AudioPlan、正式 NarrationAsset/TimelinePlan 和人工口音仍是未闭合硬门。
+
+### 2026-09-02 原仓库结构化分段与旁白时间窗迁移审计（辅助记录，不升级正式状态）
+
+- 执行文档：《AI企业内容平台_原仓库结构化分段与旁白时间窗完整迁移开发文档.md》。固定来源为 Huobao `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 的 `storyboard-breaker/SKILL.md`、`video-prompt/SKILL.md`，以及 OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 explainer `script-director.md`、`scene-director.md`、`voice-performance-director.md`、`asset-director.md`、`compose-director.md`。旧《原仓库语音表现与段落边界迁移实施文档》已标记 `HISTORICAL/SUPERSEDED FOR STRUCTURED SEGMENT EXECUTION`。
+- 本轮最小代码落点仅为 `packages/creative-planning/src/index.ts` 私有对白提取/规划：保留作者换行 source unit；按来源 8–15 秒和 `chars/4.5+2` 容量门顺序装入段；单行仅沿现有句读/分隔标点形成连续片段；无合法边界保持原句并 fail-closed；去除旧等字符均分、固定 12 秒 seed、从 visual group 重新抽取对白和任意字符切块。未改公共契约、事件、Provider、AudioPlan、TimelinePlan 或 UI。
+- 行为证据：`pnpm --filter @alchemy-video/creative-planning test`=`45/45 pass / 0 fail / 0 skip`；`pnpm --filter @alchemy-video/creative-planning typecheck`=`PASS`；`pnpm --filter @alchemy-video/workflow-worker test`=`16/16 pass / 0 fail / 0 skip`。测试覆盖保险 AI 三个 source unit 各自归属连续段、单行句读顺序、native prompt 不含邻段文本、逐段容量门和无合法边界超长行 fail-closed。全部本地 fixture/mock，无真实 Provider/TTS/网络/Veyra/VPS/Git。
+- 纠察结论：代码/测试只证明 source-unit ownership 与容量规划窄适配；视觉事件与正式 `script_section_id` 的一一 owner、实测 NarrationAsset/TimelinePlan/绝对 section window、完整 AudioPlan/transition、字幕/Studio/重启重复及中文人工听感仍无证据，继续 `DEFERRED/BLOCKED`。既有 `hasCinematicEditorialBoundary` 评分逻辑不视为 Huobao 原规则的等价实现。
+- Exit Gate：本辅助片可提交独立 `READY_FOR_AUDIT` 评审，但本轮不升级正式状态；E12/R01 保持 `BLOCKED`，总体 C12.4/C12.5 保持 `IMPLEMENTED_PENDING_AUDIT`，不得据此进入后续章节。

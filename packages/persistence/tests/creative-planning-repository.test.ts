@@ -39,6 +39,69 @@ const createBrief = (idempotencyKey = "idem_create") => ({
   event: event(idempotencyKey),
 });
 
+test("reference-only UI analysis is not promoted to object locks", async () => {
+  const sourceAssetIds = ["ast_ui_dashboard", "ast_ui_mobile", "ast_ui_style", "ast_ui_detail"];
+  const uiObjects = (count: number) => Array.from({ length: count }, (_, index) => ({
+    name: `UI模块${index + 1}`,
+    description: "界面中的信息模块。",
+    relation: "位于屏幕布局中。",
+    prohibited_changes: ["不得删除模块"],
+  }));
+  const assets = new Map(sourceAssetIds.map((assetId, index) => [assetId, {
+    projectId: "prj_story",
+    status: "READY",
+    origin: "USER_UPLOAD",
+    kind: "IMAGE",
+    metadata: {
+      filename: ["02.png", "16.png", "04.png", "26.png"][index],
+      visual_analysis: { role: "SCENE", confidence: 0.98, objects: uiObjects(7) },
+    },
+  }]));
+  const planningStore = new InMemoryCreativePlanningStore({
+    findAsset: async (_workspaceId, assetId) => assets.get(assetId),
+  });
+  const locks = await planningStore.resolveVisualObjectLocks({
+    workspaceId: "ws_story",
+    projectId: "prj_story",
+    sourceAssetIds,
+    sourcePrompt: "参考图用途说明（按文件名，不按上传顺序推断）：02.png 是产品界面主体参考；16.png 是场景环境参考；04.png 是视觉风格和配色参考；26.png 是视觉风格和配色参考。所有参考图仅作为视觉锚点。",
+  });
+  assert.deepEqual(locks, []);
+});
+
+test("mixed references keep explicit foreground analysis locks and filter UI analysis", async () => {
+  const sourceAssetIds = ["ast_ui_screen", "ast_person"];
+  const assets = new Map(sourceAssetIds.map((assetId, index) => [assetId, {
+    projectId: "prj_story",
+    status: "READY",
+    origin: "USER_UPLOAD",
+    kind: "IMAGE",
+    metadata: {
+      filename: index === 0 ? "dashboard.png" : "person.png",
+      visual_analysis: {
+        role: index === 0 ? "SUBJECT" : "SUBJECT",
+        confidence: 0.98,
+        objects: [{
+          name: index === 0 ? "界面模块" : "人物主体",
+          description: index === 0 ? "屏幕中的界面模块。" : "参考图中的人物主体。",
+          relation: index === 0 ? "位于屏幕布局中。" : "位于画面前景。",
+          prohibited_changes: ["保持原样"],
+        }],
+      },
+    },
+  }]));
+  const planningStore = new InMemoryCreativePlanningStore({
+    findAsset: async (_workspaceId, assetId) => assets.get(assetId),
+  });
+  const locks = await planningStore.resolveVisualObjectLocks({
+    workspaceId: "ws_story",
+    projectId: "prj_story",
+    sourceAssetIds,
+    sourcePrompt: "dashboard.png 是产品界面参考；person.png 是人物原型。",
+  });
+  assert.deepEqual(locks.map((lock) => lock.name), ["人物主体"]);
+});
+
 const completePlan = (
   planningStore: InMemoryCreativePlanningStore,
   ids = { scriptRevisionId: "scr_story_1", storyboardRevisionId: "sbr_story_1" },
@@ -187,6 +250,27 @@ test("C11 keeps story planning immutable, workspace-scoped, and free of executio
   assert.equal(confirmed.value.totalSegmentCount, 3);
   assert.equal(confirmed.value.acceptedSegmentCount, 0);
   assert.equal((await planningStore.listProjectProductionRuns("ws_story", "prj_story")).length, 1);
+
+  // BLOCKED remains historical/retryable, but must not prevent a revised
+  // immutable storyboard from starting a separate production run.
+  const storedRuns = (planningStore as unknown as {
+    productionRuns: Map<string, { status: string }>;
+  }).productionRuns;
+  const storedRun = storedRuns.get("prd_story_1");
+  assert.ok(storedRun);
+  storedRun.status = "BLOCKED";
+  const revisedVersion = await planningStore.createProductionRun({
+    scope: "usr_dev_owner:/api/v1/production-runs",
+    idempotencyKey: "idem_production_revised_version",
+    requestHash: hash("idem_production_revised_version"),
+    workspaceId: "ws_story",
+    projectId: "prj_story",
+    productionRunId: "prd_story_2",
+    storyboardRevisionId: "sbr_story_1",
+    event: event("production_revised_version"),
+  });
+  assert.equal(revisedVersion.kind, "NEW");
+  if (revisedVersion.kind === "NEW") assert.equal(revisedVersion.value.id, "prd_story_2");
 });
 
 test("C11 rejects unconfirmed or cross-project source material before planning", async () => {
@@ -217,5 +301,70 @@ test("C11 rejects unconfirmed or cross-project source material before planning",
     creativeBriefRevisionId: "cbr_document",
     sourceAssetIds: ["ast_document"],
   });
-  assert.equal(uploadedDocument.kind, "NEW");
+  assert.deepEqual(uploadedDocument, { kind: "DOCUMENT_CONTEXT_INVALID" });
+});
+
+
+test("C11.1 freezes only successful document conversions for later planning", async () => {
+  let resolvedMarkdownAssetId = "ast_markdown_v1";
+  const planningStore = new InMemoryCreativePlanningStore({
+    findAsset: async (_workspaceId, assetId) => sourceAssets.get(assetId),
+  }, {
+    resolveDocumentContexts: async () => [{
+      documentId: "doc_story",
+      conversionId: "dcv_story",
+      sourceAssetId: "ast_document",
+      markdownAssetId: resolvedMarkdownAssetId,
+      markdownSha256: hash("a"),
+      markdownObjectKey: "ws_story/prj_story/ast_markdown_v1/document.md",
+      sequence: 1,
+      maxContentCharacters: 5_000,
+    }],
+  });
+  const created = await planningStore.createCreativeBriefRevision({
+    ...createBrief("idem_document_success"),
+    creativeBriefRevisionId: "cbr_document_success",
+    sourceAssetIds: ["ast_document"],
+  });
+  assert.equal(created.kind, "NEW");
+  if (created.kind !== "NEW") return;
+  assert.deepEqual(created.value.documentContexts.map((context) => ({
+    sourceAssetId: context.sourceAssetId,
+    conversionId: context.conversionId,
+    markdownAssetId: context.markdownAssetId,
+    maxContentCharacters: context.maxContentCharacters,
+  })), [{
+    sourceAssetId: "ast_document",
+    conversionId: "dcv_story",
+    markdownAssetId: "ast_markdown_v1",
+    maxContentCharacters: 5_000,
+  }]);
+  resolvedMarkdownAssetId = "ast_markdown_v2";
+  const stored = await planningStore.findCreativeBriefRevision("ws_story", "cbr_document_success");
+  assert.equal(stored?.documentContexts[0]?.markdownAssetId, "ast_markdown_v1");
+});
+
+test("C11.2 in-memory planning blocks document briefs until READY facts are available", async () => {
+  const planningStore = new InMemoryCreativePlanningStore({
+    findAsset: async (_workspaceId, assetId) => sourceAssets.get(assetId),
+  }, {
+    resolveDocumentContexts: async () => [{
+      documentId: "doc_story",
+      conversionId: "dcv_story",
+      sourceAssetId: "ast_document",
+      markdownAssetId: "ast_markdown_v1",
+      markdownSha256: hash("a"),
+      markdownObjectKey: "ws_story/prj_story/ast_markdown_v1/document.md",
+      sequence: 1,
+      maxContentCharacters: 5_000,
+    }],
+  }, {
+    resolveFactContexts: async () => undefined,
+  });
+  const blocked = await planningStore.createCreativeBriefRevision({
+    ...createBrief("idem_document_knowledge_gate"),
+    creativeBriefRevisionId: "cbr_document_knowledge_gate",
+    sourceAssetIds: ["ast_document"],
+  });
+  assert.deepEqual(blocked, { kind: "DOCUMENT_KNOWLEDGE_NOT_READY" });
 });

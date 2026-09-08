@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@alchemy-video/contracts": "workspace:*",
+    "@alchemy-video/domain": "workspace:*",
     "@alchemy-video/persistence": "workspace:*",
     "@alchemy-video/provider-video": "workspace:*",
     "@alchemy-video/storage-client": "workspace:*",

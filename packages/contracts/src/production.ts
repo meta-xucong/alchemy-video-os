@@ -19,6 +19,21 @@ export const QC_STATUSES = ["PASS", "NEEDS_ATTENTION", "FAILED"] as const;
 export const QcStatusSchema = z.enum(QC_STATUSES);
 export const VIDEO_VERSION_STATUSES = ["SUCCEEDED", "FAILED"] as const;
 export const VideoVersionStatusSchema = z.enum(VIDEO_VERSION_STATUSES);
+export const HANDOFF_REVIEW_RESULTS = ["PASS", "BLEND", "BRIDGE_REQUIRED", "UNAVAILABLE", "FAILED"] as const;
+export const HandoffReviewResultSchema = z.enum(HANDOFF_REVIEW_RESULTS);
+export const TRANSITION_REPAIR_STRATEGIES = ["BLEND", "BRIDGE"] as const;
+export const TransitionRepairStrategySchema = z.enum(TRANSITION_REPAIR_STRATEGIES);
+export const TRANSITION_REPAIR_STATUSES = ["PENDING", "GENERATING", "CHECKING", "ACCEPTED", "FAILED"] as const;
+export const TransitionRepairStatusSchema = z.enum(TRANSITION_REPAIR_STATUSES);
+export const HandoffReviewReasonCodeSchema = z.enum([
+  "IDENTITY_DRIFT",
+  "WARDROBE_DRIFT",
+  "SCENE_DRIFT",
+  "COMPOSITION_JUMP",
+  "ACTION_DIRECTION_BREAK",
+  "EVALUATOR_UNAVAILABLE",
+  "EVALUATOR_FAILED",
+]);
 
 // Browser-safe progress view. Task, provider, object-storage, and derived-asset identities remain internal.
 export const ProductionSegmentSchema = z.object({
@@ -47,6 +62,18 @@ export const QcReportSchema = z.object({
   kind: z.enum(["TECHNICAL", "COMPOSITION"]),
   status: QcStatusSchema,
   safe_summary: z.string().min(1).max(1_000),
+  audio_summary: z.object({
+    has_audio: z.boolean(),
+    music_applied: z.boolean(),
+    music_title: z.string().max(240).optional(),
+    music_artist: z.string().max(160).optional(),
+    music_tags: z.array(z.string().max(80)).max(12).optional(),
+    sample_rate: z.number().int().positive().optional(),
+    integrated_lufs: z.number().finite().optional(),
+    true_peak_db: z.number().finite().optional(),
+    loudness_range_lu: z.number().finite().nonnegative().optional(),
+    unexpected_silence: z.boolean().optional(),
+  }).strict().optional(),
   created_at: UtcTimestampSchema,
 }).strict();
 
@@ -64,10 +91,15 @@ export const VideoVersionSchema = z.object({
 }).strict();
 
 export const RetryProductionSegmentCommandSchema = z.object({}).strict();
+export const RetryProductionCompositionCommandSchema = z.object({}).strict();
 
 export type ProductionSegmentStatus = z.infer<typeof ProductionSegmentStatusSchema>;
 export type QcStatus = z.infer<typeof QcStatusSchema>;
 export type VideoVersionStatus = z.infer<typeof VideoVersionStatusSchema>;
+export type HandoffReviewResult = z.infer<typeof HandoffReviewResultSchema>;
+export type TransitionRepairStrategy = z.infer<typeof TransitionRepairStrategySchema>;
+export type TransitionRepairStatus = z.infer<typeof TransitionRepairStatusSchema>;
+export type HandoffReviewReasonCode = z.infer<typeof HandoffReviewReasonCodeSchema>;
 export type ProductionSegment = z.infer<typeof ProductionSegmentSchema>;
 export type ProductionRunProgress = z.infer<typeof ProductionRunProgressSchema>;
 export type QcReport = z.infer<typeof QcReportSchema>;

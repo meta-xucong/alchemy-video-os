@@ -23,6 +23,8 @@ const boundedStringArray = (value: unknown) =>
     ? value
     : undefined;
 
+const encodeSourceFilename = (value: string) => Buffer.from(value, "utf8").toString("base64url");
+
 const isLoopbackRuntimeHost = (hostname: string) => hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "::1";
 
 export const validateDocumentRuntimeUrl = (runtimeUrl: string): string => {
@@ -72,7 +74,7 @@ export class HttpDocumentRuntimeClient {
           Authorization: `Bearer ${this.input.token}`,
           "Content-Type": input.sourceMimeType,
           "X-Document-Conversion-Id": input.conversionId,
-          "X-Source-Filename": input.sourceFilename,
+          "X-Source-Filename-Base64": encodeSourceFilename(input.sourceFilename),
           "X-Source-Sha256": input.sourceSha256,
         },
         body: Buffer.from(input.bytes),

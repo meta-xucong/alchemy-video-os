@@ -148,7 +148,7 @@ const runStudioUiTest = (input) => {
   return result;
 };
 
-const assertPersistedPlanning = async (projectId, databaseUrl) => {
+const assertPersistedPlanning = async (projectId, databaseUrl, expectedSegmentCount) => {
   const database = new Client({ connectionString: databaseUrl });
   await database.connect();
   try {
@@ -165,7 +165,7 @@ const assertPersistedPlanning = async (projectId, databaseUrl) => {
     const row = result.rows[0];
     assert.equal(row.approved_brief_count, 1, "C11 E2E did not persist one approved creative brief.");
     assert.equal(row.approved_storyboard_count, 1, "C11 E2E did not persist one approved storyboard.");
-    assert.equal(row.shot_spec_count, 3, "C11 E2E did not persist all three storyboard segment specifications.");
+    assert.equal(row.shot_spec_count, expectedSegmentCount, "C11 E2E did not persist every bounded storyboard segment specification.");
     assert.equal(row.confirmed_run_count, 1, "C11 E2E did not persist one confirmed production plan.");
     assert.equal(row.task_run_count, 0, "C11 planning unexpectedly created a video TaskRun.");
     assert.equal(row.target_resolution, "480p", "C11 E2E did not persist the Studio-selected target resolution.");
@@ -259,9 +259,11 @@ const run = async () => {
     assert.equal((await proxyHealth.json()).data.build_version, environment.BUILD_VERSION);
 
     const browserResult = runStudioUiTest({ projectName, environment });
-    assert.equal(browserResult.segment_count, 3);
+    assert.equal(browserResult.segment_count, Math.ceil(browserResult.target_duration_seconds / browserResult.max_generation_segment_seconds));
+    assert.equal(browserResult.segment_durations.reduce((total, duration) => total + duration, 0), browserResult.target_duration_seconds);
+    assert.ok(browserResult.segment_durations.every((duration) => duration > 0 && duration <= browserResult.max_generation_segment_seconds));
     assert.equal(browserResult.mobile_viewport, "390x844");
-    await assertPersistedPlanning(browserResult.project_id, databaseUrl);
+    await assertPersistedPlanning(browserResult.project_id, databaseUrl, browserResult.segment_count);
     await assertPublicProjection(browserResult.project_id);
   } catch (error) {
     const processOutput = (name, processHandle) => `${name}: ${String(processHandle?.supervisorOutput ?? "<not started>").trim().slice(-2_000)}`;

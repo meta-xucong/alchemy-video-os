@@ -47,9 +47,10 @@ test("M1 root route hands off to project home and all project commands stay publ
   assert.doesNotMatch(`${rootPage}\n${home}\n${workspace}\n${composable}`, /\/internal\//);
 });
 
-test("M1 exposes the real project lifecycle and never simulates deletion", () => {
+test("M1 exposes the real project lifecycle and uses the server deletion command", () => {
   const home = read("app/pages/projects/index.vue");
   const workspace = read("app/pages/projects/[project_id].vue");
+  const composable = read("app/composables/useControlApi.ts");
   const source = `${home}\n${workspace}`;
 
   assert.match(home, /我的项目/);
@@ -57,8 +58,9 @@ test("M1 exposes the real project lifecycle and never simulates deletion", () =>
   assert.match(home, /从一个视频想法开始/);
   assert.match(workspace, /编辑名称/);
   assert.match(workspace, /归档项目/);
-  assert.match(workspace, /删除功能等待服务端开放/);
-  assert.match(workspace, /disabled aria-disabled="true"/);
-  assert.doesNotMatch(source, /method:\s*"DELETE"|删除成功/);
+  assert.match(workspace, /deleteProject/);
+  assert.match(workspace, /输入“删除”确认/);
+  assert.match(composable, /method:\s*"DELETE"/);
+  assert.doesNotMatch(source, /删除功能等待服务端开放/);
   assert.doesNotMatch(source, /\b(?:provider_request_id|object_key|veyra|minio|bullmq|outbox)\b/i);
 });

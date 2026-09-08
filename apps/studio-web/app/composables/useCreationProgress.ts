@@ -95,6 +95,15 @@ export function productionProgressFor(progressView: ProductionRunProgress | unde
   if (run.status === "GENERATING") {
     return progress("正在生成视频", "AI 正在制作这次视频。", "active", 2);
   }
+  if (run.continuity_status === "CHECKING") {
+    return progress("正在检查片段衔接", "AI 正在检查相邻片段的人物、场景和动作是否自然衔接。", "active", 3);
+  }
+  if (run.continuity_status === "AUTO_REPAIRING") {
+    return progress("正在优化片段衔接", "发现一处需要修复的衔接，正在自动整理过渡画面。", "active", 3);
+  }
+  if (run.continuity_status === "NEEDS_ATTENTION") {
+    return progress("衔接检查需要留意", "成片会保留已完成内容，并使用安全转场完成整理。", "active", 3);
+  }
   if (run.status === "REVIEWING" || run.status === "RENDERING") {
     return progress("正在整理成片", "视频已经生成，正在整理为可查看的成片。", "active", 3);
   }

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { ProviderStatus, VideoGenerationInput, VideoProviderPort } from "./port.js";
 import { VideoProviderProtocolError } from "./port.js";
 
@@ -8,7 +10,10 @@ export type MockVideoProviderOptions = {
   outcome?: MockVideoOutcome;
 };
 
-const requestIdFor = (taskRunId: string) => `mock_${taskRunId}`;
+// Provider request IDs are globally unique in the persistence boundary.  A
+// task retry after a terminal provider rejection may create a fresh Attempt in
+// a new Worker process, so taskRunId alone is not a sufficient identity.
+const requestIdFor = (taskRunId: string) => `mock_${taskRunId}_${randomUUID()}`;
 
 const streamFromBytes = (bytes: Uint8Array) =>
   new ReadableStream<Uint8Array>({

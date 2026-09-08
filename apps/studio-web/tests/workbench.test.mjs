@@ -17,7 +17,7 @@ test("M1 project shell has accessible Chinese project controls", () => {
     "编辑名称",
     "保存名称",
     "归档项目",
-    "删除功能等待服务端开放",
+    "删除项目",
   ]) {
     assert.match(`${home}\n${workspace}`, new RegExp(label));
   }
@@ -25,6 +25,9 @@ test("M1 project shell has accessible Chinese project controls", () => {
   assert.match(home, /aria-label="项目列表"/);
   assert.match(workspace, /role="alert"/);
   assert.match(workspace, /aria-describedby="delete-capability-note"/);
+  assert.match(workspace, /deleteNameConfirmation/);
+  assert.match(workspace, /输入“删除”确认/);
+  assert.match(workspace, /确认删除项目/);
   assert.doesNotMatch(`${home}\n${workspace}`, /Create project|Delete project|Generate mock video/);
 });
 
@@ -51,14 +54,32 @@ test("C10 presents project materials through public commands with user-facing st
   for (const name of ["documents", "createDocumentConversion", "retryDocumentConversion", "uploadDocument", "retryDocument", "refreshDocuments"]) {
     assert.match(source, new RegExp(name));
   }
-  for (const label of ["项目资料", "添加资料", "正在整理", "已可用于这次创作", "这份资料暂时无法整理", "重新整理"]) {
+  for (const label of ["项目资料", "添加资料", "正在整理", "正在理解项目内容", "已准备好用于这次创作", "这份资料暂时无法使用", "重新整理", "查看要点", "本次不采用"]) {
     assert.match(`${workspace}\n${materials}`, new RegExp(label));
   }
   for (const eventType of ["document_conversion.queued", "document_conversion.started", "document_conversion.succeeded", "document_conversion.failed"]) {
     assert.match(events, new RegExp(eventType));
   }
-  assert.doesNotMatch(`${workspace}\n${materials}`, /MarkItDown|object_key|runtime_url|document-runtime|bullmq|outbox/i);
+  assert.doesNotMatch(`${workspace}\n${materials}`, /MarkItDown|object_key|runtime_url|document-runtime|bullmq|outbox|查看资料/i);
   assert.doesNotMatch(composable, /\/internal\//);
+});
+
+test("C11.2 keeps document understanding safe, explicit, and generation-gated", () => {
+  const workspace = read("app/pages/projects/[project_id].vue");
+  const materials = read("app/components/studio/ProjectMaterials.vue");
+  const composable = read("app/composables/useControlApi.ts");
+  const events = read("app/composables/useProjectEvents.ts");
+  const source = `${workspace}\n${materials}\n${composable}\n${events}`;
+
+  for (const label of ["正在理解项目资料，完成后即可开始", "有资料暂时无法使用", "本次采用", "重新理解", "documentKnowledgeDetail", "retryDocumentKnowledgeRevision"]) {
+    assert.match(source, new RegExp(label));
+  }
+  for (const eventType of ["document_knowledge.queued", "document_knowledge.started", "document_knowledge.succeeded", "document_knowledge.failed"]) {
+    assert.match(events, new RegExp(eventType));
+  }
+  assert.doesNotMatch(materials, /download-url|assetDownloadUrl|object_key|provider|runtime_url|查看资料/i);
+  assert.match(workspace, /blockingDocumentMaterials/);
+  assert.match(workspace, /understanding\?\.status === "READY"/);
 });
 
 test("M1 CSS keeps project views bounded on desktop and mobile", () => {

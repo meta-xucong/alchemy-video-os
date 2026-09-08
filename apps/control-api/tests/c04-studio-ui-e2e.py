@@ -28,32 +28,33 @@ def main() -> int:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             try:
-                page = browser.new_page()
-                page.goto(args.studio_origin, wait_until="domcontentloaded")
-                page.get_by_text("Control API is available", exact=True).wait_for(timeout=30_000)
+                page = browser.new_page(viewport={"width": 1280, "height": 720})
+                page.goto(f"{args.studio_origin}/projects", wait_until="domcontentloaded")
+                page.get_by_role("heading", name="我的项目", exact=True).wait_for(timeout=30_000)
 
-                page.get_by_label("New project", exact=True).fill(args.project_name)
-                create_project = page.get_by_role("button", name="Create project", exact=True)
+                page.get_by_role("button", name="新建项目", exact=True).first.click()
+                page.locator("#new-project-name").fill(args.project_name)
+                create_project = page.get_by_role("button", name="创建并进入", exact=True)
                 if not create_project.is_enabled():
-                    raise AssertionError("Studio create-project button stayed disabled after entering a project name.")
+                    raise AssertionError("Studio 创建项目按钮在填写名称后仍不可用。")
                 create_project.click()
-                page.get_by_role("tab", name=args.project_name, exact=True).wait_for(timeout=30_000)
+                page.get_by_role("heading", name=args.project_name, exact=True).wait_for(timeout=30_000)
 
-                page.locator("#asset-file").set_input_files(str(fixture))
-                upload = page.get_by_role("button", name="Upload", exact=True)
+                page.locator("#reference-file").set_input_files(str(fixture))
+                upload = page.get_by_role("button", name="添加参考图", exact=True)
                 if not upload.is_enabled():
-                    raise AssertionError("Studio upload button stayed disabled after selecting the PNG fixture.")
+                    raise AssertionError("Studio 添加参考图按钮在选择 PNG 后仍不可用。")
                 upload.click()
-                page.get_by_text(fixture.name, exact=True).wait_for(timeout=30_000)
-                asset_row = page.locator(".asset-item").filter(has_text=fixture.name)
-                if "READY" not in asset_row.inner_text():
-                    raise AssertionError("Studio did not render the confirmed asset as READY.")
+                asset_row = page.locator(".reference-option").filter(has_text=fixture.name)
+                asset_row.wait_for(timeout=30_000)
+                if not asset_row.get_by_role("checkbox").is_checked():
+                    raise AssertionError("Studio 未将已确认的参考图默认选入本次创作。")
 
                 page.reload(wait_until="domcontentloaded")
-                page.get_by_role("tab", name=args.project_name, exact=True).wait_for(timeout=30_000)
-                asset_row = page.locator(".asset-item").filter(has_text=fixture.name)
-                asset_row.get_by_role("button", name="Preview asset", exact=True).click()
-                preview = asset_row.locator("img")
+                page.get_by_role("heading", name=args.project_name, exact=True).wait_for(timeout=30_000)
+                asset_row = page.locator(".reference-option").filter(has_text=fixture.name)
+                asset_row.get_by_role("button", name=f"预览图片：{fixture.name}", exact=True).click()
+                preview = page.get_by_role("dialog").locator("img")
                 preview.wait_for(state="visible", timeout=30_000)
                 dimensions = preview.evaluate(
                     "image => ({ complete: image.complete, natural_width: image.naturalWidth, natural_height: image.naturalHeight })"

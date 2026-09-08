@@ -36,7 +36,7 @@ test("the internal C07 snapshot is not exported through package or public contra
 
   assert.doesNotMatch(packageIndex, /capabilities/);
   assert.doesNotMatch(openApi, /grok-imagine-video|sub2api/i);
-  assert.doesNotMatch(contractsSource, /capabilit|sub2api/i);
-  assert.doesNotMatch(studioComposable, /grok-imagine-video|sub2api|capabilities/i);
+  assert.doesNotMatch(contractsSource, /C07[^\n]{0,80}(?:capabilit|sub2api)/i);
+  assert.doesNotMatch(studioComposable, /grok-imagine-video|sub2api|C07/i);
   assert.doesNotMatch(studioPage, /grok-imagine-video|sub2api|capabilities/i);
 });

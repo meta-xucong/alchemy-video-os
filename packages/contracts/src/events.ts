@@ -5,10 +5,16 @@ import {
   AssetDerivationIdSchema,
   CreativeBriefRevisionIdSchema,
   DocumentConversionIdSchema,
+  DocumentKnowledgeRevisionIdSchema,
   DocumentIdSchema,
+  DeliveryPlanRevisionIdSchema,
   EventIdSchema,
+  HandoffReviewIdSchema,
   IdempotencyKeySchema,
   JsonObjectSchema,
+  NarrationAssetVersionIdSchema,
+  NarrationScriptRevisionIdSchema,
+  TimelinePlanIdSchema,
   ProjectIdSchema,
   ProductionSegmentIdSchema,
   ProductionRunIdSchema,
@@ -18,14 +24,23 @@ import {
   ShotIdSchema,
   StoryboardRevisionIdSchema,
   TaskRunIdSchema,
+  TransitionRepairIdSchema,
   UsageRecordIdSchema,
   UtcTimestampSchema,
   WorkspaceIdSchema,
   VideoVersionIdSchema,
 } from "./primitives.js";
-import { ContinuityLevelSchema, ProductionRunStatusSchema } from "./creative-planning.js";
+import { ContinuityLevelSchema, ContinuityStatusSchema, ProductionRunStatusSchema } from "./creative-planning.js";
 import { DocumentConversionStatusSchema } from "./documents.js";
-import { ProductionSegmentStatusSchema, QcStatusSchema } from "./production.js";
+import { DocumentKnowledgeAnalysisQualitySchema, DocumentKnowledgeRevisionStatusSchema } from "./document-knowledge.js";
+import { PreflightRevisionStatusSchema } from "./delivery-preflight.js";
+import {
+  HandoffReviewReasonCodeSchema,
+  HandoffReviewResultSchema,
+  ProductionSegmentStatusSchema,
+  QcStatusSchema,
+  TransitionRepairStrategySchema,
+} from "./production.js";
 import {
   AssetKindSchema,
   PublicTaskRunStatusSchema,
@@ -33,6 +48,11 @@ import {
   TaskRunKindSchema,
   TaskRunStatusSchema,
 } from "./resources.js";
+import {
+  NarrationAudioGenerationKindSchema,
+  NarrationAudioProviderSchema,
+  NarrationAudioProviderSettingsSchema,
+} from "./narration-quality.js";
 
 const AggregateSchema = z.object({
   type: z.enum([
@@ -42,6 +62,7 @@ const AggregateSchema = z.object({
     "asset",
     "document",
     "document_conversion",
+    "document_knowledge_revision",
     "creative_brief_revision",
     "script_revision",
     "storyboard_revision",
@@ -50,6 +71,18 @@ const AggregateSchema = z.object({
     "asset_derivation",
     "qc_report",
     "video_version",
+    "handoff_review",
+    "transition_repair",
+    "delivery_plan_revision",
+    "timeline_plan",
+    "narration_plan_revision",
+    "capability_profile_revision",
+    "voice_authorization",
+    "pronunciation_glossary_revision",
+    "brand_policy_revision",
+    "budget_reservation",
+    "output_profile_revision",
+    "quality_gate_decision",
   ]),
   id: z.string().min(1),
 }).strict();
@@ -127,6 +160,16 @@ export const InternalDocumentConversionQueueMessageSchema = z.object({
   correlation_id: z.string().min(1),
 }).strict();
 
+export const InternalDocumentKnowledgeQueueMessageSchema = z.object({
+  contract_version: z.literal("1.0"),
+  event_id: EventIdSchema,
+  workspace_id: WorkspaceIdSchema,
+  project_id: ProjectIdSchema,
+  knowledge_revision_id: DocumentKnowledgeRevisionIdSchema,
+  conversion_id: DocumentConversionIdSchema,
+  correlation_id: z.string().min(1),
+}).strict();
+
 export const InternalCreativePlanningQueueMessageSchema = z.object({
   contract_version: z.literal("1.0"),
   event_id: EventIdSchema,
@@ -178,6 +221,25 @@ export const InternalProductionQueueMessageSchema = z.discriminatedUnion("event_
 export const InternalMediaRuntimeQueueMessageSchema = z.discriminatedUnion("event_type", [
   z.object({
     contract_version: z.literal("1.0"),
+    event_type: z.literal("narration_audio.generation_requested"),
+    event_id: EventIdSchema,
+    workspace_id: WorkspaceIdSchema,
+    project_id: ProjectIdSchema,
+    narration_script_revision_id: NarrationScriptRevisionIdSchema,
+    generation_kind: NarrationAudioGenerationKindSchema,
+    section_id: z.string().min(1).max(160),
+    asset_id: AssetIdSchema,
+    narration_asset_version_id: NarrationAssetVersionIdSchema.optional(),
+    sample_asset_id: AssetIdSchema.optional(),
+    provider: NarrationAudioProviderSchema,
+    voice_id: z.string().min(1).max(160),
+    provider_settings: NarrationAudioProviderSettingsSchema,
+    canonical_script_hash: Sha256Schema,
+    object_key: z.string().min(1).max(1024),
+    correlation_id: z.string().min(1),
+  }).strict(),
+  z.object({
+    contract_version: z.literal("1.0"),
     event_type: z.literal("production_segment.qc_requested"),
     event_id: EventIdSchema,
     workspace_id: WorkspaceIdSchema,
@@ -194,6 +256,18 @@ export const InternalMediaRuntimeQueueMessageSchema = z.discriminatedUnion("even
     workspace_id: WorkspaceIdSchema,
     project_id: ProjectIdSchema,
     production_run_id: ProductionRunIdSchema,
+    correlation_id: z.string().min(1),
+  }).strict(),
+  z.object({
+    contract_version: z.literal("1.0"),
+    event_type: z.literal("handoff_review.requested"),
+    event_id: EventIdSchema,
+    workspace_id: WorkspaceIdSchema,
+    project_id: ProjectIdSchema,
+    production_run_id: ProductionRunIdSchema,
+    handoff_review_id: HandoffReviewIdSchema,
+    from_sequence: z.number().int().positive(),
+    to_sequence: z.number().int().positive(),
     correlation_id: z.string().min(1),
   }).strict(),
 ]);
@@ -314,6 +388,8 @@ export const ProductionRunConfirmedEventSchema = InternalEventBaseSchema.extend(
   data: z.object({
     production_run_id: ProductionRunIdSchema,
     storyboard_revision_id: StoryboardRevisionIdSchema,
+    // Optional for recovery of confirmation events written before the plan gate.
+    delivery_plan_revision_id: DeliveryPlanRevisionIdSchema.optional(),
     total_shot_count: z.number().int().positive(),
   }).strict(),
 });
@@ -326,6 +402,9 @@ export const ProductionRunProgressedEventSchema = InternalEventBaseSchema.extend
     accepted_shot_count: z.number().int().nonnegative(),
     total_shot_count: z.number().int().positive(),
     current_sequence: z.number().int().positive().nullable(),
+    continuity_status: ContinuityStatusSchema.optional(),
+    max_auto_repair_count: z.number().int().min(0).max(20).optional(),
+    auto_repair_count: z.number().int().nonnegative().optional(),
   }).strict(),
 });
 
@@ -396,6 +475,191 @@ export const VideoVersionFailedEventSchema = InternalEventBaseSchema.extend({
   }).strict(),
 });
 
+export const DocumentKnowledgeQueuedEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("document_knowledge.queued"),
+  data: z.object({
+    knowledge_revision_id: DocumentKnowledgeRevisionIdSchema,
+    conversion_id: DocumentConversionIdSchema,
+    document_id: DocumentIdSchema,
+  }).strict(),
+});
+
+export const DocumentKnowledgeStartedEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("document_knowledge.started"),
+  data: z.object({
+    knowledge_revision_id: DocumentKnowledgeRevisionIdSchema,
+    conversion_id: DocumentConversionIdSchema,
+  }).strict(),
+});
+
+export const DocumentKnowledgeSucceededEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("document_knowledge.succeeded"),
+  data: z.object({
+    knowledge_revision_id: DocumentKnowledgeRevisionIdSchema,
+    conversion_id: DocumentConversionIdSchema,
+    analysis_quality: DocumentKnowledgeAnalysisQualitySchema,
+  }).strict(),
+});
+
+export const DocumentKnowledgeFailedEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("document_knowledge.failed"),
+  data: z.object({
+    knowledge_revision_id: DocumentKnowledgeRevisionIdSchema,
+    conversion_id: DocumentConversionIdSchema,
+    error_code: z.enum(["DOCUMENT_KNOWLEDGE_INVALID", "DOCUMENT_RUNTIME_UNAVAILABLE", "DOCUMENT_OUTPUT_INVALID"]),
+    retryable: z.boolean(),
+  }).strict(),
+});
+
+export const DeliveryPlanPreflightRequestedEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("delivery_plan.preflight_requested"),
+  data: z.object({
+    delivery_plan_revision_id: DeliveryPlanRevisionIdSchema,
+    creative_brief_revision_id: CreativeBriefRevisionIdSchema,
+    storyboard_revision_id: StoryboardRevisionIdSchema,
+    status: PreflightRevisionStatusSchema,
+  }).strict(),
+});
+
+export const DeliveryPlanBlockedEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("delivery_plan.blocked"),
+  data: z.object({
+    delivery_plan_revision_id: DeliveryPlanRevisionIdSchema,
+    status: z.literal("PREFLIGHT_BLOCKED"),
+    reason_codes: z.array(z.string().min(1).max(120)).min(1).max(20),
+  }).strict(),
+});
+
+export const DeliveryPlanApprovedEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("delivery_plan.approved"),
+  data: z.object({
+    delivery_plan_revision_id: DeliveryPlanRevisionIdSchema,
+    status: z.literal("APPROVED"),
+  }).strict(),
+});
+
+export const NarrationScriptNormalizedEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("narration_script.normalized"),
+  data: z.object({
+    narration_script_revision_id: NarrationScriptRevisionIdSchema,
+    delivery_plan_revision_id: DeliveryPlanRevisionIdSchema,
+    status: z.enum(["NORMALIZED", "NEEDS_DECISION"]),
+    decision_reasons: z.array(z.string().min(1).max(240)).max(50),
+  }).strict(),
+});
+
+export const NarrationScriptApprovedEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("narration_script.approved"),
+  data: z.object({
+    narration_script_revision_id: NarrationScriptRevisionIdSchema,
+    sample_asset_id: AssetIdSchema,
+    canonical_script_hash: Sha256Schema,
+    status: z.literal("APPROVED"),
+  }).strict(),
+});
+
+/** Internal-only request; public event projection deliberately omits it. */
+export const NarrationAudioGenerationRequestedEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("narration_audio.generation_requested"),
+  project_id: ProjectIdSchema,
+  data: z.object({
+    narration_script_revision_id: NarrationScriptRevisionIdSchema,
+    generation_kind: NarrationAudioGenerationKindSchema,
+    section_id: z.string().min(1).max(160),
+    asset_id: AssetIdSchema,
+    narration_asset_version_id: NarrationAssetVersionIdSchema.optional(),
+    sample_asset_id: AssetIdSchema.optional(),
+    provider: NarrationAudioProviderSchema,
+    voice_id: z.string().min(1).max(160),
+    provider_settings: NarrationAudioProviderSettingsSchema,
+    canonical_script_hash: Sha256Schema,
+    object_key: z.string().min(1).max(1024),
+  }).strict().superRefine((value, context) => {
+    if (value.generation_kind === "FORMAL" && (!value.narration_asset_version_id || !value.sample_asset_id)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["narration_asset_version_id"], message: "Formal generation requires version and approved sample identities." });
+    }
+    if (value.generation_kind === "SAMPLE" && (value.narration_asset_version_id || value.sample_asset_id)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["generation_kind"], message: "Sample generation cannot carry formal asset identities." });
+    }
+  }),
+});
+
+export const NarrationAssetVersionReadyEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("narration_asset_version.ready"),
+  data: z.object({
+    narration_asset_version_id: NarrationAssetVersionIdSchema,
+    narration_script_revision_id: NarrationScriptRevisionIdSchema,
+    asset_id: AssetIdSchema,
+    duration_ms: z.number().int().positive(),
+    sample_approved: z.boolean(),
+  }).strict(),
+});
+
+export const TimelinePlanCreatedEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("timeline_plan.created"),
+  data: z.object({
+    timeline_plan_id: TimelinePlanIdSchema,
+    narration_script_revision_id: NarrationScriptRevisionIdSchema,
+    delivery_plan_revision_id: DeliveryPlanRevisionIdSchema,
+    status: z.enum(["READY", "NEEDS_DECISION", "FAILED"]),
+    effective_duration_ms: z.number().int().positive(),
+  }).strict(),
+});
+
+export const HandoffReviewRequestedEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("handoff_review.requested"),
+  data: z.object({
+    production_run_id: ProductionRunIdSchema,
+    handoff_review_id: HandoffReviewIdSchema,
+    from_sequence: z.number().int().positive(),
+    to_sequence: z.number().int().positive(),
+  }).strict(),
+});
+
+export const HandoffReviewCompletedEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("handoff_review.completed"),
+  data: z.object({
+    production_run_id: ProductionRunIdSchema,
+    handoff_review_id: HandoffReviewIdSchema,
+    from_sequence: z.number().int().positive(),
+    to_sequence: z.number().int().positive(),
+    result: HandoffReviewResultSchema,
+    reason_codes: z.array(HandoffReviewReasonCodeSchema).max(8),
+    retryable: z.boolean(),
+  }).strict(),
+});
+
+export const TransitionRepairRequestedEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("transition_repair.requested"),
+  data: z.object({
+    production_run_id: ProductionRunIdSchema,
+    transition_repair_id: TransitionRepairIdSchema,
+    boundary_sequence: z.number().int().positive(),
+    strategy: TransitionRepairStrategySchema,
+  }).strict(),
+});
+
+export const TransitionRepairSucceededEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("transition_repair.succeeded"),
+  data: z.object({
+    production_run_id: ProductionRunIdSchema,
+    transition_repair_id: TransitionRepairIdSchema,
+    boundary_sequence: z.number().int().positive(),
+    strategy: TransitionRepairStrategySchema,
+  }).strict(),
+});
+
+export const TransitionRepairFailedEventSchema = InternalEventBaseSchema.extend({
+  event_type: z.literal("transition_repair.failed"),
+  data: z.object({
+    production_run_id: ProductionRunIdSchema,
+    transition_repair_id: TransitionRepairIdSchema,
+    boundary_sequence: z.number().int().positive(),
+    error_code: z.enum(["MEDIA_RUNTIME_UNAVAILABLE", "MEDIA_RENDER_FAILED", "QC_FAILED"]),
+    retryable: z.boolean(),
+  }).strict(),
+});
+
 export const InternalEventEnvelopeSchema = z.discriminatedUnion("event_type", [
   AssetUploadConfirmedEventSchema,
   ShotUpdatedEventSchema,
@@ -410,10 +674,22 @@ export const InternalEventEnvelopeSchema = z.discriminatedUnion("event_type", [
   DocumentConversionStartedEventSchema,
   DocumentConversionSucceededEventSchema,
   DocumentConversionFailedEventSchema,
+  DocumentKnowledgeQueuedEventSchema,
+  DocumentKnowledgeStartedEventSchema,
+  DocumentKnowledgeSucceededEventSchema,
+  DocumentKnowledgeFailedEventSchema,
   CreativeBriefPlanningRequestedEventSchema,
   CreativeBriefPlanningFailedEventSchema,
   StoryboardRevisionReadyForReviewEventSchema,
   StoryboardRevisionApprovedEventSchema,
+  DeliveryPlanPreflightRequestedEventSchema,
+  DeliveryPlanBlockedEventSchema,
+  DeliveryPlanApprovedEventSchema,
+  NarrationScriptNormalizedEventSchema,
+  NarrationScriptApprovedEventSchema,
+  NarrationAudioGenerationRequestedEventSchema,
+  NarrationAssetVersionReadyEventSchema,
+  TimelinePlanCreatedEventSchema,
   ProductionRunConfirmedEventSchema,
   ProductionRunProgressedEventSchema,
   ProductionRunBlockedEventSchema,
@@ -423,6 +699,11 @@ export const InternalEventEnvelopeSchema = z.discriminatedUnion("event_type", [
   VideoVersionCompositionRequestedEventSchema,
   VideoVersionSucceededEventSchema,
   VideoVersionFailedEventSchema,
+  HandoffReviewRequestedEventSchema,
+  HandoffReviewCompletedEventSchema,
+  TransitionRepairRequestedEventSchema,
+  TransitionRepairSucceededEventSchema,
+  TransitionRepairFailedEventSchema,
 ]);
 
 const PublicAssetUploadConfirmedEventSchema = PublicWorkspaceEventBaseSchema.extend({
@@ -541,8 +822,89 @@ const PublicProductionRunConfirmedEventSchema = PublicWorkspaceEventBaseSchema.e
   data: z.object({
     production_run_id: ProductionRunIdSchema,
     storyboard_revision_id: StoryboardRevisionIdSchema,
+    // Historical public events remain parseable during the forward-only rollout.
+    delivery_plan_revision_id: DeliveryPlanRevisionIdSchema.optional(),
     status: z.literal("CONFIRMED"),
     total_shot_count: z.number().int().positive(),
+  }).strict(),
+});
+
+export const PublicDocumentKnowledgeEventSchema = PublicWorkspaceEventBaseSchema.extend({
+  event_type: z.enum([
+    "document_knowledge.queued",
+    "document_knowledge.started",
+    "document_knowledge.succeeded",
+    "document_knowledge.failed",
+  ]),
+  data: z.object({
+    knowledge_revision_id: DocumentKnowledgeRevisionIdSchema,
+    conversion_id: DocumentConversionIdSchema,
+    status: DocumentKnowledgeRevisionStatusSchema,
+    retryable: z.boolean(),
+    analysis_quality: DocumentKnowledgeAnalysisQualitySchema.nullable(),
+  }).strict(),
+});
+
+const PublicDeliveryPlanPreflightRequestedEventSchema = PublicWorkspaceEventBaseSchema.extend({
+  event_type: z.literal("delivery_plan.preflight_requested"),
+  data: z.object({
+    delivery_plan_revision_id: DeliveryPlanRevisionIdSchema,
+    status: PreflightRevisionStatusSchema,
+  }).strict(),
+});
+
+const PublicDeliveryPlanBlockedEventSchema = PublicWorkspaceEventBaseSchema.extend({
+  event_type: z.literal("delivery_plan.blocked"),
+  data: z.object({
+    delivery_plan_revision_id: DeliveryPlanRevisionIdSchema,
+    status: z.literal("PREFLIGHT_BLOCKED"),
+    reason_codes: z.array(z.string().min(1).max(120)).min(1).max(20),
+  }).strict(),
+});
+
+const PublicDeliveryPlanApprovedEventSchema = PublicWorkspaceEventBaseSchema.extend({
+  event_type: z.literal("delivery_plan.approved"),
+  data: z.object({
+    delivery_plan_revision_id: DeliveryPlanRevisionIdSchema,
+    status: z.literal("APPROVED"),
+  }).strict(),
+});
+
+const PublicNarrationScriptNormalizedEventSchema = PublicWorkspaceEventBaseSchema.extend({
+  event_type: z.literal("narration_script.normalized"),
+  data: z.object({
+    narration_script_revision_id: NarrationScriptRevisionIdSchema,
+    delivery_plan_revision_id: DeliveryPlanRevisionIdSchema,
+    status: z.enum(["NORMALIZED", "NEEDS_DECISION"]),
+    decision_reasons: z.array(z.string().min(1).max(240)).max(50),
+  }).strict(),
+});
+
+const PublicNarrationScriptApprovedEventSchema = PublicWorkspaceEventBaseSchema.extend({
+  event_type: z.literal("narration_script.approved"),
+  data: z.object({
+    narration_script_revision_id: NarrationScriptRevisionIdSchema,
+    status: z.literal("APPROVED"),
+  }).strict(),
+});
+
+const PublicNarrationAssetVersionReadyEventSchema = PublicWorkspaceEventBaseSchema.extend({
+  event_type: z.literal("narration_asset_version.ready"),
+  data: z.object({
+    narration_asset_version_id: NarrationAssetVersionIdSchema,
+    narration_script_revision_id: NarrationScriptRevisionIdSchema,
+    duration_ms: z.number().int().positive(),
+    sample_approved: z.boolean(),
+  }).strict(),
+});
+
+const PublicTimelinePlanCreatedEventSchema = PublicWorkspaceEventBaseSchema.extend({
+  event_type: z.literal("timeline_plan.created"),
+  data: z.object({
+    timeline_plan_id: TimelinePlanIdSchema,
+    narration_script_revision_id: NarrationScriptRevisionIdSchema,
+    status: z.enum(["READY", "NEEDS_DECISION", "FAILED"]),
+    effective_duration_ms: z.number().int().positive(),
   }).strict(),
 });
 
@@ -554,6 +916,9 @@ const PublicProductionRunProgressedEventSchema = PublicWorkspaceEventBaseSchema.
     accepted_shot_count: z.number().int().nonnegative(),
     total_shot_count: z.number().int().positive(),
     current_sequence: z.number().int().positive().nullable(),
+    continuity_status: ContinuityStatusSchema.optional(),
+    max_auto_repair_count: z.number().int().min(0).max(20).optional(),
+    auto_repair_count: z.number().int().nonnegative().optional(),
   }).strict(),
 });
 
@@ -606,10 +971,18 @@ export const PublicWorkspaceEventEnvelopeSchema = z.discriminatedUnion("event_ty
   PublicTaskRunSucceededEventSchema,
   PublicTaskRunFailedEventSchema,
   PublicDocumentConversionEventSchema,
+  PublicDocumentKnowledgeEventSchema,
   PublicCreativeBriefPlanningRequestedEventSchema,
   PublicCreativeBriefPlanningFailedEventSchema,
   PublicStoryboardRevisionReadyForReviewEventSchema,
   PublicStoryboardRevisionApprovedEventSchema,
+  PublicDeliveryPlanPreflightRequestedEventSchema,
+  PublicDeliveryPlanBlockedEventSchema,
+  PublicDeliveryPlanApprovedEventSchema,
+  PublicNarrationScriptNormalizedEventSchema,
+  PublicNarrationScriptApprovedEventSchema,
+  PublicNarrationAssetVersionReadyEventSchema,
+  PublicTimelinePlanCreatedEventSchema,
   PublicProductionRunConfirmedEventSchema,
   PublicProductionRunProgressedEventSchema,
   PublicProductionRunBlockedEventSchema,
@@ -703,6 +1076,14 @@ export const projectPublicWorkspaceEvent = (
       return project({ ...base, event_type: event.event_type, data: { conversion_id: event.data.conversion_id, source_asset_id: event.data.source_asset_id, status: "SUCCEEDED", retryable: false, markdown_asset_id: event.data.markdown_asset_id } });
     case "document_conversion.failed":
       return project({ ...base, event_type: event.event_type, data: { conversion_id: event.data.conversion_id, source_asset_id: event.data.source_asset_id, status: "FAILED", retryable: event.data.retryable, markdown_asset_id: null } });
+    case "document_knowledge.queued":
+      return project({ ...base, event_type: event.event_type, data: { knowledge_revision_id: event.data.knowledge_revision_id, conversion_id: event.data.conversion_id, status: "QUEUED", retryable: false, analysis_quality: null } });
+    case "document_knowledge.started":
+      return project({ ...base, event_type: event.event_type, data: { knowledge_revision_id: event.data.knowledge_revision_id, conversion_id: event.data.conversion_id, status: "RUNNING", retryable: false, analysis_quality: null } });
+    case "document_knowledge.succeeded":
+      return project({ ...base, event_type: event.event_type, data: { knowledge_revision_id: event.data.knowledge_revision_id, conversion_id: event.data.conversion_id, status: "READY", retryable: false, analysis_quality: event.data.analysis_quality } });
+    case "document_knowledge.failed":
+      return project({ ...base, event_type: event.event_type, data: { knowledge_revision_id: event.data.knowledge_revision_id, conversion_id: event.data.conversion_id, status: "FAILED", retryable: event.data.retryable, analysis_quality: null } });
     case "creative_brief.planning_requested":
       return project({ ...base, event_type: event.event_type, data: { creative_brief_revision_id: event.data.creative_brief_revision_id, status: "PLANNING" } });
     case "creative_brief.planning_failed":
@@ -729,6 +1110,57 @@ export const projectPublicWorkspaceEvent = (
       });
     case "storyboard_revision.approved":
       return project({ ...base, event_type: event.event_type, data: { storyboard_revision_id: event.data.storyboard_revision_id, status: "APPROVED" } });
+    case "delivery_plan.preflight_requested":
+      return project({ ...base, event_type: event.event_type, data: { delivery_plan_revision_id: event.data.delivery_plan_revision_id, status: event.data.status } });
+    case "delivery_plan.blocked":
+      return project({ ...base, event_type: event.event_type, data: { delivery_plan_revision_id: event.data.delivery_plan_revision_id, status: event.data.status, reason_codes: event.data.reason_codes } });
+    case "delivery_plan.approved":
+      return project({ ...base, event_type: event.event_type, data: { delivery_plan_revision_id: event.data.delivery_plan_revision_id, status: event.data.status } });
+    case "narration_script.normalized":
+      return project({
+        ...base,
+        event_type: event.event_type,
+        data: {
+          narration_script_revision_id: event.data.narration_script_revision_id,
+          delivery_plan_revision_id: event.data.delivery_plan_revision_id,
+          status: event.data.status,
+          decision_reasons: event.data.decision_reasons,
+        },
+      });
+    case "narration_script.approved":
+      return project({
+        ...base,
+        event_type: event.event_type,
+        data: {
+          narration_script_revision_id: event.data.narration_script_revision_id,
+          status: event.data.status,
+        },
+      });
+    case "narration_audio.generation_requested":
+      // Provider, voice, settings and object identity are internal queue facts.
+      return undefined;
+    case "narration_asset_version.ready":
+      return project({
+        ...base,
+        event_type: event.event_type,
+        data: {
+          narration_asset_version_id: event.data.narration_asset_version_id,
+          narration_script_revision_id: event.data.narration_script_revision_id,
+          duration_ms: event.data.duration_ms,
+          sample_approved: event.data.sample_approved,
+        },
+      });
+    case "timeline_plan.created":
+      return project({
+        ...base,
+        event_type: event.event_type,
+        data: {
+          timeline_plan_id: event.data.timeline_plan_id,
+          narration_script_revision_id: event.data.narration_script_revision_id,
+          status: event.data.status,
+          effective_duration_ms: event.data.effective_duration_ms,
+        },
+      });
     case "production_run.confirmed":
       return project({
         ...base,
@@ -736,6 +1168,7 @@ export const projectPublicWorkspaceEvent = (
         data: {
           production_run_id: event.data.production_run_id,
           storyboard_revision_id: event.data.storyboard_revision_id,
+          ...(event.data.delivery_plan_revision_id ? { delivery_plan_revision_id: event.data.delivery_plan_revision_id } : {}),
           status: "CONFIRMED",
           total_shot_count: event.data.total_shot_count,
         },
@@ -750,6 +1183,11 @@ export const projectPublicWorkspaceEvent = (
       return project({ ...base, event_type: event.event_type, data: event.data });
     case "video_version.failed":
       return project({ ...base, event_type: event.event_type, data: event.data });
+    case "handoff_review.requested":
+    case "handoff_review.completed":
+    case "transition_repair.requested":
+    case "transition_repair.succeeded":
+    case "transition_repair.failed":
     case "handoff_asset.accepted":
     case "production_segment.qc_requested":
     case "video_version.composition_requested":
@@ -762,6 +1200,7 @@ export const projectPublicWorkspaceEvent = (
 export type InternalEventEnvelope = z.infer<typeof InternalEventEnvelopeSchema>;
 export type InternalTaskRunQueueMessage = z.infer<typeof InternalTaskRunQueueMessageSchema>;
 export type InternalDocumentConversionQueueMessage = z.infer<typeof InternalDocumentConversionQueueMessageSchema>;
+export type InternalDocumentKnowledgeQueueMessage = z.infer<typeof InternalDocumentKnowledgeQueueMessageSchema>;
 export type InternalCreativePlanningQueueMessage = z.infer<typeof InternalCreativePlanningQueueMessageSchema>;
 export type InternalProductionQueueMessage = z.infer<typeof InternalProductionQueueMessageSchema>;
 export type InternalMediaRuntimeQueueMessage = z.infer<typeof InternalMediaRuntimeQueueMessageSchema>;

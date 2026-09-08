@@ -287,6 +287,59 @@
             }
           }
         }
+      },
+      "delete": {
+        "operationId": "deleteProject",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Project soft-deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectSuccess"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Workspace access denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Project has active work or idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/projects/{project_id}/assets/upload-requests": {
@@ -420,6 +473,188 @@
           },
           "404": {
             "description": "Asset not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/audio-capabilities": {
+      "get": {
+        "operationId": "getProjectAudioCapabilities",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Free audio capabilities and provider status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AudioCapabilitiesSuccess"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Workspace access denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/audio/pixabay/import": {
+      "post": {
+        "operationId": "importPixabayMusic",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PixabayMusicImportCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Pixabay Music track imported as a workspace MUSIC asset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PixabayMusicImportSuccess"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Pixabay query is invalid or has no matching track",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Workspace access denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Pixabay or object storage is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/assets/{asset_id}": {
+      "delete": {
+        "operationId": "deleteAsset",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/AssetId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User-uploaded asset marked deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetSuccess"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Workspace access denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Asset not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Asset cannot be deleted or idempotency conflict",
             "content": {
               "application/json": {
                 "schema": {
@@ -758,6 +993,401 @@
         }
       }
     },
+    "/api/v1/projects/{project_id}/delivery-plan-revisions": {
+      "get": {
+        "operationId": "listDeliveryPlanRevisions",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Project delivery preflight revisions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliveryPlanRevisionListSuccess"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createDeliveryPlanRevision",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDeliveryPlanRevisionCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Delivery preflight created or blocked before production",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliveryPlanRevisionSuccess"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Delivery preflight cannot be created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project or revision not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/delivery-plan-revisions/{delivery_plan_revision_id}/approve": {
+      "post": {
+        "operationId": "approveDeliveryPlanRevision",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/DeliveryPlanRevisionId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveDeliveryPlanRevisionCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Delivery preflight approved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliveryPlanRevisionSuccess"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Delivery preflight cannot be approved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Delivery preflight not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/delivery-plan-revisions/{delivery_plan_revision_id}/narration-scripts": {
+      "get": {
+        "operationId": "listNarrationScriptRevisions",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DeliveryPlanRevisionId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Narration script revisions for a delivery plan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NarrationScriptRevisionListSuccess"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Delivery plan not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createNarrationScriptRevision",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/DeliveryPlanRevisionId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateNarrationScriptRevisionCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Narration script normalized for review",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NarrationScriptRevisionSuccess"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Narration script cannot be normalized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Delivery plan not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/narration-script-revisions/{narration_script_revision_id}/approve": {
+      "post": {
+        "operationId": "approveNarrationScriptRevision",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "name": "narration_script_revision_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveNarrationScriptRevisionCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Narration sample facts approved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NarrationScriptRevisionSuccess"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Narration script cannot be approved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Narration script not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/narration-script-revisions/{narration_script_revision_id}/timeline-plans": {
+      "post": {
+        "operationId": "createNarrationTimelinePlan",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "name": "narration_script_revision_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTimelinePlanCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Measured narration timeline created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimelinePlanSuccess"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Narration timeline cannot be created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Narration script not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{project_id}/production-runs": {
       "get": {
         "operationId": "listProductionRuns",
@@ -921,6 +1551,71 @@
         }
       }
     },
+    "/api/v1/production-runs/{production_run_id}/composition/retry": {
+      "post": {
+        "operationId": "retryProductionComposition",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ProductionRunId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetryProductionCompositionCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Final composition retry accepted without regenerating segments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionRunProgressSuccess"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Production run is not eligible for composition retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Production run not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency or production state conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{project_id}/video-versions": {
       "get": {
         "operationId": "listVideoVersions",
@@ -1039,6 +1734,103 @@
           },
           "409": {
             "description": "Idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/document-knowledge-revisions/{knowledge_revision_id}": {
+      "get": {
+        "operationId": "getDocumentKnowledgeRevision",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DocumentKnowledgeRevisionId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Document understanding revision and safe fact summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentKnowledgeDetailSuccess"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Document understanding revision not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/document-knowledge-revisions/{knowledge_revision_id}/retry": {
+      "post": {
+        "operationId": "retryDocumentKnowledgeRevision",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/DocumentKnowledgeRevisionId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetryDocumentKnowledgeRevisionCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Document understanding retry queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentKnowledgeRevisionSuccess"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Document understanding revision not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency or active understanding conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Document understanding revision is not retryable",
             "content": {
               "application/json": {
                 "schema": {
@@ -1438,9 +2230,719 @@
           "type": "string",
           "pattern": "^sbr_"
         }
+      },
+      "DocumentKnowledgeRevisionId": {
+        "name": "knowledge_revision_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "pattern": "^dkr_"
+        }
+      },
+      "DeliveryPlanRevisionId": {
+        "name": "delivery_plan_revision_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "pattern": "^dpr_"
+        }
       }
     },
     "schemas": {
+      "AudioCapabilities": {
+        "type": "object",
+        "properties": {
+          "free_only": {
+            "type": "boolean"
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "AVAILABLE",
+                    "BLOCKED",
+                    "NOT_CONFIGURED"
+                  ]
+                },
+                "free": {
+                  "type": "boolean"
+                },
+                "key_required": {
+                  "type": "boolean"
+                },
+                "reason": {
+                  "type": "string",
+                  "maxLength": 240
+                }
+              },
+              "required": [
+                "id",
+                "label",
+                "status",
+                "free",
+                "key_required",
+                "reason"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 30
+          },
+          "music_assets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                },
+                "workspace_id": {
+                  "type": "string",
+                  "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                },
+                "project_id": {
+                  "type": "string",
+                  "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "IMAGE",
+                    "VIDEO",
+                    "AUDIO",
+                    "DOCUMENT",
+                    "POSTER",
+                    "THUMBNAIL"
+                  ]
+                },
+                "origin": {
+                  "type": "string",
+                  "enum": [
+                    "USER_UPLOAD",
+                    "GENERATED",
+                    "DERIVED"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "PENDING_UPLOAD",
+                    "READY",
+                    "FAILED",
+                    "DELETED"
+                  ]
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$",
+                  "nullable": true
+                },
+                "mime_type": {
+                  "type": "string",
+                  "minLength": 1,
+                  "nullable": true
+                },
+                "byte_size": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "nullable": true
+                },
+                "width": {
+                  "type": "integer",
+                  "exclusiveMinimum": true,
+                  "minimum": 0,
+                  "nullable": true
+                },
+                "height": {
+                  "type": "integer",
+                  "exclusiveMinimum": true,
+                  "minimum": 0,
+                  "nullable": true
+                },
+                "duration_ms": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "nullable": true
+                },
+                "metadata": {
+                  "type": "object",
+                  "additionalProperties": {}
+                },
+                "created_at": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                },
+                "updated_at": {
+                  "$ref": "#/definitions/AudioCapabilities/properties/music_assets/items/properties/created_at"
+                }
+              },
+              "required": [
+                "id",
+                "workspace_id",
+                "project_id",
+                "kind",
+                "origin",
+                "status",
+                "sha256",
+                "mime_type",
+                "byte_size",
+                "width",
+                "height",
+                "duration_ms",
+                "metadata",
+                "created_at",
+                "updated_at"
+              ],
+              "additionalProperties": false
+            },
+            "default": []
+          }
+        },
+        "required": [
+          "free_only",
+          "capabilities"
+        ],
+        "additionalProperties": false
+      },
+      "AudioCapabilitiesSuccess": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "free_only": {
+                "type": "boolean"
+              },
+              "capabilities": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "AVAILABLE",
+                        "BLOCKED",
+                        "NOT_CONFIGURED"
+                      ]
+                    },
+                    "free": {
+                      "type": "boolean"
+                    },
+                    "key_required": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "maxLength": 240
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "label",
+                    "status",
+                    "free",
+                    "key_required",
+                    "reason"
+                  ],
+                  "additionalProperties": false
+                },
+                "maxItems": 30
+              },
+              "music_assets": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                    },
+                    "workspace_id": {
+                      "type": "string",
+                      "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                    },
+                    "project_id": {
+                      "type": "string",
+                      "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "IMAGE",
+                        "VIDEO",
+                        "AUDIO",
+                        "DOCUMENT",
+                        "POSTER",
+                        "THUMBNAIL"
+                      ]
+                    },
+                    "origin": {
+                      "type": "string",
+                      "enum": [
+                        "USER_UPLOAD",
+                        "GENERATED",
+                        "DERIVED"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "PENDING_UPLOAD",
+                        "READY",
+                        "FAILED",
+                        "DELETED"
+                      ]
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$",
+                      "nullable": true
+                    },
+                    "mime_type": {
+                      "type": "string",
+                      "minLength": 1,
+                      "nullable": true
+                    },
+                    "byte_size": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "nullable": true
+                    },
+                    "width": {
+                      "type": "integer",
+                      "exclusiveMinimum": true,
+                      "minimum": 0,
+                      "nullable": true
+                    },
+                    "height": {
+                      "type": "integer",
+                      "exclusiveMinimum": true,
+                      "minimum": 0,
+                      "nullable": true
+                    },
+                    "duration_ms": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "nullable": true
+                    },
+                    "metadata": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                    },
+                    "updated_at": {
+                      "$ref": "#/definitions/AudioCapabilitiesSuccess/properties/data/properties/music_assets/items/properties/created_at"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspace_id",
+                    "project_id",
+                    "kind",
+                    "origin",
+                    "status",
+                    "sha256",
+                    "mime_type",
+                    "byte_size",
+                    "width",
+                    "height",
+                    "duration_ms",
+                    "metadata",
+                    "created_at",
+                    "updated_at"
+                  ],
+                  "additionalProperties": false
+                },
+                "default": []
+              }
+            },
+            "required": [
+              "free_only",
+              "capabilities"
+            ],
+            "additionalProperties": false
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "PixabayMusicImport": {
+        "type": "object",
+        "properties": {
+          "asset": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "workspace_id": {
+                "type": "string",
+                "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "project_id": {
+                "type": "string",
+                "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "IMAGE",
+                  "VIDEO",
+                  "AUDIO",
+                  "DOCUMENT",
+                  "POSTER",
+                  "THUMBNAIL"
+                ]
+              },
+              "origin": {
+                "type": "string",
+                "enum": [
+                  "USER_UPLOAD",
+                  "GENERATED",
+                  "DERIVED"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "PENDING_UPLOAD",
+                  "READY",
+                  "FAILED",
+                  "DELETED"
+                ]
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$",
+                "nullable": true
+              },
+              "mime_type": {
+                "type": "string",
+                "minLength": 1,
+                "nullable": true
+              },
+              "byte_size": {
+                "type": "integer",
+                "minimum": 0,
+                "nullable": true
+              },
+              "width": {
+                "type": "integer",
+                "exclusiveMinimum": true,
+                "minimum": 0,
+                "nullable": true
+              },
+              "height": {
+                "type": "integer",
+                "exclusiveMinimum": true,
+                "minimum": 0,
+                "nullable": true
+              },
+              "duration_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "nullable": true
+              },
+              "metadata": {
+                "type": "object",
+                "additionalProperties": {}
+              },
+              "created_at": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+              },
+              "updated_at": {
+                "$ref": "#/definitions/PixabayMusicImport/properties/asset/properties/created_at"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "project_id",
+              "kind",
+              "origin",
+              "status",
+              "sha256",
+              "mime_type",
+              "byte_size",
+              "width",
+              "height",
+              "duration_ms",
+              "metadata",
+              "created_at",
+              "updated_at"
+            ],
+            "additionalProperties": false
+          },
+          "track": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "artist": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "duration_seconds": {
+                "type": "number",
+                "minimum": 0,
+                "nullable": true
+              },
+              "pixabay_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "nullable": true
+              },
+              "results_found": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "results_after_filter": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "title",
+              "artist",
+              "duration_seconds",
+              "results_found",
+              "results_after_filter"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "asset",
+          "track"
+        ],
+        "additionalProperties": false
+      },
+      "PixabayMusicImportSuccess": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "asset": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "workspace_id": {
+                    "type": "string",
+                    "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "project_id": {
+                    "type": "string",
+                    "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "IMAGE",
+                      "VIDEO",
+                      "AUDIO",
+                      "DOCUMENT",
+                      "POSTER",
+                      "THUMBNAIL"
+                    ]
+                  },
+                  "origin": {
+                    "type": "string",
+                    "enum": [
+                      "USER_UPLOAD",
+                      "GENERATED",
+                      "DERIVED"
+                    ]
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING_UPLOAD",
+                      "READY",
+                      "FAILED",
+                      "DELETED"
+                    ]
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$",
+                    "nullable": true
+                  },
+                  "mime_type": {
+                    "type": "string",
+                    "minLength": 1,
+                    "nullable": true
+                  },
+                  "byte_size": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "nullable": true
+                  },
+                  "width": {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0,
+                    "nullable": true
+                  },
+                  "height": {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0,
+                    "nullable": true
+                  },
+                  "duration_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "nullable": true
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  },
+                  "created_at": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                  },
+                  "updated_at": {
+                    "$ref": "#/definitions/PixabayMusicImportSuccess/properties/data/properties/asset/properties/created_at"
+                  }
+                },
+                "required": [
+                  "id",
+                  "workspace_id",
+                  "project_id",
+                  "kind",
+                  "origin",
+                  "status",
+                  "sha256",
+                  "mime_type",
+                  "byte_size",
+                  "width",
+                  "height",
+                  "duration_ms",
+                  "metadata",
+                  "created_at",
+                  "updated_at"
+                ],
+                "additionalProperties": false
+              },
+              "track": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "artist": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "duration_seconds": {
+                    "type": "number",
+                    "minimum": 0,
+                    "nullable": true
+                  },
+                  "pixabay_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ],
+                    "nullable": true
+                  },
+                  "results_found": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "results_after_filter": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "title",
+                  "artist",
+                  "duration_seconds",
+                  "results_found",
+                  "results_after_filter"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "asset",
+              "track"
+            ],
+            "additionalProperties": false
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
       "ApiError": {
         "type": "object",
         "properties": {
@@ -1462,6 +2964,12 @@
               "DOCUMENT_CONVERSION_ACTIVE_CONFLICT",
               "DOCUMENT_RUNTIME_UNAVAILABLE",
               "DOCUMENT_OUTPUT_INVALID",
+              "DOCUMENT_CONTEXT_INVALID",
+              "DOCUMENT_KNOWLEDGE_NOT_READY",
+              "DOCUMENT_KNOWLEDGE_INVALID",
+              "DOCUMENT_KNOWLEDGE_ACTIVE_CONFLICT",
+              "DOCUMENT_FACT_CONFLICT",
+              "DOCUMENT_FACT_CONTEXT_INVALID",
               "CREATIVE_PLAN_ACTIVE_CONFLICT",
               "CREATIVE_PLAN_STATE_INVALID",
               "PLANNING_FAILED",
@@ -1469,12 +2977,19 @@
               "PRODUCTION_RUN_ACTIVE_CONFLICT",
               "PRODUCTION_RUN_STATE_INVALID",
               "PRODUCTION_SEGMENT_STATE_INVALID",
+              "DELIVERY_PLAN_STATE_INVALID",
+              "DELIVERY_PREFLIGHT_BLOCKED",
+              "VOICE_AUTHORIZATION_REQUIRED",
+              "CAPABILITY_NOT_CERTIFIED",
+              "BUDGET_LIMIT_EXCEEDED",
               "MEDIA_RUNTIME_UNAVAILABLE",
               "MEDIA_RENDER_FAILED",
               "QC_FAILED",
               "STORAGE_UNAVAILABLE",
               "IDEMPOTENCY_CONFLICT",
               "SHOT_POSITION_CONFLICT",
+              "ASSET_IN_USE",
+              "PROJECT_IN_USE",
               "TASK_RUN_ACTIVE_CONFLICT",
               "WORKSPACE_FORBIDDEN",
               "VALIDATION_FAILED",
@@ -1527,6 +3042,12 @@
                   "DOCUMENT_CONVERSION_ACTIVE_CONFLICT",
                   "DOCUMENT_RUNTIME_UNAVAILABLE",
                   "DOCUMENT_OUTPUT_INVALID",
+                  "DOCUMENT_CONTEXT_INVALID",
+                  "DOCUMENT_KNOWLEDGE_NOT_READY",
+                  "DOCUMENT_KNOWLEDGE_INVALID",
+                  "DOCUMENT_KNOWLEDGE_ACTIVE_CONFLICT",
+                  "DOCUMENT_FACT_CONFLICT",
+                  "DOCUMENT_FACT_CONTEXT_INVALID",
                   "CREATIVE_PLAN_ACTIVE_CONFLICT",
                   "CREATIVE_PLAN_STATE_INVALID",
                   "PLANNING_FAILED",
@@ -1534,12 +3055,19 @@
                   "PRODUCTION_RUN_ACTIVE_CONFLICT",
                   "PRODUCTION_RUN_STATE_INVALID",
                   "PRODUCTION_SEGMENT_STATE_INVALID",
+                  "DELIVERY_PLAN_STATE_INVALID",
+                  "DELIVERY_PREFLIGHT_BLOCKED",
+                  "VOICE_AUTHORIZATION_REQUIRED",
+                  "CAPABILITY_NOT_CERTIFIED",
+                  "BUDGET_LIMIT_EXCEEDED",
                   "MEDIA_RUNTIME_UNAVAILABLE",
                   "MEDIA_RENDER_FAILED",
                   "QC_FAILED",
                   "STORAGE_UNAVAILABLE",
                   "IDEMPOTENCY_CONFLICT",
                   "SHOT_POSITION_CONFLICT",
+                  "ASSET_IN_USE",
+                  "PROJECT_IN_USE",
                   "TASK_RUN_ACTIVE_CONFLICT",
                   "WORKSPACE_FORBIDDEN",
                   "VALIDATION_FAILED",
@@ -1599,7 +3127,8 @@
             "type": "string",
             "enum": [
               "ACTIVE",
-              "ARCHIVED"
+              "ARCHIVED",
+              "DELETED"
             ]
           },
           "created_at": {
@@ -1643,7 +3172,8 @@
                 "type": "string",
                 "enum": [
                   "ACTIVE",
-                  "ARCHIVED"
+                  "ARCHIVED",
+                  "DELETED"
                 ]
               },
               "created_at": {
@@ -1700,7 +3230,8 @@
                   "type": "string",
                   "enum": [
                     "ACTIVE",
-                    "ARCHIVED"
+                    "ARCHIVED",
+                    "DELETED"
                   ]
                 },
                 "created_at": {
@@ -2092,6 +3623,59 @@
             "type": "integer",
             "minimum": 0
           },
+          "understanding": {
+            "type": "object",
+            "properties": {
+              "knowledge_revision_id": {
+                "type": "string",
+                "pattern": "^dkr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$",
+                "nullable": true
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "CREATED",
+                  "QUEUED",
+                  "RUNNING",
+                  "READY",
+                  "FAILED"
+                ],
+                "nullable": true
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "analysis_quality": {
+                "type": "string",
+                "enum": [
+                  "COMPLETE",
+                  "PARTIAL",
+                  "NEEDS_CONFIRMATION"
+                ],
+                "nullable": true
+              },
+              "fact_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "has_confirmation": {
+                "type": "boolean"
+              },
+              "has_visual_gaps": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "knowledge_revision_id",
+              "status",
+              "retryable",
+              "analysis_quality",
+              "fact_count",
+              "has_confirmation",
+              "has_visual_gaps"
+            ],
+            "additionalProperties": false
+          },
           "created_at": {
             "type": "string",
             "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
@@ -2174,6 +3758,59 @@
               "attempt_count": {
                 "type": "integer",
                 "minimum": 0
+              },
+              "understanding": {
+                "type": "object",
+                "properties": {
+                  "knowledge_revision_id": {
+                    "type": "string",
+                    "pattern": "^dkr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$",
+                    "nullable": true
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "CREATED",
+                      "QUEUED",
+                      "RUNNING",
+                      "READY",
+                      "FAILED"
+                    ],
+                    "nullable": true
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  },
+                  "analysis_quality": {
+                    "type": "string",
+                    "enum": [
+                      "COMPLETE",
+                      "PARTIAL",
+                      "NEEDS_CONFIRMATION"
+                    ],
+                    "nullable": true
+                  },
+                  "fact_count": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "has_confirmation": {
+                    "type": "boolean"
+                  },
+                  "has_visual_gaps": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "knowledge_revision_id",
+                  "status",
+                  "retryable",
+                  "analysis_quality",
+                  "fact_count",
+                  "has_confirmation",
+                  "has_visual_gaps"
+                ],
+                "additionalProperties": false
               },
               "created_at": {
                 "type": "string",
@@ -2271,6 +3908,59 @@
                   "type": "integer",
                   "minimum": 0
                 },
+                "understanding": {
+                  "type": "object",
+                  "properties": {
+                    "knowledge_revision_id": {
+                      "type": "string",
+                      "pattern": "^dkr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$",
+                      "nullable": true
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "CREATED",
+                        "QUEUED",
+                        "RUNNING",
+                        "READY",
+                        "FAILED"
+                      ],
+                      "nullable": true
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "analysis_quality": {
+                      "type": "string",
+                      "enum": [
+                        "COMPLETE",
+                        "PARTIAL",
+                        "NEEDS_CONFIRMATION"
+                      ],
+                      "nullable": true
+                    },
+                    "fact_count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "has_confirmation": {
+                      "type": "boolean"
+                    },
+                    "has_visual_gaps": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "knowledge_revision_id",
+                    "status",
+                    "retryable",
+                    "analysis_quality",
+                    "fact_count",
+                    "has_confirmation",
+                    "has_visual_gaps"
+                  ],
+                  "additionalProperties": false
+                },
                 "created_at": {
                   "type": "string",
                   "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
@@ -2295,6 +3985,616 @@
               ],
               "additionalProperties": false
             }
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "DocumentKnowledgeRevision": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^dkr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "document_id": {
+            "type": "string",
+            "pattern": "^doc_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "conversion_id": {
+            "type": "string",
+            "pattern": "^dcv_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "CREATED",
+              "QUEUED",
+              "RUNNING",
+              "READY",
+              "FAILED"
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "analysis_quality": {
+            "type": "string",
+            "enum": [
+              "COMPLETE",
+              "PARTIAL",
+              "NEEDS_CONFIRMATION"
+            ],
+            "nullable": true
+          },
+          "section_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "fact_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+          },
+          "updated_at": {
+            "$ref": "#/definitions/DocumentKnowledgeRevision/properties/created_at"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "project_id",
+          "document_id",
+          "conversion_id",
+          "status",
+          "retryable",
+          "analysis_quality",
+          "section_count",
+          "fact_count",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "DocumentKnowledgeRevisionSuccess": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^dkr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "workspace_id": {
+                "type": "string",
+                "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "project_id": {
+                "type": "string",
+                "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "document_id": {
+                "type": "string",
+                "pattern": "^doc_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "conversion_id": {
+                "type": "string",
+                "pattern": "^dcv_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "CREATED",
+                  "QUEUED",
+                  "RUNNING",
+                  "READY",
+                  "FAILED"
+                ]
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "analysis_quality": {
+                "type": "string",
+                "enum": [
+                  "COMPLETE",
+                  "PARTIAL",
+                  "NEEDS_CONFIRMATION"
+                ],
+                "nullable": true
+              },
+              "section_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "fact_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "created_at": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+              },
+              "updated_at": {
+                "$ref": "#/definitions/DocumentKnowledgeRevisionSuccess/properties/data/properties/created_at"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "project_id",
+              "document_id",
+              "conversion_id",
+              "status",
+              "retryable",
+              "analysis_quality",
+              "section_count",
+              "fact_count",
+              "created_at",
+              "updated_at"
+            ],
+            "additionalProperties": false
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "DocumentKnowledgeDetail": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^dkr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "workspace_id": {
+                "type": "string",
+                "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "project_id": {
+                "type": "string",
+                "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "document_id": {
+                "type": "string",
+                "pattern": "^doc_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "conversion_id": {
+                "type": "string",
+                "pattern": "^dcv_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "CREATED",
+                  "QUEUED",
+                  "RUNNING",
+                  "READY",
+                  "FAILED"
+                ]
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "analysis_quality": {
+                "type": "string",
+                "enum": [
+                  "COMPLETE",
+                  "PARTIAL",
+                  "NEEDS_CONFIRMATION"
+                ],
+                "nullable": true
+              },
+              "section_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "fact_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "created_at": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+              },
+              "updated_at": {
+                "$ref": "#/definitions/DocumentKnowledgeDetail/properties/revision/properties/created_at"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "project_id",
+              "document_id",
+              "conversion_id",
+              "status",
+              "retryable",
+              "analysis_quality",
+              "section_count",
+              "fact_count",
+              "created_at",
+              "updated_at"
+            ],
+            "additionalProperties": false
+          },
+          "sections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^dks_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                },
+                "knowledge_revision_id": {
+                  "$ref": "#/definitions/DocumentKnowledgeDetail/properties/revision/properties/id"
+                },
+                "sequence": {
+                  "type": "integer",
+                  "exclusiveMinimum": true,
+                  "minimum": 0
+                },
+                "heading": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "locator": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "evidence_kind": {
+                  "type": "string",
+                  "enum": [
+                    "TEXT",
+                    "TABLE",
+                    "VISUAL_UNAVAILABLE"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "knowledge_revision_id",
+                "sequence",
+                "heading",
+                "locator",
+                "evidence_kind"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 120
+          },
+          "facts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^dft_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                },
+                "section_sequence": {
+                  "type": "integer",
+                  "exclusiveMinimum": true,
+                  "minimum": 0
+                },
+                "category": {
+                  "type": "string",
+                  "enum": [
+                    "BRAND",
+                    "PRODUCT",
+                    "LOCATION",
+                    "AUDIENCE",
+                    "SELLING_POINT",
+                    "AMENITY",
+                    "STYLE",
+                    "CTA",
+                    "COMPLIANCE",
+                    "NUMERIC_CLAIM",
+                    "RISK"
+                  ]
+                },
+                "statement": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                },
+                "confidence": {
+                  "type": "string",
+                  "enum": [
+                    "EXPLICIT",
+                    "INFERRED",
+                    "NEEDS_CONFIRMATION"
+                  ]
+                },
+                "source": {
+                  "type": "object",
+                  "properties": {
+                    "document_id": {
+                      "$ref": "#/definitions/DocumentKnowledgeDetail/properties/revision/properties/document_id"
+                    },
+                    "conversion_id": {
+                      "$ref": "#/definitions/DocumentKnowledgeDetail/properties/revision/properties/conversion_id"
+                    },
+                    "locator": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 240
+                    }
+                  },
+                  "required": [
+                    "document_id",
+                    "conversion_id",
+                    "locator"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "id",
+                "section_sequence",
+                "category",
+                "statement",
+                "confidence",
+                "source"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 120
+          }
+        },
+        "required": [
+          "revision",
+          "sections",
+          "facts"
+        ],
+        "additionalProperties": false
+      },
+      "DocumentKnowledgeDetailSuccess": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "revision": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^dkr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "workspace_id": {
+                    "type": "string",
+                    "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "project_id": {
+                    "type": "string",
+                    "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "document_id": {
+                    "type": "string",
+                    "pattern": "^doc_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "conversion_id": {
+                    "type": "string",
+                    "pattern": "^dcv_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "CREATED",
+                      "QUEUED",
+                      "RUNNING",
+                      "READY",
+                      "FAILED"
+                    ]
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  },
+                  "analysis_quality": {
+                    "type": "string",
+                    "enum": [
+                      "COMPLETE",
+                      "PARTIAL",
+                      "NEEDS_CONFIRMATION"
+                    ],
+                    "nullable": true
+                  },
+                  "section_count": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "fact_count": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "created_at": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+                  },
+                  "updated_at": {
+                    "$ref": "#/definitions/DocumentKnowledgeDetailSuccess/properties/data/properties/revision/properties/created_at"
+                  }
+                },
+                "required": [
+                  "id",
+                  "workspace_id",
+                  "project_id",
+                  "document_id",
+                  "conversion_id",
+                  "status",
+                  "retryable",
+                  "analysis_quality",
+                  "section_count",
+                  "fact_count",
+                  "created_at",
+                  "updated_at"
+                ],
+                "additionalProperties": false
+              },
+              "sections": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^dks_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                    },
+                    "knowledge_revision_id": {
+                      "$ref": "#/definitions/DocumentKnowledgeDetailSuccess/properties/data/properties/revision/properties/id"
+                    },
+                    "sequence": {
+                      "type": "integer",
+                      "exclusiveMinimum": true,
+                      "minimum": 0
+                    },
+                    "heading": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 240
+                    },
+                    "locator": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 240
+                    },
+                    "evidence_kind": {
+                      "type": "string",
+                      "enum": [
+                        "TEXT",
+                        "TABLE",
+                        "VISUAL_UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "knowledge_revision_id",
+                    "sequence",
+                    "heading",
+                    "locator",
+                    "evidence_kind"
+                  ],
+                  "additionalProperties": false
+                },
+                "maxItems": 120
+              },
+              "facts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^dft_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                    },
+                    "section_sequence": {
+                      "type": "integer",
+                      "exclusiveMinimum": true,
+                      "minimum": 0
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "BRAND",
+                        "PRODUCT",
+                        "LOCATION",
+                        "AUDIENCE",
+                        "SELLING_POINT",
+                        "AMENITY",
+                        "STYLE",
+                        "CTA",
+                        "COMPLIANCE",
+                        "NUMERIC_CLAIM",
+                        "RISK"
+                      ]
+                    },
+                    "statement": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "confidence": {
+                      "type": "string",
+                      "enum": [
+                        "EXPLICIT",
+                        "INFERRED",
+                        "NEEDS_CONFIRMATION"
+                      ]
+                    },
+                    "source": {
+                      "type": "object",
+                      "properties": {
+                        "document_id": {
+                          "$ref": "#/definitions/DocumentKnowledgeDetailSuccess/properties/data/properties/revision/properties/document_id"
+                        },
+                        "conversion_id": {
+                          "$ref": "#/definitions/DocumentKnowledgeDetailSuccess/properties/data/properties/revision/properties/conversion_id"
+                        },
+                        "locator": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 240
+                        }
+                      },
+                      "required": [
+                        "document_id",
+                        "conversion_id",
+                        "locator"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "section_sequence",
+                    "category",
+                    "statement",
+                    "confidence",
+                    "source"
+                  ],
+                  "additionalProperties": false
+                },
+                "maxItems": 120
+              }
+            },
+            "required": [
+              "revision",
+              "sections",
+              "facts"
+            ],
+            "additionalProperties": false
           },
           "request_id": {
             "type": "string",
@@ -2355,6 +4655,43 @@
               "pattern": "^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
             },
             "maxItems": 20
+          },
+          "document_contexts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "document_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "conversion_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "source_asset_id": {
+                  "$ref": "#/definitions/CreativeBriefRevision/properties/source_asset_ids/items"
+                },
+                "markdown_asset_id": {
+                  "$ref": "#/definitions/CreativeBriefRevision/properties/source_asset_ids/items"
+                },
+                "max_content_characters": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 5000
+                }
+              },
+              "required": [
+                "document_id",
+                "conversion_id",
+                "source_asset_id",
+                "markdown_asset_id",
+                "max_content_characters"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 4,
+            "default": []
           },
           "status": {
             "type": "string",
@@ -2443,6 +4780,43 @@
                 },
                 "maxItems": 20
               },
+              "document_contexts": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "document_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "conversion_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "source_asset_id": {
+                      "$ref": "#/definitions/CreativeBriefRevisionSuccess/properties/data/properties/source_asset_ids/items"
+                    },
+                    "markdown_asset_id": {
+                      "$ref": "#/definitions/CreativeBriefRevisionSuccess/properties/data/properties/source_asset_ids/items"
+                    },
+                    "max_content_characters": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 5000
+                    }
+                  },
+                  "required": [
+                    "document_id",
+                    "conversion_id",
+                    "source_asset_id",
+                    "markdown_asset_id",
+                    "max_content_characters"
+                  ],
+                  "additionalProperties": false
+                },
+                "maxItems": 4,
+                "default": []
+              },
               "status": {
                 "type": "string",
                 "enum": [
@@ -2475,6 +4849,1506 @@
               "status",
               "created_at",
               "updated_at"
+            ],
+            "additionalProperties": false
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "DeliveryPlanRevision": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "creative_brief_revision_id": {
+            "type": "string",
+            "pattern": "^cbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "storyboard_revision_id": {
+            "type": "string",
+            "pattern": "^sbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "revision": {
+            "type": "integer",
+            "exclusiveMinimum": true,
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "PREFLIGHT_BLOCKED",
+              "AWAITING_APPROVAL",
+              "APPROVED",
+              "CONSUMED",
+              "SUPERSEDED"
+            ]
+          },
+          "duration_policy": {
+            "type": "string",
+            "enum": [
+              "FLEXIBLE",
+              "EXACT"
+            ],
+            "default": "FLEXIBLE"
+          },
+          "flexible_duration_percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 50,
+            "default": 20
+          },
+          "target_duration_seconds": {
+            "type": "integer",
+            "minimum": 15,
+            "maximum": 600
+          },
+          "requires_sample_approval": {
+            "type": "boolean",
+            "default": true
+          },
+          "caption_policy": {
+            "type": "string",
+            "enum": [
+              "REQUIRED",
+              "OPTIONAL",
+              "OFF"
+            ],
+            "default": "REQUIRED"
+          },
+          "lip_sync_requirement": {
+            "type": "string",
+            "enum": [
+              "OFF",
+              "PREFERRED",
+              "REQUIRED"
+            ],
+            "default": "OFF"
+          },
+          "voice_mode": {
+            "type": "string",
+            "enum": [
+              "PLATFORM_GENERIC",
+              "AUTHORIZED_CLONE",
+              "USER_SOURCE"
+            ],
+            "default": "PLATFORM_GENERIC"
+          },
+          "safe_summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "block_reasons": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "maxItems": 20,
+            "default": []
+          },
+          "approved_at": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "nullable": true,
+            "default": null
+          },
+          "consumed_by_production_run_id": {
+            "type": "string",
+            "pattern": "^prd_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$",
+            "nullable": true,
+            "default": null
+          },
+          "created_at": {
+            "$ref": "#/definitions/DeliveryPlanRevision/properties/approved_at"
+          },
+          "updated_at": {
+            "$ref": "#/definitions/DeliveryPlanRevision/properties/approved_at"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "project_id",
+          "creative_brief_revision_id",
+          "storyboard_revision_id",
+          "revision",
+          "status",
+          "target_duration_seconds",
+          "safe_summary",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "DeliveryPlanRevisionSuccess": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "workspace_id": {
+                "type": "string",
+                "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "project_id": {
+                "type": "string",
+                "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "creative_brief_revision_id": {
+                "type": "string",
+                "pattern": "^cbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "storyboard_revision_id": {
+                "type": "string",
+                "pattern": "^sbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "revision": {
+                "type": "integer",
+                "exclusiveMinimum": true,
+                "minimum": 0
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "DRAFT",
+                  "PREFLIGHT_BLOCKED",
+                  "AWAITING_APPROVAL",
+                  "APPROVED",
+                  "CONSUMED",
+                  "SUPERSEDED"
+                ]
+              },
+              "duration_policy": {
+                "type": "string",
+                "enum": [
+                  "FLEXIBLE",
+                  "EXACT"
+                ],
+                "default": "FLEXIBLE"
+              },
+              "flexible_duration_percent": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50,
+                "default": 20
+              },
+              "target_duration_seconds": {
+                "type": "integer",
+                "minimum": 15,
+                "maximum": 600
+              },
+              "requires_sample_approval": {
+                "type": "boolean",
+                "default": true
+              },
+              "caption_policy": {
+                "type": "string",
+                "enum": [
+                  "REQUIRED",
+                  "OPTIONAL",
+                  "OFF"
+                ],
+                "default": "REQUIRED"
+              },
+              "lip_sync_requirement": {
+                "type": "string",
+                "enum": [
+                  "OFF",
+                  "PREFERRED",
+                  "REQUIRED"
+                ],
+                "default": "OFF"
+              },
+              "voice_mode": {
+                "type": "string",
+                "enum": [
+                  "PLATFORM_GENERIC",
+                  "AUTHORIZED_CLONE",
+                  "USER_SOURCE"
+                ],
+                "default": "PLATFORM_GENERIC"
+              },
+              "safe_summary": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              },
+              "block_reasons": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                },
+                "maxItems": 20,
+                "default": []
+              },
+              "approved_at": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "nullable": true,
+                "default": null
+              },
+              "consumed_by_production_run_id": {
+                "type": "string",
+                "pattern": "^prd_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$",
+                "nullable": true,
+                "default": null
+              },
+              "created_at": {
+                "$ref": "#/definitions/DeliveryPlanRevisionSuccess/properties/data/properties/approved_at"
+              },
+              "updated_at": {
+                "$ref": "#/definitions/DeliveryPlanRevisionSuccess/properties/data/properties/approved_at"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "project_id",
+              "creative_brief_revision_id",
+              "storyboard_revision_id",
+              "revision",
+              "status",
+              "target_duration_seconds",
+              "safe_summary",
+              "created_at",
+              "updated_at"
+            ],
+            "additionalProperties": false
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "DeliveryPlanRevisionListSuccess": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                },
+                "workspace_id": {
+                  "type": "string",
+                  "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                },
+                "project_id": {
+                  "type": "string",
+                  "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                },
+                "creative_brief_revision_id": {
+                  "type": "string",
+                  "pattern": "^cbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                },
+                "storyboard_revision_id": {
+                  "type": "string",
+                  "pattern": "^sbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                },
+                "revision": {
+                  "type": "integer",
+                  "exclusiveMinimum": true,
+                  "minimum": 0
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "DRAFT",
+                    "PREFLIGHT_BLOCKED",
+                    "AWAITING_APPROVAL",
+                    "APPROVED",
+                    "CONSUMED",
+                    "SUPERSEDED"
+                  ]
+                },
+                "duration_policy": {
+                  "type": "string",
+                  "enum": [
+                    "FLEXIBLE",
+                    "EXACT"
+                  ],
+                  "default": "FLEXIBLE"
+                },
+                "flexible_duration_percent": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 50,
+                  "default": 20
+                },
+                "target_duration_seconds": {
+                  "type": "integer",
+                  "minimum": 15,
+                  "maximum": 600
+                },
+                "requires_sample_approval": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "caption_policy": {
+                  "type": "string",
+                  "enum": [
+                    "REQUIRED",
+                    "OPTIONAL",
+                    "OFF"
+                  ],
+                  "default": "REQUIRED"
+                },
+                "lip_sync_requirement": {
+                  "type": "string",
+                  "enum": [
+                    "OFF",
+                    "PREFERRED",
+                    "REQUIRED"
+                  ],
+                  "default": "OFF"
+                },
+                "voice_mode": {
+                  "type": "string",
+                  "enum": [
+                    "PLATFORM_GENERIC",
+                    "AUTHORIZED_CLONE",
+                    "USER_SOURCE"
+                  ],
+                  "default": "PLATFORM_GENERIC"
+                },
+                "safe_summary": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "block_reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "maxItems": 20,
+                  "default": []
+                },
+                "approved_at": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                  "nullable": true,
+                  "default": null
+                },
+                "consumed_by_production_run_id": {
+                  "type": "string",
+                  "pattern": "^prd_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$",
+                  "nullable": true,
+                  "default": null
+                },
+                "created_at": {
+                  "$ref": "#/definitions/DeliveryPlanRevisionListSuccess/properties/data/items/properties/approved_at"
+                },
+                "updated_at": {
+                  "$ref": "#/definitions/DeliveryPlanRevisionListSuccess/properties/data/items/properties/approved_at"
+                }
+              },
+              "required": [
+                "id",
+                "workspace_id",
+                "project_id",
+                "creative_brief_revision_id",
+                "storyboard_revision_id",
+                "revision",
+                "status",
+                "target_duration_seconds",
+                "safe_summary",
+                "created_at",
+                "updated_at"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "NarrationScriptRevision": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^nsr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "delivery_plan_revision_id": {
+            "type": "string",
+            "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "NORMALIZED",
+              "NEEDS_DECISION",
+              "APPROVED",
+              "REJECTED"
+            ]
+          },
+          "source_script_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "display_sections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 5000
+                }
+              },
+              "required": [
+                "id",
+                "text"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 120
+          },
+          "spoken_sections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                },
+                "display_text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 5000
+                },
+                "provider_text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 5000
+                },
+                "pronunciation_guides": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "source": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 120
+                      },
+                      "spoken": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 240
+                      }
+                    },
+                    "required": [
+                      "source",
+                      "spoken",
+                      "reason"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "maxItems": 100,
+                  "default": []
+                },
+                "delivery": {
+                  "type": "object",
+                  "properties": {
+                    "pace": {
+                      "type": "string",
+                      "enum": [
+                        "SLOW",
+                        "NATURAL",
+                        "FAST"
+                      ],
+                      "default": "NATURAL"
+                    },
+                    "energy": {
+                      "type": "string",
+                      "enum": [
+                        "CALM",
+                        "NEUTRAL",
+                        "EMPHATIC"
+                      ],
+                      "default": "NEUTRAL"
+                    },
+                    "emphasis": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 120
+                      },
+                      "maxItems": 20,
+                      "default": []
+                    },
+                    "pause_before_ms": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 10000,
+                      "default": 0
+                    },
+                    "pause_after_ms": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 10000,
+                      "default": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "default": {}
+                }
+              },
+              "required": [
+                "id",
+                "display_text",
+                "provider_text"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 120
+          },
+          "language": {
+            "type": "string",
+            "enum": [
+              "zh-CN"
+            ]
+          },
+          "normalization_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "decision_reasons": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "maxItems": 50,
+            "default": []
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "project_id",
+          "delivery_plan_revision_id",
+          "status",
+          "source_script_hash",
+          "display_sections",
+          "spoken_sections",
+          "language",
+          "normalization_version",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "NarrationScriptRevisionSuccess": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^nsr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "workspace_id": {
+                "type": "string",
+                "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "project_id": {
+                "type": "string",
+                "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "delivery_plan_revision_id": {
+                "type": "string",
+                "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "DRAFT",
+                  "NORMALIZED",
+                  "NEEDS_DECISION",
+                  "APPROVED",
+                  "REJECTED"
+                ]
+              },
+              "source_script_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "display_sections": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 160
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 5000
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "text"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1,
+                "maxItems": 120
+              },
+              "spoken_sections": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 160
+                    },
+                    "display_text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 5000
+                    },
+                    "provider_text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 5000
+                    },
+                    "pronunciation_guides": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "source": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "spoken": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 240
+                          },
+                          "reason": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 240
+                          }
+                        },
+                        "required": [
+                          "source",
+                          "spoken",
+                          "reason"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "maxItems": 100,
+                      "default": []
+                    },
+                    "delivery": {
+                      "type": "object",
+                      "properties": {
+                        "pace": {
+                          "type": "string",
+                          "enum": [
+                            "SLOW",
+                            "NATURAL",
+                            "FAST"
+                          ],
+                          "default": "NATURAL"
+                        },
+                        "energy": {
+                          "type": "string",
+                          "enum": [
+                            "CALM",
+                            "NEUTRAL",
+                            "EMPHATIC"
+                          ],
+                          "default": "NEUTRAL"
+                        },
+                        "emphasis": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          },
+                          "maxItems": 20,
+                          "default": []
+                        },
+                        "pause_before_ms": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 10000,
+                          "default": 0
+                        },
+                        "pause_after_ms": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 10000,
+                          "default": 0
+                        }
+                      },
+                      "additionalProperties": false,
+                      "default": {}
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "display_text",
+                    "provider_text"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1,
+                "maxItems": 120
+              },
+              "language": {
+                "type": "string",
+                "enum": [
+                  "zh-CN"
+                ]
+              },
+              "normalization_version": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "decision_reasons": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "maxItems": 50,
+                "default": []
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "updated_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "project_id",
+              "delivery_plan_revision_id",
+              "status",
+              "source_script_hash",
+              "display_sections",
+              "spoken_sections",
+              "language",
+              "normalization_version",
+              "created_at",
+              "updated_at"
+            ],
+            "additionalProperties": false
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "NarrationScriptRevisionListSuccess": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^nsr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                },
+                "workspace_id": {
+                  "type": "string",
+                  "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                },
+                "project_id": {
+                  "type": "string",
+                  "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                },
+                "delivery_plan_revision_id": {
+                  "type": "string",
+                  "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "DRAFT",
+                    "NORMALIZED",
+                    "NEEDS_DECISION",
+                    "APPROVED",
+                    "REJECTED"
+                  ]
+                },
+                "source_script_hash": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "display_sections": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      },
+                      "text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 5000
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "text"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "minItems": 1,
+                  "maxItems": 120
+                },
+                "spoken_sections": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      },
+                      "display_text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 5000
+                      },
+                      "provider_text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 5000
+                      },
+                      "pronunciation_guides": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "source": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 120
+                            },
+                            "spoken": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 240
+                            },
+                            "reason": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 240
+                            }
+                          },
+                          "required": [
+                            "source",
+                            "spoken",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "maxItems": 100,
+                        "default": []
+                      },
+                      "delivery": {
+                        "type": "object",
+                        "properties": {
+                          "pace": {
+                            "type": "string",
+                            "enum": [
+                              "SLOW",
+                              "NATURAL",
+                              "FAST"
+                            ],
+                            "default": "NATURAL"
+                          },
+                          "energy": {
+                            "type": "string",
+                            "enum": [
+                              "CALM",
+                              "NEUTRAL",
+                              "EMPHATIC"
+                            ],
+                            "default": "NEUTRAL"
+                          },
+                          "emphasis": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 120
+                            },
+                            "maxItems": 20,
+                            "default": []
+                          },
+                          "pause_before_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 10000,
+                            "default": 0
+                          },
+                          "pause_after_ms": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 10000,
+                            "default": 0
+                          }
+                        },
+                        "additionalProperties": false,
+                        "default": {}
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "display_text",
+                      "provider_text"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "minItems": 1,
+                  "maxItems": 120
+                },
+                "language": {
+                  "type": "string",
+                  "enum": [
+                    "zh-CN"
+                  ]
+                },
+                "normalization_version": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "decision_reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  },
+                  "maxItems": 50,
+                  "default": []
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "workspace_id",
+                "project_id",
+                "delivery_plan_revision_id",
+                "status",
+                "source_script_hash",
+                "display_sections",
+                "spoken_sections",
+                "language",
+                "normalization_version",
+                "created_at",
+                "updated_at"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
+          }
+        },
+        "required": [
+          "data",
+          "request_id"
+        ],
+        "additionalProperties": false
+      },
+      "NarrationAssetVersion": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^nav_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "narration_script_revision_id": {
+            "type": "string",
+            "pattern": "^nsr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "asset_id": {
+            "type": "string",
+            "pattern": "^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "exclusiveMinimum": true,
+            "minimum": 0
+          },
+          "sample_approved": {
+            "type": "boolean"
+          },
+          "word_timestamps_asset_id": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/NarrationAssetVersion/properties/asset_id"
+              }
+            ],
+            "nullable": true,
+            "default": null
+          },
+          "canonical_transcript_status": {
+            "type": "string",
+            "enum": [
+              "CHECKED",
+              "NEEDS_REVIEW",
+              "UNAVAILABLE"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "project_id",
+          "narration_script_revision_id",
+          "asset_id",
+          "duration_ms",
+          "sample_approved",
+          "canonical_transcript_status",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "TimelinePlan": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^tlp_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "delivery_plan_revision_id": {
+            "type": "string",
+            "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "narration_script_revision_id": {
+            "type": "string",
+            "pattern": "^nsr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "narration_asset_version_id": {
+            "type": "string",
+            "pattern": "^nav_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$",
+            "nullable": true,
+            "default": null
+          },
+          "effective_duration_ms": {
+            "type": "integer",
+            "exclusiveMinimum": true,
+            "minimum": 0
+          },
+          "narration_sections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "section_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                },
+                "start_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "end_ms": {
+                  "type": "integer",
+                  "exclusiveMinimum": true,
+                  "minimum": 0
+                },
+                "visual_role": {
+                  "type": "string",
+                  "enum": [
+                    "PRIMARY",
+                    "BROLL",
+                    "HOLD"
+                  ]
+                },
+                "narration_asset_version_id": {
+                  "$ref": "#/definitions/TimelinePlan/properties/narration_asset_version_id"
+                }
+              },
+              "required": [
+                "section_id",
+                "start_ms",
+                "end_ms",
+                "visual_role"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 120
+          },
+          "visual_segments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sequence": {
+                  "type": "integer",
+                  "exclusiveMinimum": true,
+                  "minimum": 0
+                },
+                "start_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "end_ms": {
+                  "type": "integer",
+                  "exclusiveMinimum": true,
+                  "minimum": 0
+                },
+                "provider_duration_seconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 15
+                }
+              },
+              "required": [
+                "sequence",
+                "start_ms",
+                "end_ms",
+                "provider_duration_seconds"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 120
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "READY",
+              "NEEDS_DECISION",
+              "FAILED"
+            ]
+          },
+          "decision_reasons": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "maxItems": 50,
+            "default": []
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "project_id",
+          "delivery_plan_revision_id",
+          "narration_script_revision_id",
+          "effective_duration_ms",
+          "narration_sections",
+          "visual_segments",
+          "status",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "TimelinePlanSuccess": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^tlp_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "workspace_id": {
+                "type": "string",
+                "pattern": "^ws_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "project_id": {
+                "type": "string",
+                "pattern": "^prj_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "delivery_plan_revision_id": {
+                "type": "string",
+                "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "narration_script_revision_id": {
+                "type": "string",
+                "pattern": "^nsr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
+              "narration_asset_version_id": {
+                "type": "string",
+                "pattern": "^nav_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$",
+                "nullable": true,
+                "default": null
+              },
+              "effective_duration_ms": {
+                "type": "integer",
+                "exclusiveMinimum": true,
+                "minimum": 0
+              },
+              "narration_sections": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "section_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 160
+                    },
+                    "start_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "end_ms": {
+                      "type": "integer",
+                      "exclusiveMinimum": true,
+                      "minimum": 0
+                    },
+                    "visual_role": {
+                      "type": "string",
+                      "enum": [
+                        "PRIMARY",
+                        "BROLL",
+                        "HOLD"
+                      ]
+                    },
+                    "narration_asset_version_id": {
+                      "$ref": "#/definitions/TimelinePlanSuccess/properties/data/properties/narration_asset_version_id"
+                    }
+                  },
+                  "required": [
+                    "section_id",
+                    "start_ms",
+                    "end_ms",
+                    "visual_role"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1,
+                "maxItems": 120
+              },
+              "visual_segments": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "sequence": {
+                      "type": "integer",
+                      "exclusiveMinimum": true,
+                      "minimum": 0
+                    },
+                    "start_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "end_ms": {
+                      "type": "integer",
+                      "exclusiveMinimum": true,
+                      "minimum": 0
+                    },
+                    "provider_duration_seconds": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 15
+                    }
+                  },
+                  "required": [
+                    "sequence",
+                    "start_ms",
+                    "end_ms",
+                    "provider_duration_seconds"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1,
+                "maxItems": 120
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "DRAFT",
+                  "READY",
+                  "NEEDS_DECISION",
+                  "FAILED"
+                ]
+              },
+              "decision_reasons": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "maxItems": 50,
+                "default": []
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "id",
+              "workspace_id",
+              "project_id",
+              "delivery_plan_revision_id",
+              "narration_script_revision_id",
+              "effective_duration_ms",
+              "narration_sections",
+              "visual_segments",
+              "status",
+              "created_at"
             ],
             "additionalProperties": false
           },
@@ -2680,7 +6554,7 @@
                 },
                 "duration_seconds": {
                   "type": "integer",
-                  "minimum": 1,
+                  "minimum": 8,
                   "maximum": 15
                 },
                 "narrative_goal": {
@@ -2734,6 +6608,38 @@
                   },
                   "maxItems": 60,
                   "default": []
+                },
+                "scene_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                },
+                "character_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "maxItems": 20
+                },
+                "prop_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "maxItems": 20
+                },
+                "reference_anchors": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "maxItems": 20
                 }
               },
               "required": [
@@ -2877,7 +6783,7 @@
                     },
                     "duration_seconds": {
                       "type": "integer",
-                      "minimum": 1,
+                      "minimum": 8,
                       "maximum": 15
                     },
                     "narrative_goal": {
@@ -2931,6 +6837,38 @@
                       },
                       "maxItems": 60,
                       "default": []
+                    },
+                    "scene_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 160
+                    },
+                    "character_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      },
+                      "maxItems": 20
+                    },
+                    "prop_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      },
+                      "maxItems": 20
+                    },
+                    "reference_anchors": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      },
+                      "maxItems": 20
                     }
                   },
                   "required": [
@@ -3087,7 +7025,7 @@
                       },
                       "duration_seconds": {
                         "type": "integer",
-                        "minimum": 1,
+                        "minimum": 8,
                         "maximum": 15
                       },
                       "narrative_goal": {
@@ -3141,6 +7079,38 @@
                         },
                         "maxItems": 60,
                         "default": []
+                      },
+                      "scene_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      },
+                      "character_ids": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 160
+                        },
+                        "maxItems": 20
+                      },
+                      "prop_ids": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 160
+                        },
+                        "maxItems": 20
+                      },
+                      "reference_anchors": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 160
+                        },
+                        "maxItems": 20
                       }
                     },
                     "required": [
@@ -3229,6 +7199,10 @@
             "type": "string",
             "pattern": "^sbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
           },
+          "delivery_plan_revision_id": {
+            "type": "string",
+            "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -3267,6 +7241,34 @@
             "type": "integer",
             "exclusiveMinimum": true,
             "minimum": 0
+          },
+          "continuity_status": {
+            "type": "string",
+            "enum": [
+              "NOT_CHECKED",
+              "CHECKING",
+              "GOOD",
+              "AUTO_REPAIRING",
+              "NEEDS_ATTENTION"
+            ],
+            "default": "NOT_CHECKED"
+          },
+          "planned_segment_count": {
+            "type": "integer",
+            "exclusiveMinimum": true,
+            "minimum": 0,
+            "default": 1
+          },
+          "max_auto_repair_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20,
+            "default": 2
+          },
+          "auto_repair_count": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
           },
           "created_at": {
             "type": "string",
@@ -3312,6 +7314,10 @@
                 "type": "string",
                 "pattern": "^sbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
               },
+              "delivery_plan_revision_id": {
+                "type": "string",
+                "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
               "status": {
                 "type": "string",
                 "enum": [
@@ -3350,6 +7356,34 @@
                 "type": "integer",
                 "exclusiveMinimum": true,
                 "minimum": 0
+              },
+              "continuity_status": {
+                "type": "string",
+                "enum": [
+                  "NOT_CHECKED",
+                  "CHECKING",
+                  "GOOD",
+                  "AUTO_REPAIRING",
+                  "NEEDS_ATTENTION"
+                ],
+                "default": "NOT_CHECKED"
+              },
+              "planned_segment_count": {
+                "type": "integer",
+                "exclusiveMinimum": true,
+                "minimum": 0,
+                "default": 1
+              },
+              "max_auto_repair_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 20,
+                "default": 2
+              },
+              "auto_repair_count": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0
               },
               "created_at": {
                 "type": "string",
@@ -3408,6 +7442,10 @@
                   "type": "string",
                   "pattern": "^sbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
                 },
+                "delivery_plan_revision_id": {
+                  "type": "string",
+                  "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                },
                 "status": {
                   "type": "string",
                   "enum": [
@@ -3446,6 +7484,34 @@
                   "type": "integer",
                   "exclusiveMinimum": true,
                   "minimum": 0
+                },
+                "continuity_status": {
+                  "type": "string",
+                  "enum": [
+                    "NOT_CHECKED",
+                    "CHECKING",
+                    "GOOD",
+                    "AUTO_REPAIRING",
+                    "NEEDS_ATTENTION"
+                  ],
+                  "default": "NOT_CHECKED"
+                },
+                "planned_segment_count": {
+                  "type": "integer",
+                  "exclusiveMinimum": true,
+                  "minimum": 0,
+                  "default": 1
+                },
+                "max_auto_repair_count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 20,
+                  "default": 2
+                },
+                "auto_repair_count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 0
                 },
                 "created_at": {
                   "type": "string",
@@ -3564,6 +7630,10 @@
                 "type": "string",
                 "pattern": "^sbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
               },
+              "delivery_plan_revision_id": {
+                "type": "string",
+                "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+              },
               "status": {
                 "type": "string",
                 "enum": [
@@ -3602,6 +7672,34 @@
                 "type": "integer",
                 "exclusiveMinimum": true,
                 "minimum": 0
+              },
+              "continuity_status": {
+                "type": "string",
+                "enum": [
+                  "NOT_CHECKED",
+                  "CHECKING",
+                  "GOOD",
+                  "AUTO_REPAIRING",
+                  "NEEDS_ATTENTION"
+                ],
+                "default": "NOT_CHECKED"
+              },
+              "planned_segment_count": {
+                "type": "integer",
+                "exclusiveMinimum": true,
+                "minimum": 0,
+                "default": 1
+              },
+              "max_auto_repair_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 20,
+                "default": 2
+              },
+              "auto_repair_count": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 0
               },
               "created_at": {
                 "type": "string",
@@ -3720,6 +7818,10 @@
                     "type": "string",
                     "pattern": "^sbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
                   },
+                  "delivery_plan_revision_id": {
+                    "type": "string",
+                    "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
                   "status": {
                     "type": "string",
                     "enum": [
@@ -3758,6 +7860,34 @@
                     "type": "integer",
                     "exclusiveMinimum": true,
                     "minimum": 0
+                  },
+                  "continuity_status": {
+                    "type": "string",
+                    "enum": [
+                      "NOT_CHECKED",
+                      "CHECKING",
+                      "GOOD",
+                      "AUTO_REPAIRING",
+                      "NEEDS_ATTENTION"
+                    ],
+                    "default": "NOT_CHECKED"
+                  },
+                  "planned_segment_count": {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0,
+                    "default": 1
+                  },
+                  "max_auto_repair_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 20,
+                    "default": 2
+                  },
+                  "auto_repair_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0
                   },
                   "created_at": {
                     "type": "string",
@@ -3889,6 +8019,10 @@
                       "type": "string",
                       "pattern": "^sbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
                     },
+                    "delivery_plan_revision_id": {
+                      "type": "string",
+                      "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                    },
                     "status": {
                       "type": "string",
                       "enum": [
@@ -3927,6 +8061,34 @@
                       "type": "integer",
                       "exclusiveMinimum": true,
                       "minimum": 0
+                    },
+                    "continuity_status": {
+                      "type": "string",
+                      "enum": [
+                        "NOT_CHECKED",
+                        "CHECKING",
+                        "GOOD",
+                        "AUTO_REPAIRING",
+                        "NEEDS_ATTENTION"
+                      ],
+                      "default": "NOT_CHECKED"
+                    },
+                    "planned_segment_count": {
+                      "type": "integer",
+                      "exclusiveMinimum": true,
+                      "minimum": 0,
+                      "default": 1
+                    },
+                    "max_auto_repair_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 20,
+                      "default": 2
+                    },
+                    "auto_repair_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "default": 0
                     },
                     "created_at": {
                       "type": "string",
@@ -4115,6 +8277,56 @@
                 "minLength": 1,
                 "maxLength": 1000
               },
+              "audio_summary": {
+                "type": "object",
+                "properties": {
+                  "has_audio": {
+                    "type": "boolean"
+                  },
+                  "music_applied": {
+                    "type": "boolean"
+                  },
+                  "music_title": {
+                    "type": "string",
+                    "maxLength": 240
+                  },
+                  "music_artist": {
+                    "type": "string",
+                    "maxLength": 160
+                  },
+                  "music_tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 80
+                    },
+                    "maxItems": 12
+                  },
+                  "sample_rate": {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  },
+                  "integrated_lufs": {
+                    "type": "number"
+                  },
+                  "true_peak_db": {
+                    "type": "number"
+                  },
+                  "loudness_range_lu": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "unexpected_silence": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "has_audio",
+                  "music_applied"
+                ],
+                "additionalProperties": false
+              },
               "created_at": {
                 "type": "string",
                 "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
@@ -4238,6 +8450,56 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 1000
+                    },
+                    "audio_summary": {
+                      "type": "object",
+                      "properties": {
+                        "has_audio": {
+                          "type": "boolean"
+                        },
+                        "music_applied": {
+                          "type": "boolean"
+                        },
+                        "music_title": {
+                          "type": "string",
+                          "maxLength": 240
+                        },
+                        "music_artist": {
+                          "type": "string",
+                          "maxLength": 160
+                        },
+                        "music_tags": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "maxLength": 80
+                          },
+                          "maxItems": 12
+                        },
+                        "sample_rate": {
+                          "type": "integer",
+                          "exclusiveMinimum": true,
+                          "minimum": 0
+                        },
+                        "integrated_lufs": {
+                          "type": "number"
+                        },
+                        "true_peak_db": {
+                          "type": "number"
+                        },
+                        "loudness_range_lu": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "unexpected_silence": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "has_audio",
+                        "music_applied"
+                      ],
+                      "additionalProperties": false
                     },
                     "created_at": {
                       "type": "string",
@@ -5318,6 +9580,14 @@
             "exclusiveMinimum": true,
             "minimum": 0,
             "maximum": 26214400
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "MUSIC",
+              "NARRATION_SAMPLE",
+              "USER_SOURCE_AUDIO"
+            ]
           }
         },
         "required": [
@@ -5325,6 +9595,28 @@
           "filename",
           "mime_type",
           "byte_size"
+        ],
+        "additionalProperties": false
+      },
+      "PixabayMusicImportCommand": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "min_duration": {
+            "type": "number",
+            "minimum": 1
+          },
+          "max_duration": {
+            "type": "number",
+            "maximum": 600
+          }
+        },
+        "required": [
+          "query"
         ],
         "additionalProperties": false
       },
@@ -5541,6 +9833,11 @@
         "properties": {},
         "additionalProperties": false
       },
+      "RetryDocumentKnowledgeRevisionCommand": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
       "CreateCreativeBriefRevisionCommand": {
         "type": "object",
         "properties": {
@@ -5593,16 +9890,279 @@
         "properties": {},
         "additionalProperties": false
       },
+      "CreateDeliveryPlanRevisionCommand": {
+        "type": "object",
+        "properties": {
+          "creative_brief_revision_id": {
+            "type": "string",
+            "pattern": "^cbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "storyboard_revision_id": {
+            "type": "string",
+            "pattern": "^sbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "duration_policy": {
+            "type": "string",
+            "enum": [
+              "FLEXIBLE",
+              "EXACT"
+            ],
+            "default": "FLEXIBLE"
+          },
+          "flexible_duration_percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 50,
+            "default": 20
+          },
+          "caption_policy": {
+            "type": "string",
+            "enum": [
+              "REQUIRED",
+              "OPTIONAL",
+              "OFF"
+            ],
+            "default": "REQUIRED"
+          },
+          "lip_sync_requirement": {
+            "type": "string",
+            "enum": [
+              "OFF",
+              "PREFERRED",
+              "REQUIRED"
+            ],
+            "default": "OFF"
+          },
+          "voice_mode": {
+            "type": "string",
+            "enum": [
+              "PLATFORM_GENERIC",
+              "AUTHORIZED_CLONE",
+              "USER_SOURCE"
+            ],
+            "default": "PLATFORM_GENERIC"
+          },
+          "budget_limit": {
+            "type": "string",
+            "pattern": "^(?:0|[1-9]\\d*)(?:\\.\\d{1,8})?$",
+            "default": "0"
+          }
+        },
+        "required": [
+          "creative_brief_revision_id",
+          "storyboard_revision_id"
+        ],
+        "additionalProperties": false
+      },
+      "ApproveDeliveryPlanRevisionCommand": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "CreateNarrationScriptRevisionCommand": {
+        "type": "object",
+        "properties": {
+          "display_sections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 5000
+                }
+              },
+              "required": [
+                "id",
+                "text"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 120
+          },
+          "pronunciation_glossary": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "spoken": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                }
+              },
+              "required": [
+                "source",
+                "spoken",
+                "reason"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 120,
+            "default": []
+          },
+          "normalization_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "default": "c12.7b-local-v1"
+          }
+        },
+        "required": [
+          "display_sections"
+        ],
+        "additionalProperties": false
+      },
+      "ApproveNarrationScriptRevisionCommand": {
+        "type": "object",
+        "properties": {
+          "sample_asset_id": {
+            "type": "string",
+            "pattern": "^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "sample_duration_ms": {
+            "type": "integer",
+            "exclusiveMinimum": true,
+            "minimum": 0
+          },
+          "canonical_script_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "word_timestamps_asset_id": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ApproveNarrationScriptRevisionCommand/properties/sample_asset_id"
+              }
+            ],
+            "nullable": true,
+            "default": null
+          }
+        },
+        "required": [
+          "sample_asset_id",
+          "sample_duration_ms",
+          "canonical_script_hash"
+        ],
+        "additionalProperties": false
+      },
+      "CreateTimelinePlanCommand": {
+        "type": "object",
+        "properties": {
+          "section_durations_ms": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "section_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                },
+                "duration_ms": {
+                  "type": "integer",
+                  "exclusiveMinimum": true,
+                  "minimum": 0
+                },
+                "narration_asset_version_id": {
+                  "type": "string",
+                  "pattern": "^nav_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                }
+              },
+              "required": [
+                "section_id",
+                "duration_ms"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 120
+          },
+          "target_duration_ms": {
+            "type": "integer",
+            "exclusiveMinimum": true,
+            "minimum": 0
+          },
+          "flexible_percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 50,
+            "default": 20
+          },
+          "max_provider_duration_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60,
+            "default": 15
+          },
+          "narration_asset_version_id": {
+            "$ref": "#/definitions/CreateTimelinePlanCommand/properties/section_durations_ms/items/properties/narration_asset_version_id"
+          }
+        },
+        "required": [
+          "section_durations_ms",
+          "target_duration_ms"
+        ],
+        "additionalProperties": false
+      },
       "CreateProductionRunCommand": {
         "type": "object",
         "properties": {
           "storyboard_revision_id": {
             "type": "string",
             "pattern": "^sbr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "delivery_plan_revision_id": {
+            "type": "string",
+            "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+          },
+          "music_plan": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "AUTO",
+                  "MANUAL",
+                  "OFF"
+                ],
+                "default": "AUTO"
+              },
+              "asset_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "style_hint": {
+                "type": "string",
+                "maxLength": 500,
+                "default": ""
+              }
+            },
+            "additionalProperties": false,
+            "default": {}
           }
         },
         "required": [
-          "storyboard_revision_id"
+          "storyboard_revision_id",
+          "delivery_plan_revision_id"
         ],
         "additionalProperties": false
       },
@@ -5637,7 +10197,8 @@
                     "type": "string",
                     "enum": [
                       "ACTIVE",
-                      "ARCHIVED"
+                      "ARCHIVED",
+                      "DELETED"
                     ]
                   },
                   "created_at": {
@@ -6029,6 +10590,43 @@
                       },
                       "maxItems": 20
                     },
+                    "document_contexts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "document_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "conversion_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "source_asset_id": {
+                            "$ref": "#/definitions/ProjectDetailSuccess/properties/data/properties/shots/items/properties/selected_asset_id"
+                          },
+                          "markdown_asset_id": {
+                            "$ref": "#/definitions/ProjectDetailSuccess/properties/data/properties/shots/items/properties/selected_asset_id"
+                          },
+                          "max_content_characters": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5000
+                          }
+                        },
+                        "required": [
+                          "document_id",
+                          "conversion_id",
+                          "source_asset_id",
+                          "markdown_asset_id",
+                          "max_content_characters"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "maxItems": 4,
+                      "default": []
+                    },
                     "status": {
                       "type": "string",
                       "enum": [
@@ -6140,7 +10738,7 @@
                           },
                           "duration_seconds": {
                             "type": "integer",
-                            "minimum": 1,
+                            "minimum": 8,
                             "maximum": 15
                           },
                           "narrative_goal": {
@@ -6194,6 +10792,38 @@
                             },
                             "maxItems": 60,
                             "default": []
+                          },
+                          "scene_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160
+                          },
+                          "character_ids": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 160
+                            },
+                            "maxItems": 20
+                          },
+                          "prop_ids": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 160
+                            },
+                            "maxItems": 20
+                          },
+                          "reference_anchors": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 160
+                            },
+                            "maxItems": 20
                           }
                         },
                         "required": [
@@ -6270,6 +10900,10 @@
                     "storyboard_revision_id": {
                       "$ref": "#/definitions/ProjectDetailSuccess/properties/data/properties/storyboard_revisions/items/properties/id"
                     },
+                    "delivery_plan_revision_id": {
+                      "type": "string",
+                      "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                    },
                     "status": {
                       "type": "string",
                       "enum": [
@@ -6308,6 +10942,34 @@
                       "type": "integer",
                       "exclusiveMinimum": true,
                       "minimum": 0
+                    },
+                    "continuity_status": {
+                      "type": "string",
+                      "enum": [
+                        "NOT_CHECKED",
+                        "CHECKING",
+                        "GOOD",
+                        "AUTO_REPAIRING",
+                        "NEEDS_ATTENTION"
+                      ],
+                      "default": "NOT_CHECKED"
+                    },
+                    "planned_segment_count": {
+                      "type": "integer",
+                      "exclusiveMinimum": true,
+                      "minimum": 0,
+                      "default": 1
+                    },
+                    "max_auto_repair_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 20,
+                      "default": 2
+                    },
+                    "auto_repair_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "default": 0
                     },
                     "created_at": {
                       "$ref": "#/definitions/ProjectDetailSuccess/properties/data/properties/project/properties/created_at"
@@ -6386,6 +11048,7 @@
                       "asset",
                       "document",
                       "document_conversion",
+                      "document_knowledge_revision",
                       "creative_brief_revision",
                       "script_revision",
                       "storyboard_revision",
@@ -6393,7 +11056,19 @@
                       "production_segment",
                       "asset_derivation",
                       "qc_report",
-                      "video_version"
+                      "video_version",
+                      "handoff_review",
+                      "transition_repair",
+                      "delivery_plan_revision",
+                      "timeline_plan",
+                      "narration_plan_revision",
+                      "capability_profile_revision",
+                      "voice_authorization",
+                      "pronunciation_glossary_revision",
+                      "brand_policy_revision",
+                      "budget_reservation",
+                      "output_profile_revision",
+                      "quality_gate_decision"
                     ]
                   },
                   "id": {
@@ -6939,6 +11614,90 @@
               "event_type": {
                 "type": "string",
                 "enum": [
+                  "document_knowledge.queued",
+                  "document_knowledge.started",
+                  "document_knowledge.succeeded",
+                  "document_knowledge.failed"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "knowledge_revision_id": {
+                    "type": "string",
+                    "pattern": "^dkr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "conversion_id": {
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/7/properties/data/properties/conversion_id"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "CREATED",
+                      "QUEUED",
+                      "RUNNING",
+                      "READY",
+                      "FAILED"
+                    ]
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  },
+                  "analysis_quality": {
+                    "type": "string",
+                    "enum": [
+                      "COMPLETE",
+                      "PARTIAL",
+                      "NEEDS_CONFIRMATION"
+                    ],
+                    "nullable": true
+                  }
+                },
+                "required": [
+                  "knowledge_revision_id",
+                  "conversion_id",
+                  "status",
+                  "retryable",
+                  "analysis_quality"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "event_id",
+              "occurred_at",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "event_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
                   "creative_brief.planning_requested"
                 ]
               },
@@ -7005,7 +11764,7 @@
                 "type": "object",
                 "properties": {
                   "creative_brief_revision_id": {
-                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/8/properties/data/properties/creative_brief_revision_id"
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/9/properties/data/properties/creative_brief_revision_id"
                   },
                   "status": {
                     "type": "string",
@@ -7148,7 +11907,7 @@
                 "type": "object",
                 "properties": {
                   "storyboard_revision_id": {
-                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/10/properties/data/properties/storyboard_revision_id"
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/11/properties/data/properties/storyboard_revision_id"
                   },
                   "status": {
                     "type": "string",
@@ -7199,6 +11958,466 @@
               "event_type": {
                 "type": "string",
                 "enum": [
+                  "delivery_plan.preflight_requested"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "delivery_plan_revision_id": {
+                    "type": "string",
+                    "pattern": "^dpr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "DRAFT",
+                      "PREFLIGHT_BLOCKED",
+                      "AWAITING_APPROVAL",
+                      "APPROVED",
+                      "CONSUMED",
+                      "SUPERSEDED"
+                    ]
+                  }
+                },
+                "required": [
+                  "delivery_plan_revision_id",
+                  "status"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "event_id",
+              "occurred_at",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "event_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "delivery_plan.blocked"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "delivery_plan_revision_id": {
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/13/properties/data/properties/delivery_plan_revision_id"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PREFLIGHT_BLOCKED"
+                    ]
+                  },
+                  "reason_codes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    },
+                    "minItems": 1,
+                    "maxItems": 20
+                  }
+                },
+                "required": [
+                  "delivery_plan_revision_id",
+                  "status",
+                  "reason_codes"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "event_id",
+              "occurred_at",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "event_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "delivery_plan.approved"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "delivery_plan_revision_id": {
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/13/properties/data/properties/delivery_plan_revision_id"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "APPROVED"
+                    ]
+                  }
+                },
+                "required": [
+                  "delivery_plan_revision_id",
+                  "status"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "event_id",
+              "occurred_at",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "event_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "narration_script.normalized"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "narration_script_revision_id": {
+                    "type": "string",
+                    "pattern": "^nsr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "delivery_plan_revision_id": {
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/13/properties/data/properties/delivery_plan_revision_id"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "NORMALIZED",
+                      "NEEDS_DECISION"
+                    ]
+                  },
+                  "decision_reasons": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 240
+                    },
+                    "maxItems": 50
+                  }
+                },
+                "required": [
+                  "narration_script_revision_id",
+                  "delivery_plan_revision_id",
+                  "status",
+                  "decision_reasons"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "event_id",
+              "occurred_at",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "event_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "narration_script.approved"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "narration_script_revision_id": {
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/16/properties/data/properties/narration_script_revision_id"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "APPROVED"
+                    ]
+                  }
+                },
+                "required": [
+                  "narration_script_revision_id",
+                  "status"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "event_id",
+              "occurred_at",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "event_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "narration_asset_version.ready"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "narration_asset_version_id": {
+                    "type": "string",
+                    "pattern": "^nav_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "narration_script_revision_id": {
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/16/properties/data/properties/narration_script_revision_id"
+                  },
+                  "duration_ms": {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  },
+                  "sample_approved": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "narration_asset_version_id",
+                  "narration_script_revision_id",
+                  "duration_ms",
+                  "sample_approved"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "event_id",
+              "occurred_at",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "event_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
+                  "timeline_plan.created"
+                ]
+              },
+              "data": {
+                "type": "object",
+                "properties": {
+                  "timeline_plan_id": {
+                    "type": "string",
+                    "pattern": "^tlp_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
+                  },
+                  "narration_script_revision_id": {
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/16/properties/data/properties/narration_script_revision_id"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "READY",
+                      "NEEDS_DECISION",
+                      "FAILED"
+                    ]
+                  },
+                  "effective_duration_ms": {
+                    "type": "integer",
+                    "exclusiveMinimum": true,
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "timeline_plan_id",
+                  "narration_script_revision_id",
+                  "status",
+                  "effective_duration_ms"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "event_id",
+              "occurred_at",
+              "workspace_id",
+              "aggregate",
+              "version",
+              "event_type",
+              "data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "event_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/event_id"
+              },
+              "occurred_at": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/occurred_at"
+              },
+              "workspace_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/workspace_id"
+              },
+              "project_id": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/project_id"
+              },
+              "aggregate": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/aggregate"
+              },
+              "version": {
+                "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/version"
+              },
+              "event_type": {
+                "type": "string",
+                "enum": [
                   "production_run.confirmed"
                 ]
               },
@@ -7210,7 +12429,10 @@
                     "pattern": "^prd_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
                   },
                   "storyboard_revision_id": {
-                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/10/properties/data/properties/storyboard_revision_id"
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/11/properties/data/properties/storyboard_revision_id"
+                  },
+                  "delivery_plan_revision_id": {
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/13/properties/data/properties/delivery_plan_revision_id"
                   },
                   "status": {
                     "type": "string",
@@ -7275,7 +12497,7 @@
                 "type": "object",
                 "properties": {
                   "production_run_id": {
-                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/12/properties/data/properties/production_run_id"
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/20/properties/data/properties/production_run_id"
                   },
                   "status": {
                     "type": "string",
@@ -7305,6 +12527,25 @@
                     "exclusiveMinimum": true,
                     "minimum": 0,
                     "nullable": true
+                  },
+                  "continuity_status": {
+                    "type": "string",
+                    "enum": [
+                      "NOT_CHECKED",
+                      "CHECKING",
+                      "GOOD",
+                      "AUTO_REPAIRING",
+                      "NEEDS_ATTENTION"
+                    ]
+                  },
+                  "max_auto_repair_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 20
+                  },
+                  "auto_repair_count": {
+                    "type": "integer",
+                    "minimum": 0
                   }
                 },
                 "required": [
@@ -7359,7 +12600,7 @@
                 "type": "object",
                 "properties": {
                   "production_run_id": {
-                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/12/properties/data/properties/production_run_id"
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/20/properties/data/properties/production_run_id"
                   },
                   "sequence": {
                     "type": "integer",
@@ -7507,7 +12748,7 @@
                     "pattern": "^vvr_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
                   },
                   "production_run_id": {
-                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/12/properties/data/properties/production_run_id"
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/20/properties/data/properties/production_run_id"
                   },
                   "asset_id": {
                     "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/0/properties/data/properties/asset_id"
@@ -7518,7 +12759,7 @@
                     "minimum": 0
                   },
                   "qc_report_id": {
-                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/15/properties/data/properties/qc_report_id"
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/23/properties/data/properties/qc_report_id"
                   }
                 },
                 "required": [
@@ -7573,7 +12814,7 @@
                 "type": "object",
                 "properties": {
                   "production_run_id": {
-                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/12/properties/data/properties/production_run_id"
+                    "$ref": "#/definitions/PublicWorkspaceEventEnvelope/anyOf/20/properties/data/properties/production_run_id"
                   },
                   "error_code": {
                     "type": "string",

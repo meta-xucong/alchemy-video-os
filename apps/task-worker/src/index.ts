@@ -1,10 +1,12 @@
-import { createDatabase, DrizzleAssetWorkspaceRepository, DrizzleTaskRunRepository } from "@alchemy-video/persistence";
+import { createDatabase, DrizzleAssetWorkspaceRepository, DrizzleBillingRepository, DrizzleTaskRunRepository } from "@alchemy-video/persistence";
+import { HttpVeyraCreditTransport, VeyraSub2ApiCreditAdapter } from "@alchemy-video/credit-veyra";
 import { BullMqInternalEventQueue, createBullMqInternalEventWorker } from "@alchemy-video/task-queue";
 import { createS3StoragePort } from "@alchemy-video/storage-client";
 
 import { MockVideoTaskExecutor } from "./execution-service.js";
 import { createWorkerVideoProviderRuntime } from "./provider-runtime.js";
 import { createWorkerReferenceDeliveryPort } from "./reference-delivery.js";
+import { VideoBillingExecutor } from "./billing-executor.js";
 import { OutboxRelay, TaskRunEventConsumer, recoverC06TaskRuns } from "./service.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -22,15 +24,32 @@ if (requiredStorageConfig.some((name) => !process.env[name])) {
   throw new Error("S3_ENDPOINT, S3_REGION, S3_BUCKET, S3_ACCESS_KEY, and S3_SECRET_KEY are required for the C06 Worker.");
 }
 const storage = createS3StoragePort({ endpoint: process.env.S3_ENDPOINT!, region: process.env.S3_REGION!, bucket: process.env.S3_BUCKET!, accessKeyId: process.env.S3_ACCESS_KEY!, secretAccessKey: process.env.S3_SECRET_KEY! });
+class BillingStoreAdapter {
+  constructor(private readonly receipts: DrizzleBillingRepository, private readonly tasks: DrizzleTaskRunRepository) {}
+  recordUsageReceipt(input: Parameters<DrizzleBillingRepository["recordUsageReceipt"]>[0]) { return this.receipts.recordUsageReceipt(input); }
+  markBillingSucceeded(input: Parameters<DrizzleTaskRunRepository["markBillingSucceeded"]>[0]) { return this.tasks.markBillingSucceeded(input); }
+  markBillingFailed(input: Parameters<DrizzleTaskRunRepository["markBillingFailed"]>[0]) { return this.tasks.markBillingFailed(input); }
+  scheduleBillingRetry(input: Parameters<DrizzleTaskRunRepository["scheduleBillingRetry"]>[0]) { return this.tasks.scheduleBillingRetry(input); }
+}
+let billingExecutor: VideoBillingExecutor | undefined;
+if (process.env.VEYRA_AUTH_ENABLED === "true") {
+  const baseUrl = process.env.VIDEO_VEYRA_INTERNAL_BASE_URL;
+  const internalToken = process.env.VIDEO_VEYRA_INTERNAL_TOKEN;
+  if (!baseUrl || !internalToken) throw new Error("VIDEO_VEYRA_INTERNAL_BASE_URL and VIDEO_VEYRA_INTERNAL_TOKEN are required when VEYRA_AUTH_ENABLED=true.");
+  const transport = new HttpVeyraCreditTransport({ baseUrl });
+  billingExecutor = new VideoBillingExecutor(new VeyraSub2ApiCreditAdapter({ transport, internalToken }), new BillingStoreAdapter(new DrizzleBillingRepository(database.db), store));
+}
 const runtime = await createWorkerVideoProviderRuntime({ environment: process.env });
 const executor = new MockVideoTaskExecutor(store, runtime.provider, storage, {
   providerName: runtime.profile.provider,
   expectedModel: runtime.profile.model,
   pollIntervalMs: runtime.profile.pollIntervalMs,
   maxPollAttempts: runtime.profile.maxPollAttempts,
+  retryableStatusPolls: runtime.profile.mode === "sub2api" ? 4 : 0,
   assetStore,
   referenceDelivery: createWorkerReferenceDeliveryPort({ profile: runtime.profile, environment: process.env }),
   allowLegacyReferenceAssets: runtime.profile.mode === "mock",
+  ...(billingExecutor ? { billingExecutor } : {}),
 });
 const queueName = process.env.TASK_QUEUE_NAME;
 const deadLetterQueueName = process.env.TASK_DEAD_LETTER_QUEUE_NAME;
@@ -54,7 +73,18 @@ const worker = createBullMqInternalEventWorker({
   ...(queueName ? { queueName } : {}),
   ...(deadLetterQueueName ? { deadLetterQueueName } : {}),
   processor: async (message) => {
-    await consumer.process(message);
+    try {
+      await consumer.process(message);
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: "task_worker.execution.failed",
+        event_id: message.event_id,
+        workspace_id: message.workspace_id,
+        task_run_id: message.task_run_id,
+        reason: error instanceof Error ? error.message.replace(/[\\r\\n]+/g, " ").slice(0, 500) : String(error),
+      }));
+      throw error;
+    }
   },
   onTerminalFailure: async ({ event_id, workspace_id, task_run_id, reason }) => {
     await consumer.finalizeExecutionFailure({ workspace_id, task_run_id, reason });
@@ -87,7 +117,7 @@ const relayTimer = setInterval(() => {
   });
 }, 250);
 await relay.runOnce();
-console.info(JSON.stringify({ event: "task_worker.ready", worker_id: workerId }));
+console.info(JSON.stringify({ event: "task_worker.ready", worker_id: workerId, provider_mode: runtime.profile.mode, provider_model: runtime.profile.model }));
 
 let shuttingDown = false;
 const shutdown = async () => {

@@ -38,7 +38,7 @@ def assert_mobile_layout(page: Page, project_url: str, project_name: str) -> Non
     page.goto(project_url, wait_until="domcontentloaded")
     page.get_by_role("heading", name=project_name, exact=True).wait_for(timeout=30_000)
     page.get_by_role("button", name="添加资料", exact=True).wait_for(state="visible", timeout=30_000)
-    page.get_by_text("已可用于这次创作", exact=True).wait_for(timeout=30_000)
+    page.get_by_text("已准备好用于这次创作", exact=True).wait_for(timeout=30_000)
     layout = page.evaluate(
         """() => ({
           width: window.innerWidth,
@@ -61,7 +61,7 @@ def assert_mobile_layout(page: Page, project_url: str, project_name: str) -> Non
 def fail_conversion(page: Page, project_id: str, project_name: str, studio_origin: str, seed: str) -> dict[str, object]:
     prefix = install_command_uuid_seed(page, seed)
     project_url = open_project(page, studio_origin, project_id, project_name)
-    page.get_by_text("这份资料暂时无法整理", exact=True).wait_for(timeout=60_000)
+    page.get_by_text("这份资料暂时无法使用", exact=True).wait_for(timeout=60_000)
     retry = page.get_by_role("button", name="重新整理", exact=True)
     if not retry.is_enabled():
         raise AssertionError("C10 failed conversion did not expose an enabled explicit retry action.")
@@ -71,29 +71,46 @@ def fail_conversion(page: Page, project_id: str, project_name: str, studio_origi
 def retry_and_verify(page: Page, project_id: str, project_name: str, secondary_project_id: str, secondary_project_name: str, studio_origin: str, seed: str, browser) -> dict[str, object]:
     prefix = install_command_uuid_seed(page, seed)
     open_project(page, studio_origin, project_id, project_name)
-    page.get_by_text("这份资料暂时无法整理", exact=True).wait_for(timeout=30_000)
+    page.get_by_text("这份资料暂时无法使用", exact=True).wait_for(timeout=30_000)
     page.get_by_role("button", name="重新整理", exact=True).click()
     try:
-        page.get_by_text("已可用于这次创作", exact=True).wait_for(timeout=60_000)
+        page.get_by_text("已准备好用于这次创作", exact=True).wait_for(timeout=60_000)
     except Exception as error:
         conversions = page.evaluate("""async (projectId) => {
           const response = await fetch(`/api/v1/projects/${projectId}/documents`);
           return { status: response.status, body: await response.text() };
         }""", project_id)
         raise AssertionError(f"C10 retry did not update the material card: {conversions}; page={page.locator('body').inner_text()}") from error
-    with page.expect_download(timeout=30_000) as downloaded:
-        page.get_by_role("button", name="查看资料", exact=True).click()
-    download_path = downloaded.value.path()
-    if not download_path:
-        raise AssertionError("C10 Markdown download did not produce a readable temporary file.")
-    markdown = Path(download_path).read_text(encoding="utf-8")
+    documents = page.evaluate(
+        """async (projectId) => {
+          const response = await fetch(`/api/v1/projects/${projectId}/documents`);
+          const body = await response.json();
+          if (!response.ok) throw new Error(`document list failed: ${response.status} ${JSON.stringify(body)}`);
+          return body.data;
+        }""",
+        project_id,
+    )
+    completed = next((item for item in documents if item.get("status") == "SUCCEEDED" and item.get("markdown_asset_id")), None)
+    if not completed:
+        raise AssertionError(f"C10 converted document did not expose a completed Markdown asset: {documents}")
+    download_response = page.context.request.get(f"{studio_origin}/api/v1/assets/{completed['markdown_asset_id']}/download-url")
+    if not download_response.ok:
+        raise AssertionError(f"C10 Markdown download URL request failed with HTTP {download_response.status}.")
+    download_payload = download_response.json()
+    download_url = download_payload.get("data", {}).get("download_url")
+    if not download_url:
+        raise AssertionError("C10 Markdown download URL response did not contain a short-lived URL.")
+    downloaded = page.context.request.get(download_url)
+    if not downloaded.ok:
+        raise AssertionError(f"C10 Markdown download failed with HTTP {downloaded.status}.")
+    markdown = downloaded.text()
     if "C10 browser material fixture" not in markdown:
         raise AssertionError("C10 Markdown download did not contain the converted source content.")
     page.reload(wait_until="domcontentloaded")
-    page.get_by_text("已可用于这次创作", exact=True).wait_for(timeout=30_000)
+    page.get_by_text("已准备好用于这次创作", exact=True).wait_for(timeout=30_000)
 
     secondary_url = open_project(page, studio_origin, secondary_project_id, secondary_project_name)
-    page.get_by_text("已可用于这次创作", exact=True).wait_for(timeout=60_000)
+    page.get_by_text("已准备好用于这次创作", exact=True).wait_for(timeout=60_000)
     if page.locator(".material-item").count() != 1:
         raise AssertionError("C10 project B did not retain exactly its own converted material.")
 

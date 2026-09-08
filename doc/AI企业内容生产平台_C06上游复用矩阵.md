@@ -27,3 +27,5 @@ C06 复用 Huobao 对内置 `ffmpeg-static` / `ffprobe-static` 可用性探测�
 - 新建的 `packages/provider-video/UPSTREAM.md` 必须记录 Huobao commit `f04d705603bd0257bcec6b8f44fd04ea3ea9b795`、借鉴符号、保留/舍弃内容和覆盖测试。
 - 修改 `apps/task-worker/UPSTREAM.md` 与 `packages/persistence/UPSTREAM.md` 时，必须说明 C06 只是在 C05 消费后续接 ProviderPort，不改变 C05 queue/outbox 的事实边界。
 - 禁止把 `upstream/`、固定 MP4、临时媒体、ffprobe 输出文件、签名 URL 或真实配置写入 Git。
+
+> **2026-09-01 当前音频口径**：C06 的 ProviderPort/任务快照不把用户上传旁白或样音当成自动音频输入；Provider 原生音轨和显式 Doubao 资产由最新自动音频执行文档约束。本文旧的无真实调用表述仍适用于本章默认/CI，不改变本机授权范围或引入第二协议。

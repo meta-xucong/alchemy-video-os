@@ -59,14 +59,14 @@ POST /internal/v1/document-conversions
 Authorization: Bearer <DOCUMENT_RUNTIME_TOKEN>
 Content-Type: <source MIME>
 X-Document-Conversion-Id: dcv_...
-X-Source-Filename: <sanitized basename>
+X-Source-Filename-Base64: <UTF-8 basename encoded as Base64URL without padding>
 X-Source-Sha256: <hex>
 
 binary source body
   -> 200 { markdown, converter, converter_version, warnings }
 ```
 
-Runtime 仅监听 loopback/private network，Token 只在 Document Worker 环境读取。请求不得含 URL、object key、workspace ID、project ID、用户身份、Provider 字段或任意 converter options。Runtime 限制输入 25 MiB、输出 10 MiB、允许 MIME 和安全文件名；未知或不一致输入失败关闭。
+Runtime 仅监听 loopback/private network，Token 只在 Document Worker 环境读取。文件名仅以严格校验的 Base64URL UTF-8 值跨越 HTTP 边界，避免非 ASCII 请求头导致转换请求在到达 Runtime 前失败；Runtime 解码后仍执行安全文件名和扩展名校验。请求不得含 URL、object key、workspace ID、project ID、用户身份、Provider 字段或任意 converter options。Runtime 限制输入 25 MiB、输出 10 MiB、允许 MIME 和安全文件名；未知或不一致输入失败关闭。
 
 ## 5. 事件、队列与错误
 
@@ -94,7 +94,7 @@ document_conversion.failed
 
 ## 7. Studio 交互
 
-项目页面在“想法”之前显示一个简短的“项目资料”区域：用户点击添加资料，选择文件后看到文件名和简单状态。上传确认后自动整理；成功显示“已可用于这次创作”，失败显示“这份资料暂时无法整理”与唯一的“重新整理”动作。页面不显示 MarkItDown、MIME、队列、对象存储、Artifact、模型或工程参数。
+项目页面在“想法”之前显示一个简短的“项目资料”区域：用户点击添加资料，选择文件后看到文件名和简单状态。上传确认后自动整理；成功显示“已准备好用于这次创作”，失败显示“这份资料暂时无法使用”与唯一的“重新整理”动作。页面不显示 MarkItDown、MIME、队列、对象存储、Artifact、模型或工程参数。
 
 资料不自动改写当前创作描述，也不自动发起视频。C11 产生故事计划时才明确引用已成功资料，并向用户说明资料如何参与创作。
 
@@ -107,3 +107,5 @@ document_conversion.failed
 - E2E：项目资料上传、自动整理、刷新恢复、Markdown 下载、失败重试、跨项目/工作区隔离和移动布局。
 
 只有上述门禁通过、转换结果可追溯、没有网络/对象 key 泄露、默认 Mock 视频闭环不回归后，C10 才可标记 `ACCEPTED`。本章不包含 Veyra、SUB2API 视频 POST、SSH、VPS、DNS、TLS 或部署。
+
+> **2026-09-01 当前音频口径**：C10 资料转换不要求用户上传旁白/样音；自动视频音频由 Provider 原生或显式 Doubao 服务器资产路径产生。本文关于 Mock、Veyra/VPS 和外部调用的范围仍有效；当前本机对照按最新自动音频执行文档单独进行，不扩大 C10。

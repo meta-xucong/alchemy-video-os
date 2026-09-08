@@ -35,3 +35,5 @@
 - `packages/persistence/src/schema.ts` 与 `drizzle/0006_overjoyed_captain_cross.sql`：为消费账本增加 `workspace_id`，先从既有 outbox 回填，再将主键收紧为 `(workspace_id, event_id, consumer_name)`，用 `(event_id, workspace_id)` 复合外键证明同工作区完整性；不是上游代码迁入。
 - `packages/persistence/src/task-run-repository.ts` 与 `apps/control-api/src/task-run-repository.ts`：先以 outbox/job `workspace_id` 查询，再校验 envelope workspace、TaskRun ID、correlation ID 和冻结 snapshot；消费 insert/read/reclaim/complete/dead-letter 均携带该 workspace，任何不一致在 consumption 完成前返回 `RETRY`。
 - `apps/task-worker/tests/worker.integration.test.ts`、`packages/persistence/tests/task-run-repository.integration.test.ts`：真实 PostgreSQL/Redis 回归覆盖完整消息、篡改 workspace/payload、Worker 重启和重复投递的一次性推进。
+
+> **2026-09-01 当前音频口径**：C05 只维护队列/持久化边界，不要求用户上传旁白或样音；自动音频由后续已选 Provider 原生音轨或显式 Doubao 服务端路径负责。本文历史的真实 Provider/TTS 关闭语句仍约束本章默认与 CI，不改变当前用户授权的本机对照，也不新增队列协议。

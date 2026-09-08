@@ -101,6 +101,22 @@ export const createSub2ApiHttpsTransport = (input: Readonly<{
       try {
         json = await response.json();
       } catch {
+        // Status polling can briefly receive an HTML gateway page or an empty
+        // body while the upstream task is still available. Treat that as a
+        // recoverable provider outage; the persisted request ID prevents a
+        // second submission on the next delivery. Submission responses remain
+        // strict so a malformed 2xx cannot be mistaken for an accepted task.
+        if (request.method === "GET" && request.path.startsWith("/videos/") && !request.path.endsWith("/content")) {
+          const retryable = response.status < 400 || response.status === 408 || response.status === 429 || response.status >= 500;
+          throw new VideoProviderFailure(
+            retryable ? "PROVIDER_UNAVAILABLE" : "PROVIDER_REJECTED",
+            retryable,
+            "PROVIDER",
+            retryable
+              ? "The SUB2API video status response was temporarily unavailable."
+              : "The SUB2API video status response was invalid.",
+          );
+        }
         throw new VideoProviderProtocolError("SUB2API returned an invalid JSON response.");
       }
       return { status: response.status, headers: responseHeaders(response), json };

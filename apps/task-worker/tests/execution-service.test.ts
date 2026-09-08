@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { createPrefixedId } from "@alchemy-video/domain";
 import { StorageUnavailableError, createInMemoryStoragePort, type StoragePort } from "@alchemy-video/storage-client";
-import { MockVideoProvider, Sub2ApiVideoProvider, VideoProviderFailure, createMockMp4Fixture } from "@alchemy-video/provider-video";
+import { MockVideoProvider, Sub2ApiVideoProvider, VideoProviderFailure, createMockMp4Fixture, resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import type { VideoProviderPort } from "@alchemy-video/provider-video";
 import type { Sub2ApiTransport, Sub2ApiTransportResponse } from "@alchemy-video/provider-video";
 
@@ -12,7 +12,7 @@ import { InMemoryTaskRunStore } from "../../control-api/src/task-run-repository.
 import { InMemoryAssetWorkspaceStore } from "../../control-api/src/asset-repository.js";
 import { InMemoryControlPlaneStore } from "../../control-api/src/repository.js";
 import { MockVideoTaskExecutor } from "../src/execution-service.js";
-import type { ReferenceDeliveryPort } from "../src/reference-delivery.js";
+import { createWorkerReferenceDeliveryPort, type ReferenceDeliveryPort } from "../src/reference-delivery.js";
 
 const event = () => ({ eventId: createPrefixedId("evt"), messageId: createPrefixedId("msg"), traceId: createPrefixedId("trc"), correlationId: createPrefixedId("cor") });
 
@@ -434,6 +434,53 @@ test("C07 rejected submit is preserved as non-retryable PROVIDER_REJECTED by C06
   assert.deepEqual(transport.requests.map((request) => request.method), ["POST"]);
 });
 
+test("C09 explicit retry after a missing provider task creates a fresh provider attempt", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask();
+  const fixture = await createMockMp4Fixture();
+  const transport = new C07FakeTransport([
+    { status: 202, json: { id: "req_c09_missing" } },
+    { status: 404, json: { message: "Video request not found" } },
+    { status: 202, json: { id: "req_c09_fresh" } },
+    { status: 200, json: { status: "succeeded" } },
+    { status: 200, headers: { "content-type": "video/mp4", "content-length": String(fixture.byteLength) }, stream: streamFromBytes(fixture) },
+  ]);
+  const executor = new MockVideoTaskExecutor(store, new Sub2ApiVideoProvider(transport), createInMemoryStoragePort());
+
+  const failed = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(failed?.status, "FAILED");
+  assert.equal(failed?.error?.code, "PROVIDER_REJECTED");
+  const [oldAttempt] = await store.listTaskRunAttempts(workspaceId, taskRunId);
+  assert.equal(oldAttempt?.providerRequestId, "req_c09_missing");
+  assert.equal(oldAttempt?.status, "FAILED");
+
+  const retry = await store.retryTaskRun({
+    scope: "c09:missing-provider-retry",
+    idempotencyKey: "missing-provider-retry",
+    requestHash: "f".repeat(64),
+    workspaceId,
+    taskRunId,
+    event: event(),
+  });
+  assert.equal(retry.kind, "NEW");
+  const queued = (await store.listWorkspaceEvents({ workspaceId, limit: 30 })).filter((item) => item.event_type === "task_run.queued").at(-1);
+  assert.ok(queued && queued.event_type === "task_run.queued");
+  if (!queued || queued.event_type !== "task_run.queued") throw new Error("retry event missing");
+  await store.processEvent({
+    message: { contract_version: "1.0", event_id: queued.event_id, workspace_id: workspaceId, task_run_id: taskRunId, attempt_no: 1, correlation_id: queued.correlation_id, input_snapshot: queued.data.input_snapshot },
+    consumerName: "c09-missing-provider-retry",
+    workerId: "c09-worker",
+    now: new Date(),
+    leaseMs: 100,
+  });
+  const succeeded = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(succeeded?.status, "SUCCEEDED");
+  assert.equal(transport.requests.filter((request) => request.method === "POST").length, 2);
+  const attempts = await store.listTaskRunAttempts(workspaceId, taskRunId);
+  assert.equal(attempts.length, 2);
+  assert.equal(attempts[0]?.status, "ABANDONED");
+  assert.equal(attempts[1]?.providerRequestId, "req_c09_fresh");
+});
+
 test("C07 temporary polling 429 and 503 stay processing and recover without resubmission", async () => {
   const fixture = await createMockMp4Fixture();
   const cases = [
@@ -617,6 +664,33 @@ test("C09-C fails before submission when reference delivery is unavailable", asy
   const result = await executor.execute({ workspaceId, taskRunId });
   assert.equal(result?.status, "FAILED");
   assert.equal(result?.error?.code, "PROVIDER_UNAVAILABLE");
+  assert.equal(provider.submitCount, 0);
+  assert.deepEqual(await store.listTaskRunAttempts(workspaceId, taskRunId), []);
+});
+
+test("C09-C relay preflight fails before creating an attempt or submitting the Provider", async () => {
+  const { assets, store, workspaceId, taskRunId } = await prepareReferenceTask();
+  const provider = new CapturingProvider(new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() }));
+  const key = "execution-preflight-secret-with-at-least-32-characters";
+  const delivery = createWorkerReferenceDeliveryPort({
+    profile: resolveVideoProviderRuntimeProfile("sub2api"),
+    environment: {
+      REFERENCE_DELIVERY_ORIGIN: "https://video.example.invalid",
+      REFERENCE_DELIVERY_SIGNING_KEY: key,
+      REFERENCE_DELIVERY_PREFLIGHT_TIMEOUT_MS: "500",
+      REFERENCE_DELIVERY_PREFLIGHT_RETRIES: "0",
+    },
+    fetcher: async () => ({
+      status: 503,
+      headers: { get: () => "text/plain" },
+      body: null,
+    }),
+  });
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    assetStore: assets,
+    referenceDelivery: delivery,
+  });
+  await assert.rejects(() => executor.execute({ workspaceId, taskRunId }), /temporarily unavailable/);
   assert.equal(provider.submitCount, 0);
   assert.deepEqual(await store.listTaskRunAttempts(workspaceId, taskRunId), []);
 });

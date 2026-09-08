@@ -75,6 +75,48 @@ test("the adapter accepts the documented request_id compatibility branch", async
   assert.deepEqual(await provider.submit(input), { providerRequestId: "req_fixture_compat_001" });
 });
 
+test("the adapter accepts a KIE-compatible nested taskId submission envelope", async () => {
+  const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{
+    status: 200,
+    json: { code: 200, msg: "success", data: { taskId: "task_grok_fixture_001" } },
+  }]));
+
+  assert.deepEqual(await provider.submit(input), { providerRequestId: "task_grok_fixture_001" });
+});
+
+test("the adapter accepts a compatible nested video.task_id envelope", async () => {
+  const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{
+    status: 200,
+    json: { status: "queued", video: { task_id: "task_grok_fixture_video_001" } },
+  }]));
+
+  assert.deepEqual(await provider.submit(input), { providerRequestId: "task_grok_fixture_video_001" });
+});
+
+test("the adapter reads nested status and msg fields without changing the wire path", async () => {
+  const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{
+    status: 200,
+    json: { code: 200, data: { taskId: "task_grok_fixture_001", status: "completed" } },
+  }]));
+
+  assert.deepEqual(await provider.getStatus({ providerRequestId: "task_grok_fixture_001" }), { state: "SUCCEEDED" });
+});
+
+test("the adapter exposes a nested KIE rejection as a non-retryable provider failure", async () => {
+  const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{
+    status: 200,
+    json: { code: 422, msg: "invalid input" },
+  }]));
+
+  await assert.rejects(
+    () => provider.submit(input),
+    (error: unknown) => error instanceof Sub2ApiProviderFailure
+      && error.status.code === "PROVIDER_REJECTED"
+      && error.status.message === "invalid input"
+      && !error.status.retryable,
+  );
+});
+
 test("the adapter requires an explicitly injected transport", () => {
   assert.throws(
     () => new Sub2ApiVideoProvider(undefined as never),
@@ -147,6 +189,55 @@ test("CONTRACT-005 maps successful status and returns a stream C06 can validate"
     "/videos/req_fixture_001",
     "/videos/req_fixture_001/content",
   ]);
+});
+
+test("the adapter accepts the documented complete and done terminal statuses", async () => {
+  for (const fixture of ["status.complete.json", "status.done.json"]) {
+    const transport = new FakeSub2ApiTransport([{
+      status: 200,
+      json: await readJson(fixture),
+    }]);
+    const provider = new Sub2ApiVideoProvider(transport);
+
+    assert.deepEqual(await provider.getStatus({ providerRequestId: "req_fixture_001" }), { state: "SUCCEEDED" });
+    assert.deepEqual(transport.requests, [{ method: "GET", path: "/videos/req_fixture_001" }]);
+  }
+});
+
+test("the adapter treats the observed unknown status as transient before queued and terminal states", async () => {
+  const transport = new FakeSub2ApiTransport([
+    { status: 200, json: await readJson("status.unknown.json") },
+    { status: 200, json: await readJson("status.queued.json") },
+    { status: 200, json: await readJson("status.succeeded.json") },
+  ]);
+  const provider = new Sub2ApiVideoProvider(transport);
+
+  assert.deepEqual(await provider.getStatus({ providerRequestId: "req_fixture_001" }), { state: "PROCESSING" });
+  assert.deepEqual(await provider.getStatus({ providerRequestId: "req_fixture_001" }), { state: "PROCESSING" });
+  assert.deepEqual(await provider.getStatus({ providerRequestId: "req_fixture_001" }), { state: "SUCCEEDED" });
+  assert.deepEqual(transport.requests, [
+    { method: "GET", path: "/videos/req_fixture_001" },
+    { method: "GET", path: "/videos/req_fixture_001" },
+    { method: "GET", path: "/videos/req_fixture_001" },
+  ]);
+});
+
+test("the adapter keeps incomplete or arbitrary unknown statuses fail-closed", async () => {
+  for (const json of [
+    { status: "unknown", progress: 0 },
+    { id: "req_fixture_001", status: "unknown" },
+    { id: "req_fixture_001", status: "unknown", progress: "0" },
+    { id: "req_fixture_001", status: "unknown", progress: 100 },
+    { id: "req_fixture_001", status: "unknown", progress: -1 },
+    { id: "req_fixture_001", status: "unknown", progress: Number.NaN },
+    { id: "req_fixture_001", status: "mystery", progress: 0 },
+  ]) {
+    await assert.rejects(
+      () => new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{ status: 200, json }]))
+        .getStatus({ providerRequestId: "req_fixture_001" }),
+      VideoProviderProtocolError,
+    );
+  }
 });
 
 test("CONTRACT-005 preserves the MIME type while accepting standard Content-Type parameters", async () => {

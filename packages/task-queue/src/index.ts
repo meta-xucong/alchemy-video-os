@@ -3,11 +3,13 @@ import { Queue, Worker, type ConnectionOptions, type Job } from "bullmq";
 import {
   InternalCreativePlanningQueueMessageSchema,
   InternalDocumentConversionQueueMessageSchema,
+  InternalDocumentKnowledgeQueueMessageSchema,
   InternalMediaRuntimeQueueMessageSchema,
   InternalProductionQueueMessageSchema,
   InternalTaskRunQueueMessageSchema,
   type InternalCreativePlanningQueueMessage,
   type InternalDocumentConversionQueueMessage,
+  type InternalDocumentKnowledgeQueueMessage,
   type InternalMediaRuntimeQueueMessage,
   type InternalProductionQueueMessage,
   type InternalTaskRunQueueMessage,
@@ -19,6 +21,9 @@ export const INTERNAL_EVENT_JOB_NAME = "internal-event";
 export const DOCUMENT_CONVERSION_QUEUE_NAME = "alchemy-video-document-conversions";
 export const DOCUMENT_CONVERSION_DEAD_LETTER_QUEUE_NAME = "alchemy-video-document-conversions-dead-letter";
 export const DOCUMENT_CONVERSION_JOB_NAME = "document-conversion";
+export const DOCUMENT_KNOWLEDGE_QUEUE_NAME = "alchemy-video-document-knowledge";
+export const DOCUMENT_KNOWLEDGE_DEAD_LETTER_QUEUE_NAME = "alchemy-video-document-knowledge-dead-letter";
+export const DOCUMENT_KNOWLEDGE_JOB_NAME = "document-knowledge";
 export const CREATIVE_PLANNING_QUEUE_NAME = "alchemy-video-creative-planning";
 export const CREATIVE_PLANNING_DEAD_LETTER_QUEUE_NAME = "alchemy-video-creative-planning-dead-letter";
 export const CREATIVE_PLANNING_JOB_NAME = "creative-planning";
@@ -274,6 +279,49 @@ export const clearDocumentConversionQueues = async (input: {
   }
 };
 
+export type DocumentKnowledgeQueuePort = {
+  enqueue(input: InternalDocumentKnowledgeQueueMessage): Promise<void>;
+  close(): Promise<void>;
+};
+
+export type DocumentKnowledgeQueueWorkerOptions = {
+  redisUrl: string;
+  processor: (input: InternalDocumentKnowledgeQueueMessage) => Promise<void>;
+  onTerminalFailure: (input: { event_id: string; workspace_id: string; knowledge_revision_id: string; attempts: number; reason: string }) => Promise<void>;
+  concurrency?: number;
+  queueName?: string;
+  deadLetterQueueName?: string;
+  autoStart?: boolean;
+};
+
+export class BullMqDocumentKnowledgeQueue implements DocumentKnowledgeQueuePort {
+  private readonly queue: Queue<InternalDocumentKnowledgeQueueMessage>;
+  constructor(redisUrl: string, options: { queueName?: string } = {}) {
+    this.queue = new Queue(options.queueName ?? DOCUMENT_KNOWLEDGE_QUEUE_NAME, { connection: toConnectionOptions(redisUrl) });
+  }
+  async enqueue(input: InternalDocumentKnowledgeQueueMessage) {
+    const message = InternalDocumentKnowledgeQueueMessageSchema.parse(input);
+    await this.queue.add(DOCUMENT_KNOWLEDGE_JOB_NAME, message, { ...queueOptions, jobId: message.event_id });
+  }
+  async close() { await this.queue.close(); }
+}
+
+export const createBullMqDocumentKnowledgeWorker = (input: DocumentKnowledgeQueueWorkerOptions): InternalEventWorkerHandle => {
+  const connection = toConnectionOptions(input.redisUrl);
+  const queueName = input.queueName ?? DOCUMENT_KNOWLEDGE_QUEUE_NAME;
+  const deadLetterQueueName = input.deadLetterQueueName ?? DOCUMENT_KNOWLEDGE_DEAD_LETTER_QUEUE_NAME;
+  const deadLetterQueue = new Queue(deadLetterQueueName, { connection });
+  const worker = new Worker<InternalDocumentKnowledgeQueueMessage>(queueName, async (job) => input.processor(InternalDocumentKnowledgeQueueMessageSchema.parse(job.data)), { connection, concurrency: input.concurrency ?? 1, autorun: input.autoStart ?? true });
+  worker.on("failed", (job: Job<InternalDocumentKnowledgeQueueMessage> | undefined, error) => {
+    if (!job || job.attemptsMade < (job.opts.attempts ?? 1)) return;
+    const message = InternalDocumentKnowledgeQueueMessageSchema.safeParse(job.data);
+    if (!message.success) return;
+    const payload = { event_id: message.data.event_id, workspace_id: message.data.workspace_id, knowledge_revision_id: message.data.knowledge_revision_id, attempts: job.attemptsMade, reason: safeReason(error) };
+    void Promise.all([input.onTerminalFailure(payload), deadLetterQueue.add("dead-letter", payload, { jobId: `dead-${payload.event_id}`, removeOnComplete: false, removeOnFail: false })]);
+  });
+  return { close: async () => { await worker.close(); await deadLetterQueue.close(); }, start: () => { void worker.run(); }, waitUntilReady: () => worker.waitUntilReady() };
+};
+
 export type CreativePlanningQueuePort = {
   enqueue(input: InternalCreativePlanningQueueMessage): Promise<void>;
   close(): Promise<void>;
@@ -505,7 +553,7 @@ export type MediaRuntimeQueueWorkerOptions = {
   onTerminalFailure: (input: {
     event_id: string;
     workspace_id: string;
-    production_run_id: string;
+    production_run_id?: string;
     production_segment_id?: string;
     task_run_id?: string;
     attempts: number;
@@ -541,7 +589,7 @@ export const createBullMqMediaRuntimeWorker = (input: MediaRuntimeQueueWorkerOpt
   const deadLetterQueue = new Queue<{
     event_id: string;
     workspace_id: string;
-    production_run_id: string;
+    production_run_id?: string;
     production_segment_id?: string;
     task_run_id?: string;
     attempts: number;
@@ -563,7 +611,7 @@ export const createBullMqMediaRuntimeWorker = (input: MediaRuntimeQueueWorkerOpt
     const payload = {
       event_id: message.data.event_id,
       workspace_id: message.data.workspace_id,
-      production_run_id: message.data.production_run_id,
+      ...(message.data.event_type !== "narration_audio.generation_requested" ? { production_run_id: message.data.production_run_id } : {}),
       ...(message.data.event_type === "production_segment.qc_requested"
         ? { production_segment_id: message.data.production_segment_id, task_run_id: message.data.task_run_id }
         : {}),

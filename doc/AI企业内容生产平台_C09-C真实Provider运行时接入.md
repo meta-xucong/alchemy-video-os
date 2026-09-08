@@ -2,9 +2,17 @@
 
 状态：`IMPLEMENTED_AWAITING_AUDIT`
 
+## 生产分段重试与旧任务成功回补
+
+长叙事制作的重试必须调用公开的 `retryProductionSegment` 命令，不能把 ProductionRun 的分段失败降级为底层 `retryTaskRun`。旧页面或刷新竞态仍可能留下“底层 TaskRun 已成功、ProductionSegment 仍失败”的历史状态；Persistence 只在同工作区、同项目、同 `task_run_id` 且 TaskRun 已持久化为 `SUCCEEDED`、结果资产与成功事件一致时执行一次性回补：`BLOCKED -> GENERATING`，`FAILED -> GENERATING -> CHECKING`，随后继续既有 Media Runtime QC、交接帧和后续分段调度。任何不同任务、不同结果资产或不允许的生产状态均保持原状。该回补不重新提交 Provider，不改变既有 TaskRun 输入快照和幂等语义。
+
 范围说明：本文保留 C08 文生真实运行时基线，并记录 ADR-0034 已实现的图生与一至七张独立参考素材代码路径。实现已通过离线/Mock 验证；它不等于真实图生已开放。真实 I2V/R2V 仍等待 Video VPS 专用 HTTPS relay 的部署审计，以及本次调用的 profile、次数、费用上限和素材范围授权。
 
 本文件落实 ADR-0033。目标是让用户提供的 `aiself-grok` SUB2API 配置可以被产品 Worker 使用，同时保持浏览器、Control API、Veyra、VPS 和部署边界不变。
+
+现行音频口径（2026-09-01）：本文的 Provider 运行时只负责已选 owner 的视频请求和产物校验。当前自动旁白不要求用户上传音频或样音；Grok 若经能力认证返回 native 音轨则保留该音轨，替换音频只在操作者明确选择时走独立 Doubao Runtime。Huobao 的 `reference_audio`/`generate_audio` 字段不得未经 provider-specific mapper 跨映射到 Grok；样音由服务端生成并经过人工审批，不能由上传控件或默认 Piper 代替。详细语音执行顺序以《AI企业内容生产平台_自动生成音频与视频匹配正式使用开发文档.md》为准。
+
+本机实际模式补充（2026-09-01）：用户已授权 Aiself Grok/Sub2API 实际运行和 Doubao 显式替换；当前 profile 为 `grok-imagine-video-1.5`、`seed-tts-2.0`/`zh_female_meilinvyou_uranus_bigtts`。该模式只在未入库本机环境启用，不能改写仓库/CI 的 Mock 默认，也不启用 Veyra、共享积分或部署。
 
 ## 运行面
 
@@ -30,7 +38,13 @@ Control API 从已保存的 `Shot` 与同项目 `reference_bindings` 建立不�
 
 当前真实 profile 使用 `grok-imagine-video-1.5` 和固定画幅 `16:9`。C08 的 `1s / 480p` 是一次受限文生认证的成本下限，不是产品默认创作质量；本机 MCP 的当前 `aiself-grok` 证据已覆盖 `5s / 720p / 16:9` 的独立参考素材路径。Studio 第三步将时长 `1..15` 秒与清晰度 `480p|720p` 作为明确的可保存设置显示，默认 `5s / 720p`。Control API 只从 `Shot.generation_settings.video_settings` 读取这两个值，并在创建 TaskRun 前校验范围；自然语言中的数字不再改写模型参数。`ratio` 为公开显示但不可修改的当前 profile 能力，必须为 `16:9`。其他可选组合只代表协议可接受范围，不扩大为已完成的真实画质认证。ADR-0034 已实现公开单 Shot 的 `FIRST_FRAME` 与一至七张 `REFERENCE_SET` 输入映射：前者写入 `image.image_url`，后者写入 `reference_images[].url`；公开手工入口保持互斥。C12 自动多段成片按 ADR-0043 使用有序 `REFERENCE_SET` 承载“第 0 位交接帧 + 用户参考图”，不开放尾帧字段，也不宣称逐帧连续能力。参考素材协议最多七张，但当前独立视觉端到端证据只有两张。Seedance 和 Veyra 计费仍未开放。
 
-Control API 只校验并保留已保存的创作描述作为 Worker 专用提示词（只去除首尾空白）。它不在前后追加模板、翻译、偏好或参数说明，因此发送给 Aiself 的 `prompt` 与用户的创作描述一致。该步骤从受控 `video_settings` 取得规格，但不是浏览器直连模型、不会读取密钥，也不会声明已完成脚本 Agent 或内容政策审核。TaskRun 只保存该执行提示词和冻结后的规格；原始想法继续由 Shot 保存。平台不恢复 4096 字节本地硬拒绝。
+Control API 只校验并保留已保存的创作描述，不读取视频密钥，也不让浏览器直连模型。xAI 官方视频文档没有公布 Prompt 的最大字符或 UTF-8 字节数，因此平台不再伪造通用的 4096 字节硬拒绝。真实 Worker 冻结 `TaskRun.input_snapshot` 时使用可配置的 `VIDEO_PROMPT_MAX_UTF8_BYTES`，默认 20,000；实际快照预算为平台配置与当前 profile 已认证出站上限的较小值，只有超过该有效预算时才移除重复的私有资料块并做 UTF-8 安全压缩。压缩必须优先保留用户明确台词及 `Dialogue contract`、镜头和起止状态等执行契约，不能因为资料正文较长而丢失对白。完整 Markdown 只留在私有资料/规划链路；C11.2 的按段事实包完成前，超长资料仍不能被当作资料理解或全文检索。TaskRun 只保存最终执行 Prompt 和冻结后的规格；原始想法继续由 Shot 保存。
+
+官方依据：[Video Generation](https://docs.x.ai/developers/model-capabilities/video/generation)、[Videos REST API](https://docs.x.ai/developers/rest-api-reference/inference/videos)、[Grok Imagine Video](https://docs.x.ai/developers/models/grok-imagine-video) 均未公开 Prompt 长度上限；官方公开的是时长、分辨率、比例、速率等模型约束。20,000 字节是平台可调保护阈值，不代表官方保证上游一定接受该长度。
+
+## 2026-08-18 真实 profile 提示词上限修正
+
+本地真实 `aiself-grok / grok-imagine-video-1.5` 验证中，13,457 字节的冻结 Prompt 被上游明确拒绝，并返回“最多支持 4096 字节的 UTF-8 文本”。这不是 xAI 官方文档公布的通用限制，而是当前真实 profile 的可复现实测能力事实。平台继续保留 20,000 字节的用户/资料预算，不在浏览器硬拒绝；`VideoProviderRuntimeProfile` 现在为该 profile 额外声明 4,096 字节的出站压缩上限，创建不可变 TaskRun 快照时自动以两者较小值做 UTF-8 安全压缩。用户原始描述仍保存在 Shot，历史 TaskRun 不修改，后续 profile 若通过能力认证可独立调整该内部上限。
 
 真实图片任务在 Worker submit 前由 `ReferenceDeliveryPort` 为已授权私有图片创建短时 HTTPS relay URL。Control API 的无认证 `GET` / `HEAD /provider-input/:token` 只接受不透明、加密、带到期和 workspace/project/asset/SHA/MIME 绑定的 token；它只流式返回受控图片 MIME，未命中或篡改返回 404，存储暂不可用返回 503。token、URL、对象 key 和 Provider 字段不持久化也不公开。真实 mode 缺少 relay origin 或签名密钥时，带图片 TaskRun 在 ProviderAttempt 和 submit 之前安全失败，不能回退为文生。
 
@@ -78,9 +92,29 @@ infrastructure\local\start-full-local-stack.ps1 -VideoProvider sub2api
 
 限制仍然保留：这不是 VPS 部署；共享积分/Veyra 仍关闭；真实 profile 的视觉质量不因一次 canary 扩大为全部内容保证。现有 Mock 旧成片不会被原地替换，用户需在真实模式下生成新版本。长文本项目会按分镜数量触发多次真实 Provider 调用，因此对多段故事仍需在 UI 上理解它会消耗多段生成额度。
 
-## Video VPS 部署准备（未执行）
+## 2026-08-21 真实轮询非 JSON 恢复修正
 
-`infrastructure/deploy/` 现提供 Video VPS 的容器构建、私有 Compose、ACME bootstrap、Nginx 反代和无密钥环境样例。它不是一次部署，也不会启动真实 Provider：当前 DNS 没有 `video.aiself.vip` 或 `assets.video.aiself.vip` 的 A/AAAA 记录，SSH 主机清单也没有标记为 Video OS 的第三台 VPS。
+一次真实三段成片中，第 1 段已成功，第 2 段已提交并在上游完成，但 Worker 某次状态轮询收到无法解析为 JSON 的网关响应，旧逻辑将其错误归类为永久 `PROVIDER_PROTOCOL_INVALID`，从而阻断了 ProductionRun。复核同一 `provider_request_id` 后，上游状态为 `completed` 且 `content_status=available`，证明不是提交失败或视频不存在。
+
+Worker transport 现仅对 `GET /videos/{id}` 状态轮询的临时非 JSON 响应归一为可恢复的 `PROVIDER_UNAVAILABLE`；提交接口仍严格拒绝畸形 2xx，下载接口仍按下载错误处理。队列重试只复用已持久化的 `provider_request_id`，禁止再次 POST。新增 Worker 回归覆盖该行为；Task Worker 36/36、Provider Video 39/39、根 typecheck 通过。现有失败任务不会自动重放，需用户显式点击重试。
+
+## 2026-08-21 显式重试遇到上游请求不存在的修正
+
+真实链路第二次复核表明，用户点击重试后仍沿用了已被上游清理的 `provider_request_id`，随后得到 `PROVIDER_REJECTED / Video request not found`。这不是新的提交失败，而是恢复边界错误：旧尝试已经不再可查询，却仍被 `ensureProviderAttempt` 视为持久化提交边界。
+
+现行规则：
+
+- `PROVIDER_REJECTED` 的明确用户重试会将已有 submitted ProviderAttempt 标记为 `ABANDONED`；下一次 Worker 执行创建新的 attempt 并重新提交。
+- 临时轮询不可用、下载失败或存储中断继续复用原 request ID，保持“最多一次提交”和恢复下载语义。
+- Worker 恢复查询明确排除 `ABANDONED` 的 submitted attempt，避免重新捞回已废弃请求。
+
+新增 C09 回归覆盖“请求不存在 -> 显式重试 -> 新 request ID -> 成功”，并保留下载失败单 POST 恢复测试。代码已通过 Task Worker 37 tests（32 pass、5 既有基础设施 skip）及 Persistence/Control API typecheck；需重启本地真实栈后由用户再次点击一次重试验证。
+
+## Video VPS 部署准备与 relay-only 预配置
+
+`infrastructure/deploy/` 现提供 Video VPS 的容器构建、私有 Compose、ACME bootstrap、Nginx 反代和无密钥环境样例。完整 Video OS、数据库、Redis、MinIO、Control API、Worker 和 Studio 仍未部署，也未启动真实 Provider。2026-08-22 已在用户指定的空闲 Debian 12 主机上完成**仅 relay 的预配置**：安装 Nginx/Certbot，新增独立 `video.aiself.vip` HTTP relay site，仅代理 `/provider-input/` 到 SSH 反向隧道的 `127.0.0.1:18080`，其他路径返回 404；现有 SSH 用户仅放开 remote TCP forwarding，Agent/TUN/stream-local forwarding 仍关闭。该变更不接管 Sub2API、Alchemy 或其他应用端口。
+
+`video.aiself.vip A 43.251.227.106` 已生效。2026-08-22 已在 VPS 签发 `video.aiself.vip` 的 Let’s Encrypt 证书（有效至 2026-11-20），启用 443 relay，并通过公网验证 TLS、根路径 404、无效 token GET 404、POST 405。`assets.video.aiself.vip` 仍未配置（完整 Video OS 部署才需要）。本地 Control API 通过 SSH 反向隧道映射到 VPS `127.0.0.1:18080`，HTTPS relay 边界已打通；真实 Provider 任务仍需保持隧道运行并由用户在 Studio 手工点击触发，不能据此宣称视频质量或真实任务已验收。
 
 部署包将对象存储分成两个端点：`S3_ENDPOINT=http://minio:9000` 只供 API/Worker 内网读写；`S3_PUBLIC_ENDPOINT=https://assets.video.aiself.vip` 只用于 Control API 签发给浏览器的 URL。`S3_BROWSER_ORIGINS=https://video.aiself.vip` 约束上传 CORS。浏览器页面、`/api/v1/*` 和 SSE 在 C09-B 身份实现完成前由 edge Basic Auth 保护；只有短时不透明 `/provider-input/<token>` 和签名 S3 对象请求不使用该认证。MinIO Console、数据库、Redis、Worker、Control API host ports 和 `/internal/*` 均不公开。
 

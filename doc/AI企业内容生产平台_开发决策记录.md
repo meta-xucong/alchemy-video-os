@@ -602,17 +602,18 @@ receipt：`usage_records` 增加 `credit_provider`，唯一性固定为 `(credit
 
 上下文：当前长叙事设计把可见 Shot 与实际 Provider 生成单元基本等同。这样会把 18 个逻辑镜头错误地变成 18 次真实调用，即使目标总时长只有 30 秒，也会产生大量过短、昂贵且连续性较差的任务。前端还会把历史成功片段数量误认为当前制作计划的镜头数量。这个问题不属于某一个题材，而是所有长文本、广告、短剧、产品宣传和未来 Provider 的共同编排问题。
 
-决策：平台统一采用三层模型：
+决策：平台对用户可见的创作与成片事实继续采用三层模型；后台执行层允许在 `NarrativeBeat` 与 `GenerationSegment` 之间增加私有动作节拍：
 
 ```text
 NarrativeBeat（叙事点）
+  -> MotionBeat（私有动作节拍，可选兼容层）
   -> GenerationSegment（实际生成片段）
   -> VideoVersion（最终成片）
 ```
 
-`NarrativeBeat` 负责故事事件、人物状态、场景和情绪，不直接创建 Provider TaskRun。`GenerationSegment` 按目标总时长、Provider capability、预算和叙事边界分组，每个生成片段恰好对应一次可恢复的 Video TaskRun。所有已验收生成片段由 Media Runtime 合成新的不可覆盖 `VideoVersion`。
+`NarrativeBeat` 负责故事事件、人物状态、场景和情绪，不直接创建 Provider TaskRun。`MotionBeat` 只描述同一连续片段中的可观察动作、时间位置和起止姿态，不创建 Provider TaskRun，也不改变公开片段数量。`GenerationSegment` 按目标总时长、Provider capability、预算和叙事边界分组，每个生成片段恰好对应一次可恢复的 Video TaskRun。所有已验收生成片段由 Media Runtime 合成新的不可覆盖 `VideoVersion`。
 
-30 秒内容默认优先规划为 3 段 × 10 秒；复杂内容可规划为 6 段 × 5 秒。实际结果必须满足 Provider 的安全时长范围、片段总时长等于目标时长，并且按场景、动作和情绪边界分组，不能按字符数或逻辑镜头数量机械切片。
+30 秒内容默认优先规划为 2 段 × 15 秒。15 秒以内的动作和运镜使用同一段内的时间轴表达；只有超过 Provider 的安全时长上限，或用户明确写出编辑性场景切换时，才增加 Provider 片段。实际结果必须满足 Provider 的安全时长范围、片段总时长等于目标时长，并且按场景、动作和情绪边界分组，不能按字符数或逻辑镜头数量机械切片。
 
 `ProductionRun` 的公开进度显示生成片段数量，不显示历史 TaskRun 数量。旧的 Shot/TaskRun/VideoVersion 保持只读兼容；新的长叙事 revision 通过独立的叙事点、生成片段映射和版本化 ProductionRun 迁移，不原地改写旧快照。
 
@@ -627,7 +628,7 @@ NarrativeBeat（叙事点）
 
 选择原因：方案 4 把非专业用户看到的故事结构与 Provider 的工程限制解耦，能控制真实调用次数、保留长故事的叙事顺序、支持局部失败重试，并且为任何 Provider 和题材复用同一套规则。
 
-影响：需要在后续实现中补充 `NarrativeBeat`、`GenerationSegmentSpec` 及其映射契约，更新 Storyboard/ProductionRun 公开投影、C12 调度、交接帧、QC、合成和 Studio 进度展示。C09 的单 Shot 兼容接口暂不删除；真实 Provider、Veyra、VPS、DNS、部署和 Git 操作边界不因本 ADR 改变。
+影响：需要在后续实现中补充 `NarrativeBeat`、可选私有 `MotionBeat`、`GenerationSegmentSpec` 及其映射契约，更新 Storyboard/ProductionRun 公开投影、C12 调度、交接帧、QC、合成和 Studio 进度展示。C09 的单 Shot 兼容接口暂不删除；真实 Provider、Veyra、VPS、DNS、部署和 Git 操作边界不因本 ADR 改变。动作节拍的实施和验收由 ADR-0050/C11.3 单独管理。
 
 迁移/回滚：旧项目不回填、不修改历史输入快照。重新生成时创建新的 StoryboardRevision 和 ProductionRun；新版本成功后与旧版本并列保留。若实现回滚，只能停止新编排命令，不能把新片段任务重新解释为旧 Shot 或重复提交已有 Provider request ID。
 
@@ -675,6 +676,26 @@ C12 后续片段的 `HANDOFF_FIRST_FRAME` 不再丢弃用户参考图。前段�
 
 审计证据：Studio 静态回归证明勾选由 CreativeBrief 恢复且不读取最新 Shot 绑定；Production Repository 集成回归证明第二段快照为 `[handoff, user-reference]` 的有序 `REFERENCE_SET`；CreativePlanning/Provider runtime 回归证明 PromptPackage 和 7 图上限一致；C12 E2E/本地测试通过后追加到章节审计记录。
 
+## ADR-0044：以语义衔接质检和有界自动修复补齐 C12 成片连续性
+
+状态：SUPERSEDED
+
+日期：2026-08-17
+
+影响章节：C12.1；C13-A 继续后置，不改变 Veyra、VPS、DNS、部署、共享积分或公开单 Shot 生成契约。
+
+上下文：ADR-0042 和 ADR-0043 已修复确定性的音轨、用户参考素材和“前段交接帧优先”问题，但上游视频模型仍可能在相邻片段之间产生人物、服装、场景、构图或动作方向漂移。现有固定淡变只能遮蔽硬切，不能判断是否存在语义断裂，也不能以可审计方式决定何时需要真正的短过渡画面。
+
+决策：新增私有 `HandoffReview` 和 `TransitionRepair`。技术 QC 通过后，受控 `HandoffEvaluatorPort` 只接收有界边界帧与最小连续性摘要，返回 `PASS`、`BLEND`、`BRIDGE_REQUIRED`、`UNAVAILABLE` 或失败。`PASS` 直接合成，`BLEND` 使用既有淡变，`BRIDGE_REQUIRED` 最多生成或编排一个 1 至 3 秒的本地媒体运行时转场并记录修复计划；`UNAVAILABLE` 或失败只直切并公开投影为“衔接检查未完成”，不创建没有语义依据的修复。每个边界最多一次自动修复，整次 `ProductionRun` 的自动修复上限冻结；自动转场不改变用户看到的主生成片段数量或用户目标总时长，也不在 C12.1 新增真实 Provider 调用。
+
+选择原因：把“内容连续”从提示词期待转为持久化、可恢复、可测的后台质量流程，同时保留面向非专业用户的一键创作体验。自动转场只在必要时触发且有次数、时长和恢复守卫，避免无限调用、无限修复或把工程细节抛给用户。
+
+限制：第一阶段只实现注入式本地夹具评估器和 Mock/离线回归，不认证新的真实视觉评估模型，也不承诺逐像素首尾一致。评估器的原始图像、模型回答、评分、Prompt、Provider、对象 key、临时文件与命令行一律不公开。语义评估不可用时只能降级为直切和明确状态，不能伪造通过或伪造转场修复。
+
+迁移/回滚：通过前向迁移新增私有关系和安全公开字段；不修改历史 TaskRun、ProviderAttempt、Asset、HandoffAsset 或 VideoVersion。回滚仅停止新的质检/修复调度，保留已有事实和旧成片只读；C12.1 本地修复没有桥接 Provider 任务，重复恢复只可回放既有评估、修复事实与合成计划。未来认证视觉模型桥接时必须另立 ADR、能力认证和恢复语义。
+
+审计证据：`AI企业内容生产平台_C12.1语义衔接质检与自动转场修复开发设计.md`、Contracts/Domain/Persistence/Production Worker/Media Runtime/Studio 回归、多片段的 PASS/BLEND/BRIDGE_REQUIRED/UNAVAILABLE 夹具、Worker 重启和重复事件回归、公开边界扫描及独立 C12.1 Exit Gate。
+
 ## 新决策模板
 
 ```text
@@ -692,3 +713,371 @@ C12 后续片段的 `HANDOFF_FIRST_FRAME` 不再丢弃用户参考图。前段�
 迁移/回滚：
 审计证据：
 ```
+
+## ADR-0053：DeliveryPlan 与 NarrationPlan 作为 Provider 前置审批状态机
+
+状态：ACCEPTED
+
+日期：2026-08-29
+
+影响章节：C11.7/C12.7A、C12.7B；不改变历史 ProductionRun、TaskRun 或 Provider 协议。
+
+上下文：现有“开始制作”会直接确认 ProductionRun，无法在视频提交前冻结交付承诺、声音策略、样音审批和能力降级。源仓库的 proposal/checkpoint 能力不能直接以文件状态进入平台事实。
+
+决策：新增 `DeliveryPlanRevision` 与 `NarrationPlanRevision`。它们拥有独立 `DRAFT -> PREFLIGHT_BLOCKED|AWAITING_APPROVAL -> APPROVED -> CONSUMED|SUPERSEDED` 状态，失败或撤销只能阻止新制作，不改写历史成片。未批准的 preflight 不创建 `production_run.confirmed`，也不占用现有活动 ProductionRun 锁。
+
+迁移/回滚：仅前向新增表、契约和事件；关闭本能力时历史流程只读兼容，不迁移旧 ProductionRun。
+
+审计证据：Contracts、Domain、Persistence schema、Control API preflight 和公开 SSE 脱敏测试。
+
+## ADR-0054：SpokenForm、Glossary、VoiceAuthorization 与 BrandPolicy 默认 fail-closed
+
+状态：ACCEPTED
+
+日期：2026-08-29
+
+影响章节：C11.7/C12.7A、C12.7B、C12.8。
+
+决策：`AI`、品牌、人名、型号、日期/编号等歧义词必须由 `PronunciationGlossaryRevision` 或用户批准的样音冻结，不自动猜测为内容正确。真实人声、头像、授权音频/视频和 Logo 默认禁止克隆、模仿或暗示代言；只有 `VoiceAuthorization` 与 `BrandPolicyRevision` 均处于可用状态且未过期时，后续计划才可使用对应输入。
+
+迁移/回滚：撤销只影响新 DeliveryPlan；历史 VideoVersion 仍按原始事实播放和审阅。
+
+审计证据：状态机、授权撤销、公开投影脱敏和跨工作区 schema 测试。
+
+## ADR-0055：BudgetReservation 与 Veyra debit 分离
+
+状态：ACCEPTED
+
+日期：2026-08-29
+
+影响章节：C11.7/C12.7A、C13-A。
+
+决策：`BudgetReservation` 只保存平台侧估算、用户批准和超预算阻断事实，金额使用十进制字符串。它不得维护余额、模拟扣费、替代 Sub2API/Veyra debit 或写 UsageRecord；真实 debit 仍只在 C13-A 按成功产物后幂等 receipt 执行。
+
+审计证据：契约和 schema 均不包含 Veyra token、余额或 debit payload；预算超额只阻断 Provider 前置提交。
+
+## ADR-0056：CapabilityProfile 认证决定 Web 可见能力
+
+状态：ACCEPTED
+
+日期：2026-08-29
+
+影响章节：C11.7/C12.7A、C09-C、C12.7B、C12.9。
+
+决策：视频、TTS、字幕、Avatar/lip-sync、编辑和输出变体能力必须按 feature 独立记录认证状态。只有 `OFFLINE_CERTIFIED` 可进入本地 Mock/fixture 流程，只有 `LIVE_CERTIFIED` 且经授权的真实能力才可在普通项目选择器出现；`DISABLED`、`REVOKED` 或未知 feature 必须 fail-closed。
+
+审计证据：Domain 能力可见性测试、公开 DTO 不暴露 provider 原始字段。
+
+## ADR-0057：QualityGateDecision 将 QC 事实转成可恢复行动
+
+状态：ACCEPTED
+
+日期：2026-08-29
+
+影响章节：C11.7/C12.7A、C12.8。
+
+决策：`QcReport` 继续保存技术/语义检查事实；`QualityGateDecision` 保存行动路由：`PRESENT`、`REVISE_NARRATION`、`REVISE_EDIT`、`REGENERATE_SEGMENT`、`BLOCK` 或 `AWAITING_HUMAN_APPROVAL`。`REVIEW` 不能自动等价为发布通过，只有 `PRESENT` 或授权人工批准才允许导出相应 variant。
+
+审计证据：严重度/action 领域测试、公开安全投影和恢复命令后续测试。
+
+## ADR-0058：OutputProfile 与字幕/重构图不覆盖原始 VideoVersion
+
+状态：ACCEPTED
+
+日期：2026-08-29
+
+影响章节：C11.7/C12.7A、C12.8。
+
+决策：默认只冻结 16:9 原始输出；横版、竖版、方形、字幕烧录、sidecar 字幕和重构图必须在 `OutputProfileRevision` 中显式选择。所有派生输出都是新 Asset/variant，不裁切、不替换、不重新评级历史成功 VideoVersion。
+
+审计证据：契约和 schema 验证 variants 必须显式，默认字幕策略按项目类型冻结。
+
+
+## ADR-0045：C11.1 以冻结 Markdown 结果而非原始资料进入规划
+
+状态：ACCEPTED
+
+日期：2026-08-17
+
+影响章节：C10、C11.1；不改变 C12、C13-A 或既有视频任务。
+
+决策：原始 `USER_UPLOAD/DOCUMENT` Asset 只表达用户选择。新建 CreativeBriefRevision 必须在同一 workspace/project 中冻结其唯一成功的 `DocumentConversion` 和 `READY/DERIVED/text-markdown` 结果 Asset，随后由 Workflow Worker 以每份 5,000 字符、最多四份、总计 18,000 字符读取这些准确结果。Markdown 正文只作为私有规划上下文和 PromptPackage 约束；确定性公开计划只显示资料参与和一致性要求，不能复述原句。公开 DTO/SSE/日志不返回正文、对象 key、签名 URL、Prompt 或内部哈希。
+
+选择原因：直接引用原始资料无法证明转换完成，也会让失败资料在浏览器刷新后悄然进入规划；只保存一个可变资料列表又无法让审阅版本复现。冻结 conversion/result 关系保留 C10 的来源链，同时使 Worker 在不访问原始文件或任意路径的前提下得到有限、可重放的上下文。
+
+后果：C11.1 增加私有 `creative_brief_document_contexts` 和 `DOCUMENT_CONTEXT_INVALID` 语义。资料读取失败停止该次规划并走已有重试/失败路径；不会重新转换资料、替换历史引用或创建视频任务。
+
+审计证据：C11.1 设计、领域契约、Repository/Worker/HTTP/Studio 测试和公开边界扫描。该 ADR 不授权 Provider、Veyra、VPS、SSH、DNS、部署、付费调用或 Git 写入。
+
+## ADR-0046：C11.2 以可定位事实包替代 Markdown 全文进入创作
+
+状态：PROPOSED
+
+日期：2026-08-18
+
+影响章节：C10、C11.1、C11.2、C11、C12；不改变 C13-A、Veyra、共享积分、VPS、DNS、部署或现有历史生成。
+
+上下文：C11.1 已安全冻结成功 Conversion 的 Markdown，但固定开头字符截取既无法覆盖复杂 PPT 的后半段内容，也无法按叙事段过滤资料；同一资料原文被附加到所有镜头 Prompt，导致重点漂移、冲突事实无法处理，并可能扩大真实 Provider 输入。资料转换成功不等于资料已被理解。
+
+决策：新增私有 `DocumentKnowledgeRevision`、结构段、可定位 `DocumentFact` 和 `CreativeBriefFactContext`。资料理解与创作规划分离：Document Worker 成功转换后通过 outbox 投递理解任务；新 Brief 只冻结同一 Conversion/SHA 的 READY 知识修订中被选中的事实快照；每个 GenerationSegment 只接收相关事实和全局品牌/合规锁。原始 Markdown、chunk、对象 key、hash、Prompt、检索分数、模型和选择理由不进入公开 DTO/SSE/日志。资料冲突、视觉缺失和没有来源定位的推断默认不得进入营销结论。
+
+考虑过的方案：继续扩大 C11.1 字符上限会继续丢失语义边界并把更多无关文本复制到每个片段；直接接入向量库或自由文本 Agent 会引入未认证模型、外部凭据和不可审计写入；让用户手动切块会违反面向非专业用户的一键创作目标。
+
+选择原因：结构化事实包既保留 C10 的来源链和 C11.1 的不可变性，又把复杂资料的处理变成可恢复、可测试的后台工作。首版可由无网络确定性解析器安全实施；未来真实文本/视觉理解只能替换受控端口，不能绕过事实、快照和 Provider 边界。
+
+影响：新增 C11.2 专项后端/前端设计、领域/事件契约、迁移、Document Knowledge Worker、事实选择器、Studio 资料状态与回归。C11.1 历史 Brief 和所有历史视频版本只读兼容；新的资料理解失败、冲突或部分可读不能被伪装成已结合资料生成。
+
+迁移/回滚：只前向新增知识和事实快照表。历史成功 Conversion 可以逐个 backfill，但不会修改历史 Brief 或发起视频任务；回滚仅停止新任务创建，已存在 Revision/FactContext/Storyboard/TaskRun/VideoVersion 保留可读。
+
+审计证据：`AI企业内容生产平台_C11.2资料理解与按段事实包后端开发设计.md`、`AI企业内容生产平台_C11.2资料理解前端交互设计.md`、Contracts/Domain/Persistence/Document Intelligence/Workflow/Studio/E2E 回归、公开字段和无网络扫描。该 ADR 在独立验收前不授权真实文本或视觉模型、Provider、Veyra、VPS、SSH、DNS、部署、付费调用或 Git 写入。
+
+## ADR-0047：为已实测 SUB2API profile 增加出站 Prompt 压缩上限
+
+状态：ACCEPTED
+
+日期：2026-08-18
+
+影响章节：C09-C、C12；不改变公开输入、历史 TaskRun、参考素材契约或 C13-A 外部边界。
+
+上下文：xAI 官方视频文档没有公布 Prompt 字节上限，平台因此保留了 20,000 字节的可调安全预算。但本地真实 `aiself-grok / grok-imagine-video-1.5` 请求返回了明确的“最多支持 4096 字节 UTF-8 文本”拒绝。该限制可能来自当前 SUB2API/profile 网关，不能写成 xAI 通用规范；继续把 20,000 字节原样送入该 profile 会在 Provider submit 前失败。
+
+决策：保留 20,000 字节作为平台/资料预算，不在浏览器或 Control API 入口拒绝用户原文；在内部 `VideoProviderRuntimeProfile` 为该 profile 声明 4,096 字节出站压缩上限。创建不可变 TaskRun 执行快照时，使用配置预算与 profile 上限的较小值做确定性 UTF-8 安全压缩。Shot 继续保存原始创作描述，历史任务不改写；未来 profile 认证出不同能力时只调整内部 profile 配置和对应证据。
+
+选择原因：同时满足非专业用户不需要手工缩写、平台不伪造官方限制、真实请求不被已知网关规则立即拒绝三项要求。压缩发生在任务快照生成前，Worker 实际提交的 Prompt 与持久化快照一致，避免 Provider 请求与审计事实分叉。
+
+审计证据：最新失败 TaskRun 的只读数据库证据（13,457 UTF-8 字节、两张参考图、`PROVIDER_REJECTED` 4096 文案）；Provider Runtime 35/35、Production Worker 22/22、类型检查和本地真实栈重启验证。未自动重试真实任务，未访问 Veyra/VPS/DNS/TLS，未执行 Git 写入。
+
+## ADR-0048：保留多参考图的主体与场景语义
+
+状态：PROPOSED
+
+日期：2026-08-18
+
+影响章节：C09-C、C12；不改变公开 ReferenceBinding 枚举、C13-A、Veyra、VPS、DNS、部署或历史 TaskRun。
+
+上下文：本机真实成功任务已经证明两张参考图能够完成 relay 和 Provider 接收，但成片主要采用第一张人物图，第二张场景图变成泛化环境。此前 `REFERENCE_SET` 快照没有内部角色，Prompt 只说“参考图是视觉来源”，无法告诉上游哪张图片锁定场景。
+
+决策：在不可变 `visual_input.references` 中增加可选的内部角色。新任务不再依据上传位置分配角色；用户文字说明优先，随后由视觉分析单元识别 `SUBJECT`、`SCENE` 或 `STYLE`，C12 的交接帧为 `HANDOFF`。Worker relay 按 `HANDOFF -> SCENE -> SUBJECT -> STYLE` 排序，Prompt Compiler 同步加入角色约束。旧快照没有角色时保持兼容，不回写历史事实。
+
+选择原因：不增加面向非专业用户的工程表单，不修改公开数据库枚举，又让真实 R2V 请求拥有可审计、确定性的场景优先语义。单图仍只声明主体，不虚构场景能力。
+
+限制：该 ADR 的位置规则已被 ADR-0049 取代；角色和排序只能提高上游采用场景图的概率，不能承诺逐帧或逐像素一致。
+
+审计证据：Contracts 角色兼容解析、Control API 快照角色推断、Production Repository C12 快照、Worker relay 排序、Prompt Compiler、Studio 标签和对应单测/集成测试；本 ADR 在测试通过前保持 `PROPOSED`，不授权 Git、VPS、SSH、DNS、Veyra 或部署。
+## ADR-0049 参考图角色解析采用用户说明优先
+
+- 状态：ACCEPTED
+- 决策：参考图的内部角色按“用户创作说明 > 显式主体绑定 > 视觉分析单元”解析；`HANDOFF` 首帧绑定保持最高优先级；未解析时进入等待，不执行位置回退。用户在故事输入框中明确写出的图片职责必须进入不可变 TaskRun 快照，并影响 Provider relay 排序和提示词中的输入序号映射。
+- 原因：非专业用户不应被迫按固定顺序上传图片；此前只按位置推断会丢失用户已经说明的场景/主体关系。
+- 边界：视觉分析通过显式配置的 OpenAI-compatible 多模态适配器完成；没有 `REFERENCE_VISION_BASE_URL`、`REFERENCE_VISION_API_KEY`、`REFERENCE_VISION_MODEL` 或置信度不足时，系统保持等待并提示用户，不调用位置回退，也不把失败伪装成识别成功。
+- 验证：Domain 24/24、Reference Analysis 2/2、Creative Planning 6/6、Provider Video 36/36、Studio 33/33、Control API 参考素材回归与 typecheck 通过；公开序列化不输出视觉分析元数据，C11/C12 生产快照对未解析角色保持 WAITING。
+
+## ADR-0050：以 MotionBeat 补齐叙事点到生成片段的动作编排
+
+- 状态：PROPOSED
+- 日期：2026-08-19
+- 影响章节：C11.3、C12；兼容 C11、C11.1、C11.2、C12.1 的既有事实，不改变 C13-A 外部边界。
+- 上下文：当前平台已经能把 `NarrativeBeat` 分组为 `GenerationSegment`，但现行编译器主要按句子和等分规则形成段落，缺少同一片段内的动作顺序、时间位置、结束姿态和镜头运动约束。这会放大人物动作不自然、服装/场景连续性漂移和首尾状态不明确等质量问题。上游 `huobao-drama` 的 storyboard-breaker/prompt-generator、Seedance 的长视频提示词和 OpenMontage 的时间轴 Artifact 已提供可复用思路，但不能直接把上游 Agent 或文件工程当作平台事实源。
+- 决策：在 `NarrativeBeat` 与 `GenerationSegment` 之间增加私有 `MotionBeat` 和 `GenerationSegmentMotionPlan`。新 revision 先生成 2-4 个可观察动作节拍，再按场景、因果、能力和预算边界形成生成片段。`PromptPackage` 按参考素材职责、全局连续性锁、项目事实、动作时间轴、音频提示和禁止项确定性编译；动作计划版本、哈希和来源叙事点序号进入不可变执行快照。公开 DTO/SSE/日志不暴露动作工程字段，旧 revision 没有动作计划时继续使用兼容编译器。
+- 考虑过的方案：继续沿用句子等分；把整段原文直接交给视频 Provider；让前端显示分镜/动作时间轴供用户手工修正；复制上游自由 Agent 和本地 workspace 文件。
+- 选择原因：MotionBeat 只增加后台执行层，不破坏现有公开项目/任务体验；结构化时间轴可测试、可重放、可在 Provider 能力认证前使用 Mock 验证，同时保留上游成熟的动作与提示词字段语义。
+- 影响：新增 C11.3 设计文档、私有计划 schema/校验、PromptPackage 编译输入和 TaskRun 快照字段；C12 需要在调度、QC 和合成报告中保留动作计划版本。不会回填或重写历史 Storyboard、TaskRun、VideoVersion，也不会增加用户操作步骤。
+- 迁移/回滚：只向前为新 revision 写入动作计划；历史快照缺失时按旧编译器读取。若 C11.3 验证失败，关闭新 revision 的 MotionPlan 编排并回退到兼容编译，保留已经创建的新事实和历史成片只读可追溯。
+- 审计证据：`AI企业内容生产平台_C11.3动作节拍与时间轴提示词开发设计.md`、领域/API 契约更新、creative-planning/Workflow Worker/PromptPackage/TaskRun 快照测试、公开脱敏扫描和 Mock E2E。该 ADR 在独立验收前不授权真实 Provider、Veyra、VPS、SSH、DNS、部署、付费调用或 Git 写入。
+
+## ADR-0051：以 AudioPlan 统一连续旁白与分段视频音频所有权
+
+> **语音路线部分已由 ADR-0063（2026-09-01）SUPERSEDED**：本条中“存在 `PLATFORM_NARRATION` 即默认静音 Provider dialogue”的无条件路由不再适用；仅在明确选择该 owner 时执行。native Provider 音频可按来源能力成为最终 owner。AudioPlan、历史兼容和 fail-closed 边界仍保留。
+
+- 状态：PROPOSED
+- 日期：2026-08-25
+- 影响章节：C12.4、C12.1、C09-C；不改变历史 TaskRun/ProductionRun/VideoVersion、Provider submit/status/download 协议、默认 Mock、Veyra 或部署边界。
+- 上下文：当前 Media Runtime 会保留每个 AI 片段的内嵌音频，并以 concat/acrossfade 拼接。真实 30 秒样本证明视频生成成功，但段间口播出现明显停顿。OpenMontage `video-stitching.md` 明确指出 AI 片段音频通常不连续，应在跨段成片时移除不连续的 AI 音频，使用统一音乐/旁白轨道，并以绝对时间戳、J-cut/L-cut、响度和完整转写校验保证连续性。现有总控文档“来源片段有音轨时不得丢弃”与该规则存在范围冲突。
+- 决策：引入私有 `AudioPlan` 和 `AudioOwnership`。存在 `PLATFORM_NARRATION` 时，Provider dialogue 不再拥有最终旁白，Media Runtime 默认将其静音并按绝对时间轴混入完整旁白；用户源音频、环境声、音乐和音效按所有权保留。没有 AudioPlan 的历史任务使用 `LEGACY_PRESERVE`，保持可回放和行为兼容。画面转场结论不自动决定音频跨淡。
+- 选择原因：这是对上游已验证音频架构的薄适配，不是无条件删除声音；同时保留旧成片、Mock 和非旁白用户素材，解决当前真实问题而不穿透模块边界。
+- 迁移/回滚：新任务只向前写入 AudioPlan 和音频资产关系；历史事实不回写。若旁白资产、时长或转写不可用，任务停在可恢复媒体门禁，不静默回退为错误音频。关闭连续旁白策略时使用 `LEGACY_PRESERVE`，不重新提交已完成 Provider 任务。
+- 审计证据要求：C12.4 设计文档、内部契约、AudioPlan/ownership 单测、三段含 AI 音频 fixture 的 Media Runtime 合成测试、响度/静音/转写检查、旧任务回放测试和一次受控真实 30 秒样本。该 ADR 在 C12.4 独立 Exit Gate 前保持 `PROPOSED`，不授权 VPS、Veyra、部署、Git 写入或无界真实 Provider 调用。
+
+## ADR-0052：口播语速优先，视觉时长跟随实际旁白并允许空镜填充
+
+> **语音 owner 部分已由 ADR-0063（2026-09-01）SUPERSEDED**：本条的自然语速、实际时长和禁止变速规则继续有效；“统一平台旁白作为默认 spoken owner”的前提改为依来源能力选择 native Provider 或 TTS owner。旧决策原文保留用于审计。
+
+- 状态：`PROPOSED`
+- 日期：2026-08-25
+- 影响章节：C12.5、C12.4、C12.1；不改变历史运行、TaskRun 状态机、Provider submit/status/download 协议、默认 Mock、Veyra、VPS 或部署边界。
+- 上下文：当前规划器先将 30 秒目标等分为 15+15 秒，再把台词塞入固定片段，导致后段口播被拖慢、段间产生停顿或切掉最后一句。该行为与 huobao 的台词最低时长和弹性分段规则、Seedance 的时间轴脚本要求，以及 OpenMontage 的“按实际旁白时长调整画面、禁止慢放音频”规则不一致。
+- 决策：复用 C12.4 的 `AudioPlan`。以脚本节奏配置和实际旁白时长为权威；先按语义边界和台词容量规划 8–15 秒视觉段，再由实际旁白时间轴确定画面承载。目标时长有余时使用无台词视觉/环境段或尾拍填充；目标时长不足时回到脚本重写，或在允许的弹性范围内延长画面；禁止使用等分时长作为口播预算、禁止 atempo/rubberband、禁止 Provider 自行补词或重复台词。
+- 选择原因：该决策直接继承源仓库已有字段、校验和反馈闭环，只在平台内部做薄 mapper；能同时解决语速不一致、音频截断和机械 15+15 拆分，而不新增第二套音频事实源。
+- 迁移/回滚：历史任务按原行为回放；新任务向前写入旁白实际时长、弹性时长策略和 AudioPlan。关闭新策略时使用 `LEGACY_PRESERVE`，不重新提交已完成 Provider 任务。
+- 审计证据要求：C12.5 设计文档、旁白 section 实际时长/节奏 DTO、按台词容量分段单测、22 秒旁白填充 30 秒和 33 秒旁白超长两个 fixture、A/V 时间轴与转写 QC、历史 `LEGACY_PRESERVE` 回放测试。该 ADR 在 C12.5 Exit Gate 前保持 `PROPOSED`，不授权真实 Provider、VPS、Veyra、部署或 Git 写入。
+
+## ADR-0059：新生产提交必须消费已批准的 DeliveryPlanRevision
+
+- 状态：`IN_PROGRESS`
+- 日期：2026-08-29
+- 影响章节：C11.7、C12.7A、C12；不改变历史无计划运行的读取、Provider 协议、默认 Mock、Veyra、VPS、DNS、部署或 Git 边界。
+- 决策：Control API 的新 `ProductionRun` 命令必须显式携带 `delivery_plan_revision_id`。该 revision 必须属于同一 workspace/project、绑定同一 approved storyboard、状态为 `APPROVED` 且没有阻断原因。创建成功后在同一持久化事务内将计划转为 `CONSUMED` 并记录不可变的 production run 引用；幂等重放只返回原 run。`production_runs.delivery_plan_revision_id` 在数据库层保持 nullable，以便已存在的历史行继续可读，但没有该引用的旧运行不得被新 API 当作新的提交依据。当前迁移不声明反向复合外键，改由事务内的 workspace/project/storyboard 作用域查询、行锁和领域门禁共同保证引用一致性，避免循环表初始化导致的 Drizzle schema 递归类型问题。
+- 原因：仅在路由前置查询批准状态会在重启、并发和多实例部署中产生批准检查与运行创建分叉；只在前端传递或隐藏按钮也不能构成领域门禁。把计划引用写入生产运行并由事务锁定计划，才能证明 Provider 调度使用的是经过批准且未被再次消费的交付事实。应用层的复合作用域校验是当前可验证的实际约束，不能在没有数据库外键的情况下宣称数据库已提供同等保护。
+- 迁移/回滚：只向前增加 nullable 引用列和消费更新；不回填或改写历史运行。关闭新入口时保留历史读取，新的无计划生产命令仍拒绝，已消费计划不可重新批准或重复创建运行。若后续需要数据库级复合外键，必须另立 schema/迁移决策并先解决循环初始化与历史数据校验。
+- 审计证据要求：Contract/OpenAPI 字段校验、Control API workspace/project/状态门禁、InMemory 与 Drizzle 幂等和消费测试、确认事件引用、Worker 重启恢复及公开 DTO/SSE 安全扫描。该 ADR 在独立验收前不授权真实 Provider、共享扣费、Veyra、VPS、SSH、DNS、部署或 Git 写入。
+
+## ADR-0060：原仓库优先、薄壳适配和最小增量
+
+状态：`ACCEPTED`
+
+日期：2026-08-30
+
+影响范围：所有参考仓库迁入、适配器、Runtime、规划器、Worker、Studio 及后续章节；不改变平台既有 Control API、领域、持久化、队列、工作区和审计边界。
+
+上下文：近期旁白与音频编排增量出现了与来源语义重叠的自定义路径，导致样音/正式旁白身份混淆、分段旁白和完整旁白混用、AUTO 音乐静默缺失以及多个兼容协议继续扩张。平台需要一个比“尽量复用”更严格、可审计且能阻止过度开发的底层约束。
+
+决策：
+
+1. 只移植参考仓库固定 commit 中已有的代码、字段、参数、校验和流程；来源已有实现与平台契约兼容时，直接移植原代码或保持等价调用顺序。
+2. 平台只允许在边界处增加输入/输出转换、workspace/权限校验、对象存储读写、错误归一化、任务幂等和公开脱敏等薄壳适配。平台自己的身份、Control API、持久化、队列和审计逻辑不被删除，但不得改变来源媒体/内容语义。
+3. 禁止在来源能力之上另写平行算法、阈值、协议版本、自动改写、静默回退或 UI 状态含义。任何修改、删减、重命名或替换都必须注明具体来源文件/符号/规则、保留内容、平台适配点、舍弃原因和行为回归。
+4. 来源没有安全对应实现、能力未认证或语义无法证明时，保持 `UNAVAILABLE`、`DEFERRED`、`BLOCKED` 或 fail-closed，不得用“先跑起来”补造逻辑。
+5. 内存、数据库、Runtime、兼容读取器和 fixture 必须遵循同一来源语义；不允许只修一条实现或用静态源码检查冒充行为证据。
+6. 先执行最小错误路径修正，再考虑扩展；扩展前必须有契约、来源登记、定向行为测试和审计 Exit Gate。原《AI企业内容生产平台_C12.4-C12.5最小化源仓库适配修改方案.md》已冻结为历史基线；当前 C12.4/C12.5 以《AI企业内容生产平台_多源仓库逐项迁移矩阵与冲突审计开发方案.md》作为来源追踪、跨仓库冲突和逐项增量清单。
+
+考虑过的方案：
+
+- 整仓回滚到某一个参考仓库：拒绝，会丢失平台必要的模块边界、已验收本地 MVP 和 C11.2 事实链。
+- 保留所有自定义兼容层并继续叠加：拒绝，会继续制造来源语义漂移和无法审计的分支。
+- 仅保留平台外壳、把来源逻辑全部重写：拒绝，违背最大化复用和来源优先原则。
+
+迁移/回滚：本 ADR 不要求立即删除历史代码或重写用户改动。后续回退只针对明确的活动路径，优先关闭/隔离自定义分支，保留历史快照和兼容读取；不得使用破坏性 Git 操作。旧协议和旧成片只有在有来源等价替代、行为测试和审计证据后才可移除。
+
+审计证据要求：每个迁入或修改的适配模块都有来源登记；测试同时覆盖来源行为和平台边界；文档只引用最新可复核计数，历史计数明确标注为历史。该 ADR 不授权真实 Provider/TTS、Veyra、共享扣费、VPS、SSH、DNS、TLS、部署、付费调用或 Git 发布。
+
+## ADR-0061：S03 独立旁白轨道载体边界
+
+状态：`ACCEPTED`（仅 C12.4-S03 切片；C12.4/C12.5 总体仍 `IMPLEMENTED_PENDING_AUDIT`）
+
+日期：2026-08-30
+
+来源映射：OpenMontage `asset-director.md` 的 section narration asset（asset id/path/duration）、`edit-director.md` 的 `asset_id + start_seconds` 绝对 EDL，以及 `audio_mixer.py::_full_mix/_track_filters` 的 `{path, role, start_seconds, volume, fades}` 轨道语义。
+
+平台边界：允许在现有 TimelinePlan/AudioPlan/ALCHMED8 内部兼容扩展逐轨已测 AUDIO 资产载荷；旧单 `narrationBytes` 必须保持兼容。Worker 只能通过既有 workspace/project Asset + StoragePort 读取并校验 bytes，Runtime 只能使用受控临时路径；不接受 URL、任意本地路径、第二套 AudioPlan 或新 magic。
+
+本轮收口：现有 `TimelineNarrationSection`、`narrationAssetVersions` 与 `ProductionCompositionInput` 已在不新增公共协议的前提下支持按 PRIMARY section 全有或全无的正式非样音资产及独立实测 duration；ALCHMED8 复用既有私有载荷承载逐轨 bytes/track identity，Worker 通过已有 StoragePort 校验后交给 Runtime。Runtime 仅将受控临时文件映射为来源 `{path, role: "speech", start_seconds}`，调用 `full_mix.py` 对 OpenMontage `_full_mix` 的薄适配；旧单 `narrationBytes` 保持兼容，缺少独立事实仍 fail-closed。
+
+证据：`services/media-runtime/tests/test_runtime.py` `101 passed`（含 payload identity、绝对窗口、时长不一致和 compose 接线路径）；`services/media-runtime/adapters/openmontage_audio/test_adapters.py` `11 passed`（含来源滤镜图、缺轨/非法 target fail-closed 和受控 ffmpeg/ffprobe 实际媒体夹具）；Production Worker `45/45`；Persistence `53 pass / 10 explicit DATABASE_URL-gated skip`；Contracts `36/36`；Domain `43/43`；根 `pnpm test` `452 passed / 18 explicit environment-gated skips / 0 failed`，typecheck/build 通过。未调用真实 Provider/TTS/Veyra/计费/网络/VPS/Git。
+
+独立 Exit Gate 复核于 2026-08-30 完成，S03 标记为 `ACCEPTED`，仅表示本切片的来源等价、负向边界、Worker→Runtime 集成和受控媒体产物证据齐全，不宣称章节验收。approved full-track section-level windows、完整 AudioPlan 语义、transition/xfade、cue-only full-narration-first、Studio 样音/审批/TimelinePlan、REQUIRED 字幕事实链、中文口音及超长旁白 consumer 行为仍按总控文档保留为硬门；S04 仅按用户授权开始 `IN_PROGRESS`，不得提前标记完成。
+
+## ADR-0062：Huobao 正式分镜段 8–15 秒边界
+
+状态：`ACCEPTED`（仅 E03/HB-STORYBOARD-TIMING 8–15 秒迁移切片；C12.4/C12.5 总体仍 `IMPLEMENTED_PENDING_AUDIT`）
+
+日期：2026-08-31
+
+来源映射：固定 `huobao-drama@f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 的 `backend/workspace/skills/storyboard-breaker/SKILL.md`。来源明确每个分镜段为 8–15 秒；台词容量按 `字符数 / 4.5 + 2 秒表演余量`，装不下时应沿来源边界移到后续段落。
+
+决策：仅将平台 `StoryboardShotSpec` 的正式段时长契约和既有 `assertStoryboardPlan` 入口收口到 8–15 秒；规划器生成无法满足该边界的结果时复用既有 `STORYBOARD_SPEC_INVALID` 失败路径，不新增余数分配、慢放、填充、裁剪或 Provider 调用算法。`GenerationSegmentMotionPlan` 的 1–15 秒兼容 schema、`MotionBeat` 计数、editorial 评分、对话贪心分组和 remainder 分配与来源子镜头语义尚未完成等价映射，继续按 `UNREFERENCED`/冲突项冻结，不能借本 ADR 推广为已迁移。
+
+证据：`@alchemy-video/creative-planning` `38/38`、`@alchemy-video/domain` `43/43`、`@alchemy-video/contracts` `36/36`，并已运行 `pnpm contracts:generate`；0 skip/fail。纠察员已独立复核并完成 READY→ACCEPTED 状态流程。未调用真实 Provider/TTS/Veyra/网络/VPS，未执行 Git 写操作。该 ACCEPTED 仅覆盖 8–15 秒边界切片，不覆盖 Huobao 2–4/2–6 子镜头、MotionPlan 或未映射规划语义。
+
+## ADR-0063：按原仓库能力选择唯一语音 owner，禁止无条件后期 Piper
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED`（语音路线设计裁定；代码迁移和真实能力仍待各自章节审计） |
+| 日期 | 2026-09-01 |
+| 影响章节 | C12.4、C12.5、E12；不改变公共状态机、默认 Mock、历史运行、Veyra、计费、VPS、部署或 Git 边界 |
+| 来源 | OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `grok_video.py::GrokVideo`、`tts_selector.py::TTSSelector`、`piper_tts.py::PiperTTS`、`voice-performance-director.md`、explainer `asset-director.md`/`compose-director.md`/`executive-producer.md`/`audio_mixer.py::_full_mix`；Huobao `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 的 `volcengine-video.ts`/`generation.ts`；Seedance `ebc68d3c19a62fba0f9ba9d2805af1f711a82aa7` 的 sound policy |
+| 上下文 | 当前平台把后期 Piper 作为所有新任务的权威旁白，导致正确的 Provider 原生人声被替换/静音，同时裸 script 进入 Piper 造成中文断句、读音和速度问题。来源明确区分 native audio、参考音频、TTS selector、Piper fallback 和样音 gate。 |
+| 决策 | 先依据已固定且已认证的 profile 选择唯一 spoken/audio owner：native Provider owner 时保留其单次生成的实际音轨，不追加 TTS；TTS owner 时通过来源 `TTSSelector` 的 registry discovery、偏好、可用性和来源评分选择具体 provider；Piper 仅在明确选中时按原始 stdin/参数/`timeout=300` 执行。样音先审批、正式旁白独立且实测；最终时间轴和 `_full_mix` 只消费已证明的 owner/asset。 |
+| 兼容 | 复用既有 AudioPlan/DeliveryPlan/Asset/TaskRun/ProviderPort；不新增第二套 AudioPlan 或通用 `generate_audio` 字段。Huobao 的 `generate_audio` 只在对应 provider adapter 有固定来源证据时使用，`reference_audio` 永远是输入参考。无法由现有契约表达 owner 时 fail-closed，先立契约/ADR。历史无 AudioPlan 任务继续 `LEGACY_PRESERVE`。 |
+| 拒绝方案 | 拒绝平台 `PROVIDERS` 手工 tuple、auto 固定 Piper、无条件静音 Provider dialogue、自动 native→TTS 静默 fallback、pace 数值映射、atempo/rubberband、裁切/补静音、裸 script 直接合成和把样音当正式整轨。 |
+| 迁移/回滚 | 先做 source owner/profile 事实和离线 fixture，再迁移 selector、sample gate、正式 asset、TimelinePlan 和 Runtime/Worker 分支；任何一环缺证据即保持 `UNAVAILABLE/BLOCKED`。回滚只关闭新 owner 路径或恢复旧兼容读取，不改写历史产物、不重提已成功 Provider。 |
+| 审计证据 | Native fixture 必须证明音频保留且 TTS 调用次数为零；TTS fixture 必须证明 selector 选择、`provider_text`、原始参数、样音/正式资产和 WAV/实际时长；最终 fixture/产物必须证明 `_full_mix`、BGM/ducking、转写、末句、静音和 MIME/ffprobe。真实 Provider/TTS/中文口音仅在单独授权后验证；本 ADR 不授权外部调用。 |
+
+ADR-0051/0052 中关于“所有新任务固定 `PLATFORM_NARRATION`/后期 Piper”的语音路线由本 ADR 覆盖；其自然语速、实际时长、历史兼容和禁止变速等非冲突边界继续保留，旧 ADR 原文不删除。
+
+## ADR-0064：Doubao TTS 私有执行边界与 Runtime 阻断（历史快照，已 superseded）
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `SUPERSEDED`（授权前仅 mapper 的历史快照；由 ADR-0065 覆盖） |
+| 日期 | 2026-09-01 |
+| 来源 | OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/doubao_tts.py::DoubaoTTS`：`_headers`、`_submit_body`、`_poll_query`、`_generate`、`_audio_duration` |
+| 上下文 | 来源 Doubao 执行链使用 `DOUBAO_SPEECH_API_KEY`、`DOUBAO_SPEECH_VOICE_TYPE`、`voice_id/resource_id`、MP3/OGG/PCM、submit→poll→download 和完整 query metadata；当前平台 Runtime narration DTO、`/internal/v1/media/narration` 和 Worker client 固定 Piper/WAV，且没有可核验的 owner/profile/registry 映射。 |
+| 决策 | 只允许 `services/media-runtime/adapters/openmontage_audio/doubao.py` 内部保存来源字段、构建请求、执行显式 profile 的 source 顺序并返回私有产物事实；测试使用 mock transport。`DOUBAO_SPEECH_API_KEY` 只从进程环境读取且不写入结果/日志；默认 Mock、既有 Piper、selector auto 和现有 narration 路由保持不变。 |
+| 契约边界 | 私有产物可携带 `audio/mpeg`、实际 SHA/字节数、task id、voice/resource、source format 和 query metadata；不把这些字段加入公开 DTO、通用 `MediaRuntimeNarrationRequest`、`VideoProviderPort`、AudioPlan 或 Sub2API mapper。 |
+| 阻断 | 在现有 owner/profile 事实和跨进程 MP3 inspection/Storage 载体出现前，不把该 adapter 接入 `main.py`、`runtime.py`、Worker composition 或 selector；不能声称已启用 Doubao、中文口音或正式旁白资产。 |
+| 审计证据 | 只接受固定 source 字段/调用顺序、显式 env/profile 缺失 fail-closed、submit/poll/download mock、MIME/SHA/metadata/时长事实和 secret redaction 测试；本 ADR 不授权真实 Provider 网络调用。 |
+
+## ADR-0065：用户授权的 OpenMontage Doubao 显式 Runtime 薄壳（2026-09-01）
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `历史 IMPLEMENTED / VERIFYING，当前 BLOCKED`（仅 E12/R01 显式 Doubao 窄切片；不代表 E12 或 C12.4/C12.5 完整验收） |
+| 来源 | 固定 OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930`：`tools/audio/doubao_tts.py::DoubaoTTS._headers/_submit_body/_generate/_poll_query/_audio_duration`；selector `TTSSelector._providers/_select_best_tool` |
+| 授权 | 用户明确允许使用仓库外 `DOUBAO_SPEECH_API_KEY`、`DOUBAO_SPEECH_VOICE_TYPE`，profile=`seed-tts-2.0`/`zh_female_vv_uranus_bigtts`，进行一次真实 Runtime smoke；secret 不写入仓库、日志、fixture 或响应 |
+| 决策 | 仅把 source submit→poll→download 链以薄壳落到 `doubao.py` → `runtime.py` → `main.py` 显式 `preferred_provider=doubao|doubao_tts` → Worker loopback；保留 source URL/header/body、voice/resource、format/sample-rate/speech-rate/timestamp/usage、poll/timeout、status/error、metadata 顺序。selector auto/unknown 无 registry 时 fail-closed，显式 Doubao 需 key，显式 Piper 保留旧离线兼容。 |
+| 适配边界 | 只复用既有内部 bytes/MIME/SHA/size/ffprobe/临时目录/错误脱敏；source fields 是 loopback 私有字段，不扩散到公开视频 DTO、AudioPlan、UI、计费或第二协议。缺失 Content-Type 按 source 接受，MIME 由 source format 映射；Worker outer timeout 跟随 source `timeout_seconds`。 |
+| 验证 | 本地 Media Runtime `151/151`、Doubao/selector adapters `24/24`、Worker Runtime Client `23/23`、handler explicit/auto fixtures、typecheck/py_compile/diff-check 全通过；用户授权真实 Runtime smoke 返回 `audio/mpeg`、`37212` bytes、bundled ffprobe `1850ms`。 |
+| 未关闭 | source registry/rank 正向映射、native audio owner、正式 NarrationAsset/TimelinePlan、approved section windows、Studio 样音审批、REQUIRED 字幕、人工中文口音和超长 consumer 仍 `BLOCKED/DEFERRED`；不进入 R02，不升级 `ACCEPTED`。 |
+
+ADR-0065 覆盖 ADR-0064 中“未接入 Runtime/Worker/Contracts/API、route disabled”的当前事实表述；ADR-0064 原文保留为授权前历史审计轨迹。
+
+## ADR-0066：视频生成快照记录来源音频 owner
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `IMPLEMENTED_PENDING_AUDIT`（R01 最小 owner 适配；不代表 R01/E12 或 C12.4/C12.5 完整验收） |
+| 日期 | 2026-09-01 |
+| 来源 | OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/video/grok_video.py::GrokVideo.supports["native_audio"]`；`tools/audio/tts_selector.py::TTSSelector` 的显式 provider 选择边界 |
+| 决策 | 在现有私有 `VideoGenerationInputSnapshot` 增加可选 `audio_owner`，仅记录 `NATIVE_PROVIDER`、`TTS` 或 `LEGACY_PRESERVE`。`sub2api/grok-imagine-video-1.5` profile 映射为来源声明的 `NATIVE_PROVIDER`；Mock profile 不写入该字段。Workflow/Control API 只把该事实写入不可变快照和私有 capability snapshot，不扩展公开 TaskRun DTO、VideoProviderPort 或通用 `generate_audio`。 |
+| 生产消费 | Persistence 读取已接受片段的 owner：全部明确为 `NATIVE_PROVIDER` 或 `LEGACY_PRESERVE` 时保留片段实际音轨并跳过平台 TTS；任一片段 owner 缺失、非法或与其它片段不一致时 fail-closed；历史全无 owner 的任务继续旧兼容行为。原生 owner 与 approved platform narration timeline 同时存在时阻断，避免双重音轨。 |
+| Prompt | Creative-planning 与 provider prompt compiler 在 `NATIVE_PROVIDER` 下不生成“platform narration supplies final audible speech / provider must not carry audible dialogue”抑制语义；其它 owner/历史调用保持原有来源对齐提示。 |
+| 拒绝方案 | 不新增 `generate_audio` 公共字段、第二 AudioPlan、硬性用量/金额上限、native 失败后的静默 TTS/Piper 回退、手工 provider tuple、变速/补静音/裁切或新的评分协议。Doubao 仍只能由已有显式 `preferred_provider` 路径调用。 |
+| 证据 | Provider/runtime snapshot、prompt compiler、creative-planning native/legacy 正负 fixtures；Persistence owner 一致性单测。真实 Provider/TTS、人工中文口音和正式 NarrationAsset/TimelinePlan 仍需独立实测/审计，不在本 ADR 中自动接受。 |
+
+ADR-0066 只解决 owner 事实的最小表达与消费边界；R02 selector registry/rank、R03 样音/正式资产、完整 TimelinePlan、section windows 和人工听感仍按总控文档保持 `DEFERRED/BLOCKED`。
+
+## ADR-0067：自动生成样音与正式旁白资产（覆盖用户上传前提）
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED`（仅作为 R01 实施基线；代码、真实产物和人工验收仍需独立 Exit Gate） |
+| 日期 | 2026-09-01 |
+| 来源 | OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `skills/meta/voice-performance-director.md`、`skills/pipelines/explainer/asset-director.md`、`tools/audio/tts_selector.py`、`tools/audio/doubao_tts.py`、`tools/video/grok_video.py`；Huobao `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 仅用于区分 `reference_audio` 与 provider-specific `generate_audio` |
+| 决策 | 自动视频流程不要求用户上传旁白或样音。先依据固定来源和已认证 profile 选择唯一 audio owner：Grok native owner 保留 MP4 音轨且不调用 TTS；操作者明确选择替换时，按来源 Doubao submit→poll→download 生成服务器样音，人工审批后再生成独立正式 `NarrationAssetVersion`。样音行不得直接作为正式旁白或 TimelinePlan 资产。 |
+| 兼容 | 既有通用图片、资料、Logo、MUSIC 上传及 `NARRATION_SAMPLE`/`USER_SOURCE_AUDIO` 角色继续保留；后两者仅用于兼容和隔离测试，不构成当前自动旁白输入。现有 `sample_asset_id` 仍可表示服务器生成样音，正式资产/TimelinePlan 继续使用已有契约。 |
+| 禁止 | 不默认 Piper、不自动 native→Doubao fallback、不自动审批、不把 Huobao `reference_audio` 跨映射成 Grok 旁白、不新增第二 AudioPlan/协议、数值语速映射、时长修正、变速、裁切、补静音或口型算法。 |
+| 证据与状态 | 必须分别记录 provider/voice/settings、实际 MIME/SHA/bytes/ffprobe duration、sample approval、正式资产与绝对 section windows；静态命中、fixture 或一次 canary 不能替代人工中文听感。公共字段不足时先补 ADR/契约再实现；证据不足保持 `UNAVAILABLE`/`BLOCKED`。默认 `VIDEO_PROVIDER=mock` 不变。 |
+
+ADR-0067 覆盖旧 ADR/设计文档中把用户上传样音写成当前必需输入的语义；旧文本保留为历史审计上下文，不删除、不回写历史产物。
+
+## ADR-0068：R01.2 服务器样音与正式旁白资产的内部执行边界
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `IMPLEMENTED_PENDING_AUDIT`（内部边界已落代码；不升级 R01/E12 或总体状态） |
+| 日期 | 2026-09-01 |
+| 来源 | 固定 OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930`：`skills/meta/voice-performance-director.md` 的 `voice_performance`/Sample Gate；`skills/pipelines/explainer/asset-director.md` 的 Sample Preview/Generate Narration；`tools/audio/tts_selector.py::TTSSelector` 与 `tools/audio/doubao_tts.py::DoubaoTTS` |
+| 决策 | R01.2 若实现，只能由 Control API 在事务内登记现有内部命令事实并写入既有 outbox，由现有 Media Runtime queue/Worker 调用已有 Runtime/Storage 端口。样音与正式 `NarrationAssetVersion` 必须是两个服务器生成的 `AUDIO/GENERATED` 资产；样音必须先获得显式人工审批，不能自动审批、不能要求用户上传旁白或样音。正式资产只能在审批事实之后独立生成、实测并以 `sample_approved=false` 注册，TimelinePlan 只能消费该正式版本。 |
+| 事实绑定 | 样音和正式资产必须绑定同一 approved script revision、来源 `provider_text`/delivery cues、显式 provider、voice、provider settings；正式资产另须保存实际 MIME、SHA-256、byte size 和 Runtime/ffprobe `duration_ms`。现有 `sample_asset_id` 只能作为审批所听样音，不能直接升级为正式资产。 |
+| Provider 边界 | native owner 继续保留 Provider MP4 音轨且不调用 TTS；替换只允许调用方明确选择已有 Doubao 路径并满足其现有 key/profile guard。Piper 仅保留显式兼容路径，不得默认或作为静默 fallback。Control API 不得直连 Provider/TTS，Worker 不得从 composition 偷渡样音生成。 |
+| 复用与禁止 | 优先复用现有事务幂等、outbox、Media Runtime queue、Worker、Storage、Asset 和 `NarrationQualityStore`。不得新增第二音频协议、第二 AudioPlan、独立状态机、时长修正/变速/裁切/补静音、Provider 选择算法或公开敏感字段；任何新增内部 DTO/event 必须在契约中版本化并逐字段映射固定来源。 |
+| 当前审计结论 | R01.2 已按本 ADR 补齐内部 `narration_audio.generation_requested` DTO/event、`NarrationQualityStore` 服务器生成资产操作、既有 Media Runtime queue/Worker/Storage 消费和 provider/voice/settings identity/幂等校验；定向本地 fixture 已通过。代码没有新增公开 `narration-audio` 路由，Studio 的生成→试听→批准→正式资产→TimelinePlan 触发闭环、真实产物和人工听感仍未闭合，因此 R01.2 与 E12 继续 `BLOCKED`，不得标记 `READY_FOR_AUDIT`/`ACCEPTED`。 |
+
+ADR-0068 不改变公开 API、TaskRun/AudioPlan 语义或默认 Mock 配置；它只把 R01.2 的最小安全执行边界和当前阻断事实固定下来。
+
+## ADR-0069：Video VPS 固定 relay 与参考图提交前预检
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `IMPLEMENTED_PENDING_AUDIT`（仅 C09-C 参考图交付稳定性切片） |
+| 日期 | 2026-09-05 |
+| 范围 | Aiself/Alchemy Video OS 的 Video VPS、Control API 与 task-worker；不包含 Sub2API/Smart Router |
+| 背景 | 生产 `video.aiself.vip` 位于独立 Video VPS，当前直连 Control API；本地 Quick Tunnel 曾出现随机域名和 DNS/QUIC 超时。KIE/Grok 在提交阶段无法读取参考图时不产生 provider request id，原有泛化错误难以区分 relay 故障。 |
+| 决策 | Worker 对自己签发的同源 opaque `provider-input` URL 在 ProviderAttempt 创建前做 HEAD 预检；HEAD 不可用时受限 GET 验证 MIME/字节数；网络/408/429/5xx 仅做有界预检重试。生产默认 origin 固定为 `https://video.aiself.vip`，token TTL 提升至 15 分钟但限制在 60 秒–1 小时。Edge 保持无认证、无缓存、流式转发并显式设置超时。 |
+| 安全边界 | 预检不接受用户 URL、不跟随跨 origin 重定向、不记录 token/URL；继续使用 AES-GCM、workspace/project/asset/hash/MIME/8 MiB 校验。Control API 的无内容错误响应显式 `Content-Length: 0`。 |
+| 兼容/计费 | Mock 模式不访问网络；文本任务不预检。预检失败在 ProviderAttempt/Provider POST 前归一为既有可恢复 `PROVIDER_UNAVAILABLE`，不会创建上游任务或额外计费。已有 provider request id 的恢复与“不重复提交”规则不变。 |
+| 拒绝方案 | 不修改 Sub2API、Smart Router、Provider 协议、调度策略、轮询/提交最大次数；不把 generations 自动改为 edits，不把 KIE 文件上传协议混入本切片。 |
+| 证据要求 | 必须有 task-worker/control-api 定向测试、build/typecheck、Video VPS edge/Control API/Worker relay 只读健康检查；真实付费 Provider 生成不是本 ADR 的验收条件。 |
+
+ADR-0069 只解决 Aiself 自有参考图交付链路的可达性与可审计性，不宣称 KIE 上游稳定性、余额或权限已被改变。

@@ -2,7 +2,9 @@
 
 状态：`DESIGN_BASELINE`（C11/C12 的既有实现保留兼容边界；后续长叙事迁移必须按统一叙事点/生成片段模型演进。）
 
-关联章节：C10、C11、C12。本文只定义后端领域、公开控制面、内部编排和验收；对应页面行为见 `AI企业内容生产平台_长叙事前端项目工作台交互设计.md`。平台级“叙事点 → 生成片段 → 最终成片”规则以 `AI企业内容生产平台_通用叙事点与生成片段编排规范.md` 和 ADR-0041 为准。
+> **2026-09-01 当前口径**：自动旁白由 Provider 原生音轨或服务端显式 Doubao 生成，不要求用户上传 spoken audio；`NARRATION_SAMPLE`/`USER_SOURCE_AUDIO` 仅兼容既有资产。默认/CI 仍为 Mock，本机真实对照不改变本设计的契约、章节范围或后置 Veyra/部署门禁。
+
+关联章节：C10、C11、C11.3、C12。本文只定义后端领域、公开控制面、内部编排和验收；对应页面行为见 `AI企业内容生产平台_长叙事前端项目工作台交互设计.md`。平台级“叙事点 → 动作节拍 → 生成片段 → 最终成片”规则以 `AI企业内容生产平台_通用叙事点与生成片段编排规范.md`、C11.3 设计文档和 ADR-0041 为准。
 
 ## 1. 范围与非目标
 
@@ -27,6 +29,7 @@ Project
   -> ScriptRevision
   -> StoryboardRevision
        -> NarrativeBeat[]
+       -> MotionBeat[] (private execution plan)
        -> GenerationSegmentSpec[]
             -> Shot -> TaskRun[] -> generated VIDEO Asset
   -> ProductionRun
@@ -47,7 +50,9 @@ DERIVED IMAGE Asset + AssetDerivation = HandoffAsset
 | `ScriptRevision` | `id`、`creative_brief_revision_id`、`revision`、`beats`、`status` | 每个 beat 有叙事目标、事件顺序、角色/场景事实与可见信息 |
 | `StoryboardRevision` | `id`、`script_revision_id`、`revision`、`total_duration_seconds`、`continuity_level`、`status` | NarrativeBeat 和 GenerationSegmentSpec 的顺序、映射和总时长可计算；批准后冻结 |
 | `NarrativeBeat` | `id`、`storyboard_revision_id`、`sequence`、`narrative_goal`、`event`、`characters`、`location`、`start_state`、`end_state`、`generation_segment_id` | 故事层叙事点，不直接创建 Provider TaskRun；每个叙事点必须且只能属于一个生成片段 |
-| `GenerationSegmentSpec` | `id`、`storyboard_revision_id`、`sequence`、`duration_seconds`、`narrative_beat_ids`、`start_state`、`end_state`、`reference_policy`、`transition`、`depends_on_sequence` | 实际 Provider 生成单位；时长受能力注册表约束；一个片段只创建一个视频 TaskRun |
+| `MotionBeat` | `sequence`、`start_seconds`、`end_seconds`、`action`、`subject_refs`、`start_pose`、`end_pose`、`shot_size`、`camera_movement`、`continuity_locks`、`prohibited_changes` | 私有动作执行单元；必须有可观察动作、结束姿态和不重叠时间范围；不直接创建 TaskRun |
+| `GenerationSegmentMotionPlan` | `version`、`duration_seconds`、`motion_beats`、`opening_state`、`closing_state`、`scene_locks`、`character_locks`、`prop_locks`、`transition_in`、`transition_out`、`complexity_summary` | 生成片段的冻结动作计划；时间轴覆盖完整片段；旧 revision 可缺省并走兼容编译器 |
+| `GenerationSegmentSpec` | `id`、`storyboard_revision_id`、`sequence`、`duration_seconds`、`narrative_beat_ids`、`motion_plan_version`、`motion_plan_hash`、`start_state`、`end_state`、`reference_policy`、`transition`、`depends_on_sequence` | 实际 Provider 生成单位；时长受能力注册表约束；一个片段只创建一个视频 TaskRun |
 | `StoryboardShotSpec` | 兼容字段和旧 revision 的只读投影 | C09/旧版本兼容；新长叙事不再把逻辑叙事点直接当成 Provider 生成单位 |
 | `PromptPackage` | `id`、`generation_segment_spec_id`、`compiler_version`、`prompt`、`visual_constraints`、`reference_map`、`capability_snapshot` | 由已批准 GenerationSegmentSpec 确定性生成；不覆盖用户原文或旧版本 |
 | `ProductionRun` | `id`、`project_id`、`storyboard_revision_id`、`status`、`accepted_segment_count`、`total_segment_count`、`budget_guard` | 一个明确确认的制作批次；公开进度按生成片段统计，不与单 Shot TaskRun 共用状态 |
@@ -108,11 +113,12 @@ interface PlanningModelPort {
 interface StoryboardCompilerPort {
   compile(input: ApprovedShotSpec & {
     stylePreferences: string;
+    motionPlan?: MotionPlanDraft;
   }): Promise<PromptPackage>;
 }
 ```
 
-Planner 输出必须包含 NarrativeBeat 的角色、场景、关键道具、开始/结束状态、事件顺序，再输出 GenerationSegmentSpec 的必要事件集合、时长、参考素材职责和连续性风险。`StoryboardCompilerPort` 只针对一个已批准生成片段写执行 PromptPackage，并把冻结的 `stylePreferences` 编译为人物身份、服装、场景、角色数、自然人体结构和边界承接约束；它不会公开原始 PromptPackage。
+`MotionPlanningPort` 是可选的内部规划端口，不能被浏览器调用，也不能调用 VideoProvider。Planner 输出必须包含 NarrativeBeat 的角色、场景、关键道具、开始/结束状态、事件顺序，再输出 GenerationSegmentSpec 的必要事件集合、时长、参考素材职责和连续性风险；C11.3 再为每个新片段生成冻结的 MotionPlan。`StoryboardCompilerPort` 只针对一个已批准生成片段写执行 PromptPackage，并把冻结的 `stylePreferences`、事实引用和动作时间轴编译为人物身份、服装、场景、角色数、自然人体结构、动作顺序和边界承接约束；它不会公开原始 PromptPackage。
 
 当前 `VideoPromptCompiler` 只保留 C09-C 单 Shot 的“非空描述 + 已保存规格”功能。C11 新的 PromptPackage 不能覆盖它，也不能隐式改变用户原文；需要在内部快照上记录 `prompt_package_id`/版本和 capability snapshot，再由 Worker 构建 Provider 输入。
 
@@ -175,7 +181,7 @@ Media Runtime 的每个动作通过受保护的内部 API 接收明确工具名�
 - 长故事 fixture 按事件边界产生有序 Script/Storyboard；短故事产生一段计划；两者都通过 schema 验证。
 - 规划命令在任何成功/失败/重试分支中均为零次视频 Provider POST。
 - Storyboard 批准前不能创建 ProductionRun；同幂等键回放不创建第二个 planning 或 production run。
-- 每个 StoryboardShotSpec 在 capability 范围内；交接帧和用户参考图必须按有序视觉输入组合，素材缺失或能力不足在创建视频任务前形成可公开的阻塞建议。
+- 每个 StoryboardShotSpec 在 capability 范围内；新 revision 的 MotionPlan 时间轴必须通过结构校验并写入不可变 TaskRun 快照；交接帧和用户参考图必须按有序视觉输入组合，素材缺失或能力不足在创建视频任务前形成可公开的阻塞建议。
 - 前段未接受时，依赖 Shot 不可提交；第 N 段重做只影响 N 和依赖它的后续段。
 - HandoffAsset 必须是同项目、已验收视频派生的 READY 图片；篡改来源、跨 workspace、过期 relay 或不支持 MIME 全部拒绝。
 - Provider Worker、Workflow Worker 和 Media Runtime 重启后均能从持久化事实恢复，且不重复 Planner/Provider/Render 提交。

@@ -19,6 +19,7 @@
       @input="emit('update:source-text', ($event.target as HTMLTextAreaElement).value)"
     />
     <p class="character-count">{{ sourceText.length.toLocaleString("zh-CN") }} / 50,000</p>
+    <p class="field-hint">上传多张参考图时，也可以直接写明“第一张是场景，第二张是人物”，AI 会优先按你的说明理解。</p>
 
     <section class="story-settings" aria-labelledby="story-settings-title">
       <p id="story-settings-title" class="story-settings-title">成片设置</p>
@@ -59,12 +60,19 @@
       </div>
 
       <div class="segment-estimate" aria-live="polite">
-        <div>
-          <p class="segment-estimate-title">预计生成 {{ estimatedSegments.length }} 段视频</p>
-          <p>
-            叙事点只是关键剧情内容，不会截断故事；生成时会连续制作这些片段，最后合成为约
-            {{ estimatedTotalDurationSeconds }} 秒完整成片。
-          </p>
+        <div class="segment-estimate-heading">
+          <div>
+            <p class="segment-estimate-title">预计生成 {{ estimatedSegments.length }} 段视频</p>
+            <p class="segment-estimate-note">以实际生成为准</p>
+          </div>
+          <span
+            class="segment-estimate-help"
+            tabindex="0"
+            role="img"
+            aria-label="查看预计段数说明"
+            :title="segmentEstimateExplanation"
+            :data-tooltip="segmentEstimateExplanation"
+          >?</span>
         </div>
         <ol v-if="estimatedSegments.length <= 12" class="segment-estimate-list" aria-label="预计生成片段">
           <li v-for="segment in estimatedSegments" :key="segment.sequence">
@@ -112,6 +120,9 @@ const estimatedSegments = computed<EstimatedGenerationSegment[]>(() => estimateG
 const estimatedTotalDurationSeconds = computed(() =>
   estimatedSegments.value.reduce((total, segment) => total + segment.durationSeconds, 0),
 );
+const segmentEstimateExplanation = computed(() =>
+  `叙事点只是关键剧情内容，不会截断故事；15 秒以内会在一个视频中按时间轴完成多次动作，超过单段上限才会连续制作多个片段，最后合成为约 ${estimatedTotalDurationSeconds.value} 秒完整成片。这里显示的是按总时长计算的预估；正式生成时，后台还会结合内容、段落和口播容量重新规划，最终段数与每段时长可能不同，请以实际生成结果为准。`,
+);
 const compactSegmentDurationLabel = computed(() => {
   const durations = new Set(estimatedSegments.value.map((segment) => segment.durationSeconds));
   if (durations.size === 1) return `${estimatedSegments.value[0]?.durationSeconds ?? 0} 秒`;
@@ -121,7 +132,7 @@ const compactSegmentDurationLabel = computed(() => {
 
 function estimateGenerationSegments(durationSeconds: number): EstimatedGenerationSegment[] {
   const safeDurationSeconds = Number.isInteger(durationSeconds) ? Math.min(600, Math.max(15, durationSeconds)) : 30;
-  const segmentCount = safeDurationSeconds <= 15 ? 1 : Math.min(60, Math.max(1, Math.ceil(safeDurationSeconds / 10)));
+  const segmentCount = safeDurationSeconds <= 15 ? 1 : Math.min(60, Math.max(1, Math.ceil(safeDurationSeconds / 15)));
   const baseDurationSeconds = Math.floor(safeDurationSeconds / segmentCount);
   const remainder = safeDurationSeconds % segmentCount;
   return Array.from({ length: segmentCount }, (_, index) => ({

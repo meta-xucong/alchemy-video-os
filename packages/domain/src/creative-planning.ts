@@ -20,7 +20,9 @@ export const PRODUCTION_RUN_TRANSITIONS: Readonly<Record<ProductionRunStatus, re
   RENDERING: ["SUCCEEDED", "FAILED"],
   SUCCEEDED: [],
   BLOCKED: ["GENERATING", "REVIEWING", "FAILED"],
-  FAILED: [],
+  // A failed final composition may be retried from the already accepted
+  // source segments. This recovery never returns to Provider submission.
+  FAILED: ["REVIEWING"],
 };
 
 export type PlannedShotSpec = {
@@ -42,8 +44,8 @@ export const assertProductionRunTransition = (from: ProductionRunStatus, to: Pro
 };
 
 export const assertStoryboardPlan = (input: { totalDurationSeconds: number; specs: PlannedShotSpec[] }) => {
-  if (!Number.isInteger(input.totalDurationSeconds) || input.totalDurationSeconds < 1 || input.specs.length < 1) {
-    throw new DomainInvariantError("STORYBOARD_SPEC_INVALID", "A storyboard requires a positive total duration and at least one ordered shot.");
+  if (!Number.isInteger(input.totalDurationSeconds) || input.totalDurationSeconds < 8 || input.specs.length < 1) {
+    throw new DomainInvariantError("STORYBOARD_SPEC_INVALID", "A storyboard requires a total duration of at least 8 seconds and at least one ordered shot.");
   }
 
   let total = 0;
@@ -51,8 +53,8 @@ export const assertStoryboardPlan = (input: { totalDurationSeconds: number; spec
     if (!Number.isInteger(spec.sequence) || spec.sequence !== index + 1) {
       throw new DomainInvariantError("STORYBOARD_SPEC_INVALID", "Storyboard shot sequences must start at one and remain contiguous.");
     }
-    if (!Number.isInteger(spec.durationSeconds) || spec.durationSeconds < 1 || spec.durationSeconds > 15) {
-      throw new DomainInvariantError("STORYBOARD_SPEC_INVALID", "Storyboard shot durations must stay within the certified local capability range.");
+    if (!Number.isInteger(spec.durationSeconds) || spec.durationSeconds < 8 || spec.durationSeconds > 15) {
+      throw new DomainInvariantError("STORYBOARD_SPEC_INVALID", "Storyboard shot durations must stay within the Huobao source range of 8 to 15 seconds.");
     }
     const dependencies = new Set(spec.dependsOnSequences);
     if (dependencies.size !== spec.dependsOnSequences.length || [...dependencies].some((dependency) => !Number.isInteger(dependency) || dependency < 1 || dependency >= spec.sequence)) {

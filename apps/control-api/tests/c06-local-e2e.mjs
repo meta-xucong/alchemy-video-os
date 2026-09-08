@@ -28,7 +28,7 @@ const urlHost = (host) => host.includes(":") ? `[${host}]` : host;
 const apiOrigin = `http://127.0.0.1:${controlApiPort}`;
 const studioOrigin = `http://${urlHost(studioOriginHost)}:${studioPort}`;
 const studioProbeOrigin = `http://${urlHost(studioBindHost)}:${studioPort}`;
-const databaseUrl = "postgresql://video_local:video_local@127.0.0.1:15432/video_local";
+const databaseUrl = process.env.C06_E2E_DATABASE_URL ?? "postgresql://video_local:video_local@127.0.0.1:15432/video_local";
 const redisUrl = "redis://127.0.0.1:6380";
 const storageConfig = {
   endpoint: "http://127.0.0.1:9002",
@@ -118,7 +118,7 @@ const startService = (cwd, args, environment) => {
   });
   let output = "";
   let spawnError;
-  const append = (chunk) => { output = `${output}${chunk.toString("utf8")}`.slice(-4_000); };
+  const append = (chunk) => { output = `${output}${chunk.toString("utf8")}`.slice(-20_000); };
   child.stdout?.on("data", append);
   child.stderr?.on("data", append);
   child.once("error", (error) => { spawnError = error; });
@@ -244,7 +244,9 @@ const taskRunProviderRecord = async (projectName) => {
               shots.generation_settings -> 'video_settings' ->> 'ratio' AS saved_ratio,
               count(provider_attempts.id)::integer AS attempt_count,
               count(provider_attempts.provider_request_id)::integer AS submitted_attempt_count,
-              min(provider_attempts.provider_request_id) AS provider_request_id
+              min(provider_attempts.provider_request_id) AS provider_request_id,
+              array_agg(provider_attempts.provider_request_id ORDER BY provider_attempts.created_at)
+                FILTER (WHERE provider_attempts.provider_request_id IS NOT NULL) AS provider_request_ids
        FROM task_runs
        INNER JOIN projects ON projects.id = task_runs.project_id
        INNER JOIN shots ON shots.workspace_id = task_runs.workspace_id AND shots.id = task_runs.shot_id
@@ -300,14 +302,15 @@ const assertMockApiRuntimeProfile = async (input) => {
   await cleanupProject([projectName], input.storage, input.commandSeedPrefix);
 };
 
-const assertSingleRetriedAttempt = async (projectName, failedRecord) => {
+const assertFreshRetriedAttempt = async (projectName, failedRecord) => {
   const recovered = await taskRunProviderRecord(projectName);
   assert.equal(recovered.id, failedRecord.id, "C06 retry E2E did not recover the failed TaskRun.");
   assert.equal(recovered.status, "SUCCEEDED", "C06 retry E2E did not persist a completed retry.");
   assert.ok(recovered.result_asset_id, "C06 retry E2E did not persist a result asset.");
-  assert.equal(recovered.attempt_count, 1, "C06 retry E2E created a second ProviderAttempt instead of reusing the request.");
-  assert.equal(recovered.submitted_attempt_count, 1, "C06 retry E2E did not retain exactly one provider request ID.");
-  assert.equal(recovered.provider_request_id, failedRecord.provider_request_id, "C06 retry E2E replaced the persisted provider request ID.");
+  assert.equal(recovered.attempt_count, 2, "C06 retry E2E did not preserve the failed attempt and create one fresh ProviderAttempt.");
+  assert.equal(recovered.submitted_attempt_count, 2, "C06 retry E2E did not retain both provider request IDs.");
+  assert.deepEqual(recovered.provider_request_ids?.[0], failedRecord.provider_request_id, "C06 retry E2E changed the original provider request ID.");
+  assert.equal(recovered.provider_request_ids?.[1] === failedRecord.provider_request_id, false, "C06 retry E2E reused a terminal provider request ID.");
 };
 
 const runStudioUiTest = (input) => {
@@ -340,6 +343,47 @@ const stopWorker = async (processHandle, name) => {
   throw new Error(`${name} did not stop after its controlled test phase.`);
 };
 
+const taskRunDiagnostics = async (projectName) => {
+  const database = new Client({ connectionString: databaseUrl });
+  await database.connect();
+  try {
+    const taskRuns = await database.query(
+      `SELECT task_runs.id, task_runs.status, task_runs.error, task_runs.updated_at,
+              provider_attempts.id AS provider_attempt_id, provider_attempts.status AS provider_attempt_status,
+              provider_attempts.provider_request_id, provider_attempts.response_payload,
+              outbox_events.id AS outbox_event_id, outbox_events.event_type AS outbox_event_type,
+              outbox_events.published_at, outbox_events.available_at, outbox_events.publish_attempts,
+              outbox_events.last_error, outbox_events.dead_lettered_at,
+              event_consumptions.attempts AS consumption_attempts, event_consumptions.completed_at,
+              event_consumptions.dead_lettered_at AS consumption_dead_lettered_at,
+              event_consumptions.last_error AS consumption_last_error
+       FROM task_runs
+       INNER JOIN projects ON projects.id = task_runs.project_id
+       LEFT JOIN provider_attempts ON provider_attempts.workspace_id = task_runs.workspace_id AND provider_attempts.task_run_id = task_runs.id
+       LEFT JOIN outbox_events ON outbox_events.workspace_id = task_runs.workspace_id AND outbox_events.aggregate_type = 'task_run' AND outbox_events.aggregate_id = task_runs.id
+       LEFT JOIN event_consumptions ON event_consumptions.workspace_id = task_runs.workspace_id AND event_consumptions.event_id = outbox_events.id AND event_consumptions.consumer_name = 'task-run-transition'
+       WHERE projects.workspace_id = $1 AND projects.name = $2
+       ORDER BY task_runs.created_at, outbox_events.occurred_at, provider_attempts.created_at`,
+      ["ws_dev_default", projectName],
+    );
+    return taskRuns.rows;
+  } finally {
+    await database.end();
+  }
+};
+
+const waitForWorkerReady = async (processHandle, name) => {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (processHandle.exitCode !== null) {
+      throw new Error(`${name} exited before ready: ${String(processHandle.supervisorOutput ?? "").trim().slice(-4_000) || "<no output>"}`);
+    }
+    if (String(processHandle.supervisorOutput ?? "").includes('"event":"task_worker.ready"')) return;
+    await sleep(250);
+  }
+  throw new Error(`${name} did not report task_worker.ready before timeout: ${String(processHandle.supervisorOutput ?? "").trim().slice(-4_000) || "<no output>"}`);
+};
+
 const run = async () => {
   const suffix = randomUUID();
   const commandSeedPrefix = suffix.replaceAll("-", "").slice(0, 8);
@@ -361,6 +405,7 @@ const run = async () => {
     S3_BUCKET: storageConfig.bucket,
     S3_ACCESS_KEY: storageConfig.accessKeyId,
     S3_SECRET_KEY: storageConfig.secretAccessKey,
+    S3_BROWSER_ORIGINS: `${studioOrigin},http://localhost:${studioPort}`,
     LOCAL_AUTH_MODE: "dev",
     VIDEO_PROVIDER: "mock",
     VEYRA_AUTH_ENABLED: "false",
@@ -422,8 +467,7 @@ const run = async () => {
       ["--import", "tsx", "src/index.ts"],
       workerEnvironment(failedQueueName, failedDeadLetterQueueName, "failed"),
     );
-    await sleep(1_000);
-    if (typeof failedWorkerProcess.exitCode === "number") throw new Error("C06 failed Mock Worker exited before the UI generation flow began.");
+    await waitForWorkerReady(failedWorkerProcess, "C06 failed Mock Worker");
     studioProcess = startService(studioWebRoot, [studioServerScriptPath], environment);
     await waitFor(`${studioProbeOrigin}/`, "Studio", [apiProcess, failedWorkerProcess, studioProcess]);
     const studioProxyHealth = await waitFor(`${studioProbeOrigin}/api/v1/health`, "Studio Control API proxy", [apiProcess, failedWorkerProcess, studioProcess]);
@@ -455,18 +499,31 @@ const run = async () => {
       ["--import", "tsx", "src/index.ts"],
       workerEnvironment(successfulQueueName, successfulDeadLetterQueueName, "succeeded"),
     );
-    await sleep(1_000);
-    if (typeof successfulWorkerProcess.exitCode === "number") throw new Error("C06 successful Mock Worker exited before the UI retry flow began.");
+    await waitForWorkerReady(successfulWorkerProcess, "C06 successful Mock Worker");
     const retryResult = runStudioUiTest({ mode: "retry", projectName, secondaryProjectName, commandSeed: suffix, environment });
     assert.ok(retryResult.video_width > 0 && retryResult.video_height > 0, "C06 Studio retry preview did not decode a video frame.");
     assert.ok(retryResult.duration > 0, "C06 Studio retry preview did not report a playable duration.");
     assert.equal(retryResult.desktop_viewport, "1280x720", "C06 retry E2E did not verify the required desktop viewport.");
     assert.equal(retryResult.command_seed_prefix, commandSeedPrefix, "C06 retry E2E did not reuse its isolated command seed.");
-    await assertSingleRetriedAttempt(projectName, failedTaskRun);
+    await assertFreshRetriedAttempt(projectName, failedTaskRun);
     await publicResponseHasNoInternalFields(projectName);
     console.log(`C06 Studio failure/retry UI E2E passed: visible provider failure, retry control, ${retryResult.video_width}x${retryResult.video_height}, ${retryResult.duration}s.`);
   } catch (error) {
-    executionError = error;
+    const processOutput = (name, processHandle) => `${name}: ${String(processHandle?.supervisorOutput ?? "<not started>").trim().slice(-20_000)}`;
+    let diagnostics = "<unavailable>";
+    try {
+      diagnostics = JSON.stringify(await taskRunDiagnostics(projectName));
+    } catch (diagnosticError) {
+      diagnostics = `diagnostic query failed: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}`;
+    }
+    executionError = new Error([
+      error instanceof Error ? error.message : String(error),
+      `Database diagnostics: ${diagnostics}`,
+      processOutput("Control API", apiProcess),
+      processOutput("Failed Worker", failedWorkerProcess),
+      processOutput("Successful Worker", successfulWorkerProcess),
+      processOutput("Studio", studioProcess),
+    ].join("\n"));
   }
 
   try {

@@ -39,6 +39,115 @@ test("DevIdentityAdapter exposes only the fixed local identity and accessible wo
   assert.match(me.request_id, /^req_[0-9A-HJKMNP-TV-Z]{26}$/);
 });
 
+test("free audio capability surface blocks paid providers without changing video settings", async () => {
+  const app = createApp({ audioFreeOnly: true });
+  const projectResponse = await createProject(app, "Audio capabilities", "audio-capabilities-project");
+  const project = await readJson(projectResponse);
+  const response = await app.request(`http://localhost/api/v1/projects/${project.data.id}/audio-capabilities`);
+  const payload = await readJson(response);
+  assert.equal(response.status, 200);
+  assert.equal(payload.data.free_only, true);
+  assert.deepEqual(payload.data.music_assets, []);
+  assert.equal(payload.data.capabilities.find((item: { id: string }) => item.id === "pixabay_music")?.status, "BLOCKED");
+  assert.equal(payload.data.capabilities.find((item: { id: string }) => item.id === "paid_music_and_tts")?.status, "BLOCKED");
+  const ffmpegCapability = payload.data.capabilities.find((item: { id: string }) => item.id === "ffmpeg_audio_mixer");
+  if (!process.env.MEDIA_RUNTIME_FFMPEG_PATH || !process.env.MEDIA_RUNTIME_FFPROBE_PATH) {
+    assert.equal(ffmpegCapability?.status, "NOT_CONFIGURED");
+  }
+  const piperCapability = payload.data.capabilities.find((item: { id: string }) => item.id === "piper_tts");
+  if (!process.env.PIPER_MODEL_PATH || !process.env.PIPER_MODEL_CONFIG_PATH || !process.env.PIPER_PYTHON_PATH) {
+    assert.equal(piperCapability?.status, "NOT_CONFIGURED");
+  }
+  assert.equal(payload.data.capabilities.find((item: { id: string }) => item.id === "faster_whisper")?.status, "NOT_CONFIGURED");
+  assert.equal(payload.data.capabilities.find((item: { id: string }) => item.id === "clip_visual_review")?.status, "NOT_CONFIGURED");
+});
+
+test("provider native audio capability follows the selected video profile while Mock remains blocked", async () => {
+  const mockApp = createApp({ videoProviderMode: "mock" });
+  const mockProject = await readJson(await createProject(mockApp, "Mock native audio capability", "native-audio-capability-mock"));
+  const mockResponse = await mockApp.request(`http://localhost/api/v1/projects/${mockProject.data.id}/audio-capabilities`);
+  const mockPayload = await readJson(mockResponse);
+  const mockCapability = mockPayload.data.capabilities.find((item: { id: string }) => item.id === "provider_native_audio");
+  assert.equal(mockResponse.status, 200);
+  assert.equal(mockCapability?.status, "BLOCKED");
+
+  const nativeApp = createApp({ videoProviderMode: "sub2api" });
+  const nativeProject = await readJson(await createProject(nativeApp, "Native audio capability", "native-audio-capability-sub2api"));
+  const nativeResponse = await nativeApp.request(`http://localhost/api/v1/projects/${nativeProject.data.id}/audio-capabilities`);
+  const nativePayload = await readJson(nativeResponse);
+  const nativeCapability = nativePayload.data.capabilities.find((item: { id: string }) => item.id === "provider_native_audio");
+  assert.equal(nativeResponse.status, 200);
+  assert.equal(nativeCapability?.status, "AVAILABLE");
+  assert.equal(nativeCapability?.key_required, false);
+});
+
+test("reference vision capability is AVAILABLE only when an analyzer is injected", async () => {
+  const app = createApp({
+    referenceVisionAnalyzer: {
+      async analyze() {
+        return { role: "SCENE", confidence: 1 };
+      },
+    },
+  });
+  const projectResponse = await createProject(app, "Vision capabilities", "vision-capabilities-project");
+  const project = await readJson(projectResponse);
+  const response = await app.request(`http://localhost/api/v1/projects/${project.data.id}/audio-capabilities`);
+  const payload = await readJson(response);
+  assert.equal(payload.data.capabilities.find((item: { id: string }) => item.id === "clip_visual_review")?.status, "AVAILABLE");
+});
+
+test("audio capabilities expose the shared workspace MUSIC library to every project", async () => {
+  const store = createInMemoryControlPlaneStore();
+  const assetStore = createInMemoryAssetWorkspaceStore(store);
+  const app = createApp({ store, assetStore });
+  const sourceProject = await readJson(await createProject(app, "Shared music source", "shared-music-source-project"));
+  const targetProject = await readJson(await createProject(app, "Shared music target", "shared-music-target-project"));
+  const workspaceId = "ws_dev_default";
+  const sourceProjectId = sourceProject.data.id as string;
+  const targetProjectId = targetProject.data.id as string;
+  const musicAssetId = createPrefixedId("ast");
+  const musicBytes = new Uint8Array([0x49, 0x44, 0x33, 0x01]);
+  const musicHash = createHash("sha256").update(musicBytes).digest("hex");
+  const created = await assetStore.createUploadAsset({
+    scope: "shared-music-upload",
+    idempotencyKey: "shared-music-upload",
+    requestHash: fingerprintRequest({ musicAssetId }),
+    workspaceId,
+    projectId: sourceProjectId,
+    assetId: musicAssetId,
+    kind: "AUDIO",
+    objectKey: `${workspaceId}/${sourceProjectId}/${musicAssetId}/music.mp3`,
+    filename: "shared-background.mp3",
+    mimeType: "audio/mpeg",
+    byteSize: musicBytes.byteLength,
+    audioRole: "MUSIC",
+    metadata: { source_title: "Shared background" },
+  });
+  assert.equal(created.kind, "NEW");
+  const confirmed = await assetStore.confirmAssetUpload({
+    scope: "shared-music-confirm",
+    idempotencyKey: "shared-music-confirm",
+    requestHash: fingerprintRequest({ musicHash }),
+    workspaceId,
+    assetId: musicAssetId,
+    sha256: musicHash,
+    mimeType: "audio/mpeg",
+    byteSize: musicBytes.byteLength,
+    durationMs: 42_000,
+    verifyUpload: async () => true,
+  });
+  assert.equal(confirmed.kind, "NEW");
+
+  const response = await app.request(`http://localhost/api/v1/projects/${targetProjectId}/audio-capabilities`);
+  const payload = await readJson(response);
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload.data.music_assets.map((asset: { id: string; project_id: string; metadata: Record<string, unknown> }) => ({
+    id: asset.id,
+    project_id: asset.project_id,
+    role: asset.metadata.audio_role,
+  })), [{ id: musicAssetId, project_id: sourceProjectId, role: "MUSIC" }]);
+});
+
 test("project commands are idempotent and project reads stay in the current workspace", async () => {
   const app = createApp();
   const firstResponse = await createProject(app, "Launch film", "project-create-1");
@@ -82,6 +191,101 @@ test("project commands are idempotent and project reads stay in the current work
   const updateReplay = await readJson(updateReplayResponse);
   assert.equal(updateReplayResponse.status, 200);
   assert.deepEqual(updateReplay.data, update.data);
+});
+
+test("project deletion is a confirmed, replayable soft delete", async () => {
+  const store = createInMemoryControlPlaneStore();
+  const app = createApp({ store });
+  const created = await readJson(await createProject(app, "Delete me", "delete-create-1"));
+  const projectId = created.data.id as string;
+  const request = () => app.request(`http://localhost/api/v1/projects/${projectId}`, {
+    method: "DELETE",
+    headers: { "Idempotency-Key": "delete-project-1" },
+  });
+
+  const deletedResponse = await request();
+  const deleted = await readJson(deletedResponse);
+  assert.equal(deletedResponse.status, 200);
+  assert.equal(deleted.data.id, projectId);
+  assert.equal(deleted.data.status, "DELETED");
+
+  const replayResponse = await request();
+  assert.equal(replayResponse.status, 200);
+  assert.deepEqual((await readJson(replayResponse)).data, deleted.data);
+  assert.equal((await readJson(await app.request("http://localhost/api/v1/projects"))).data.some((project: { id: string }) => project.id === projectId), false);
+  assert.equal((await app.request(`http://localhost/api/v1/projects/${projectId}`)).status, 404);
+
+  const secondDelete = await app.request(`http://localhost/api/v1/projects/${projectId}`, {
+    method: "DELETE",
+    headers: { "Idempotency-Key": "delete-project-2" },
+  });
+  assert.equal(secondDelete.status, 404);
+
+  const blockedStore = createInMemoryControlPlaneStore();
+  await blockedStore.createProject({
+    scope: "delete-active-create",
+    idempotencyKey: "delete-active-create",
+    requestHash: fingerprintRequest({ name: "Active" }),
+    workspaceId: "ws_dev_default",
+    projectId: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    name: "Active",
+  });
+  const blocked = await blockedStore.deleteProject({
+    scope: "usr_dev_owner:DELETE:/api/v1/projects/prj_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    idempotencyKey: "delete-active-1",
+    requestHash: fingerprintRequest({}),
+    workspaceId: "ws_dev_default",
+    projectId: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    activeWork: true,
+  });
+  assert.deepEqual(blocked, { kind: "IN_USE", status: 409 });
+
+  const activeStore = createInMemoryControlPlaneStore();
+  const activeAssets = createInMemoryAssetWorkspaceStore(activeStore);
+  const activeTasks = createInMemoryTaskRunStore(activeAssets);
+  const activeApp = createApp({ store: activeStore, assetStore: activeAssets, taskStore: activeTasks });
+  const activeProject = await readJson(await createProject(activeApp, "Active work", "delete-active-project"));
+  const activeProjectId = activeProject.data.id as string;
+  const activeShotId = createPrefixedId("sht");
+  await activeAssets.createShot({
+    scope: "delete-active-shot",
+    idempotencyKey: "delete-active-shot",
+    requestHash: fingerprintRequest({ position: 0, prompt: "Active" }),
+    workspaceId: "ws_dev_default",
+    projectId: activeProjectId,
+    shotId: activeShotId,
+    position: 0,
+    prompt: "Active",
+    model: null,
+    generationSettings: {},
+    referenceBindings: [],
+  });
+  await activeAssets.updateShot({
+    scope: "delete-active-shot-ready",
+    idempotencyKey: "delete-active-shot-ready",
+    requestHash: fingerprintRequest({ status: "READY" }),
+    workspaceId: "ws_dev_default",
+    shotId: activeShotId,
+    status: "READY",
+  });
+  const activeTaskInput = { model: "mock-video-v1", prompt: "Active", duration: 5, resolution: "720p", ratio: "16:9", reference_asset_ids: [] };
+  await activeTasks.createTaskRun({
+    scope: "delete-active-task",
+    idempotencyKey: "delete-active-task",
+    requestHash: fingerprintRequest(activeTaskInput),
+    workspaceId: "ws_dev_default",
+    taskRunId: createPrefixedId("tsk"),
+    shotId: activeShotId,
+    kind: "VIDEO_GENERATION",
+    inputSnapshot: activeTaskInput,
+    event: { eventId: createPrefixedId("evt"), messageId: createPrefixedId("msg"), traceId: createPrefixedId("trc"), correlationId: createPrefixedId("cor") },
+  });
+  const activeDelete = await activeApp.request(`http://localhost/api/v1/projects/${activeProjectId}`, {
+    method: "DELETE",
+    headers: { "Idempotency-Key": "delete-active-api" },
+  });
+  assert.equal(activeDelete.status, 409);
+  assert.equal((await readJson(activeDelete)).error.code, "PROJECT_IN_USE");
 });
 
 test("the API rejects an idempotency key reused with a different command", async () => {
@@ -273,6 +477,43 @@ test("C04 upload, shot, invalid-reference, and missing-project commands have rep
   assert.equal(await assetStore.findProjectDetail("ws_other_workspace", projectId), undefined);
 });
 
+test("user-uploaded assets can be soft-deleted with an idempotent public command", async () => {
+  const store = createInMemoryControlPlaneStore();
+  const assetStore = createInMemoryAssetWorkspaceStore(store);
+  const storage = new InMemoryStoragePort();
+  const app = createApp({ store, assetStore, storage });
+  const projectResponse = await createProject(app, "Delete material", "delete-material-project");
+  const projectId = (await readJson(projectResponse)).data.id as string;
+  const uploadResponse = await app.request(`http://localhost/api/v1/projects/${projectId}/assets/upload-requests`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "delete-material-upload" },
+    body: JSON.stringify({ kind: "IMAGE", filename: "wrong.png", mime_type: "image/png", byte_size: 3 }),
+  });
+  const upload = await readJson(uploadResponse);
+  const assetId = upload.data.asset_id as string;
+  const asset = (await assetStore.findProjectDetail("ws_dev_default", projectId))?.assets.find((item) => item.id === assetId);
+  assert.ok(asset);
+  storage.putObject({ objectKey: asset!.objectKey, mimeType: "image/png", bytes: new Uint8Array([1, 2, 3]) });
+  const checksum = createHash("sha256").update(new Uint8Array([1, 2, 3])).digest("hex");
+  await app.request(`http://localhost/api/v1/assets/${assetId}/confirm-upload`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "delete-material-confirm" },
+    body: JSON.stringify({ sha256: checksum, mime_type: "image/png", byte_size: 3 }),
+  });
+
+  const remove = () => app.request(`http://localhost/api/v1/assets/${assetId}`, {
+    method: "DELETE",
+    headers: { "Idempotency-Key": "delete-material-command" },
+  });
+  const first = await remove();
+  const replay = await remove();
+  assert.equal(first.status, 200);
+  assert.equal((await readJson(first)).data.status, "DELETED");
+  assert.equal(replay.status, 200);
+  assert.equal((await readJson(replay)).data.status, "DELETED");
+  assert.equal((await app.request(`http://localhost/api/v1/assets/${assetId}/download-url`)).status, 404);
+});
+
 test("missing asset confirmation is repository-first and shot positions have a public conflict code", async () => {
   const store = createInMemoryControlPlaneStore();
   const assetStore = createInMemoryAssetWorkspaceStore(store);
@@ -356,6 +597,215 @@ test("missing asset confirmation is repository-first and shot positions have a p
   const changedPatchConflict = await patchPosition({ position: 0, prompt: "Different conflict body" });
   assert.equal(changedPatchConflict.status, 409);
   assert.equal((await readJson(changedPatchConflict)).error.code, "IDEMPOTENCY_CONFLICT");
+});
+
+test("music-purpose AUDIO uploads are server-owned MUSIC assets even when caller metadata attempts to override the role", async () => {
+  const store = createInMemoryControlPlaneStore();
+  const assetStore = createInMemoryAssetWorkspaceStore(store);
+  const projectResponse = await createProject(createApp({ store, assetStore }), "Music role", "music-role-project");
+  const projectId = (await readJson(projectResponse)).data.id as string;
+  const assetId = "ast_01J4N8QZ8PCW2N2G6D2XJXJXY";
+  const result = await assetStore.createUploadAsset({
+    scope: "music-role-seed",
+    idempotencyKey: "music-role-upload",
+    requestHash: fingerprintRequest({ music: true }),
+    workspaceId: "ws_dev_default",
+    projectId,
+    assetId,
+    kind: "AUDIO",
+    objectKey: `ws_dev_default/${projectId}/${assetId}/music.mp3`,
+    filename: "music.mp3",
+    mimeType: "audio/mpeg",
+    byteSize: 4,
+    audioRole: "MUSIC",
+    metadata: { audio_role: "PROVIDER_AMBIENCE" },
+  });
+  assert.equal(result.kind, "NEW");
+  if (result.kind === "NEW") assert.equal(result.value.metadata.audio_role, "MUSIC");
+});
+
+test("narration sample purpose is server-owned and excluded from AUTO music assets", async () => {
+  const store = createInMemoryControlPlaneStore();
+  const assetStore = createInMemoryAssetWorkspaceStore(store);
+  const app = createApp({ store, assetStore });
+  const projectId = (await readJson(await createProject(app, "Audio roles", "audio-role-project"))).data.id as string;
+  const workspaceId = "ws_dev_default";
+  const sampleId = "ast_01J4N8QZ8PCW2N2G6D2XJXJXZ";
+  const sample = await assetStore.createUploadAsset({
+    scope: "audio-role-sample",
+    idempotencyKey: "sample-upload",
+    requestHash: fingerprintRequest({ sample: true }),
+    workspaceId,
+    projectId,
+    assetId: sampleId,
+    kind: "AUDIO",
+    objectKey: `${workspaceId}/${projectId}/${sampleId}/sample.wav`,
+    filename: "sample.wav",
+    mimeType: "audio/wav",
+    byteSize: 4,
+    audioRole: "NARRATION_SAMPLE",
+    metadata: { audio_role: "MUSIC" },
+  });
+  assert.equal(sample.kind, "NEW");
+  if (sample.kind !== "NEW") return;
+  assert.equal(sample.value.metadata.audio_role, "NARRATION_SAMPLE");
+  await assetStore.confirmAssetUpload({
+    scope: "audio-role-sample-confirm",
+    idempotencyKey: "sample-confirm",
+    requestHash: fingerprintRequest({ sample: "confirm" }),
+    workspaceId,
+    assetId: sampleId,
+    sha256: "a".repeat(64),
+    mimeType: "audio/wav",
+    byteSize: 4,
+    durationMs: 1_000,
+    verifyUpload: async () => true,
+  });
+  assert.deepEqual(await assetStore.listWorkspaceMusicAssets(workspaceId), []);
+});
+
+test("AUTO music candidates include only server-owned MUSIC across every audio role", async () => {
+  const store = createInMemoryControlPlaneStore();
+  const assetStore = createInMemoryAssetWorkspaceStore(store);
+  const app = createApp({ store, assetStore });
+  const projectId = (await readJson(await createProject(app, "Audio role isolation", "audio-role-isolation-project"))).data.id as string;
+  const workspaceId = "ws_dev_default";
+  const roles: Array<"MUSIC" | "NARRATION_SAMPLE" | "USER_SOURCE_AUDIO" | undefined> = [
+    "MUSIC",
+    "NARRATION_SAMPLE",
+    "USER_SOURCE_AUDIO",
+    undefined,
+  ];
+
+  for (const [index, role] of roles.entries()) {
+    const assetId = `ast_01J4N8QZ8PCW2N2G6D2XJXJX${String(index + 1).padStart(2, "0")}`;
+    const created = await assetStore.createUploadAsset({
+      scope: `audio-role-isolation-${index}`,
+      idempotencyKey: `audio-role-isolation-${index}`,
+      requestHash: fingerprintRequest({ role, index }),
+      workspaceId,
+      projectId,
+      assetId,
+      kind: "AUDIO",
+      objectKey: `${workspaceId}/${projectId}/${assetId}/audio.mp3`,
+      filename: `audio-${index}.mp3`,
+      mimeType: "audio/mpeg",
+      byteSize: 4,
+      ...(role ? { audioRole: role } : {}),
+      metadata: { audio_role: "MUSIC" },
+    });
+    assert.equal(created.kind, "NEW");
+    if (created.kind !== "NEW") continue;
+    const confirmed = await assetStore.confirmAssetUpload({
+      scope: `audio-role-isolation-confirm-${index}`,
+      idempotencyKey: `audio-role-isolation-confirm-${index}`,
+      requestHash: fingerprintRequest({ confirm: index }),
+      workspaceId,
+      assetId,
+      sha256: String(index).repeat(64),
+      mimeType: "audio/mpeg",
+      byteSize: 4,
+      verifyUpload: async () => true,
+    });
+    assert.equal(confirmed.kind, "NEW");
+  }
+
+  const candidates = await assetStore.listWorkspaceMusicAssets(workspaceId);
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0]?.metadata.audio_role, "MUSIC");
+  assert.equal(candidates[0]?.metadata.filename, "audio-0.mp3");
+});
+
+test("Pixabay source flow imports the first filtered track as a server-owned MUSIC asset and replays idempotently", async () => {
+  const store = createInMemoryControlPlaneStore();
+  const assetStore = createInMemoryAssetWorkspaceStore(store);
+  const storage = new InMemoryStoragePort();
+  let calls = 0;
+  const bytes = new Uint8Array([0x49, 0x44, 0x33, 0x04, 0x00, 0x00]);
+  const app = createApp({
+    store,
+    assetStore,
+    storage,
+    pixabayMusic: {
+      async execute(input) {
+        calls += 1;
+        assert.equal(input.query, "corporate background");
+        return {
+          bytes,
+          mimeType: "audio/mpeg" as const,
+          filename: "pixabay_music_Corporate Theme.mp3",
+          query: input.query,
+          track: {
+            title: "Corporate Theme",
+            artist: "Pixabay Artist",
+            audio_url: "https://cdn.pixabay.com/audio/test.mp3",
+            duration: 42.5,
+            pixabay_id: 123,
+          },
+          results_found: 3,
+          results_after_filter: 1,
+        };
+      },
+    },
+  });
+  const projectId = (await readJson(await createProject(app, "Pixabay import", "pixabay-project"))).data.id as string;
+  const request = () => app.request(`http://localhost/api/v1/projects/${projectId}/audio/pixabay/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "pixabay-import-1" },
+    body: JSON.stringify({ query: "corporate background", min_duration: 30, max_duration: 60 }),
+  });
+  const first = await request();
+  assert.equal(first.status, 201);
+  const firstBody = await readJson(first);
+  assert.equal(firstBody.data.track.title, "Corporate Theme");
+  assert.equal(firstBody.data.track.artist, "Pixabay Artist");
+  assert.equal(firstBody.data.asset.metadata.audio_role, "MUSIC");
+  assert.equal(firstBody.data.asset.metadata.audio_provider, "pixabay_music");
+  assert.equal(firstBody.data.asset.metadata.filename, "pixabay_music_Corporate Theme.mp3");
+  assert.equal(firstBody.data.asset.metadata.source_title, "Corporate Theme");
+  assert.equal(firstBody.data.asset.metadata.source_artist, "Pixabay Artist");
+  const assetId = firstBody.data.asset.id as string;
+  const asset = await assetStore.findAsset("ws_dev_default", assetId);
+  assert.ok(asset);
+  assert.equal(asset.status, "READY");
+  assert.equal(asset.mimeType, "audio/mpeg");
+  assert.equal(asset.byteSize, bytes.byteLength);
+  const object = await storage.inspectObject({ objectKey: asset.objectKey });
+  assert.deepEqual(object, {
+    mimeType: "audio/mpeg",
+    byteSize: bytes.byteLength,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  });
+
+  const replay = await request();
+  assert.equal(replay.status, 200);
+  const replayBody = await readJson(replay);
+  assert.equal(replayBody.data.asset.id, assetId);
+  assert.equal(replayBody.data.track.title, "Corporate Theme");
+  assert.equal(calls, 1);
+});
+
+test("upload purpose maps only the closed server-owned audio roles", async () => {
+  const store = createInMemoryControlPlaneStore();
+  const assetStore = createInMemoryAssetWorkspaceStore(store);
+  const app = createApp({ store, assetStore });
+  const projectId = (await readJson(await createProject(app, "Audio upload purpose", "audio-purpose-project"))).data.id as string;
+  const upload = async (purpose: "MUSIC" | "NARRATION_SAMPLE" | "USER_SOURCE_AUDIO" | undefined, key: string) => {
+    const response = await app.request(`http://localhost/api/v1/projects/${projectId}/assets/upload-requests`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+      body: JSON.stringify({ kind: "AUDIO", purpose, filename: `${key}.wav`, mime_type: "audio/wav", byte_size: 4, metadata: { audio_role: "MUSIC" } }),
+    });
+    assert.equal(response.status, 201);
+    const body = await readJson(response);
+    const asset = await assetStore.findAsset("ws_dev_default", body.data.asset_id as string);
+    assert.ok(asset);
+    return asset;
+  };
+  assert.equal((await upload("MUSIC", "music-purpose")).metadata.audio_role, "MUSIC");
+  assert.equal((await upload("NARRATION_SAMPLE", "sample-purpose")).metadata.audio_role, "NARRATION_SAMPLE");
+  assert.equal((await upload("USER_SOURCE_AUDIO", "user-source-purpose")).metadata.audio_role, "USER_SOURCE_AUDIO");
+  assert.equal((await upload(undefined, "unclassified-purpose")).metadata.audio_role, undefined);
 });
 
 test("storage unavailability does not persist a confirm command", async () => {

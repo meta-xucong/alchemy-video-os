@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   AssetIdSchema,
   DecimalStringSchema,
+  DeliveryPlanRevisionIdSchema,
   JsonObjectSchema,
   ProjectIdSchema,
   ProviderAttemptIdSchema,
@@ -14,16 +15,17 @@ import {
   UtcTimestampSchema,
   WorkspaceIdSchema,
 } from "./primitives.js";
-import { CreditProviderSchema } from "./credit.js";
+import { BillingRuleSnapshotSchema, CreditProviderSchema } from "./credit.js";
 import {
   CreativeBriefRevisionSchema,
+  MotionBeatSchema,
   ProductionRunSchema,
   StoryboardRevisionSchema,
 } from "./creative-planning.js";
 
 export const UserStatusSchema = z.enum(["ACTIVE", "DISABLED"]);
 export const WorkspaceRoleSchema = z.enum(["OWNER", "ADMIN", "EDITOR", "VIEWER"]);
-export const ProjectStatusSchema = z.enum(["ACTIVE", "ARCHIVED"]);
+export const ProjectStatusSchema = z.enum(["ACTIVE", "ARCHIVED", "DELETED"]);
 export const AssetKindSchema = z.enum([
   "IMAGE",
   "VIDEO",
@@ -190,17 +192,32 @@ export const ReferenceBindingInputSchema = ReferenceBindingSchema.pick({
 });
 
 export const VisualInputModeSchema = z.enum(["TEXT", "FIRST_FRAME", "REFERENCE_SET"]);
+// Semantic roles are internal routing hints for a multi-reference snapshot. They
+// are deliberately separate from ReferenceBinding.role so no database enum or
+// public hand-shot input needs to change when the provider ordering evolves.
+export const VisualReferenceRoleSchema = z.enum(["STYLE", "SUBJECT", "SCENE", "HANDOFF"]);
 export const VisualInputReferenceSchema = z.object({
   asset_id: AssetIdSchema,
   sha256: Sha256Schema,
   mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]),
   position: z.number().int().nonnegative(),
+  // Optional keeps already-persisted TaskRun snapshots readable during rollout.
+  role: VisualReferenceRoleSchema.optional(),
 }).strict();
 export const VisualInputSnapshotSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("TEXT"), references: z.tuple([]) }).strict(),
   z.object({ mode: z.literal("FIRST_FRAME"), references: z.tuple([VisualInputReferenceSchema]) }).strict(),
   z.object({ mode: z.literal("REFERENCE_SET"), references: z.array(VisualInputReferenceSchema).min(1).max(7) }).strict(),
 ]);
+
+/**
+ * Private audio-owner fact carried by immutable video execution snapshots.
+ * The values mirror the source owner distinction: a provider may retain the
+ * generated MP4 audio, or a separately approved TTS track may own narration.
+ * Browser TaskRun DTOs omit the snapshot, so this does not expose provider
+ * routing to the public API.
+ */
+export const VideoAudioOwnerSchema = z.enum(["NATIVE_PROVIDER", "TTS", "LEGACY_PRESERVE"]);
 
 export const VideoGenerationInputSnapshotSchema = z.object({
   model: z.string().min(1),
@@ -209,10 +226,48 @@ export const VideoGenerationInputSnapshotSchema = z.object({
   resolution: z.string().min(1),
   ratio: z.string().min(1),
   reference_asset_ids: z.array(AssetIdSchema).max(7),
+  // Optional while historical TaskRun snapshots are still being consumed.
+  audio_owner: VideoAudioOwnerSchema.optional(),
+  // Immutable delivery approval fact; historical TaskRuns may omit it.
+  delivery_plan_revision_id: DeliveryPlanRevisionIdSchema.optional(),
   generation_segment_sequence: z.number().int().positive().optional(),
   narrative_beat_sequences: z.array(z.number().int().positive()).min(1).max(60).optional(),
+  // Private immutable planning facts. Historical snapshots may omit them during rollout.
+  motion_plan_version: z.string().min(1).max(160).optional(),
+  motion_plan_hash: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  motion_timeline: z.array(MotionBeatSchema).min(1).max(8).optional(),
   // Optional only while already-persisted Mock snapshots are drained after deployment.
   visual_input: VisualInputSnapshotSchema.optional(),
+  billing: z.object({
+    external_user_id: z.number().int().positive(),
+    billing_rule: BillingRuleSnapshotSchema,
+  }).strict().optional(),
+}).superRefine((snapshot, context) => {
+  if ((snapshot.motion_plan_version === undefined) !== (snapshot.motion_plan_hash === undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["motion_plan_version"], message: "Motion plan version and hash must be supplied together." });
+  }
+  const timeline = snapshot.motion_timeline;
+  if (!timeline) return;
+  const ordered = [...timeline].sort((left, right) => left.sequence - right.sequence);
+  if (ordered.some((beat, index) => beat.sequence !== index + 1)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["motion_timeline"], message: "Motion timeline sequences must be contiguous." });
+  }
+  if (Math.abs(ordered[0]!.start_seconds) > 0.001) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["motion_timeline", 0, "start_seconds"], message: "Motion timeline must start at 0 seconds." });
+  }
+  ordered.forEach((beat, index) => {
+    if (beat.end_seconds <= beat.start_seconds) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["motion_timeline", index], message: "Motion beat must have positive duration." });
+    }
+    const next = ordered[index + 1];
+    if (next && Math.abs(next.start_seconds - beat.end_seconds) > 0.001) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["motion_timeline", index], message: "Motion timeline must not contain gaps or overlaps." });
+    }
+  });
+  const last = ordered.at(-1);
+  if (last && Math.abs(last.end_seconds - snapshot.duration) > 0.001) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["motion_timeline"], message: "Motion timeline must cover the full task duration." });
+  }
 });
 
 export const TaskRunErrorSchema = z.object({
@@ -372,7 +427,7 @@ export const CreateProjectCommandSchema = z.object({
 
 export const UpdateProjectCommandSchema = z.object({
   name: z.string().min(1).max(255).optional(),
-  status: ProjectStatusSchema.optional(),
+  status: z.enum(["ACTIVE", "ARCHIVED"]).optional(),
 }).refine((command) => Object.keys(command).length > 0, "At least one project field is required.");
 
 export const CreateUploadRequestCommandSchema = z.object({
@@ -380,6 +435,9 @@ export const CreateUploadRequestCommandSchema = z.object({
   filename: z.string().min(1).max(255),
   mime_type: z.string().min(1).max(255),
   byte_size: z.number().int().positive().max(25 * 1024 * 1024),
+  // Optional, server-interpreted purpose. This is intentionally a closed
+  // enum; arbitrary metadata must never be allowed to assign audio ownership.
+  purpose: z.enum(["MUSIC", "NARRATION_SAMPLE", "USER_SOURCE_AUDIO"]).optional(),
 }).superRefine((command, context) => {
   const mimeType = command.mime_type.toLowerCase();
   const allowedMimeTypes = {
@@ -400,6 +458,13 @@ export const CreateUploadRequestCommandSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["mime_type"],
       message: "mime_type is not allowed for the requested asset kind.",
+    });
+  }
+  if (command.purpose && command.kind !== "AUDIO") {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["purpose"],
+      message: "purpose is only valid for AUDIO uploads.",
     });
   }
 });
@@ -459,5 +524,7 @@ export const RetryTaskRunCommandSchema = z.object({}).strict();
 export type TaskRunStatus = z.infer<typeof TaskRunStatusSchema>;
 export type TaskRun = z.infer<typeof TaskRunSchema>;
 export type VideoGenerationInputSnapshot = z.infer<typeof VideoGenerationInputSnapshotSchema>;
+export type VideoAudioOwner = z.infer<typeof VideoAudioOwnerSchema>;
 export type VisualInputMode = z.infer<typeof VisualInputModeSchema>;
+export type VisualReferenceRole = z.infer<typeof VisualReferenceRoleSchema>;
 export type VisualInputSnapshot = z.infer<typeof VisualInputSnapshotSchema>;

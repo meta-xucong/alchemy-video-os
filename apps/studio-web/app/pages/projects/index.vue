@@ -36,7 +36,7 @@
       <NuxtLink v-for="item in projects" :key="item.id" class="project-card" :to="`/projects/${item.id}`" :aria-label="`进入项目：${item.name}`">
         <div>
           <p class="project-card-status" :class="item.status.toLowerCase()">{{ projectStatusLabel(item.status) }}</p>
-          <h2>{{ item.name }}</h2>
+          <h2 :title="item.name">{{ item.name }}</h2>
         </div>
         <span>最近更新 {{ formatTime(item.updated_at) }}</span>
       </NuxtLink>
@@ -67,7 +67,7 @@ const showCreate = ref(false);
 const creatingProject = ref(false);
 
 const commandKey = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
-const projectStatusLabel = (status: "ACTIVE" | "ARCHIVED") => status === "ARCHIVED" ? "已归档" : "进行中";
+const projectStatusLabel = (status: "ACTIVE" | "ARCHIVED" | "DELETED") => status === "ARCHIVED" ? "已归档" : status === "DELETED" ? "已删除" : "进行中";
 const formatTime = (value: string) => new Date(value).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
 async function loadProjects() {

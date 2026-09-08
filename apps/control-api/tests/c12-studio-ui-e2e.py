@@ -1,7 +1,12 @@
 import argparse
 import json
+import math
 import re
+import struct
 import sys
+import tempfile
+import wave
+from pathlib import Path
 from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
@@ -10,9 +15,30 @@ from playwright.sync_api import sync_playwright
 RESULT_PREFIX = "C12_STUDIO_UI_E2E_RESULT="
 
 
+def create_music_fixture(directory: str) -> Path:
+    """Create the existing local MUSIC upload fixture without a network source."""
+    path = Path(directory) / "c12-music.wav"
+    sample_rate = 8_000
+    duration_seconds = 30
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        frames = b"".join(
+            struct.pack("<h", int(6_000 * math.sin(2 * math.pi * 440 * index / sample_rate)))
+            for index in range(sample_rate * duration_seconds)
+        )
+        output.writeframes(frames)
+    return path
+
+
 def wait_for_final_video(page):
     try:
-        page.get_by_role("heading", name="完整成片已准备好", exact=True).wait_for(timeout=30_000)
+        # The source-aligned OpenMontage final-review path may run the
+        # controlled local transcriber on CPU.  Keep the browser assertion
+        # within the Runtime client's bounded request window instead of
+        # treating that legitimate review latency as a UI failure.
+        page.get_by_role("heading", name="完整成片已准备好", exact=True).wait_for(timeout=120_000)
     except Exception as error:
         diagnostic = page.evaluate(
             """async () => {
@@ -80,20 +106,30 @@ def create_plan_and_verify_final_video(page, studio_origin, project_name, browse
     page.locator("#story-duration").fill("30")
     page.locator("#story-resolution-480p").check()
     page.locator("#story-style").fill("真实纪录感，克制的暖色灯光")
-    page.get_by_text("预计生成 3 段视频", exact=True).wait_for(timeout=10_000)
+    page.get_by_text("预计生成 2 段视频", exact=True).wait_for(timeout=10_000)
     estimate_items = page.locator('ol[aria-label="预计生成片段"] > li')
-    if estimate_items.count() != 3:
-        raise AssertionError("C12 Studio did not show the expected three pre-generation video segments for a 30-second story.")
-    for index in range(3):
+    if estimate_items.count() != 2:
+        raise AssertionError("C12 Studio did not show the expected two pre-generation video segments for a 30-second story.")
+    for index in range(2):
         estimate_text = estimate_items.nth(index).inner_text()
-        if f"第 {index + 1} 段" not in estimate_text or "约 10 秒" not in estimate_text:
+        if f"第 {index + 1} 段" not in estimate_text or "约 15 秒" not in estimate_text:
             raise AssertionError(f"C12 Studio showed an unexpected pre-generation segment estimate: {estimate_text!r}")
+    # The Mock video fixture is intentionally video-only.  Upload the
+    # existing server-owned MUSIC path so the final-review audio gate is
+    # exercised without weakening the no-audio/explicit-OFF contract.
+    with tempfile.TemporaryDirectory(prefix="alchemy-c12-music-") as directory:
+        music_fixture = create_music_fixture(directory)
+        page.locator('input[type="file"][accept="audio/mpeg,audio/wav,audio/ogg"]').set_input_files(str(music_fixture))
+        page.wait_for_function(
+            "() => { const input = document.querySelector('input[type=\"radio\"][value=\"MANUAL\"]'); return input && !input.disabled && input.checked; }",
+            timeout=60_000,
+        )
     page.get_by_role("button", name="开始生成视频", exact=True).click()
     wait_for_final_video(page)
     if not page.locator("#story-resolution-480p").is_checked():
         raise AssertionError("C12 Studio did not retain the selected 480p resolution for the completed production.")
-    if page.locator('ol[aria-label="制作细节"] > li').count() != 3:
-        raise AssertionError("C12 18-beat / 30-second narrative did not create three executable generation segments.")
+    if page.locator('ol[aria-label="制作细节"] > li').count() != 2:
+        raise AssertionError("C12 18-beat / 30-second narrative did not create two executable generation segments.")
 
     result_button = page.get_by_role("button", name="查看完整成片 01", exact=True)
     result_button.wait_for(timeout=30_000)
@@ -143,7 +179,7 @@ def create_plan_and_verify_final_video(page, studio_origin, project_name, browse
         assert_mobile_layout(mobile_page, page.url, project_name)
     finally:
         mobile_context.close()
-    return {"project_id": project_id, "segment_count": 3, "mobile_viewport": "390x844"}
+    return {"project_id": project_id, "segment_count": 2, "mobile_viewport": "390x844"}
 
 
 def main():

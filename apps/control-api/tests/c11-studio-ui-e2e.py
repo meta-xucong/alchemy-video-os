@@ -8,12 +8,32 @@ from playwright.sync_api import Page, sync_playwright
 
 
 RESULT_PREFIX = "C11_STUDIO_UI_E2E_RESULT="
+TARGET_DURATION_SECONDS = 45
+# The current certified local planning/provider contract accepts a 15-second
+# visual generation segment.  Keep this browser gate aligned with C11.6's
+# minimum-call rule instead of the retired 10-second mechanical split.
+MAX_GENERATION_SEGMENT_SECONDS = 15
 
 
-def assert_mobile_layout(page: Page, project_url: str, project_name: str) -> None:
+def wait_for_production_heading(page: Page, timeout: int, failed_posts: list[dict[str, object]] | None = None) -> None:
+    try:
+        page.get_by_role("heading", name="正在制作视频", exact=True).first.wait_for(timeout=timeout)
+    except Exception as error:
+        body = page.locator("body").inner_text()[:4_000]
+        progress = page.evaluate(
+            """async () => {
+              const response = await fetch(`/api/v1/projects/${location.pathname.split('/').pop()}/production-runs`);
+              return { status: response.status, body: await response.text() };
+            }""",
+        )
+        suffix = f"; failed_posts={failed_posts}" if failed_posts else ""
+        raise AssertionError(f"C11 production progress panel did not render; body={body}; progress={progress}{suffix}") from error
+
+
+def assert_mobile_layout(page: Page, project_url: str, project_name: str, failed_posts: list[dict[str, object]] | None = None) -> None:
     page.goto(project_url, wait_until="domcontentloaded")
     page.get_by_role("heading", name=project_name, exact=True).wait_for(timeout=30_000)
-    page.get_by_role("heading", name="正在制作视频", exact=True).first.wait_for(timeout=30_000)
+    wait_for_production_heading(page, 30_000, failed_posts)
     layout = page.evaluate(
         """() => ({
           width: window.innerWidth,
@@ -48,6 +68,7 @@ def create_and_confirm_plan(page: Page, studio_origin: str, project_name: str, b
     project_id = project_match.group(1)
 
     post_paths: list[str] = []
+    failed_posts: list[dict[str, object]] = []
 
     def record_request(request) -> None:
         if request.method != "POST":
@@ -57,15 +78,30 @@ def create_and_confirm_plan(page: Page, studio_origin: str, project_name: str, b
             post_paths.append(parsed.path)
 
     page.on("request", record_request)
+
+    def record_failed_response(response) -> None:
+        request = response.request
+        if request.method != "POST" or response.status < 400:
+            return
+        parsed = urlparse(response.url)
+        if parsed.netloc != urlparse(studio_origin).netloc or not parsed.path.startswith("/api/v1/"):
+            return
+        try:
+            body = response.text()[:2_000]
+        except Exception:
+            body = "<response body unavailable>"
+        failed_posts.append({"url": parsed.path, "status": response.status, "body": body})
+
+    page.on("response", record_failed_response)
     page.get_by_label("把想法、故事或小说情节写在这里", exact=True).fill(
         "雨夜，创始人抵达工厂，发现交付期限只剩最后一晚。团队点亮车间，逐项完成产品检查。"
         "黎明前，客户收到承诺的成果，所有人走出厂房。"
     )
-    page.locator("#story-duration").fill("45")
+    page.locator("#story-duration").fill(str(TARGET_DURATION_SECONDS))
     page.locator("#story-resolution-480p").check()
     page.locator("#story-style").fill("真实纪录感，克制的暖色灯光")
     page.get_by_role("button", name="开始生成视频", exact=True).click()
-    page.get_by_role("heading", name="正在制作视频", exact=True).first.wait_for(timeout=60_000)
+    wait_for_production_heading(page, 60_000, failed_posts)
 
     storyboard_projection = page.evaluate(
         """async (projectId) => {
@@ -81,17 +117,30 @@ def create_and_confirm_plan(page: Page, studio_origin: str, project_name: str, b
         item for item in storyboard_projection["data"]
         if item.get("status") == "APPROVED"
     ]
-    segment_count = len(approved_storyboards[0]["shot_specs"]) if approved_storyboards else 0
-    if segment_count != 3:
-        raise AssertionError(f"C11 45-second narrative should have three 15-second planned segments, got {segment_count}.")
-    if page.locator("#story-duration").input_value() != "45":
+    shot_specs = approved_storyboards[0]["shot_specs"] if approved_storyboards else []
+    segment_count = len(shot_specs)
+    expected_segment_count = max(1, (TARGET_DURATION_SECONDS + MAX_GENERATION_SEGMENT_SECONDS - 1) // MAX_GENERATION_SEGMENT_SECONDS)
+    if segment_count != expected_segment_count:
+        raise AssertionError(
+            f"C11 {TARGET_DURATION_SECONDS}-second narrative should use {expected_segment_count} bounded generation segments, got {segment_count}."
+        )
+    durations = [item.get("duration_seconds") for item in shot_specs]
+    if sum(durations) != TARGET_DURATION_SECONDS or any(
+        not isinstance(duration, int) or duration < 1 or duration > MAX_GENERATION_SEGMENT_SECONDS
+        for duration in durations
+    ):
+        raise AssertionError(f"C11 planned segments do not preserve the requested bounded duration: {durations}.")
+    sequences = [item.get("sequence") for item in shot_specs]
+    if sequences != list(range(1, expected_segment_count + 1)):
+        raise AssertionError(f"C11 planned segment sequences are not contiguous: {sequences}.")
+    if page.locator("#story-duration").input_value() != str(TARGET_DURATION_SECONDS):
         raise AssertionError("C11 Studio did not retain the selected total duration in its review UI.")
     if not page.locator("#story-resolution-480p").is_checked():
         raise AssertionError("C11 Studio did not retain the selected 480p resolution in its project draft.")
 
     page.reload(wait_until="domcontentloaded")
     page.get_by_role("heading", name=project_name, exact=True).wait_for(timeout=30_000)
-    page.get_by_role("heading", name="正在制作视频", exact=True).first.wait_for(timeout=30_000)
+    wait_for_production_heading(page, 30_000, failed_posts)
     if not page.locator("#story-resolution-480p").is_checked():
         raise AssertionError("C11 Studio did not restore the selected 480p resolution after refresh.")
 
@@ -112,12 +161,15 @@ def create_and_confirm_plan(page: Page, studio_origin: str, project_name: str, b
 
     mobile_page = browser.new_page(viewport={"width": 390, "height": 844})
     try:
-        assert_mobile_layout(mobile_page, page.url, project_name)
+        assert_mobile_layout(mobile_page, page.url, project_name, failed_posts)
     finally:
         mobile_page.close()
     return {
         "project_id": project_id,
         "segment_count": segment_count,
+        "segment_durations": durations,
+        "target_duration_seconds": TARGET_DURATION_SECONDS,
+        "max_generation_segment_seconds": MAX_GENERATION_SEGMENT_SECONDS,
         "post_paths": post_paths,
         "mobile_viewport": "390x844",
     }

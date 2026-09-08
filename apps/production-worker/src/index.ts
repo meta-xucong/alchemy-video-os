@@ -1,4 +1,4 @@
-import { createDatabase, DrizzleProductionRepository } from "@alchemy-video/persistence";
+import { createDatabase, DrizzleNarrationQualityStore, DrizzleProductionRepository } from "@alchemy-video/persistence";
 import { BullMqMediaRuntimeQueue, BullMqProductionQueue, createBullMqMediaRuntimeWorker, createBullMqProductionWorker } from "@alchemy-video/task-queue";
 import { createS3StoragePort } from "@alchemy-video/storage-client";
 
@@ -17,8 +17,9 @@ const workerId = process.env.PRODUCTION_WORKER_ID ?? `production-worker-${proces
 const database = createDatabase(databaseUrl);
 const store = new DrizzleProductionRepository(
   database.db,
-  createProductionTaskRunInputSnapshotFactory(process.env.VIDEO_PROVIDER),
+  createProductionTaskRunInputSnapshotFactory(process.env.VIDEO_PROVIDER, process.env.VIDEO_PROMPT_MAX_UTF8_BYTES),
 );
+const narrationStore = new DrizzleNarrationQualityStore(database.db);
 const requiredStorageConfig = ["S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "S3_ACCESS_KEY", "S3_SECRET_KEY"] as const;
 if (requiredStorageConfig.some((name) => !process.env[name])) {
   throw new Error("S3_ENDPOINT, S3_REGION, S3_BUCKET, S3_ACCESS_KEY, and S3_SECRET_KEY are required for the C12 Production Worker.");
@@ -35,7 +36,10 @@ const storage = createS3StoragePort({
   accessKeyId: process.env.S3_ACCESS_KEY!,
   secretAccessKey: process.env.S3_SECRET_KEY!,
 });
-const mediaRuntime = new HttpMediaRuntimeClient({ runtimeUrl: mediaRuntimeUrl, token: mediaRuntimeToken });
+const mediaRuntime = new HttpMediaRuntimeClient({
+  runtimeUrl: mediaRuntimeUrl,
+  token: mediaRuntimeToken,
+});
 const queueName = process.env.PRODUCTION_QUEUE_NAME;
 const deadLetterQueueName = process.env.PRODUCTION_DEAD_LETTER_QUEUE_NAME;
 const queue = new BullMqProductionQueue(redisUrl, { ...(queueName ? { queueName } : {}) });
@@ -65,7 +69,7 @@ const mediaConsumer = new MediaRuntimeEventConsumer(store, storage, mediaRuntime
   consumerName: "media-runtime-transition",
   workerId,
   leaseMs: 30_000,
-});
+}, undefined, narrationStore);
 const worker = createBullMqProductionWorker({
   redisUrl,
   autoStart: false,
@@ -92,6 +96,7 @@ const mediaWorker = createBullMqMediaRuntimeWorker({
 });
 
 await Promise.all([worker.waitUntilReady(), mediaWorker.waitUntilReady()]);
+const recoveredRuns = await store.recoverActiveProductionRuns({ now: new Date() });
 worker.start();
 mediaWorker.start();
 const relayTimer = setInterval(() => {
@@ -103,7 +108,7 @@ const relayTimer = setInterval(() => {
   });
 }, 250);
 await Promise.all([relay.runOnce(), mediaRelay.runOnce()]);
-console.info(JSON.stringify({ event: "production_worker.ready", worker_id: workerId }));
+console.info(JSON.stringify({ event: "production_worker.ready", worker_id: workerId, provider_mode: process.env.VIDEO_PROVIDER ?? "default", provider_model: process.env.VIDEO_PROVIDER === "mock" ? "mock-video-v1" : "grok-imagine-video-1.5", recovered_runs: recoveredRuns.length }));
 
 let shuttingDown = false;
 const shutdown = async () => {

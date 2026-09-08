@@ -4,6 +4,7 @@ import type { ControlIdentitySeed } from "@alchemy-video/persistence";
 export type CurrentIdentity = {
   userId: string;
   workspaceId: string;
+  externalUserId?: number;
   bootstrap?: ControlIdentitySeed;
 };
 
@@ -54,6 +55,7 @@ export const createVeyraCurrentIdentity = (identity: VeyraExternalIdentity): Cur
   return {
     userId: bootstrap.user.id,
     workspaceId: bootstrap.workspace.id,
+    externalUserId: identity.externalUserId,
     bootstrap,
   };
 };

@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, ne } from "drizzle-orm";
 
 import type { PlatformDatabase } from "./db.js";
 import {
@@ -46,11 +46,11 @@ export class WorkspaceRepositories {
   }
 
   async listProjects(workspaceId: string) {
-    return this.db.select().from(projects).where(eq(projects.workspaceId, workspaceId)).orderBy(asc(projects.createdAt));
+    return this.db.select().from(projects).where(and(eq(projects.workspaceId, workspaceId), ne(projects.status, "DELETED"))).orderBy(asc(projects.createdAt));
   }
 
   async findProject(workspaceId: string, projectId: string) {
-    return (await this.db.select().from(projects).where(projectScope(workspaceId, projectId)).limit(1))[0];
+    return (await this.db.select().from(projects).where(and(projectScope(workspaceId, projectId), ne(projects.status, "DELETED"))).limit(1))[0];
   }
 
   async findAsset(workspaceId: string, assetId: string) {

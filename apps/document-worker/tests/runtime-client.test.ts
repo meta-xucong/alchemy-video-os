@@ -47,11 +47,13 @@ test("Document Runtime client rejects an unsafe endpoint before fetching source 
 
 test("Document Runtime client uses the fixed internal conversion path", async () => {
   let requestUrl = "";
+  let requestHeaders: Headers | undefined;
   const client = new HttpDocumentRuntimeClient({
     runtimeUrl: "http://127.0.0.1:3040",
     token: "test-token",
-    fetcher: async (input) => {
+    fetcher: async (input, init) => {
       requestUrl = String(input);
+      requestHeaders = new Headers(init?.headers);
       return new Response(JSON.stringify({
         markdown: "# Converted",
         converter: "markitdown",
@@ -63,12 +65,17 @@ test("Document Runtime client uses the fixed internal conversion path", async ()
 
   const result = await client.convert({
     conversionId: "dcv_01J00000000000000000000000",
-    sourceFilename: "brief.pdf",
-    sourceMimeType: "application/pdf",
+    sourceFilename: "副本镇江茅山高端度假别墅营销方案.pptx",
+    sourceMimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     sourceSha256: "a".repeat(64),
     bytes: new Uint8Array([1, 2, 3]),
   });
 
   assert.equal(requestUrl, "http://127.0.0.1:3040/internal/v1/document-conversions");
+  assert.equal(requestHeaders?.get("X-Source-Filename"), null);
+  assert.equal(
+    requestHeaders?.get("X-Source-Filename-Base64"),
+    Buffer.from("副本镇江茅山高端度假别墅营销方案.pptx", "utf8").toString("base64url"),
+  );
   assert.equal(result.markdown, "# Converted");
 });

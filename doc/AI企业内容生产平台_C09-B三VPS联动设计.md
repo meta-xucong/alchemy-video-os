@@ -255,3 +255,5 @@ last_error_code, last_error_retryable, completed_at, created_at
 - 不改 DNS、Nginx、TLS、WireGuard、Compose、Sub2API Portal、Alchemy 或 Video 部署。
 
 本设计只为 C09-B 的后续、显式授权的实现和真实验证提供审计边界；C09 仍是唯一 `IN_PROGRESS` 章节。
+
+> **2026-09-01 当前音频口径**：C09-B/VPS 设计不要求用户上传旁白或样音；自动音频使用 Provider 原生或显式 Doubao 服务端路径。本文的 VPS、部署和真实外部调用均仍后置/禁用；本机 Grok/Doubao 对照不改变本章边界。

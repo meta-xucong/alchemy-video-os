@@ -11,7 +11,7 @@
     "dev": "pnpm --parallel --filter @alchemy-video/studio-web --filter @alchemy-video/control-api dev",
     "build": "pnpm -r --if-present build",
     "typecheck": "pnpm -r --if-present typecheck",
-    "test": "pnpm -r --if-present test",
+    "test": "pnpm -r --workspace-concurrency=1 --if-present test",
     "contracts:generate": "pnpm --filter @alchemy-video/contracts generate",
     "db:generate": "pnpm --filter @alchemy-video/persistence db:generate",
     "db:migrate": "pnpm --filter @alchemy-video/persistence db:migrate",

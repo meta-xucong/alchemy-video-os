@@ -1,5 +1,3 @@
-name: alchemy-video
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -72,9 +70,16 @@ services:
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-video}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in the private deployment environment file}
       LOCAL_AUTH_MODE: dev
-      VEYRA_AUTH_ENABLED: "false"
+      AUDIO_FREE_ONLY: ${AUDIO_FREE_ONLY:-true}
+      VEYRA_AUTH_ENABLED: ${VEYRA_AUTH_ENABLED:-false}
+      VIDEO_VEYRA_INTERNAL_BASE_URL: ${VIDEO_VEYRA_INTERNAL_BASE_URL:-https://aiself.vip}
+      VIDEO_VEYRA_INTERNAL_TOKEN: ${VIDEO_VEYRA_INTERNAL_TOKEN:-}
+      VIDEO_SESSION_SECRET: ${VIDEO_SESSION_SECRET:-}
       VIDEO_PROVIDER: ${VIDEO_PROVIDER:-mock}
       REFERENCE_DELIVERY_SIGNING_KEY: ${REFERENCE_DELIVERY_SIGNING_KEY:?set REFERENCE_DELIVERY_SIGNING_KEY in the private deployment environment file}
+      REFERENCE_VISION_BASE_URL: ${REFERENCE_VISION_BASE_URL:-}
+      REFERENCE_VISION_API_KEY: ${REFERENCE_VISION_API_KEY:-}
+      REFERENCE_VISION_MODEL: ${REFERENCE_VISION_MODEL:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -102,6 +107,113 @@ services:
       VIDEO_PROVIDER: ${VIDEO_PROVIDER:-mock}
       SUB2API_VIDEO_BASE_URL: ${SUB2API_VIDEO_BASE_URL:-}
       SUB2API_VIDEO_API_KEY: ${SUB2API_VIDEO_API_KEY:-}
+      VEYRA_AUTH_ENABLED: ${VEYRA_AUTH_ENABLED:-false}
+      VIDEO_VEYRA_INTERNAL_BASE_URL: ${VIDEO_VEYRA_INTERNAL_BASE_URL:-https://aiself.vip}
+      VIDEO_VEYRA_INTERNAL_TOKEN: ${VIDEO_VEYRA_INTERNAL_TOKEN:-}
+      REFERENCE_DELIVERY_ORIGIN: ${REFERENCE_DELIVERY_ORIGIN:-https://video.aiself.vip}
+      REFERENCE_DELIVERY_SIGNING_KEY: ${REFERENCE_DELIVERY_SIGNING_KEY:?set REFERENCE_DELIVERY_SIGNING_KEY in the private deployment environment file}
+      REFERENCE_DELIVERY_PREFLIGHT_ENABLED: ${REFERENCE_DELIVERY_PREFLIGHT_ENABLED:-true}
+      REFERENCE_DELIVERY_PREFLIGHT_TIMEOUT_MS: ${REFERENCE_DELIVERY_PREFLIGHT_TIMEOUT_MS:-5000}
+      REFERENCE_DELIVERY_PREFLIGHT_RETRIES: ${REFERENCE_DELIVERY_PREFLIGHT_RETRIES:-2}
+      REFERENCE_DELIVERY_TTL_MS: ${REFERENCE_DELIVERY_TTL_MS:-900000}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  document-worker:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile
+    command: ["node", "apps/document-worker/dist/index.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-video}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the private deployment environment file}@postgres:5432/${POSTGRES_DB:-video}
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-video-assets}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-video}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in the private deployment environment file}
+      DOCUMENT_RUNTIME_URL: http://127.0.0.1:3434/
+      DOCUMENT_RUNTIME_TOKEN: ${DOCUMENT_RUNTIME_TOKEN:?set DOCUMENT_RUNTIME_TOKEN in the private deployment environment file}
+      DOCUMENT_CONVERSION_QUEUE_NAME: ${DOCUMENT_CONVERSION_QUEUE_NAME:-alchemy-video-document-conversions}
+      DOCUMENT_CONVERSION_DEAD_LETTER_QUEUE_NAME: ${DOCUMENT_CONVERSION_DEAD_LETTER_QUEUE_NAME:-alchemy-video-document-conversions-dead-letter}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  document-runtime:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile.document-runtime
+    command: ["uvicorn", "main:app", "--host", "127.0.0.1", "--port", "3434"]
+    environment:
+      DOCUMENT_RUNTIME_TOKEN: ${DOCUMENT_RUNTIME_TOKEN:?set DOCUMENT_RUNTIME_TOKEN in the private deployment environment file}
+    network_mode: "service:document-worker"
+    depends_on:
+      document-worker:
+        condition: service_started
+    restart: unless-stopped
+
+  workflow-worker:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile
+    command: ["node", "apps/workflow-worker/dist/index.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-video}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the private deployment environment file}@postgres:5432/${POSTGRES_DB:-video}
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-video-assets}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-video}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in the private deployment environment file}
+      CREATIVE_PLANNING_QUEUE_NAME: ${CREATIVE_PLANNING_QUEUE_NAME:-alchemy-video-creative-planning}
+      CREATIVE_PLANNING_DEAD_LETTER_QUEUE_NAME: ${CREATIVE_PLANNING_DEAD_LETTER_QUEUE_NAME:-alchemy-video-creative-planning-dead-letter}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  production-worker:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile
+    command: ["node", "apps/production-worker/dist/index.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-video}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the private deployment environment file}@postgres:5432/${POSTGRES_DB:-video}
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-video-assets}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-video}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in the private deployment environment file}
+      VIDEO_PROVIDER: ${VIDEO_PROVIDER:-mock}
+      VEYRA_AUTH_ENABLED: ${VEYRA_AUTH_ENABLED:-false}
+      VIDEO_VEYRA_INTERNAL_BASE_URL: ${VIDEO_VEYRA_INTERNAL_BASE_URL:-https://aiself.vip}
+      VIDEO_VEYRA_INTERNAL_TOKEN: ${VIDEO_VEYRA_INTERNAL_TOKEN:-}
+      VIDEO_PROMPT_MAX_UTF8_BYTES: ${VIDEO_PROMPT_MAX_UTF8_BYTES:-20000}
+      MEDIA_RUNTIME_URL: http://127.0.0.1:3433/
+      MEDIA_RUNTIME_TOKEN: ${MEDIA_RUNTIME_TOKEN:?set MEDIA_RUNTIME_TOKEN in the private deployment environment file}
+      PRODUCTION_QUEUE_NAME: ${PRODUCTION_QUEUE_NAME:-alchemy-video-production}
+      PRODUCTION_DEAD_LETTER_QUEUE_NAME: ${PRODUCTION_DEAD_LETTER_QUEUE_NAME:-alchemy-video-production-dead-letter}
+      MEDIA_RUNTIME_QUEUE_NAME: ${MEDIA_RUNTIME_QUEUE_NAME:-alchemy-video-media-runtime}
+      MEDIA_RUNTIME_DEAD_LETTER_QUEUE_NAME: ${MEDIA_RUNTIME_DEAD_LETTER_QUEUE_NAME:-alchemy-video-media-runtime-dead-letter}
+      SUB2API_VIDEO_BASE_URL: ${SUB2API_VIDEO_BASE_URL:-}
+      SUB2API_VIDEO_API_KEY: ${SUB2API_VIDEO_API_KEY:-}
       REFERENCE_DELIVERY_ORIGIN: ${REFERENCE_DELIVERY_ORIGIN:-https://video.aiself.vip}
       REFERENCE_DELIVERY_SIGNING_KEY: ${REFERENCE_DELIVERY_SIGNING_KEY:?set REFERENCE_DELIVERY_SIGNING_KEY in the private deployment environment file}
     depends_on:
@@ -113,6 +225,21 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  media-runtime:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile.media-runtime
+    command: ["uvicorn", "main:app", "--host", "127.0.0.1", "--port", "3433"]
+    environment:
+      MEDIA_RUNTIME_TOKEN: ${MEDIA_RUNTIME_TOKEN:?set MEDIA_RUNTIME_TOKEN in the private deployment environment file}
+      MEDIA_RUNTIME_FFMPEG_PATH: /usr/bin/ffmpeg
+      MEDIA_RUNTIME_FFPROBE_PATH: /usr/bin/ffprobe
+    network_mode: "service:production-worker"
+    depends_on:
+      production-worker:
+        condition: service_started
+    restart: unless-stopped
+
   studio-web:
     build:
       context: ../..
@@ -120,6 +247,7 @@ services:
     command: ["node", "apps/studio-web/.output/server/index.mjs"]
     environment:
       CONTROL_API_ORIGIN: http://control-api:8032
+      REFERENCE_DELIVERY_ORIGIN: ${REFERENCE_DELIVERY_ORIGIN:-https://video.aiself.vip}
       HOST: 0.0.0.0
       PORT: 3031
     depends_on:

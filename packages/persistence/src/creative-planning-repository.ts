@@ -6,23 +6,42 @@ import {
   type ContinuityLevel,
   type CreativeBriefTargetResolution,
   type CreativeRevisionStatus,
+  type DeliveryPlanRevisionId,
+  type GenerationSegmentMotionPlan,
   type InternalEventEnvelope,
   type InternalCreativePlanningQueueMessage,
+  type KeyVisualObjectLock,
   type ProductionRunStatus,
   type ReferencePolicy,
+  type MusicPlan,
+  type CreativeBriefFactContext,
+  type FrozenDocumentFact,
 } from "@alchemy-video/contracts";
+import { DeterministicFactSelector } from "@alchemy-video/document-intelligence";
 import {
   assertCreativeRevisionTransition,
+  assertDeliveryPlanCanCreateProductionRun,
   assertProductionRunCreatable,
   assertProductionRunTransition,
   assertStoryboardPlan,
+  inferVisualReferenceLockPolicies,
+  inferVisualReferenceRoles,
+  parseVisualReferenceAnalysis,
 } from "@alchemy-video/domain";
 
 import type { PlatformDatabase } from "./db.js";
 import {
   assets,
   commandDeduplications,
+  creativeBriefDocumentContexts,
+  creativeBriefFactContexts,
   creativeBriefRevisions,
+  documentFacts,
+  documentKnowledgeRevisions,
+  documentKnowledgeSections,
+  documentConversions,
+  documents,
+  deliveryPlanRevisions,
   eventConsumptions,
   outboxEvents,
   promptPackages,
@@ -40,6 +59,28 @@ export type CreativePlanningEvent = {
   correlationId: string;
 };
 
+export const MAX_DOCUMENT_CONTEXTS_PER_BRIEF = 4;
+export const MAX_DOCUMENT_CONTEXT_CHARACTERS = 5_000;
+export const MAX_DOCUMENT_CONTEXT_TOTAL_CHARACTERS = 18_000;
+
+export type ControlPlanningDocumentContext = {
+  documentId: string;
+  conversionId: string;
+  sourceAssetId: string;
+  markdownAssetId: string;
+  markdownSha256: string;
+  markdownObjectKey: string;
+  sequence: number;
+  maxContentCharacters: number;
+};
+
+export type PlanningDocumentContextResolver = {
+  resolveDocumentContexts(input: { workspaceId: string; projectId: string; sourceAssetIds: string[] }): Promise<ControlPlanningDocumentContext[] | undefined>;
+};
+export type PlanningFactContextResolver = {
+  resolveFactContexts(input: { workspaceId: string; projectId: string; creativeBriefRevisionId: string; sourceAssetIds: string[]; sourceText: string; stylePreferences: string }): Promise<CreativeBriefFactContext[] | undefined>;
+};
+
 export type ControlCreativeBriefRevision = {
   id: string;
   workspaceId: string;
@@ -50,6 +91,9 @@ export type ControlCreativeBriefRevision = {
   targetResolution: CreativeBriefTargetResolution;
   stylePreferences: string;
   sourceAssetIds: string[];
+  documentContexts: ControlPlanningDocumentContext[];
+  /** Internal frozen fact snapshot consumed by Workflow Worker; omitted by public serializer. */
+  factContexts?: CreativeBriefFactContext[];
   status: CreativeRevisionStatus;
   createdAt: string;
   updatedAt: string;
@@ -94,12 +138,17 @@ export type ControlProductionRun = {
   workspaceId: string;
   projectId: string;
   storyboardRevisionId: string;
+  deliveryPlanRevisionId?: DeliveryPlanRevisionId;
   status: ProductionRunStatus;
   totalShotCount: number;
   acceptedShotCount: number;
   totalSegmentCount: number;
   acceptedSegmentCount: number;
   totalDurationSeconds: number;
+  continuityStatus: "NOT_CHECKED" | "CHECKING" | "GOOD" | "AUTO_REPAIRING" | "NEEDS_ATTENTION";
+  plannedSegmentCount: number;
+  maxAutoRepairCount: number;
+  autoRepairCount: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -114,6 +163,8 @@ export type PromptPackageDraft = {
   visualConstraints: Record<string, unknown>;
   referenceMap: Record<string, unknown>;
   capabilitySnapshot: Record<string, unknown>;
+  motionPlan?: GenerationSegmentMotionPlan;
+  motionPlanHash?: string;
 };
 
 export type CreativePlanningDraft = {
@@ -172,12 +223,15 @@ export type ProductionRunCommandInput = {
   projectId: string;
   productionRunId: string;
   storyboardRevisionId: string;
+  // Optional only for direct repository callers replaying pre-C11.7 history.
+  deliveryPlanRevisionId?: DeliveryPlanRevisionId;
+  musicPlan?: MusicPlan;
   event: CreativePlanningEvent;
 };
 
 export type CreativePlanningCommandOutcome<T> =
   | { kind: "NEW" | "REPLAY"; value: T; status: 201 | 202 }
-  | { kind: "CONFLICT" | "NOT_FOUND" | "INVALID_SOURCE" | "ACTIVE_CONFLICT" | "STATE_INVALID" };
+  | { kind: "CONFLICT" | "NOT_FOUND" | "INVALID_SOURCE" | "DOCUMENT_CONTEXT_INVALID" | "DOCUMENT_KNOWLEDGE_NOT_READY" | "DOCUMENT_FACT_CONTEXT_INVALID" | "ACTIVE_CONFLICT" | "STATE_INVALID" | "PREFLIGHT_BLOCKED" };
 
 export type CreativePlanningEventClaim =
   | { kind: "CLAIMED"; brief: ControlCreativeBriefRevision }
@@ -192,6 +246,7 @@ export interface CreativePlanningStore {
   createCreativeBriefRevision(input: CreativeBriefCommandInput): Promise<CreativePlanningCommandOutcome<ControlCreativeBriefRevision>>;
   requestCreativePlan(input: PlanningCommandInput): Promise<CreativePlanningCommandOutcome<ControlCreativeBriefRevision>>;
   completeCreativePlan(input: { workspaceId: string; creativeBriefRevisionId: string; draft: CreativePlanningDraft; event: CreativePlanningEvent }): Promise<ControlStoryboardRevision | undefined>;
+  resolveVisualObjectLocks(input: { workspaceId: string; projectId: string; sourceAssetIds: string[]; sourcePrompt?: string }): Promise<KeyVisualObjectLock[]>;
   failCreativePlan(input: { workspaceId: string; creativeBriefRevisionId: string; code: string; event: CreativePlanningEvent }): Promise<ControlCreativeBriefRevision | undefined>;
   approveStoryboardRevision(input: ApproveStoryboardCommandInput): Promise<CreativePlanningCommandOutcome<ControlStoryboardRevision>>;
   createProductionRun(input: ProductionRunCommandInput): Promise<CreativePlanningCommandOutcome<ControlProductionRun>>;
@@ -204,13 +259,13 @@ type StoredSnapshot =
   | { kind: "CREATIVE_BRIEF"; creativeBriefRevisionId: string }
   | { kind: "STORYBOARD"; storyboardRevisionId: string }
   | { kind: "PRODUCTION_RUN"; productionRunId: string }
-  | { kind: "NOT_FOUND" | "INVALID_SOURCE" | "ACTIVE_CONFLICT" | "STATE_INVALID" };
+  | { kind: "NOT_FOUND" | "INVALID_SOURCE" | "DOCUMENT_CONTEXT_INVALID" | "DOCUMENT_KNOWLEDGE_NOT_READY" | "DOCUMENT_FACT_CONTEXT_INVALID" | "ACTIVE_CONFLICT" | "STATE_INVALID" | "PREFLIGHT_BLOCKED" };
 
 type StoredCommand = { requestHash: string; snapshot: StoredSnapshot; status: 201 | 202 };
 
 const now = () => new Date().toISOString();
 
-const serializeCreativeBrief = (value: typeof creativeBriefRevisions.$inferSelect): ControlCreativeBriefRevision => ({
+const serializeCreativeBrief = (value: typeof creativeBriefRevisions.$inferSelect, documentContexts: ControlPlanningDocumentContext[] = [], factContexts: CreativeBriefFactContext[] = []): ControlCreativeBriefRevision => ({
   id: value.id,
   workspaceId: value.workspaceId,
   projectId: value.projectId,
@@ -220,6 +275,8 @@ const serializeCreativeBrief = (value: typeof creativeBriefRevisions.$inferSelec
   targetResolution: value.targetResolution,
   stylePreferences: value.stylePreferences,
   sourceAssetIds: value.sourceAssetIds,
+  documentContexts,
+  factContexts,
   status: value.status,
   createdAt: value.createdAt,
   updatedAt: value.updatedAt,
@@ -268,18 +325,25 @@ const serializeProductionRun = (value: typeof productionRuns.$inferSelect): Cont
   workspaceId: value.workspaceId,
   projectId: value.projectId,
   storyboardRevisionId: value.storyboardRevisionId,
+  ...(value.deliveryPlanRevisionId ? { deliveryPlanRevisionId: value.deliveryPlanRevisionId } : {}),
   status: value.status,
   totalShotCount: value.totalShotCount,
   acceptedShotCount: value.acceptedShotCount,
   totalSegmentCount: value.totalShotCount,
   acceptedSegmentCount: value.acceptedShotCount,
   totalDurationSeconds: value.totalDurationSeconds,
+  continuityStatus: value.continuityStatus,
+  plannedSegmentCount: value.totalShotCount,
+  maxAutoRepairCount: value.maxAutoRepairCount,
+  autoRepairCount: value.autoRepairCount,
   createdAt: value.createdAt,
   updatedAt: value.updatedAt,
 });
 
 const commandKey = (scope: string, idempotencyKey: string) => `${scope}:${idempotencyKey}`;
-const activeProductionStatuses: ProductionRunStatus[] = ["DRAFT", "PLAN_READY", "CONFIRMED", "GENERATING", "REVIEWING", "RENDERING", "BLOCKED"];
+// BLOCKED is a historical run that is waiting for an explicit segment retry or a new version.
+// It must not prevent a revised storyboard from starting a separate production run.
+const activeProductionStatuses: ProductionRunStatus[] = ["DRAFT", "PLAN_READY", "CONFIRMED", "GENERATING", "REVIEWING", "RENDERING"];
 
 const planIsValid = (input: Pick<CreativePlanningDraft, "totalDurationSeconds" | "shotSpecs">) => {
   assertStoryboardPlan({
@@ -358,14 +422,33 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
   private readonly commands = new Map<string, StoredCommand>();
   private readonly consumedEvents = new Set<string>();
 
-  constructor(private readonly sourceAssetResolver?: {
-    findAsset(workspaceId: string, assetId: string): Promise<{
-      projectId: string;
-      status: string;
-      origin?: string;
-      kind?: string;
-    } | undefined>;
-  }) {}
+  constructor(
+    private readonly sourceAssetResolver?: {
+      findAsset(workspaceId: string, assetId: string): Promise<{
+        projectId: string;
+        status: string;
+        origin?: string;
+        kind?: string;
+        metadata?: Record<string, unknown>;
+      } | undefined>;
+    },
+    private readonly documentContextResolver?: PlanningDocumentContextResolver,
+    private readonly factContextResolver?: PlanningFactContextResolver,
+    private deliveryPlanResolver?: {
+      findDeliveryPlanRevision(workspaceId: string, deliveryPlanRevisionId: string): Promise<{
+        projectId: string;
+        storyboardRevisionId: string;
+        status: "DRAFT" | "PREFLIGHT_BLOCKED" | "AWAITING_APPROVAL" | "APPROVED" | "CONSUMED" | "SUPERSEDED";
+        blockReasons: string[];
+        consumedByProductionRunId: string | null;
+      } | undefined>;
+      consumeDeliveryPlanRevision(input: { workspaceId: string; deliveryPlanRevisionId: string; productionRunId: string }): Promise<{ kind: "CONSUMED" | "ALREADY_CONSUMED" | "NOT_FOUND" | "STATE_INVALID" }>;
+    },
+  ) {}
+
+  setDeliveryPlanResolver(resolver: NonNullable<InMemoryCreativePlanningStore["deliveryPlanResolver"]>) {
+    this.deliveryPlanResolver = resolver;
+  }
 
   async listProjectCreativeBriefRevisions(workspaceId: string, projectId: string) {
     return [...this.creativeBriefs.values()]
@@ -399,6 +482,12 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
     const replay = await this.replayBrief(input);
     if (replay) return replay;
     if (!(await this.sourcesAreReady(input.workspaceId, input.projectId, input.sourceAssetIds))) return this.store(input, { kind: "INVALID_SOURCE" });
+    const documentContexts = await this.resolveDocumentContexts(input);
+    if (!documentContexts) return this.store(input, { kind: "DOCUMENT_CONTEXT_INVALID" });
+    const factContexts = this.factContextResolver
+      ? await this.factContextResolver.resolveFactContexts({ workspaceId: input.workspaceId, projectId: input.projectId, creativeBriefRevisionId: input.creativeBriefRevisionId, sourceAssetIds: input.sourceAssetIds, sourceText: input.sourceText, stylePreferences: input.stylePreferences })
+      : [];
+    if (factContexts === undefined) return this.store(input, { kind: "DOCUMENT_KNOWLEDGE_NOT_READY" });
     const revision = (await this.listProjectCreativeBriefRevisions(input.workspaceId, input.projectId)).length + 1;
     const timestamp = now();
     const value: ControlCreativeBriefRevision = {
@@ -411,6 +500,8 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
       targetResolution: input.targetResolution,
       stylePreferences: input.stylePreferences,
       sourceAssetIds: [...input.sourceAssetIds],
+      documentContexts,
+      factContexts,
       status: "DRAFT",
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -418,6 +509,26 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
     this.creativeBriefs.set(value.id, value);
     this.commands.set(commandKey(input.scope, input.idempotencyKey), { requestHash: input.requestHash, snapshot: { kind: "CREATIVE_BRIEF", creativeBriefRevisionId: value.id }, status: 201 });
     return { kind: "NEW", value, status: 201 };
+  }
+
+  async resolveVisualObjectLocks(input: { workspaceId: string; projectId: string; sourceAssetIds: string[]; sourcePrompt?: string }): Promise<KeyVisualObjectLock[]> {
+    if (!this.sourceAssetResolver) return [];
+    const values = await Promise.all(input.sourceAssetIds.map((assetId) => this.sourceAssetResolver!.findAsset(input.workspaceId, assetId)));
+    const roles = inferVisualReferenceRoles({
+      sourcePrompt: input.sourcePrompt ?? "",
+      count: values.length,
+      sourceImageNames: values.map((asset) => typeof asset?.metadata?.filename === "string" ? asset.metadata.filename : undefined),
+      visionAnalyses: values.map((asset) => parseVisualReferenceAnalysis(asset?.metadata?.visual_analysis)),
+    });
+    const lockPolicies = inferVisualReferenceLockPolicies({
+      sourcePrompt: input.sourcePrompt ?? "",
+      roles,
+      sourceImageNames: values.map((asset) => typeof asset?.metadata?.filename === "string" ? asset.metadata.filename : undefined),
+    });
+    return values.flatMap((asset, position) => {
+      if (lockPolicies[position] !== "LOCK_OBJECTS" || !asset || asset.projectId !== input.projectId || asset.status !== "READY") return [];
+      return parseVisualReferenceAnalysis(asset.metadata?.visual_analysis)?.objects ?? [];
+    });
   }
 
   async requestCreativePlan(input: PlanningCommandInput): Promise<CreativePlanningCommandOutcome<ControlCreativeBriefRevision>> {
@@ -511,6 +622,20 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
     if (replay) return replay;
     const storyboard = await this.findStoryboardRevision(input.workspaceId, input.storyboardRevisionId);
     if (!storyboard || storyboard.projectId !== input.projectId) return this.store(input, { kind: "NOT_FOUND" });
+    if (input.deliveryPlanRevisionId && this.deliveryPlanResolver) {
+      const deliveryPlan = await this.deliveryPlanResolver.findDeliveryPlanRevision(input.workspaceId, input.deliveryPlanRevisionId);
+      if (!deliveryPlan || deliveryPlan.projectId !== input.projectId || deliveryPlan.storyboardRevisionId !== storyboard.id) {
+        return this.store(input, { kind: "NOT_FOUND" });
+      }
+      try {
+        assertDeliveryPlanCanCreateProductionRun({
+          status: deliveryPlan.status,
+          block_reasons: deliveryPlan.blockReasons,
+        });
+      } catch {
+        return this.store(input, { kind: "PREFLIGHT_BLOCKED" });
+      }
+    }
     if (this.activeProductionRun(input.workspaceId, input.projectId)) return this.store(input, { kind: "ACTIVE_CONFLICT" });
     try {
       assertProductionRunCreatable(storyboard.status);
@@ -525,16 +650,32 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
       workspaceId: input.workspaceId,
       projectId: input.projectId,
       storyboardRevisionId: storyboard.id,
+      ...(input.deliveryPlanRevisionId ? { deliveryPlanRevisionId: input.deliveryPlanRevisionId } : {}),
       status: "CONFIRMED",
       totalShotCount: storyboard.shotSpecs.length,
       acceptedShotCount: 0,
       totalSegmentCount: storyboard.generationSegmentCount ?? storyboard.shotSpecs.length,
       acceptedSegmentCount: 0,
       totalDurationSeconds: storyboard.totalDurationSeconds,
+      continuityStatus: "NOT_CHECKED",
+      plannedSegmentCount: storyboard.generationSegmentCount ?? storyboard.shotSpecs.length,
+      maxAutoRepairCount: 2,
+      autoRepairCount: 0,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
     this.productionRuns.set(value.id, value);
+    if (input.deliveryPlanRevisionId && this.deliveryPlanResolver) {
+      const consumed = await this.deliveryPlanResolver.consumeDeliveryPlanRevision({
+        workspaceId: input.workspaceId,
+        deliveryPlanRevisionId: input.deliveryPlanRevisionId,
+        productionRunId: value.id,
+      });
+      if (consumed.kind !== "CONSUMED") {
+        this.productionRuns.delete(value.id);
+        return this.store(input, { kind: consumed.kind === "NOT_FOUND" ? "NOT_FOUND" : "PREFLIGHT_BLOCKED" });
+      }
+    }
     this.commands.set(commandKey(input.scope, input.idempotencyKey), { requestHash: input.requestHash, snapshot: { kind: "PRODUCTION_RUN", productionRunId: value.id }, status: 202 });
     return { kind: "NEW", value, status: 202 };
   }
@@ -567,6 +708,24 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
       && (asset.kind === "IMAGE" || asset.kind === "DOCUMENT"));
   }
 
+  private async resolveDocumentContexts(input: Pick<CreativeBriefCommandInput, "workspaceId" | "projectId" | "sourceAssetIds">) {
+    if (!this.sourceAssetResolver) return [];
+    const selectedDocumentIds: string[] = [];
+    for (const sourceAssetId of input.sourceAssetIds) {
+      const asset = await this.sourceAssetResolver.findAsset(input.workspaceId, sourceAssetId);
+      if (asset?.kind === "DOCUMENT") selectedDocumentIds.push(sourceAssetId);
+    }
+    if (selectedDocumentIds.length === 0) return [];
+    if (!this.documentContextResolver || selectedDocumentIds.length > MAX_DOCUMENT_CONTEXTS_PER_BRIEF) return undefined;
+    const contexts = await this.documentContextResolver.resolveDocumentContexts(input);
+    if (!contexts || contexts.length !== selectedDocumentIds.length) return undefined;
+    for (let index = 0; index < contexts.length; index += 1) {
+      const context = contexts[index];
+      if (!context || context.sourceAssetId !== selectedDocumentIds[index] || context.sequence !== index + 1 || context.maxContentCharacters < 1 || context.maxContentCharacters > MAX_DOCUMENT_CONTEXT_CHARACTERS) return undefined;
+    }
+    return contexts.map((context) => ({ ...context }));
+  }
+
   private activeProductionRun(workspaceId: string, projectId: string) {
     return [...this.productionRuns.values()].some((value) => value.workspaceId === workspaceId && value.projectId === projectId && activeProductionStatuses.includes(value.status));
   }
@@ -579,7 +738,7 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
       const value = this.creativeBriefs.get(stored.snapshot.creativeBriefRevisionId);
       return value ? { kind: "REPLAY", value, status: stored.status } : { kind: "CONFLICT" };
     }
-    return stored.snapshot.kind === "NOT_FOUND" || stored.snapshot.kind === "INVALID_SOURCE" || stored.snapshot.kind === "ACTIVE_CONFLICT" || stored.snapshot.kind === "STATE_INVALID" ? stored.snapshot : { kind: "CONFLICT" };
+    return stored.snapshot.kind === "NOT_FOUND" || stored.snapshot.kind === "INVALID_SOURCE" || stored.snapshot.kind === "DOCUMENT_CONTEXT_INVALID" || stored.snapshot.kind === "DOCUMENT_KNOWLEDGE_NOT_READY" || stored.snapshot.kind === "DOCUMENT_FACT_CONTEXT_INVALID" || stored.snapshot.kind === "ACTIVE_CONFLICT" || stored.snapshot.kind === "STATE_INVALID" || stored.snapshot.kind === "PREFLIGHT_BLOCKED" ? stored.snapshot : { kind: "CONFLICT" };
   }
 
   private async replayStoryboard(input: Pick<ApproveStoryboardCommandInput, "scope" | "idempotencyKey" | "requestHash">): Promise<CreativePlanningCommandOutcome<ControlStoryboardRevision> | undefined> {
@@ -590,7 +749,7 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
       const value = this.storyboards.get(stored.snapshot.storyboardRevisionId);
       return value ? { kind: "REPLAY", value, status: stored.status } : { kind: "CONFLICT" };
     }
-    return stored.snapshot.kind === "NOT_FOUND" || stored.snapshot.kind === "INVALID_SOURCE" || stored.snapshot.kind === "ACTIVE_CONFLICT" || stored.snapshot.kind === "STATE_INVALID" ? stored.snapshot : { kind: "CONFLICT" };
+    return stored.snapshot.kind === "NOT_FOUND" || stored.snapshot.kind === "INVALID_SOURCE" || stored.snapshot.kind === "DOCUMENT_KNOWLEDGE_NOT_READY" || stored.snapshot.kind === "DOCUMENT_FACT_CONTEXT_INVALID" || stored.snapshot.kind === "ACTIVE_CONFLICT" || stored.snapshot.kind === "STATE_INVALID" || stored.snapshot.kind === "PREFLIGHT_BLOCKED" ? stored.snapshot : { kind: "CONFLICT" };
   }
 
   private async replayProductionRun(input: Pick<ProductionRunCommandInput, "scope" | "idempotencyKey" | "requestHash">): Promise<CreativePlanningCommandOutcome<ControlProductionRun> | undefined> {
@@ -601,7 +760,7 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
       const value = this.productionRuns.get(stored.snapshot.productionRunId);
       return value ? { kind: "REPLAY", value, status: stored.status } : { kind: "CONFLICT" };
     }
-    return stored.snapshot.kind === "NOT_FOUND" || stored.snapshot.kind === "INVALID_SOURCE" || stored.snapshot.kind === "ACTIVE_CONFLICT" || stored.snapshot.kind === "STATE_INVALID" ? stored.snapshot : { kind: "CONFLICT" };
+    return stored.snapshot.kind === "NOT_FOUND" || stored.snapshot.kind === "INVALID_SOURCE" || stored.snapshot.kind === "DOCUMENT_KNOWLEDGE_NOT_READY" || stored.snapshot.kind === "DOCUMENT_FACT_CONTEXT_INVALID" || stored.snapshot.kind === "ACTIVE_CONFLICT" || stored.snapshot.kind === "STATE_INVALID" || stored.snapshot.kind === "PREFLIGHT_BLOCKED" ? stored.snapshot : { kind: "CONFLICT" };
   }
 
   private store<T>(input: Pick<CreativeBriefCommandInput | PlanningCommandInput | ApproveStoryboardCommandInput | ProductionRunCommandInput, "scope" | "idempotencyKey" | "requestHash">, snapshot: Exclude<StoredSnapshot, { kind: "CREATIVE_BRIEF" | "STORYBOARD" | "PRODUCTION_RUN" }>): CreativePlanningCommandOutcome<T> {
@@ -649,6 +808,199 @@ const sourceAssetsAreReady = async (transaction: Transaction, workspaceId: strin
     && (asset.kind === "IMAGE" || asset.kind === "DOCUMENT"));
 };
 
+const resolveDocumentContexts = async (transaction: Transaction, workspaceId: string, projectId: string, sourceAssetIds: string[]): Promise<ControlPlanningDocumentContext[] | undefined> => {
+  if (new Set(sourceAssetIds).size !== sourceAssetIds.length) return undefined;
+  if (sourceAssetIds.length === 0) return [];
+  const sourceRows = await transaction
+    .select({ id: assets.id, status: assets.status, origin: assets.origin, kind: assets.kind })
+    .from(assets)
+    .where(and(eq(assets.workspaceId, workspaceId), eq(assets.projectId, projectId), inArray(assets.id, sourceAssetIds)));
+  if (sourceRows.length !== sourceAssetIds.length || sourceRows.some((asset) =>
+    asset.status !== "READY"
+    || asset.origin !== "USER_UPLOAD"
+    || (asset.kind !== "IMAGE" && asset.kind !== "DOCUMENT"))) return undefined;
+  const sourceKinds = new Map(sourceRows.map((asset) => [asset.id, asset.kind]));
+  const documentSourceIds = sourceAssetIds.filter((assetId) => sourceKinds.get(assetId) === "DOCUMENT");
+  if (documentSourceIds.length === 0) return [];
+  if (documentSourceIds.length > MAX_DOCUMENT_CONTEXTS_PER_BRIEF) return undefined;
+  const rows = await transaction
+    .select({
+      documentId: documents.id,
+      documentStatus: documents.status,
+      conversionId: documentConversions.id,
+      sourceAssetId: documents.sourceAssetId,
+      markdownAssetId: assets.id,
+      markdownSha256: assets.sha256,
+      markdownObjectKey: assets.objectKey,
+      markdownStatus: assets.status,
+      markdownOrigin: assets.origin,
+      markdownKind: assets.kind,
+      markdownMimeType: assets.mimeType,
+    })
+    .from(documents)
+    .innerJoin(documentConversions, and(
+      eq(documentConversions.workspaceId, documents.workspaceId),
+      eq(documentConversions.projectId, documents.projectId),
+      eq(documentConversions.documentId, documents.id),
+      eq(documentConversions.sourceAssetId, documents.sourceAssetId),
+      eq(documentConversions.status, "SUCCEEDED"),
+    ))
+    .innerJoin(assets, and(
+      eq(assets.workspaceId, documentConversions.workspaceId),
+      eq(assets.projectId, documentConversions.projectId),
+      eq(assets.id, documentConversions.markdownAssetId),
+    ))
+    .where(and(
+      eq(documents.workspaceId, workspaceId),
+      eq(documents.projectId, projectId),
+      inArray(documents.sourceAssetId, documentSourceIds),
+    ));
+  if (rows.length !== documentSourceIds.length || rows.some((row) =>
+    row.documentStatus !== "READY"
+    || !row.markdownSha256
+    || row.markdownStatus !== "READY"
+    || row.markdownOrigin !== "DERIVED"
+    || row.markdownKind !== "DOCUMENT"
+    || row.markdownMimeType !== "text/markdown")) return undefined;
+  const bySource = new Map(rows.map((row) => [row.sourceAssetId, row]));
+  return documentSourceIds.map((sourceAssetId, index) => {
+    const row = bySource.get(sourceAssetId);
+    if (!row || !row.markdownSha256) throw new Error("Document context resolution lost a selected source asset.");
+    return {
+      documentId: row.documentId,
+      conversionId: row.conversionId,
+      sourceAssetId: row.sourceAssetId,
+      markdownAssetId: row.markdownAssetId,
+      markdownSha256: row.markdownSha256,
+      markdownObjectKey: row.markdownObjectKey,
+      sequence: index + 1,
+      maxContentCharacters: MAX_DOCUMENT_CONTEXT_CHARACTERS,
+    };
+  });
+};
+
+const loadDocumentContexts = async (transaction: Pick<PlatformDatabase, "select">, workspaceId: string, creativeBriefRevisionId: string): Promise<ControlPlanningDocumentContext[]> => {
+  const rows = await transaction
+    .select({ context: creativeBriefDocumentContexts, markdownObjectKey: assets.objectKey })
+    .from(creativeBriefDocumentContexts)
+    .innerJoin(assets, and(
+      eq(assets.workspaceId, creativeBriefDocumentContexts.workspaceId),
+      eq(assets.projectId, creativeBriefDocumentContexts.projectId),
+      eq(assets.id, creativeBriefDocumentContexts.markdownAssetId),
+    ))
+    .where(and(
+      eq(creativeBriefDocumentContexts.workspaceId, workspaceId),
+      eq(creativeBriefDocumentContexts.creativeBriefRevisionId, creativeBriefRevisionId),
+    ))
+    .orderBy(asc(creativeBriefDocumentContexts.sequence));
+  return rows.map(({ context, markdownObjectKey }) => ({
+    documentId: context.documentId,
+    conversionId: context.conversionId,
+    sourceAssetId: context.sourceAssetId,
+    markdownAssetId: context.markdownAssetId,
+    markdownSha256: context.markdownSha256,
+    markdownObjectKey,
+    sequence: context.sequence,
+    maxContentCharacters: context.maxContentCharacters,
+  }));
+};
+
+type FactContextResolution =
+  | { kind: "READY"; contexts: CreativeBriefFactContext[]; rows: Array<{ fact: FrozenDocumentFact; knowledgeRevisionId: string }> }
+  | { kind: "DOCUMENT_KNOWLEDGE_NOT_READY" | "DOCUMENT_FACT_CONTEXT_INVALID" };
+
+const resolveFactContexts = async (
+  transaction: Pick<PlatformDatabase, "select">,
+  input: { workspaceId: string; projectId: string; creativeBriefRevisionId: string; sourceText: string; stylePreferences: string; documentContexts: ControlPlanningDocumentContext[] },
+): Promise<FactContextResolution> => {
+  if (input.documentContexts.length === 0) return { kind: "READY", contexts: [], rows: [] };
+  const conversionIds = input.documentContexts.map((context) => context.conversionId);
+  const revisions = await transaction.select({
+    revision: documentKnowledgeRevisions,
+    assetSha256: assets.sha256,
+  }).from(documentKnowledgeRevisions).innerJoin(assets, and(
+    eq(assets.workspaceId, documentKnowledgeRevisions.workspaceId),
+    eq(assets.projectId, documentKnowledgeRevisions.projectId),
+    eq(assets.id, documentKnowledgeRevisions.markdownAssetId),
+  )).where(and(
+    eq(documentKnowledgeRevisions.workspaceId, input.workspaceId),
+    eq(documentKnowledgeRevisions.projectId, input.projectId),
+    inArray(documentKnowledgeRevisions.conversionId, conversionIds),
+  ));
+  const byConversion = new Map(revisions.map((row) => [row.revision.conversionId, row]));
+  for (const context of input.documentContexts) {
+    const row = byConversion.get(context.conversionId);
+    if (!row || row.revision.status !== "READY") return { kind: "DOCUMENT_KNOWLEDGE_NOT_READY" };
+    if (row.revision.markdownSha256 !== context.markdownSha256 || row.assetSha256 !== context.markdownSha256) return { kind: "DOCUMENT_FACT_CONTEXT_INVALID" };
+  }
+  const readyRevisionIds = input.documentContexts.map((context) => byConversion.get(context.conversionId)!.revision.id);
+  const factRows = await transaction.select({
+    fact: documentFacts,
+    sectionSequence: documentKnowledgeSections.sequence,
+    locator: documentKnowledgeSections.locator,
+    documentId: documentKnowledgeRevisions.documentId,
+    conversionId: documentKnowledgeRevisions.conversionId,
+  }).from(documentFacts)
+    .innerJoin(documentKnowledgeSections, and(
+      eq(documentKnowledgeSections.workspaceId, documentFacts.workspaceId),
+      eq(documentKnowledgeSections.projectId, documentFacts.projectId),
+      eq(documentKnowledgeSections.id, documentFacts.sectionId),
+    ))
+    .innerJoin(documentKnowledgeRevisions, and(
+      eq(documentKnowledgeRevisions.workspaceId, documentFacts.workspaceId),
+      eq(documentKnowledgeRevisions.projectId, documentFacts.projectId),
+      eq(documentKnowledgeRevisions.id, documentFacts.knowledgeRevisionId),
+      eq(documentKnowledgeRevisions.status, "READY"),
+    ))
+    .where(and(
+      eq(documentFacts.workspaceId, input.workspaceId),
+      eq(documentFacts.projectId, input.projectId),
+      inArray(documentFacts.knowledgeRevisionId, readyRevisionIds),
+    ))
+    .orderBy(asc(documentKnowledgeRevisions.conversionId), asc(documentKnowledgeSections.sequence), asc(documentFacts.createdAt));
+  const frozenRows = factRows.map(({ fact, sectionSequence, locator, documentId, conversionId }) => ({
+    knowledgeRevisionId: fact.knowledgeRevisionId,
+    fact: {
+      fact_id: fact.id,
+      category: fact.category,
+      statement: fact.statement,
+      confidence: fact.confidence,
+      source: { document_id: documentId, conversion_id: conversionId, section_sequence: sectionSequence, locator },
+    },
+  }));
+  const selected = new DeterministicFactSelector().selectForBrief({
+    creativeBriefRevisionId: input.creativeBriefRevisionId,
+    sourceText: input.sourceText,
+    stylePreferences: input.stylePreferences,
+    facts: frozenRows.map((row) => row.fact),
+  });
+  const byFactId = new Map(frozenRows.map((row) => [row.fact.fact_id, row]));
+  const contexts = selected.map((context) => ({ ...context }));
+  if (contexts.some((context) => !byFactId.has(context.fact_id))) return { kind: "DOCUMENT_FACT_CONTEXT_INVALID" };
+  return { kind: "READY", contexts, rows: contexts.map((context) => ({ fact: context.fact, knowledgeRevisionId: byFactId.get(context.fact_id)!.knowledgeRevisionId })) };
+};
+
+const loadFactContexts = async (transaction: Pick<PlatformDatabase, "select">, workspaceId: string, creativeBriefRevisionId: string): Promise<CreativeBriefFactContext[]> => {
+  const rows = await transaction.select().from(creativeBriefFactContexts).where(and(
+    eq(creativeBriefFactContexts.workspaceId, workspaceId),
+    eq(creativeBriefFactContexts.creativeBriefRevisionId, creativeBriefRevisionId),
+  )).orderBy(asc(creativeBriefFactContexts.sequence));
+  return rows.map((row) => ({
+    creative_brief_revision_id: row.creativeBriefRevisionId,
+    fact_id: row.factId,
+    sequence: row.sequence,
+    fact: {
+      fact_id: row.factId,
+      category: row.category,
+      statement: row.statement,
+      confidence: row.confidence,
+      source: { document_id: row.documentId, conversion_id: row.conversionId, section_sequence: row.sectionSequence, locator: row.locator },
+    },
+    selection_reason: row.selectionReason,
+    snapshot_hash: row.snapshotHash,
+  }));
+};
+
 const loadStoryboard = async (transaction: Pick<PlatformDatabase, "select">, workspaceId: string, storyboardRevisionId: string, forUpdate = false) => {
   const query = transaction
     .select()
@@ -679,7 +1031,7 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
       .from(creativeBriefRevisions)
       .where(and(eq(creativeBriefRevisions.workspaceId, workspaceId), eq(creativeBriefRevisions.projectId, projectId)))
       .orderBy(asc(creativeBriefRevisions.revision));
-    return values.map(serializeCreativeBrief);
+    return Promise.all(values.map(async (value) => serializeCreativeBrief(value, await loadDocumentContexts(this.db, workspaceId, value.id), await loadFactContexts(this.db, workspaceId, value.id))));
   }
 
   async findCreativeBriefRevision(workspaceId: string, creativeBriefRevisionId: string) {
@@ -688,7 +1040,7 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
       .from(creativeBriefRevisions)
       .where(and(eq(creativeBriefRevisions.workspaceId, workspaceId), eq(creativeBriefRevisions.id, creativeBriefRevisionId)))
       .limit(1);
-    return value ? serializeCreativeBrief(value) : undefined;
+    return value ? serializeCreativeBrief(value, await loadDocumentContexts(this.db, workspaceId, value.id), await loadFactContexts(this.db, workspaceId, value.id)) : undefined;
   }
 
   async listProjectStoryboardRevisions(workspaceId: string, projectId: string) {
@@ -731,6 +1083,17 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
       if (!(await sourceAssetsAreReady(transaction, input.workspaceId, input.projectId, input.sourceAssetIds))) {
         return this.storeOutcome(transaction, input, { kind: "INVALID_SOURCE" });
       }
+      const documentContexts = await resolveDocumentContexts(transaction, input.workspaceId, input.projectId, input.sourceAssetIds);
+      if (!documentContexts) return this.storeOutcome(transaction, input, { kind: "DOCUMENT_CONTEXT_INVALID" });
+      const factResolution = await resolveFactContexts(transaction, {
+        workspaceId: input.workspaceId,
+        projectId: input.projectId,
+        creativeBriefRevisionId: input.creativeBriefRevisionId,
+        sourceText: input.sourceText,
+        stylePreferences: input.stylePreferences,
+        documentContexts,
+      });
+      if (factResolution.kind !== "READY") return this.storeOutcome(transaction, input, { kind: factResolution.kind });
       const [previous] = await transaction
         .select({ revision: creativeBriefRevisions.revision })
         .from(creativeBriefRevisions)
@@ -752,8 +1115,68 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
           status: "DRAFT",
         })
         .returning();
+      if (documentContexts.length > 0) {
+        await transaction.insert(creativeBriefDocumentContexts).values(documentContexts.map((context) => ({
+          workspaceId: input.workspaceId,
+          projectId: input.projectId,
+          creativeBriefRevisionId: value.id,
+          documentId: context.documentId,
+          conversionId: context.conversionId,
+          sourceAssetId: context.sourceAssetId,
+          markdownAssetId: context.markdownAssetId,
+          markdownSha256: context.markdownSha256,
+          sequence: context.sequence,
+          maxContentCharacters: context.maxContentCharacters,
+        })));
+      }
+      if (factResolution.rows.length > 0) {
+        await transaction.insert(creativeBriefFactContexts).values(factResolution.rows.map(({ fact, knowledgeRevisionId }, index) => ({
+          workspaceId: input.workspaceId,
+          projectId: input.projectId,
+          creativeBriefRevisionId: value!.id,
+          knowledgeRevisionId,
+          factId: fact.fact_id,
+          sequence: index + 1,
+          category: fact.category,
+          statement: fact.statement,
+          confidence: fact.confidence,
+          documentId: fact.source.document_id,
+          conversionId: fact.source.conversion_id,
+          sectionSequence: fact.source.section_sequence,
+          locator: fact.source.locator,
+          selectionReason: factResolution.contexts[index]!.selection_reason,
+          snapshotHash: factResolution.contexts[index]!.snapshot_hash,
+        })));
+      }
       await storeSnapshot(transaction, input, { kind: "CREATIVE_BRIEF", creativeBriefRevisionId: value.id });
-      return { kind: "NEW", value: serializeCreativeBrief(value), status: 201 };
+      return { kind: "NEW", value: serializeCreativeBrief(value, documentContexts, factResolution.contexts), status: 201 };
+    });
+  }
+
+  async resolveVisualObjectLocks(input: { workspaceId: string; projectId: string; sourceAssetIds: string[]; sourcePrompt?: string }): Promise<KeyVisualObjectLock[]> {
+    if (input.sourceAssetIds.length === 0) return [];
+    const rows = await this.db.select({ id: assets.id, metadata: assets.metadata }).from(assets).where(and(
+      eq(assets.workspaceId, input.workspaceId),
+      eq(assets.projectId, input.projectId),
+      inArray(assets.id, input.sourceAssetIds),
+      eq(assets.status, "READY"),
+    ));
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const orderedRows = input.sourceAssetIds.map((assetId) => byId.get(assetId));
+    const roles = inferVisualReferenceRoles({
+      sourcePrompt: input.sourcePrompt ?? "",
+      count: orderedRows.length,
+      sourceImageNames: orderedRows.map((row) => typeof row?.metadata?.filename === "string" ? row.metadata.filename : undefined),
+      visionAnalyses: orderedRows.map((row) => parseVisualReferenceAnalysis(row?.metadata?.visual_analysis)),
+    });
+    const lockPolicies = inferVisualReferenceLockPolicies({
+      sourcePrompt: input.sourcePrompt ?? "",
+      roles,
+      sourceImageNames: orderedRows.map((row) => typeof row?.metadata?.filename === "string" ? row.metadata.filename : undefined),
+    });
+    return orderedRows.flatMap((row, position) => {
+      if (lockPolicies[position] !== "LOCK_OBJECTS") return [];
+      return parseVisualReferenceAnalysis(row?.metadata?.visual_analysis)?.objects ?? [];
     });
   }
 
@@ -788,7 +1211,7 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
         data: { creative_brief_revision_id: value.id },
       }));
       await storeSnapshot(transaction, input, { kind: "CREATIVE_BRIEF", creativeBriefRevisionId: value.id });
-      return { kind: "NEW", value: serializeCreativeBrief(value), status: 202 };
+      return { kind: "NEW", value: serializeCreativeBrief(value, await loadDocumentContexts(transaction, input.workspaceId, value.id), await loadFactContexts(transaction, input.workspaceId, value.id)), status: 202 };
     });
   }
 
@@ -886,7 +1309,11 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
           prompt: promptPackage.prompt,
           visualConstraints: promptPackage.visualConstraints,
           referenceMap: promptPackage.referenceMap,
-          capabilitySnapshot: promptPackage.capabilitySnapshot,
+          capabilitySnapshot: {
+            ...promptPackage.capabilitySnapshot,
+            ...(promptPackage.motionPlan ? { motion_plan: promptPackage.motionPlan } : {}),
+            ...(promptPackage.motionPlanHash ? { motion_plan_hash: promptPackage.motionPlanHash } : {}),
+          },
           createdAt: timestamp,
         })));
       }
@@ -924,7 +1351,7 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
         .limit(1)
         .for("update");
       if (!current) return undefined;
-      if (current.status === "FAILED") return serializeCreativeBrief(current);
+      if (current.status === "FAILED") return serializeCreativeBrief(current, await loadDocumentContexts(transaction, input.workspaceId, current.id), await loadFactContexts(transaction, input.workspaceId, current.id));
       if (current.status !== "PLANNING") return undefined;
       assertCreativeRevisionTransition(current.status, "FAILED");
       const [value] = await transaction
@@ -944,7 +1371,7 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
           data: { creative_brief_revision_id: value.id, error_code: input.code },
         }));
       }
-      return value ? serializeCreativeBrief(value) : undefined;
+      return value ? serializeCreativeBrief(value, await loadDocumentContexts(transaction, input.workspaceId, value.id), await loadFactContexts(transaction, input.workspaceId, value.id)) : undefined;
     });
   }
 
@@ -1010,6 +1437,29 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
       await advisoryProjectLock(transaction, input.workspaceId, input.projectId);
       const loaded = await loadStoryboard(transaction, input.workspaceId, input.storyboardRevisionId, true);
       if (!loaded || loaded.storyboard.projectId !== input.projectId) return this.storeOutcome(transaction, input, { kind: "NOT_FOUND" });
+      if (input.deliveryPlanRevisionId) {
+        const [deliveryPlan] = await transaction
+          .select()
+          .from(deliveryPlanRevisions)
+          .where(and(
+            eq(deliveryPlanRevisions.workspaceId, input.workspaceId),
+            eq(deliveryPlanRevisions.projectId, input.projectId),
+            eq(deliveryPlanRevisions.id, input.deliveryPlanRevisionId),
+          ))
+          .limit(1)
+          .for("update");
+        if (!deliveryPlan || deliveryPlan.storyboardRevisionId !== loaded.storyboard.id) {
+          return this.storeOutcome(transaction, input, { kind: "NOT_FOUND" });
+        }
+        try {
+          assertDeliveryPlanCanCreateProductionRun({
+            status: deliveryPlan.status,
+            block_reasons: deliveryPlan.blockReasons,
+          });
+        } catch {
+          return this.storeOutcome(transaction, input, { kind: "PREFLIGHT_BLOCKED" });
+        }
+      }
       const [active] = await transaction
         .select({ id: productionRuns.id })
         .from(productionRuns)
@@ -1030,13 +1480,34 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
           workspaceId: input.workspaceId,
           projectId: input.projectId,
           storyboardRevisionId: loaded.storyboard.id,
+          ...(input.deliveryPlanRevisionId ? { deliveryPlanRevisionId: input.deliveryPlanRevisionId } : {}),
           status: "CONFIRMED",
           totalShotCount: loaded.specs.length,
           acceptedShotCount: 0,
           totalDurationSeconds: loaded.storyboard.totalDurationSeconds,
-          budgetGuard: {},
+          continuityStatus: "NOT_CHECKED",
+          maxAutoRepairCount: 2,
+          autoRepairCount: 0,
+          budgetGuard: { music_plan: input.musicPlan ?? { mode: "AUTO", style_hint: "" } },
         })
         .returning();
+      if (input.deliveryPlanRevisionId) {
+        const [consumedPlan] = await transaction
+          .update(deliveryPlanRevisions)
+          .set({
+            status: "CONSUMED",
+            consumedByProductionRunId: value.id,
+            updatedAt: new Date().toISOString(),
+          })
+          .where(and(
+            eq(deliveryPlanRevisions.workspaceId, input.workspaceId),
+            eq(deliveryPlanRevisions.projectId, input.projectId),
+            eq(deliveryPlanRevisions.id, input.deliveryPlanRevisionId),
+            eq(deliveryPlanRevisions.status, "APPROVED"),
+          ))
+          .returning();
+        if (!consumedPlan) return this.storeOutcome(transaction, input, { kind: "PREFLIGHT_BLOCKED" });
+      }
       await transaction.insert(outboxEvents).values(eventRow({
         event: input.event,
         producer: "control-api",
@@ -1048,6 +1519,7 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
         data: {
           production_run_id: value.id,
           storyboard_revision_id: value.storyboardRevisionId,
+          ...(value.deliveryPlanRevisionId ? { delivery_plan_revision_id: value.deliveryPlanRevisionId } : {}),
           total_shot_count: value.totalShotCount,
         },
       }));
@@ -1191,7 +1663,7 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
           ));
         return { kind: "DUPLICATE" };
       }
-      return { kind: "CLAIMED", brief: serializeCreativeBrief(brief) };
+      return { kind: "CLAIMED", brief: serializeCreativeBrief(brief, await loadDocumentContexts(transaction, message.workspace_id, brief.id), await loadFactContexts(transaction, message.workspace_id, brief.id)) };
     });
   }
 
@@ -1233,9 +1705,9 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
         .from(creativeBriefRevisions)
         .where(and(eq(creativeBriefRevisions.workspaceId, workspaceId), eq(creativeBriefRevisions.id, snapshot.creativeBriefRevisionId)))
         .limit(1);
-      return value ? { kind: "REPLAY", value: serializeCreativeBrief(value), status } : { kind: "CONFLICT" };
+      return value ? { kind: "REPLAY", value: serializeCreativeBrief(value, await loadDocumentContexts(transaction, workspaceId, value.id), await loadFactContexts(transaction, workspaceId, value.id)), status } : { kind: "CONFLICT" };
     }
-    return snapshot.kind === "NOT_FOUND" || snapshot.kind === "INVALID_SOURCE" || snapshot.kind === "ACTIVE_CONFLICT" || snapshot.kind === "STATE_INVALID" ? snapshot : { kind: "CONFLICT" };
+    return snapshot.kind === "NOT_FOUND" || snapshot.kind === "INVALID_SOURCE" || snapshot.kind === "DOCUMENT_CONTEXT_INVALID" || snapshot.kind === "DOCUMENT_KNOWLEDGE_NOT_READY" || snapshot.kind === "DOCUMENT_FACT_CONTEXT_INVALID" || snapshot.kind === "ACTIVE_CONFLICT" || snapshot.kind === "STATE_INVALID" ? snapshot : { kind: "CONFLICT" };
   }
 
   private async replayStoryboard(transaction: Pick<PlatformDatabase, "select">, workspaceId: string, snapshot: StoredSnapshot | "CONFLICT"): Promise<CreativePlanningCommandOutcome<ControlStoryboardRevision>> {
@@ -1263,7 +1735,7 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
   private async storeOutcome(
     transaction: Transaction,
     input: { scope: string; idempotencyKey: string },
-    outcome: { kind: "NOT_FOUND" | "INVALID_SOURCE" | "ACTIVE_CONFLICT" | "STATE_INVALID" },
+    outcome: { kind: "NOT_FOUND" | "INVALID_SOURCE" | "DOCUMENT_CONTEXT_INVALID" | "DOCUMENT_KNOWLEDGE_NOT_READY" | "DOCUMENT_FACT_CONTEXT_INVALID" | "ACTIVE_CONFLICT" | "STATE_INVALID" | "PREFLIGHT_BLOCKED" },
   ) {
     await storeSnapshot(transaction, input, outcome);
     return outcome;

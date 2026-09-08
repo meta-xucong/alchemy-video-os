@@ -1,17 +1,19 @@
 import type {
   AssetCommandInput,
+  DeleteAssetInput,
   AssetWorkspaceStore,
   ConfirmAssetInput,
   ControlAsset,
   ControlReferenceBinding,
   ControlShot,
   CreateShotInput,
+  UpdateVisualReferenceAnalysisInput,
   UpdateShotInput,
 } from "@alchemy-video/persistence";
 
 import type { ControlPlaneStore } from "@alchemy-video/persistence";
 
-type StoredCommand = { hash: string; assetId?: string; shot?: ControlShot; invalidReference?: boolean; invalidUpload?: boolean; positionConflict?: boolean; notFound?: boolean; status: 200 | 201 | 404 };
+type StoredCommand = { hash: string; assetId?: string; shot?: ControlShot; invalidReference?: boolean; invalidUpload?: boolean; invalidDelete?: boolean; assetInUse?: boolean; positionConflict?: boolean; notFound?: boolean; status: 200 | 201 | 404 };
 
 export class InMemoryAssetWorkspaceStore implements AssetWorkspaceStore {
   private readonly assets = new Map<string, ControlAsset>();
@@ -26,12 +28,85 @@ export class InMemoryAssetWorkspaceStore implements AssetWorkspaceStore {
     if (!project) return undefined;
     const shots = [...this.shots.values()].filter((value) => value.workspaceId === workspaceId && value.projectId === projectId).sort((a, b) => a.position - b.position);
     const assets = [...this.assets.values()].filter((value) => value.workspaceId === workspaceId && value.projectId === projectId);
-    return { project, assets, shots, referenceBindings: shots.flatMap((shot) => this.bindings.get(shot.id) ?? []) };
+    return {
+      project: { ...project, status: project.status as "ACTIVE" | "ARCHIVED" },
+      assets,
+      shots,
+      referenceBindings: shots.flatMap((shot) => this.bindings.get(shot.id) ?? []),
+    };
   }
 
   async findAsset(workspaceId: string, assetId: string) {
     const asset = this.assets.get(assetId);
     return asset?.workspaceId === workspaceId ? asset : undefined;
+  }
+
+  async ensureGeneratedAudioAsset(input: import("@alchemy-video/persistence").GeneratedAudioAssetInput) {
+    if (!input.objectKey.startsWith(`${input.workspaceId}/${input.projectId}/${input.assetId}/`)) {
+      throw new Error("Generated audio object key is outside the asset scope.");
+    }
+    const existing = await this.findAsset(input.workspaceId, input.assetId);
+    if (existing) {
+      if (existing.kind !== "AUDIO" || existing.origin !== "GENERATED" || existing.projectId !== input.projectId || existing.objectKey !== input.objectKey) {
+        throw new Error("Generated audio asset identity conflicts with a persisted asset.");
+      }
+      return existing;
+    }
+    if (!(await this.control.findProject(input.workspaceId, input.projectId))) return undefined;
+    const timestamp = new Date().toISOString();
+    const asset: ControlAsset = {
+      id: input.assetId,
+      workspaceId: input.workspaceId,
+      projectId: input.projectId,
+      kind: "AUDIO",
+      origin: "GENERATED",
+      status: "PENDING_UPLOAD",
+      objectKey: input.objectKey,
+      sha256: null,
+      mimeType: null,
+      byteSize: null,
+      width: null,
+      height: null,
+      durationMs: null,
+      metadata: input.metadata,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    this.assets.set(asset.id, asset);
+    return asset;
+  }
+
+  async completeGeneratedAudioAsset(input: import("@alchemy-video/persistence").CompletedAudioAssetInput) {
+    if (!/^[a-f0-9]{64}$/u.test(input.sha256) || input.byteSize < 1 || input.durationMs < 1 || !/^audio\/[a-z0-9.+-]+$/iu.test(input.mimeType)) {
+      throw new Error("Measured generated audio metadata is invalid.");
+    }
+    const current = await this.findAsset(input.workspaceId, input.assetId);
+    if (!current || current.kind !== "AUDIO" || current.origin !== "GENERATED") return undefined;
+    if (current.status === "READY") {
+      if (current.sha256 !== input.sha256 || current.mimeType !== input.mimeType || current.byteSize !== input.byteSize || current.durationMs !== input.durationMs) {
+        throw new Error("Generated audio asset facts conflict with the persisted asset.");
+      }
+      return current;
+    }
+    if (current.status !== "PENDING_UPLOAD") throw new Error("Generated audio asset is not pending completion.");
+    const completed: ControlAsset = {
+      ...current,
+      status: "READY",
+      sha256: input.sha256,
+      mimeType: input.mimeType,
+      byteSize: input.byteSize,
+      durationMs: input.durationMs,
+      metadata: { ...current.metadata, ...(input.metadata ?? {}) },
+      updatedAt: new Date().toISOString(),
+    };
+    this.assets.set(completed.id, completed);
+    return completed;
+  }
+
+  async listWorkspaceMusicAssets(workspaceId: string) {
+    return [...this.assets.values()]
+      .filter((asset) => asset.workspaceId === workspaceId && asset.kind === "AUDIO" && asset.status === "READY" && asset.metadata.audio_role === "MUSIC")
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
   async findShot(workspaceId: string, shotId: string) {
@@ -61,7 +136,8 @@ export class InMemoryAssetWorkspaceStore implements AssetWorkspaceStore {
       return { kind: "NOT_FOUND", status: 404 } as const;
     }
     const now = new Date().toISOString();
-    const asset: ControlAsset = { id: input.assetId, workspaceId: input.workspaceId, projectId: input.projectId, kind: input.kind, origin: "USER_UPLOAD", status: "PENDING_UPLOAD", objectKey: input.objectKey, sha256: null, mimeType: null, byteSize: null, width: null, height: null, durationMs: null, metadata: { filename: input.filename, requested_mime_type: input.mimeType, requested_byte_size: input.byteSize }, createdAt: now, updatedAt: now };
+    const assetMetadata = Object.fromEntries(Object.entries(input.metadata ?? {}).filter(([key]) => key !== "audio_role"));
+    const asset: ControlAsset = { id: input.assetId, workspaceId: input.workspaceId, projectId: input.projectId, kind: input.kind, origin: "USER_UPLOAD", status: "PENDING_UPLOAD", objectKey: input.objectKey, sha256: null, mimeType: null, byteSize: null, width: null, height: null, durationMs: null, metadata: { filename: input.filename, requested_mime_type: input.mimeType, requested_byte_size: input.byteSize, ...assetMetadata, ...(input.audioRole ? { audio_role: input.audioRole } : {}) }, createdAt: now, updatedAt: now };
     this.assets.set(asset.id, asset);
     this.storeAsset(input, asset.id, 201);
     return { kind: "NEW", value: asset, status: 201 } as const;
@@ -79,10 +155,82 @@ export class InMemoryAssetWorkspaceStore implements AssetWorkspaceStore {
       this.storeInvalidUpload(input);
       return { kind: "INVALID_UPLOAD" } as const;
     }
-    const asset = current.status === "PENDING_UPLOAD" ? { ...current, status: "READY" as const, sha256: input.sha256, mimeType: input.mimeType, byteSize: input.byteSize, width: input.width ?? null, height: input.height ?? null, durationMs: input.durationMs ?? null, updatedAt: new Date().toISOString() } : current;
+    const asset = current.status === "PENDING_UPLOAD" ? {
+      ...current,
+      status: "READY" as const,
+      sha256: input.sha256,
+      mimeType: input.mimeType,
+      byteSize: input.byteSize,
+      width: input.width ?? null,
+      height: input.height ?? null,
+      durationMs: input.durationMs ?? null,
+      metadata: {
+        ...current.metadata,
+        ...(input.metadata ?? {}),
+        ...(input.visualAnalysis ? { visual_analysis: input.visualAnalysis } : {}),
+        ...(input.visualAnalysisStatus ? { visual_analysis_status: input.visualAnalysisStatus } : {}),
+      },
+      updatedAt: new Date().toISOString(),
+    } : current;
     this.assets.set(asset.id, asset);
     this.storeAsset(input, asset.id, 200);
     return { kind: "NEW", value: asset, status: 200 } as const;
+  }
+
+  async updateVisualReferenceAnalysis(input: UpdateVisualReferenceAnalysisInput) {
+    const current = await this.findAsset(input.workspaceId, input.assetId);
+    if (!current
+      || current.projectId !== input.projectId
+      || current.kind !== "IMAGE"
+      || current.origin !== "USER_UPLOAD"
+      || current.status !== "READY") return undefined;
+    const updated: ControlAsset = {
+      ...current,
+      metadata: {
+        ...current.metadata,
+        ...(input.visualAnalysis ? { visual_analysis: input.visualAnalysis } : {}),
+        visual_analysis_status: input.visualAnalysisStatus,
+      },
+      updatedAt: new Date().toISOString(),
+    };
+    this.assets.set(updated.id, updated);
+    return updated;
+  }
+
+  async deleteAsset(input: DeleteAssetInput) {
+    const key = this.key(input);
+    const existing = this.commands.get(key);
+    if (existing) {
+      if (existing.hash !== input.requestHash) return { kind: "CONFLICT" } as const;
+      if (existing.notFound) return { kind: "NOT_FOUND", status: 404 } as const;
+      if (existing.invalidDelete) return { kind: "INVALID_DELETE" } as const;
+      if (existing.assetInUse) return { kind: "ASSET_IN_USE" } as const;
+      const asset = existing.assetId ? this.assets.get(existing.assetId) : undefined;
+      return asset ? { kind: "REPLAY", value: asset, status: 200 } as const : { kind: "CONFLICT" } as const;
+    }
+    const current = await this.findAsset(input.workspaceId, input.assetId);
+    if (!current) {
+      this.commands.set(key, { hash: input.requestHash, notFound: true, status: 404 });
+      return { kind: "NOT_FOUND", status: 404 } as const;
+    }
+    if (current.origin !== "USER_UPLOAD") {
+      this.commands.set(key, { hash: input.requestHash, invalidDelete: true, status: 200 });
+      return { kind: "INVALID_DELETE" } as const;
+    }
+    const activeReference = [...this.shots.values()].some((shot) => (
+      shot.workspaceId === input.workspaceId
+      && shot.projectId === current.projectId
+      && shot.status === "GENERATING"
+      && (this.bindings.get(shot.id) ?? []).some((binding) => binding.assetId === input.assetId)
+    ));
+    if (activeReference) {
+      this.commands.set(key, { hash: input.requestHash, assetInUse: true, status: 200 });
+      return { kind: "ASSET_IN_USE" } as const;
+    }
+    const deleted = { ...current, status: "DELETED" as const, updatedAt: new Date().toISOString() };
+    this.assets.set(deleted.id, deleted);
+    this.commands.set(key, { hash: input.requestHash, assetId: deleted.id, status: 200 });
+    return { kind: "NEW", value: deleted, status: 200 } as const;
   }
 
   async createShot(input: CreateShotInput) {

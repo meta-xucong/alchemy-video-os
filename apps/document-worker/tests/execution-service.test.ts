@@ -49,7 +49,7 @@ const stopRuntime = async (process: ChildProcess) => {
   await Promise.race([exited, new Promise((_, reject) => setTimeout(() => reject(new Error("C10 document runtime did not stop.")), 5_000))]);
 };
 
-const prepareConversion = async () => {
+const prepareConversion = async (input: { sourceFilename?: string } = {}) => {
   const workspaceId = createPrefixedId("ws");
   const projectId = createPrefixedId("prj");
   const sourceAssetId = createPrefixedId("ast");
@@ -71,7 +71,7 @@ const prepareConversion = async () => {
     width: null,
     height: null,
     durationMs: null,
-    metadata: { filename: "brief.md" },
+    metadata: { filename: input.sourceFilename ?? "brief.md" },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -152,7 +152,7 @@ test("Document executor maps an unsupported Runtime rejection to a retryable pub
 });
 
 test("Document executor completes a real loopback Runtime conversion and persists the immutable Markdown asset", { skip: !existsSync(runtimePython) }, async () => {
-  const fixture = await prepareConversion();
+  const fixture = await prepareConversion({ sourceFilename: "镇江茅山项目资料.md" });
   const port = 42000 + Math.floor(Math.random() * 1000);
   const endpoint = `http://127.0.0.1:${port}`;
   const runtime = spawn(runtimePython, ["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", String(port), "--log-level", "warning"], {

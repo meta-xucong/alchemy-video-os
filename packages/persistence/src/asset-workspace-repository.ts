@@ -1,13 +1,15 @@
 import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 
 import type { PlatformDatabase } from "./db.js";
-import { assets, commandDeduplications, projects, referenceBindings, shots } from "./schema.js";
+import { assets, commandDeduplications, documentConversions, productionRuns, productionSegments, projects, referenceBindings, shots, taskRuns } from "./schema.js";
 import { assetScope, projectScope, shotScope } from "./workspace-repositories.js";
 
 export type AssetKind = "IMAGE" | "VIDEO" | "AUDIO" | "DOCUMENT" | "POSTER" | "THUMBNAIL";
 export type AssetStatus = "PENDING_UPLOAD" | "READY" | "FAILED" | "DELETED";
 export type ShotStatus = "DRAFT" | "READY" | "GENERATING" | "GENERATED" | "FAILED" | "ARCHIVED";
 export type ReferenceRole = "STYLE" | "SUBJECT" | "FIRST_FRAME" | "LAST_FRAME";
+/** Server-owned purpose for uploaded audio. Omitted means unclassified audio. */
+export type AudioAssetRole = "MUSIC" | "NARRATION_SAMPLE" | "USER_SOURCE_AUDIO";
 
 export type ControlAsset = {
   id: string;
@@ -63,6 +65,9 @@ export type AssetCommandInput = {
   filename: string;
   mimeType: string;
   byteSize: number;
+  /** Internal mapper only; never copied from arbitrary browser metadata. */
+  audioRole?: AudioAssetRole;
+  metadata?: Record<string, unknown>;
 };
 
 export type ConfirmAssetInput = {
@@ -77,7 +82,57 @@ export type ConfirmAssetInput = {
   width?: number;
   height?: number;
   durationMs?: number;
+  /** Server-derived metadata from an internal importer; not a public command field. */
+  metadata?: Record<string, unknown>;
+  visualAnalysis?: {
+    role: "STYLE" | "SUBJECT" | "SCENE";
+    confidence: number;
+    summary?: string;
+    objects?: Array<{
+      name: string;
+      description: string;
+      relation: string;
+      prohibited_changes: string[];
+    }>;
+  };
+  visualAnalysisStatus?: "READY" | "UNAVAILABLE" | "FAILED";
   verifyUpload: (asset: ControlAsset) => Promise<boolean>;
+};
+
+/** Internal retry path for server-produced reference-image analysis. */
+export type UpdateVisualReferenceAnalysisInput = {
+  workspaceId: string;
+  projectId: string;
+  assetId: string;
+  visualAnalysis?: ConfirmAssetInput["visualAnalysis"];
+  visualAnalysisStatus: NonNullable<ConfirmAssetInput["visualAnalysisStatus"]>;
+};
+
+/** Internal server-generated audio asset lifecycle; never a browser upload command. */
+export type GeneratedAudioAssetInput = {
+  workspaceId: string;
+  projectId: string;
+  assetId: string;
+  objectKey: string;
+  metadata: Record<string, unknown>;
+};
+
+export type CompletedAudioAssetInput = {
+  workspaceId: string;
+  assetId: string;
+  sha256: string;
+  mimeType: string;
+  byteSize: number;
+  durationMs: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type DeleteAssetInput = {
+  scope: string;
+  idempotencyKey: string;
+  requestHash: string;
+  workspaceId: string;
+  assetId: string;
 };
 
 export type CreateShotInput = {
@@ -109,6 +164,8 @@ export type AssetCommandConflict = { kind: "CONFLICT" };
 export type AssetCommandNotFound = { kind: "NOT_FOUND"; status: 404 };
 export type AssetCommandExecution<T> = { kind: "NEW" | "REPLAY"; value: T; status: 200 | 201 };
 export type AssetCommandInvalidUpload = { kind: "INVALID_UPLOAD" };
+export type AssetCommandInvalidDelete = { kind: "INVALID_DELETE" };
+export type AssetCommandInUse = { kind: "ASSET_IN_USE" };
 export type AssetCommandPositionConflict = { kind: "POSITION_CONFLICT" };
 
 type CommandSnapshot = Record<string, unknown>;
@@ -124,7 +181,24 @@ const isShotSnapshot = (snapshot: CommandSnapshot): snapshot is { kind: "SHOT"; 
   snapshot.kind === "SHOT" && typeof snapshot.shot_id === "string";
 const isInvalidReferenceSnapshot = (snapshot: CommandSnapshot) => snapshot.kind === "INVALID_REFERENCE";
 const isInvalidUploadSnapshot = (snapshot: CommandSnapshot) => snapshot.kind === "INVALID_UPLOAD";
+const isInvalidDeleteSnapshot = (snapshot: CommandSnapshot) => snapshot.kind === "INVALID_DELETE";
+const isAssetInUseSnapshot = (snapshot: CommandSnapshot) => snapshot.kind === "ASSET_IN_USE";
 const isPositionConflictSnapshot = (snapshot: CommandSnapshot) => snapshot.kind === "POSITION_CONFLICT";
+
+const activeTaskRunStatuses = ["CREATED", "QUEUED", "RUNNING", "PROVIDER_PROCESSING", "DOWNLOADING", "BILLING_PENDING", "BILLING_FAILED", "RETRY_SCHEDULED"] as const;
+const activeProductionRunStatuses = ["DRAFT", "PLAN_READY", "CONFIRMED", "GENERATING", "REVIEWING", "RENDERING"] as const;
+const activeDocumentConversionStatuses = ["CREATED", "QUEUED", "RUNNING"] as const;
+
+const snapshotReferencesAsset = (snapshot: Record<string, unknown>, assetId: string) => {
+  const referenceAssetIds = snapshot.reference_asset_ids;
+  if (Array.isArray(referenceAssetIds) && referenceAssetIds.includes(assetId)) return true;
+  const visualInput = snapshot.visual_input;
+  if (!visualInput || typeof visualInput !== "object") return false;
+  const references = (visualInput as { references?: unknown }).references;
+  return Array.isArray(references) && references.some((reference) => (
+    reference && typeof reference === "object" && (reference as { asset_id?: unknown }).asset_id === assetId
+  ));
+};
 
 export interface AssetWorkspaceStore {
   findProjectDetail(workspaceId: string, projectId: string): Promise<{
@@ -134,10 +208,18 @@ export interface AssetWorkspaceStore {
     referenceBindings: ControlReferenceBinding[];
   } | undefined>;
   findAsset(workspaceId: string, assetId: string): Promise<ControlAsset | undefined>;
+  /** Optional internal port used by the server-generated narration worker. */
+  ensureGeneratedAudioAsset?(input: GeneratedAudioAssetInput): Promise<ControlAsset | undefined>;
+  /** Optional internal port used after Runtime bytes have been measured. */
+  completeGeneratedAudioAsset?(input: CompletedAudioAssetInput): Promise<ControlAsset | undefined>;
+  listWorkspaceMusicAssets(workspaceId: string): Promise<ControlAsset[]>;
   findShot(workspaceId: string, shotId: string): Promise<ControlShot | undefined>;
   setShotGenerationState(input: { workspaceId: string; shotId: string; status: Extract<ShotStatus, "GENERATING" | "GENERATED" | "FAILED">; selectedAssetId?: string | null }): Promise<ControlShot | undefined>;
   createUploadAsset(input: AssetCommandInput): Promise<AssetCommandExecution<ControlAsset> | AssetCommandConflict | AssetCommandNotFound>;
   confirmAssetUpload(input: ConfirmAssetInput): Promise<AssetCommandExecution<ControlAsset> | AssetCommandConflict | AssetCommandNotFound | AssetCommandInvalidUpload>;
+  /** Optional so lightweight test/dedicated stores remain fail-closed when unavailable. */
+  updateVisualReferenceAnalysis?(input: UpdateVisualReferenceAnalysisInput): Promise<ControlAsset | undefined>;
+  deleteAsset(input: DeleteAssetInput): Promise<AssetCommandExecution<ControlAsset> | AssetCommandConflict | AssetCommandNotFound | AssetCommandInvalidDelete | AssetCommandInUse>;
   createShot(input: CreateShotInput): Promise<AssetCommandExecution<ControlShot> | AssetCommandConflict | AssetCommandNotFound | { kind: "INVALID_REFERENCE" } | AssetCommandPositionConflict>;
   updateShot(input: UpdateShotInput): Promise<AssetCommandExecution<ControlShot> | AssetCommandConflict | AssetCommandNotFound | { kind: "INVALID_REFERENCE" } | AssetCommandPositionConflict>;
 }
@@ -264,8 +346,8 @@ export class DrizzleAssetWorkspaceRepository implements AssetWorkspaceStore {
   constructor(private readonly db: PlatformDatabase) {}
 
   async findProjectDetail(workspaceId: string, projectId: string) {
-    const [project] = await this.db.select().from(projects).where(projectScope(workspaceId, projectId)).limit(1);
-    if (!project) return undefined;
+    const [project] = await this.db.select().from(projects).where(and(projectScope(workspaceId, projectId), ne(projects.status, "DELETED"))).limit(1);
+    if (!project || project.status === "DELETED") return undefined;
     const [projectAssets, projectShots] = await Promise.all([
       this.db.select().from(assets).where(and(eq(assets.workspaceId, workspaceId), eq(assets.projectId, projectId))).orderBy(asc(assets.createdAt)),
       this.db.select().from(shots).where(and(eq(shots.workspaceId, workspaceId), eq(shots.projectId, projectId))).orderBy(asc(shots.position)),
@@ -275,11 +357,75 @@ export class DrizzleAssetWorkspaceRepository implements AssetWorkspaceStore {
       .from(referenceBindings)
       .where(and(eq(referenceBindings.workspaceId, workspaceId), eq(referenceBindings.projectId, projectId)))
       .orderBy(asc(referenceBindings.position));
-    return { project, assets: projectAssets, shots: projectShots, referenceBindings: bindings };
+    return {
+      project: { ...project, status: project.status as "ACTIVE" | "ARCHIVED" },
+      assets: projectAssets,
+      shots: projectShots,
+      referenceBindings: bindings,
+    };
   }
 
   async findAsset(workspaceId: string, assetId: string) {
     return (await this.db.select().from(assets).where(assetScope(workspaceId, assetId)).limit(1))[0];
+  }
+
+  async ensureGeneratedAudioAsset(input: GeneratedAudioAssetInput) {
+    if (!input.objectKey.startsWith(`${input.workspaceId}/${input.projectId}/${input.assetId}/`)) {
+      throw new Error("Generated audio object key is outside the asset scope.");
+    }
+    return this.db.transaction(async (transaction) => {
+      const [project] = await transaction.select({ id: projects.id }).from(projects).where(and(projectScope(input.workspaceId, input.projectId), ne(projects.status, "DELETED"))).limit(1);
+      if (!project) return undefined;
+      await transaction.insert(assets).values({
+        id: input.assetId,
+        workspaceId: input.workspaceId,
+        projectId: input.projectId,
+        kind: "AUDIO",
+        origin: "GENERATED",
+        status: "PENDING_UPLOAD",
+        objectKey: input.objectKey,
+        metadata: input.metadata,
+      }).onConflictDoNothing();
+      const [asset] = await transaction.select().from(assets).where(assetScope(input.workspaceId, input.assetId)).limit(1);
+      if (!asset || asset.kind !== "AUDIO" || asset.origin !== "GENERATED" || asset.objectKey !== input.objectKey) {
+        throw new Error("Generated audio asset identity conflicts with a persisted asset.");
+      }
+      return asset;
+    });
+  }
+
+  async completeGeneratedAudioAsset(input: CompletedAudioAssetInput) {
+    if (!/^[a-f0-9]{64}$/u.test(input.sha256) || input.byteSize < 1 || input.durationMs < 1 || !/^audio\/[a-z0-9.+-]+$/iu.test(input.mimeType)) {
+      throw new Error("Measured generated audio metadata is invalid.");
+    }
+    const [current] = await this.db.select().from(assets).where(assetScope(input.workspaceId, input.assetId)).limit(1);
+    if (!current || current.kind !== "AUDIO" || current.origin !== "GENERATED") return undefined;
+    if (current.status === "READY") {
+      if (current.sha256 !== input.sha256 || current.mimeType !== input.mimeType || current.byteSize !== input.byteSize || current.durationMs !== input.durationMs) {
+        throw new Error("Generated audio asset facts conflict with the persisted asset.");
+      }
+      return current;
+    }
+    if (current.status !== "PENDING_UPLOAD") throw new Error("Generated audio asset is not pending completion.");
+    const [completed] = await this.db.update(assets).set({
+      status: "READY",
+      sha256: input.sha256,
+      mimeType: input.mimeType,
+      byteSize: input.byteSize,
+      durationMs: input.durationMs,
+      metadata: { ...current.metadata, ...(input.metadata ?? {}) },
+      updatedAt: new Date().toISOString(),
+    }).where(assetScope(input.workspaceId, input.assetId)).returning();
+    return completed;
+  }
+
+  async listWorkspaceMusicAssets(workspaceId: string) {
+    return this.db.select().from(assets).where(and(
+      eq(assets.workspaceId, workspaceId),
+      eq(assets.kind, "AUDIO"),
+      eq(assets.status, "READY"),
+      sql`${assets.metadata}->>'audio_role' = 'MUSIC'`,
+    )).orderBy(asc(assets.createdAt));
   }
 
   async findShot(workspaceId: string, shotId: string) {
@@ -313,7 +459,7 @@ export class DrizzleAssetWorkspaceRepository implements AssetWorkspaceStore {
         return asset ? { kind: "REPLAY", value: asset, status: 201 } as const : { kind: "CONFLICT" } as const;
       }
 
-      const [project] = await transaction.select({ id: projects.id }).from(projects).where(projectScope(input.workspaceId, input.projectId)).limit(1);
+      const [project] = await transaction.select({ id: projects.id }).from(projects).where(and(projectScope(input.workspaceId, input.projectId), ne(projects.status, "DELETED"))).limit(1);
       if (!project) {
         await storeNotFound(transaction, input.scope, input.idempotencyKey);
         return { kind: "NOT_FOUND", status: 404 } as const;
@@ -328,7 +474,16 @@ export class DrizzleAssetWorkspaceRepository implements AssetWorkspaceStore {
           origin: "USER_UPLOAD",
           status: "PENDING_UPLOAD",
           objectKey: input.objectKey,
-          metadata: { filename: input.filename, requested_mime_type: input.mimeType, requested_byte_size: input.byteSize },
+          metadata: {
+            filename: input.filename,
+            requested_mime_type: input.mimeType,
+            requested_byte_size: input.byteSize,
+            // Never trust caller-supplied audio_role. The route maps a
+            // validated purpose to this server-owned field; omitted purpose
+            // deliberately leaves AUDIO unclassified for narration/source use.
+            ...Object.fromEntries(Object.entries(input.metadata ?? {}).filter(([key]) => key !== "audio_role")),
+            ...(input.audioRole ? { audio_role: input.audioRole } : {}),
+          },
         })
         .returning();
       await storeSnapshot(transaction, input.scope, input.idempotencyKey, { kind: "ASSET", asset_id: asset.id });
@@ -369,15 +524,138 @@ export class DrizzleAssetWorkspaceRepository implements AssetWorkspaceStore {
           mimeType: input.mimeType,
           byteSize: input.byteSize,
           ...(input.width === undefined ? {} : { width: input.width }),
-          ...(input.height === undefined ? {} : { height: input.height }),
-          ...(input.durationMs === undefined ? {} : { durationMs: input.durationMs }),
-          updatedAt: new Date().toISOString(),
-        })
+        ...(input.height === undefined ? {} : { height: input.height }),
+        ...(input.durationMs === undefined ? {} : { durationMs: input.durationMs }),
+        metadata: {
+          ...asset.metadata,
+          ...(input.metadata ?? {}),
+          ...(input.visualAnalysis ? { visual_analysis: input.visualAnalysis } : {}),
+          ...(input.visualAnalysisStatus ? { visual_analysis_status: input.visualAnalysisStatus } : {}),
+        },
+        updatedAt: new Date().toISOString(),
+      })
         .where(assetScope(input.workspaceId, input.assetId))
         .returning();
       await storeSnapshot(transaction, input.scope, input.idempotencyKey, { kind: "ASSET", asset_id: confirmed.id });
       return { kind: "NEW", value: confirmed, status: 200 } as const;
     });
+  }
+
+  async updateVisualReferenceAnalysis(input: UpdateVisualReferenceAnalysisInput) {
+    return this.db.transaction(async (transaction) => {
+      const scope = and(
+        assetScope(input.workspaceId, input.assetId),
+        eq(assets.projectId, input.projectId),
+        eq(assets.kind, "IMAGE"),
+        eq(assets.origin, "USER_UPLOAD"),
+        eq(assets.status, "READY"),
+      );
+      const [current] = await transaction.select().from(assets).where(scope).limit(1);
+      if (!current) return undefined;
+      const [updated] = await transaction
+        .update(assets)
+        .set({
+          metadata: {
+            ...current.metadata,
+            ...(input.visualAnalysis ? { visual_analysis: input.visualAnalysis } : {}),
+            visual_analysis_status: input.visualAnalysisStatus,
+          },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(scope)
+        .returning();
+      return updated;
+    });
+  }
+
+  async deleteAsset(input: DeleteAssetInput) {
+    return this.db.transaction(async (transaction) => {
+      const reservation = await commandReservation(transaction, input);
+      if (reservation.kind === "CONFLICT") return reservation;
+      if (reservation.kind === "NOT_FOUND") return { kind: "NOT_FOUND", status: 404 } as const;
+      if (reservation.kind === "REPLAY") {
+        if (isInvalidDeleteSnapshot(reservation.value)) return { kind: "INVALID_DELETE" } as const;
+        if (isAssetInUseSnapshot(reservation.value)) return { kind: "ASSET_IN_USE" } as const;
+        if (!isAssetSnapshot(reservation.value)) return { kind: "CONFLICT" } as const;
+        const [asset] = await transaction.select().from(assets).where(assetScope(input.workspaceId, reservation.value.asset_id)).limit(1);
+        return asset ? { kind: "REPLAY", value: asset, status: 200 } as const : { kind: "CONFLICT" } as const;
+      }
+
+      const [asset] = await transaction.select().from(assets).where(assetScope(input.workspaceId, input.assetId)).limit(1);
+      if (!asset) {
+        await storeNotFound(transaction, input.scope, input.idempotencyKey);
+        return { kind: "NOT_FOUND", status: 404 } as const;
+      }
+      if (asset.origin !== "USER_UPLOAD") {
+        await storeSnapshot(transaction, input.scope, input.idempotencyKey, { kind: "INVALID_DELETE" });
+        return { kind: "INVALID_DELETE" } as const;
+      }
+      if (asset.status === "DELETED") {
+        await storeSnapshot(transaction, input.scope, input.idempotencyKey, { kind: "ASSET", asset_id: asset.id });
+        return { kind: "NEW", value: asset, status: 200 } as const;
+      }
+      if (await this.assetIsInUse(transaction, input.workspaceId, asset.projectId, input.assetId)) {
+        await storeSnapshot(transaction, input.scope, input.idempotencyKey, { kind: "ASSET_IN_USE" });
+        return { kind: "ASSET_IN_USE" } as const;
+      }
+      const [deleted] = await transaction.update(assets)
+        .set({ status: "DELETED", updatedAt: new Date().toISOString() })
+        .where(assetScope(input.workspaceId, input.assetId))
+        .returning();
+      await storeSnapshot(transaction, input.scope, input.idempotencyKey, { kind: "ASSET", asset_id: deleted.id });
+      return { kind: "NEW", value: deleted, status: 200 } as const;
+    });
+  }
+
+  private async assetIsInUse(transaction: QueryExecutor, workspaceId: string, projectId: string, assetId: string) {
+    const [activeProduction] = await transaction
+      .select({ id: productionRuns.id })
+      .from(productionRuns)
+      .where(and(
+        eq(productionRuns.workspaceId, workspaceId),
+        eq(productionRuns.projectId, projectId),
+        inArray(productionRuns.status, activeProductionRunStatuses),
+      ))
+      .limit(1);
+    if (activeProduction) return true;
+
+    const activeTaskSnapshots = await transaction
+      .select({ inputSnapshot: taskRuns.inputSnapshot })
+      .from(taskRuns)
+      .where(and(
+        eq(taskRuns.workspaceId, workspaceId),
+        eq(taskRuns.projectId, projectId),
+        inArray(taskRuns.status, activeTaskRunStatuses),
+      ));
+    if (activeTaskSnapshots.some(({ inputSnapshot }) => snapshotReferencesAsset(inputSnapshot, assetId))) return true;
+
+    const retryableFailedSnapshots = await transaction
+      .select({ inputSnapshot: taskRuns.inputSnapshot })
+      .from(productionSegments)
+      .innerJoin(taskRuns, and(
+        eq(taskRuns.workspaceId, productionSegments.workspaceId),
+        eq(taskRuns.projectId, productionSegments.projectId),
+        eq(taskRuns.id, productionSegments.taskRunId),
+      ))
+      .where(and(
+        eq(productionSegments.workspaceId, workspaceId),
+        eq(productionSegments.projectId, projectId),
+        eq(productionSegments.status, "FAILED"),
+        eq(productionSegments.retryable, true),
+      ));
+    if (retryableFailedSnapshots.some(({ inputSnapshot }) => snapshotReferencesAsset(inputSnapshot, assetId))) return true;
+
+    const [activeConversion] = await transaction
+      .select({ id: documentConversions.id })
+      .from(documentConversions)
+      .where(and(
+        eq(documentConversions.workspaceId, workspaceId),
+        eq(documentConversions.projectId, projectId),
+        eq(documentConversions.sourceAssetId, assetId),
+        inArray(documentConversions.status, activeDocumentConversionStatuses),
+      ))
+      .limit(1);
+    return Boolean(activeConversion);
   }
 
   async createShot(input: CreateShotInput) {
@@ -392,7 +670,7 @@ export class DrizzleAssetWorkspaceRepository implements AssetWorkspaceStore {
         const [shot] = await transaction.select().from(shots).where(shotScope(input.workspaceId, reservation.value.shot_id)).limit(1);
         return shot ? { kind: "REPLAY", value: shot, status: 201 } as const : { kind: "CONFLICT" } as const;
       }
-      const [project] = await transaction.select({ id: projects.id }).from(projects).where(projectScope(input.workspaceId, input.projectId)).limit(1);
+      const [project] = await transaction.select({ id: projects.id }).from(projects).where(and(projectScope(input.workspaceId, input.projectId), ne(projects.status, "DELETED"))).limit(1);
       if (!project) {
         await storeNotFound(transaction, input.scope, input.idempotencyKey);
         return { kind: "NOT_FOUND", status: 404 } as const;

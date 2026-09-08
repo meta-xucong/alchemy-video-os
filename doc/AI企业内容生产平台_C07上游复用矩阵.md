@@ -77,3 +77,5 @@
 - 历史 ADR-0027 复证中，`pnpm --filter @alchemy-video/provider-video typecheck` 与离线 CONTRACT suite `22/22`、完整本地 Worker PostgreSQL/Redis/MinIO suite `22/22` 均通过。最新 ADR-0028 复证新增轮询 `429/503` 后，Provider suite 为 `23/23`，无服务变量的 Worker suite 为 `18` 通过、`5` 个既有集成 skip，带本机 PostgreSQL/Redis/MinIO 的 Worker suite 为 `23/23`。
 - 再次通过 `pnpm install --frozen-lockfile --store-dir .pnpm-store`、`pnpm contracts:generate`、根 `pnpm typecheck`、根 `pnpm test`、根 `pnpm build`、`pnpm db:generate` 无漂移、显式 `DATABASE_URL` 的 `pnpm db:migrate`、Persistence `12/12`、BullMQ `1/1`、MinIO `1/1` 和 Compose health。
 - 扫描确认 adapter source 不含默认 fetch、env/dotenv、Key、Authorization/Bearer/Cookie、object key 或签名 query；`apps/` 对 adapter 的仅有引用在 Task Worker 测试中，非运行时装配。C07 已由独立审计接受，且 `origin/main` 与 `c07-accepted^{}` 已复核为 `41d414cf1b6767c39f251445278831328e1620cf`；旧 `IN_PROGRESS` 与 `READY_FOR_AUDIT` 叙述仅为历史审计轨迹。C08 只能在另行取得真实调用明确授权后认证 profile。
+
+> **2026-09-01 当前音频口径**：C07 的 Provider 认证准备不要求用户上传旁白/样音；当前自动视频优先保留 Grok 原生音轨，显式替换才走服务端 Doubao。本文旧的“另行授权后认证”是 C07 默认/历史边界；本轮用户授权仅用于最新自动音频文档限定的本机对照，不改 C07 的认证状态或默认禁用规则。

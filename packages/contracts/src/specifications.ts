@@ -2,8 +2,12 @@ import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
 import { ApiErrorSchema, ApiFailureEnvelopeSchema, successEnvelope } from "./errors.js";
-import { InternalCreativePlanningQueueMessageSchema, InternalDocumentConversionQueueMessageSchema, InternalEventEnvelopeSchema, InternalTaskRunQueueMessageSchema, PublicWorkspaceEventEnvelopeSchema } from "./events.js";
+import { AudioCapabilitiesSchema, PixabayMusicImportCommandSchema, PixabayMusicImportSchema, PixabayMusicImportSuccessSchema } from "./audio.js";
+import { InternalCreativePlanningQueueMessageSchema, InternalDocumentConversionQueueMessageSchema, InternalDocumentKnowledgeQueueMessageSchema, InternalEventEnvelopeSchema, InternalTaskRunQueueMessageSchema, PublicWorkspaceEventEnvelopeSchema } from "./events.js";
+import { ApproveDeliveryPlanRevisionCommandSchema, CreateDeliveryPlanRevisionCommandSchema, DeliveryPlanRevisionSchema } from "./delivery-preflight.js";
+import { ApproveNarrationScriptRevisionCommandSchema, CreateNarrationScriptRevisionCommandSchema, CreateTimelinePlanCommandSchema, NarrationScriptRevisionSchema, PublicNarrationAssetVersionSchema, TimelinePlanSchema } from "./narration-quality.js";
 import { CreateDocumentConversionCommandSchema, DocumentConversionSchema, DocumentSchema, RetryDocumentConversionCommandSchema } from "./documents.js";
+import { DocumentKnowledgeDetailSchema, DocumentKnowledgeRevisionSchema, RetryDocumentKnowledgeRevisionCommandSchema } from "./document-knowledge.js";
 import {
   ApproveStoryboardRevisionCommandSchema,
   CreateCreativeBriefRevisionCommandSchema,
@@ -59,6 +63,10 @@ const toSchema = (
 };
 
 export const publicContractSchemas = {
+  AudioCapabilities: AudioCapabilitiesSchema,
+  AudioCapabilitiesSuccess: successEnvelope(AudioCapabilitiesSchema),
+  PixabayMusicImport: PixabayMusicImportSchema,
+  PixabayMusicImportSuccess: PixabayMusicImportSuccessSchema,
   ApiError: ApiErrorSchema,
   ApiFailure: ApiFailureEnvelopeSchema,
   Project: ProjectSchema,
@@ -71,8 +79,21 @@ export const publicContractSchemas = {
   DocumentConversion: DocumentConversionSchema,
   DocumentConversionSuccess: successEnvelope(DocumentConversionSchema),
   DocumentListSuccess: successEnvelope(z.array(DocumentConversionSchema)),
+  DocumentKnowledgeRevision: DocumentKnowledgeRevisionSchema,
+  DocumentKnowledgeRevisionSuccess: successEnvelope(DocumentKnowledgeRevisionSchema),
+  DocumentKnowledgeDetail: DocumentKnowledgeDetailSchema,
+  DocumentKnowledgeDetailSuccess: successEnvelope(DocumentKnowledgeDetailSchema),
   CreativeBriefRevision: CreativeBriefRevisionSchema,
   CreativeBriefRevisionSuccess: successEnvelope(CreativeBriefRevisionSchema),
+  DeliveryPlanRevision: DeliveryPlanRevisionSchema,
+  DeliveryPlanRevisionSuccess: successEnvelope(DeliveryPlanRevisionSchema),
+  DeliveryPlanRevisionListSuccess: successEnvelope(z.array(DeliveryPlanRevisionSchema)),
+  NarrationScriptRevision: NarrationScriptRevisionSchema,
+  NarrationScriptRevisionSuccess: successEnvelope(NarrationScriptRevisionSchema),
+  NarrationScriptRevisionListSuccess: successEnvelope(z.array(NarrationScriptRevisionSchema)),
+  NarrationAssetVersion: PublicNarrationAssetVersionSchema,
+  TimelinePlan: TimelinePlanSchema,
+  TimelinePlanSuccess: successEnvelope(TimelinePlanSchema),
   ScriptRevision: ScriptRevisionSchema,
   StoryboardRevision: StoryboardRevisionSchema,
   StoryboardRevisionSuccess: successEnvelope(StoryboardRevisionSchema),
@@ -100,6 +121,7 @@ export const publicContractSchemas = {
   CreateProjectCommand: CreateProjectCommandSchema,
   UpdateProjectCommand: UpdateProjectCommandSchema,
   CreateUploadRequestCommand: CreateUploadRequestCommandSchema,
+  PixabayMusicImportCommand: PixabayMusicImportCommandSchema,
   ConfirmAssetUploadCommand: ConfirmAssetUploadCommandSchema,
   ReferenceBindingInput: ReferenceBindingInputSchema,
   CreateShotCommand: CreateShotCommandSchema,
@@ -108,9 +130,15 @@ export const publicContractSchemas = {
   RetryTaskRunCommand: RetryTaskRunCommandSchema,
   CreateDocumentConversionCommand: CreateDocumentConversionCommandSchema,
   RetryDocumentConversionCommand: RetryDocumentConversionCommandSchema,
+  RetryDocumentKnowledgeRevisionCommand: RetryDocumentKnowledgeRevisionCommandSchema,
   CreateCreativeBriefRevisionCommand: CreateCreativeBriefRevisionCommandSchema,
   RequestCreativePlanCommand: RequestCreativePlanCommandSchema,
   ApproveStoryboardRevisionCommand: ApproveStoryboardRevisionCommandSchema,
+  CreateDeliveryPlanRevisionCommand: CreateDeliveryPlanRevisionCommandSchema,
+  ApproveDeliveryPlanRevisionCommand: ApproveDeliveryPlanRevisionCommandSchema,
+  CreateNarrationScriptRevisionCommand: CreateNarrationScriptRevisionCommandSchema,
+  ApproveNarrationScriptRevisionCommand: ApproveNarrationScriptRevisionCommandSchema,
+  CreateTimelinePlanCommand: CreateTimelinePlanCommandSchema,
   CreateProductionRunCommand: CreateProductionRunCommandSchema,
   RetryProductionSegmentCommand: RetryProductionSegmentCommandSchema,
   ProjectDetailSuccess: successEnvelope(ProjectDetailSchema),
@@ -121,6 +149,7 @@ export const internalContractSchemas = {
   InternalEventEnvelope: InternalEventEnvelopeSchema,
   InternalTaskRunQueueMessage: InternalTaskRunQueueMessageSchema,
   InternalDocumentConversionQueueMessage: InternalDocumentConversionQueueMessageSchema,
+  InternalDocumentKnowledgeQueueMessage: InternalDocumentKnowledgeQueueMessageSchema,
   InternalCreativePlanningQueueMessage: InternalCreativePlanningQueueMessageSchema,
 };
 
@@ -235,6 +264,19 @@ export const createOpenApiDocument = (): JsonSchema => ({
           "409": response("ApiFailure", "Idempotency conflict"),
         },
       },
+      delete: {
+        operationId: "deleteProject",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { $ref: "#/components/parameters/ProjectId" },
+        ],
+        responses: {
+          "200": response("ProjectSuccess", "Project soft-deleted"),
+          "403": response("ApiFailure", "Workspace access denied"),
+          "404": response("ApiFailure", "Project not found"),
+          "409": response("ApiFailure", "Project has active work or idempotency conflict"),
+        },
+      },
     },
     "/api/v1/projects/{project_id}/assets/upload-requests": {
       post: {
@@ -283,6 +325,55 @@ export const createOpenApiDocument = (): JsonSchema => ({
         responses: {
           "200": response("AssetDownloadUrlSuccess", "Short-lived asset download URL"),
           "404": response("ApiFailure", "Asset not found"),
+        },
+      },
+    },
+    "/api/v1/projects/{project_id}/audio-capabilities": {
+      get: {
+        operationId: "getProjectAudioCapabilities",
+        parameters: [{ "$ref": "#/components/parameters/ProjectId" }],
+        responses: {
+          "200": response("AudioCapabilitiesSuccess", "Free audio capabilities and provider status"),
+          "403": response("ApiFailure", "Workspace access denied"),
+          "404": response("ApiFailure", "Project not found"),
+        },
+      },
+    },
+    "/api/v1/projects/{project_id}/audio/pixabay/import": {
+      post: {
+        operationId: "importPixabayMusic",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { $ref: "#/components/parameters/ProjectId" },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/PixabayMusicImportCommand" } },
+          },
+        },
+        responses: {
+          "201": response("PixabayMusicImportSuccess", "Pixabay Music track imported as a workspace MUSIC asset"),
+          "400": response("ApiFailure", "Pixabay query is invalid or has no matching track"),
+          "403": response("ApiFailure", "Workspace access denied"),
+          "404": response("ApiFailure", "Project not found"),
+          "409": response("ApiFailure", "Idempotency conflict"),
+          "503": response("ApiFailure", "Pixabay or object storage is unavailable"),
+        },
+      },
+    },
+    "/api/v1/assets/{asset_id}": {
+      delete: {
+        operationId: "deleteAsset",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { $ref: "#/components/parameters/AssetId" },
+        ],
+        responses: {
+          "200": response("AssetSuccess", "User-uploaded asset marked deleted"),
+          "403": response("ApiFailure", "Workspace access denied"),
+          "404": response("ApiFailure", "Asset not found"),
+          "409": response("ApiFailure", "Asset cannot be deleted or idempotency conflict"),
         },
       },
     },
@@ -371,6 +462,102 @@ export const createOpenApiDocument = (): JsonSchema => ({
         },
       },
     },
+    "/api/v1/projects/{project_id}/delivery-plan-revisions": {
+      get: {
+        operationId: "listDeliveryPlanRevisions",
+        parameters: [{ $ref: "#/components/parameters/ProjectId" }],
+        responses: {
+          "200": response("DeliveryPlanRevisionListSuccess", "Project delivery preflight revisions"),
+          "404": response("ApiFailure", "Project not found"),
+        },
+      },
+      post: {
+        operationId: "createDeliveryPlanRevision",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { $ref: "#/components/parameters/ProjectId" },
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/CreateDeliveryPlanRevisionCommand" } } } },
+        responses: {
+          "202": response("DeliveryPlanRevisionSuccess", "Delivery preflight created or blocked before production"),
+          "400": response("ApiFailure", "Delivery preflight cannot be created"),
+          "404": response("ApiFailure", "Project or revision not found"),
+          "409": response("ApiFailure", "Idempotency conflict"),
+        },
+      },
+    },
+    "/api/v1/delivery-plan-revisions/{delivery_plan_revision_id}/approve": {
+      post: {
+        operationId: "approveDeliveryPlanRevision",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { $ref: "#/components/parameters/DeliveryPlanRevisionId" },
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/ApproveDeliveryPlanRevisionCommand" } } } },
+        responses: {
+          "202": response("DeliveryPlanRevisionSuccess", "Delivery preflight approved"),
+          "400": response("ApiFailure", "Delivery preflight cannot be approved"),
+          "404": response("ApiFailure", "Delivery preflight not found"),
+          "409": response("ApiFailure", "Idempotency conflict"),
+        },
+      },
+    },
+    "/api/v1/delivery-plan-revisions/{delivery_plan_revision_id}/narration-scripts": {
+      get: {
+        operationId: "listNarrationScriptRevisions",
+        parameters: [{ $ref: "#/components/parameters/DeliveryPlanRevisionId" }],
+        responses: {
+          "200": response("NarrationScriptRevisionListSuccess", "Narration script revisions for a delivery plan"),
+          "404": response("ApiFailure", "Delivery plan not found"),
+        },
+      },
+      post: {
+        operationId: "createNarrationScriptRevision",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { $ref: "#/components/parameters/DeliveryPlanRevisionId" },
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/CreateNarrationScriptRevisionCommand" } } } },
+        responses: {
+          "201": response("NarrationScriptRevisionSuccess", "Narration script normalized for review"),
+          "400": response("ApiFailure", "Narration script cannot be normalized"),
+          "404": response("ApiFailure", "Delivery plan not found"),
+          "409": response("ApiFailure", "Idempotency conflict"),
+        },
+      },
+    },
+    "/api/v1/narration-script-revisions/{narration_script_revision_id}/approve": {
+      post: {
+        operationId: "approveNarrationScriptRevision",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { name: "narration_script_revision_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/ApproveNarrationScriptRevisionCommand" } } } },
+        responses: {
+          "202": response("NarrationScriptRevisionSuccess", "Narration sample facts approved"),
+          "400": response("ApiFailure", "Narration script cannot be approved"),
+          "404": response("ApiFailure", "Narration script not found"),
+          "409": response("ApiFailure", "Idempotency conflict"),
+        },
+      },
+    },
+    "/api/v1/narration-script-revisions/{narration_script_revision_id}/timeline-plans": {
+      post: {
+        operationId: "createNarrationTimelinePlan",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { name: "narration_script_revision_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/CreateTimelinePlanCommand" } } } },
+        responses: {
+          "201": response("TimelinePlanSuccess", "Measured narration timeline created"),
+          "400": response("ApiFailure", "Narration timeline cannot be created"),
+          "404": response("ApiFailure", "Narration script not found"),
+          "409": response("ApiFailure", "Idempotency conflict"),
+        },
+      },
+    },
     "/api/v1/projects/{project_id}/production-runs": {
       get: {
         operationId: "listProductionRuns",
@@ -412,6 +599,22 @@ export const createOpenApiDocument = (): JsonSchema => ({
         },
       },
     },
+    "/api/v1/production-runs/{production_run_id}/composition/retry": {
+      post: {
+        operationId: "retryProductionComposition",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { $ref: "#/components/parameters/ProductionRunId" },
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/RetryProductionCompositionCommand" } } } },
+        responses: {
+          "202": response("ProductionRunProgressSuccess", "Final composition retry accepted without regenerating segments"),
+          "400": response("ApiFailure", "Production run is not eligible for composition retry"),
+          "404": response("ApiFailure", "Production run not found"),
+          "409": response("ApiFailure", "Idempotency or production state conflict"),
+        },
+      },
+    },
     "/api/v1/projects/{project_id}/video-versions": {
       get: {
         operationId: "listVideoVersions",
@@ -445,6 +648,32 @@ export const createOpenApiDocument = (): JsonSchema => ({
           "400": response("ApiFailure", "Conversion is not retryable"),
           "404": response("ApiFailure", "Document conversion not found"),
           "409": response("ApiFailure", "Idempotency conflict"),
+        },
+      },
+    },
+    "/api/v1/document-knowledge-revisions/{knowledge_revision_id}": {
+      get: {
+        operationId: "getDocumentKnowledgeRevision",
+        parameters: [{ $ref: "#/components/parameters/DocumentKnowledgeRevisionId" }],
+        responses: {
+          "200": response("DocumentKnowledgeDetailSuccess", "Document understanding revision and safe fact summary"),
+          "404": response("ApiFailure", "Document understanding revision not found"),
+        },
+      },
+    },
+    "/api/v1/document-knowledge-revisions/{knowledge_revision_id}/retry": {
+      post: {
+        operationId: "retryDocumentKnowledgeRevision",
+        parameters: [
+          { $ref: "#/components/parameters/IdempotencyKey" },
+          { $ref: "#/components/parameters/DocumentKnowledgeRevisionId" },
+        ],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/RetryDocumentKnowledgeRevisionCommand" } } } },
+        responses: {
+          "202": response("DocumentKnowledgeRevisionSuccess", "Document understanding retry queued"),
+          "404": response("ApiFailure", "Document understanding revision not found"),
+          "409": response("ApiFailure", "Idempotency or active understanding conflict"),
+          "422": response("ApiFailure", "Document understanding revision is not retryable"),
         },
       },
     },
@@ -636,6 +865,18 @@ export const createOpenApiDocument = (): JsonSchema => ({
         in: "path",
         required: true,
         schema: { type: "string", pattern: "^sbr_" },
+      },
+      DocumentKnowledgeRevisionId: {
+        name: "knowledge_revision_id",
+        in: "path",
+        required: true,
+        schema: { type: "string", pattern: "^dkr_" },
+      },
+      DeliveryPlanRevisionId: {
+        name: "delivery_plan_revision_id",
+        in: "path",
+        required: true,
+        schema: { type: "string", pattern: "^dpr_" },
       },
     },
     schemas: openApiSchemas,

@@ -3,6 +3,7 @@ import { VideoGenerationInputSnapshotSchema } from "@alchemy-video/contracts";
 import type { AssetWorkspaceStore, TaskRunStore } from "@alchemy-video/persistence";
 import { StorageObjectAlreadyExistsError, createGeneratedVideoObjectKey, type StoragePort } from "@alchemy-video/storage-client";
 import type { VideoProviderPort } from "@alchemy-video/provider-video";
+import { VideoBillingExecutor } from "./billing-executor.js";
 import { VideoProviderFailure, VideoProviderProtocolError, validateMp4Bytes } from "@alchemy-video/provider-video";
 
 import type { ReferenceDeliveryPort } from "./reference-delivery.js";
@@ -78,9 +79,11 @@ export class MockVideoTaskExecutor {
       expectedModel?: string;
       pollIntervalMs?: number;
       maxPollAttempts?: number;
+      retryableStatusPolls?: number;
       assetStore?: Pick<AssetWorkspaceStore, "findAsset">;
       referenceDelivery?: ReferenceDeliveryPort;
       allowLegacyReferenceAssets?: boolean;
+      billingExecutor?: VideoBillingExecutor;
     }> = {},
   ) {}
 
@@ -89,6 +92,17 @@ export class MockVideoTaskExecutor {
     if (!taskRun || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(taskRun.status)) return taskRun;
 
     const inputSnapshot = VideoGenerationInputSnapshotSchema.parse(taskRun.inputSnapshot);
+    if (taskRun.status === "BILLING_PENDING" && inputSnapshot.billing && this.options.billingExecutor) {
+      await this.options.billingExecutor.execute({
+        workspaceId: input.workspaceId,
+        chargeRequest: {
+          taskRunId: input.taskRunId,
+          externalUserId: inputSnapshot.billing.external_user_id,
+          billingRule: inputSnapshot.billing.billing_rule,
+        },
+      });
+      return this.store.findTaskRun(input.workspaceId, input.taskRunId);
+    }
     const providerName = this.options.providerName ?? "mock";
     if (this.options.expectedModel && inputSnapshot.model !== this.options.expectedModel) {
       return this.store.failTaskRun({
@@ -139,7 +153,21 @@ export class MockVideoTaskExecutor {
         await this.store.recordProviderSubmission({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, providerRequestId: submission.providerRequestId, now: new Date() });
       }
 
-      let status = await this.provider.getStatus({ providerRequestId });
+      const retryableStatusPolls = this.options.retryableStatusPolls ?? 0;
+      const getStatusWithTransientRetry = async () => {
+        for (let retry = 0; ; retry += 1) {
+          try {
+            const next = await this.provider.getStatus({ providerRequestId });
+            if (next.state !== "FAILED" || !next.retryable || retry >= retryableStatusPolls) return next;
+          } catch (error) {
+            if (!(error instanceof VideoProviderFailure) || !error.retryable || retry >= retryableStatusPolls) throw error;
+          }
+          await this.store.recordProviderProcessing({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
+          const delay = this.options.pollIntervalMs ?? 0;
+          if (delay > 0) await new Promise<void>((resolve) => setTimeout(resolve, delay));
+        }
+      };
+      let status = await getStatusWithTransientRetry();
       const maxPollAttempts = this.options.maxPollAttempts ?? 2;
       for (let pollAttempt = 1; status.state === "PROCESSING"; pollAttempt += 1) {
         await this.store.recordProviderProcessing({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
@@ -148,7 +176,7 @@ export class MockVideoTaskExecutor {
         }
         const pollIntervalMs = this.options.pollIntervalMs ?? 0;
         if (pollIntervalMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs));
-        status = await this.provider.getStatus({ providerRequestId });
+        status = await getStatusWithTransientRetry();
       }
       if (status.state === "FAILED") {
         if (status.retryable) {
@@ -168,7 +196,7 @@ export class MockVideoTaskExecutor {
 
       await this.store.recordProviderProcessing({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
       await this.store.beginDownload({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
-      return await this.finishDownload({ workspaceId: input.workspaceId, taskRunId: taskRun.id, attemptId: attempt.id, projectId: taskRun.projectId });
+      return await this.finishDownload({ workspaceId: input.workspaceId, taskRunId: taskRun.id, attemptId: attempt.id, projectId: taskRun.projectId, inputSnapshot });
     } catch (error) {
       if (error instanceof RetryableTaskExecutionError) throw error;
       const failure = providerStageError(error);
@@ -215,7 +243,7 @@ export class MockVideoTaskExecutor {
     return delivery.createVisualInput({ workspaceId: input.workspaceId, projectId: input.projectId, visualInput });
   }
 
-  private async finishDownload(input: { workspaceId: string; taskRunId: string; attemptId: string; projectId: string }) {
+  private async finishDownload(input: { workspaceId: string; taskRunId: string; attemptId: string; projectId: string; inputSnapshot: ReturnType<typeof VideoGenerationInputSnapshotSchema.parse> }) {
     try {
       const attempt = (await this.store.listTaskRunAttempts(input.workspaceId, input.taskRunId)).find((item) => item.id === input.attemptId);
       if (!attempt?.providerRequestId) throw new VideoProviderProtocolError("Provider request was not persisted before download.");
@@ -254,7 +282,7 @@ export class MockVideoTaskExecutor {
           }
         }
       }
-      return this.store.completeGeneratedTaskRun({
+      const completed = await this.store.completeGeneratedTaskRun({
         workspaceId: input.workspaceId,
         taskRunId: input.taskRunId,
         providerAttemptId: input.attemptId,
@@ -266,6 +294,15 @@ export class MockVideoTaskExecutor {
         durationMs: inspection.durationMs,
         now: new Date(),
       });
+      const billing = input.inputSnapshot.billing;
+      if (!billing) return completed;
+      if (!this.options.billingExecutor) throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", true, "PROVIDER", "Shared credit billing is not configured for this Worker.");
+      const billingResult = await this.options.billingExecutor.execute({
+        workspaceId: input.workspaceId,
+        chargeRequest: { taskRunId: input.taskRunId, externalUserId: billing.external_user_id, billingRule: billing.billing_rule },
+      });
+      if (billingResult.kind === "RETRY_SCHEDULED") return this.store.findTaskRun(input.workspaceId, input.taskRunId);
+      return this.store.findTaskRun(input.workspaceId, input.taskRunId);
     } catch (error) {
       const failure = downloadStageError(error);
       if (failure.retryable) {

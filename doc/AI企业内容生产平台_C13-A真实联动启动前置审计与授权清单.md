@@ -4,6 +4,8 @@
 
 日期：2026-08-16
 
+现行范围覆盖（2026-09-01）：当前仅授权本机 Aiself Grok 原生音频与显式 Doubao TTS 的茅山项目对照；不授权 C13-A 的 Veyra/共享积分/VPS/SSH/DNS/TLS/部署联动。自动旁白不要求用户上传音频或样音，样音由服务端生成并经人工审批；本文件中通用资产上传清单和历史授权模板不改变该口径。具体执行以《AI企业内容生产平台_自动生成音频与视频匹配正式使用开发文档.md》为准。
+
 关联文档：
 
 - `AI企业内容生产平台_正式开发总控文档.md`
@@ -179,6 +181,8 @@ Provider profile 与调用次数：
 ## 10. Phase 1 身份入口离线实现记录
 
 2026-08-16，按用户授权的最小 canary 参数，先完成 `VeyraIdentityAdapter` 的离线入口，不创建真实账号、不消费真实 ticket、不查询余额、不扣费、不部署。
+
+后续本地适配已补齐：`VideoVeyraBridgeAdapter`、HTTPS transport、视频 POST 回调、签名 host-only session、`/api/v1/me/credits` 以及 Sub2API Portal 的 `video` 入口。真实 Veyra token、真实 ticket、扣费和部署仍需在部署环境显式启用并按本清单执行 canary。
 
 实现边界：
 

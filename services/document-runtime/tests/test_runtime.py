@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -10,7 +11,7 @@ from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from runtime import DocumentRuntimeError, convert_bytes, safe_filename
-from main import convert_document
+from main import convert_document, decode_source_filename
 
 
 class StreamRequest:
@@ -114,6 +115,13 @@ class DocumentRuntimeTests(unittest.TestCase):
         with self.assertRaises(DocumentRuntimeError):
             safe_filename("company.pdf", "text/plain")
 
+    def test_decodes_utf8_base64url_source_filename(self) -> None:
+        filename = "副本镇江茅山高端度假别墅营销方案.pptx"
+        encoded = base64.urlsafe_b64encode(filename.encode("utf-8")).rstrip(b"=").decode("ascii")
+        self.assertEqual(decode_source_filename(encoded), filename)
+        with self.assertRaises(DocumentRuntimeError):
+            decode_source_filename("invalid=")
+
     def test_rejects_unknown_mime_without_network_or_path_access(self) -> None:
         with self.assertRaises(DocumentRuntimeError) as caught:
             convert_bytes(body=b"data", mime_type="application/octet-stream", filename="input.bin")
@@ -165,7 +173,7 @@ class DocumentRuntimeTests(unittest.TestCase):
                     request=request,
                     authorization="Bearer runtime-test-token",
                     x_document_conversion_id="dcv_01J00000000000000000000000",
-                    x_source_filename="brief.txt",
+                    x_source_filename_base64=base64.urlsafe_b64encode(b"brief.txt").rstrip(b"=").decode("ascii"),
                     x_source_sha256=hashlib.sha256(b"abcde").hexdigest(),
                 )
             )
@@ -173,6 +181,24 @@ class DocumentRuntimeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 413)
         self.assertEqual(json.loads(response.body), {"error": {"code": "DOCUMENT_UNSUPPORTED", "retryable": False}})
         self.assertEqual(request.yielded, 2)
+
+    def test_http_handler_accepts_utf8_filename_over_base64url_header(self) -> None:
+        body = b"# Project material"
+        filename = "镇江茅山资料.txt"
+        encoded = base64.urlsafe_b64encode(filename.encode("utf-8")).rstrip(b"=").decode("ascii")
+        with patch.dict(os.environ, {"DOCUMENT_RUNTIME_TOKEN": "runtime-test-token"}, clear=False):
+            response = asyncio.run(
+                convert_document(
+                    request=StreamRequest([body]),
+                    authorization="Bearer runtime-test-token",
+                    x_document_conversion_id="dcv_01J00000000000000000000000",
+                    x_source_filename_base64=encoded,
+                    x_source_sha256=hashlib.sha256(body).hexdigest(),
+                )
+            )
+
+        self.assertEqual(response["converter"], "markitdown")
+        self.assertIn("Project material", response["markdown"])
 
 
 if __name__ == "__main__":

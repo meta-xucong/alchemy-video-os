@@ -2,6 +2,8 @@
 
 状态：`IN_PROGRESS`。C09-A 离线基础已通过独立复核；C09-B 只允许完成三 VPS 联动设计，不授权真实账户、票据、Token、网络、扣费、运行时接线或部署。
 
+> **2026-09-01 当前音频口径**：自动视频不要求用户上传旁白/样音；本机 Grok native 与显式 Doubao 对照是最新自动音频文档限定的例外，不改变 C09 的 Veyra/部署后置边界或默认 Mock。
+
 | 平台目标 | 事实来源与符号 | 薄适配位置 | 保留内容 | 舍弃内容和理由 | 回归验证 |
 | --- | --- | --- | --- | --- | --- |
 | CreditPort DTO 与 Veyra 字段 mapper | 本机 `D:\AI\SSH\sub2api\backend\internal\veyra\routes.go` 的 `debitRequest`、`debitResponse`、`accountSummaryResponse` | `packages/contracts/src/credit.ts`、`packages/credit-veyra/src/mapper.ts` | `user_id`、`amount`、`idempotency_key`、`source`、`reference_id`、`balance_after`、`replayed` 和 `data` envelope | Gin handler、Token guard、真实路由与所有用户数据。平台 adapter 只能接收 injected fake transport。 | path/method/header/body/data-envelope fake contract tests |

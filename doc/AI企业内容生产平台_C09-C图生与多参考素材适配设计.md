@@ -6,6 +6,10 @@
 
 关联：ADR-0034、`AI企业内容生产平台_C09-C真实Provider运行时接入.md`、`AI企业内容生产平台_C09-B三VPS联动设计.md`
 
+现行音频口径（2026-09-01）：本章只描述视觉参考素材。自动旁白不要求用户上传音频/样音；Grok native 音轨优先，显式替换时才调用 Doubao。Huobao `reference_audio` 仅是其 provider-specific 参考输入，不能跨映射为当前旁白路径；通用图片、资料、Logo、MUSIC 上传仍按既有契约。
+
+> 本章的“保持 Mock/不授权真实提交”只约束 C09-C 的章节实施与默认环境；本轮用户授权的本机 Grok/Doubao 对照必须按最新自动音频执行文档单独运行，不改变本章的契约和状态。
+
 ## 1. 目标与范围
 
 本设计将用户提供的 `aiself-grok` 真实视频能力接入平台的图像输入链路。平台复用本地 `sub2api-video-mcp` 已验证的协议和能力证据，但不在生产运行时启动 MCP 进程，也不让浏览器调用 MCP、Provider、MinIO 管理端或 Veyra。
@@ -24,6 +28,7 @@
 - 不支持首帧与独立参考图混合、尾帧、视频参考、音频参考、编辑、延长或 Seedance。
 - 不把 7 张协议上限误写为 7 张画质已验证；目前完成的独立参考端到端证据只有 2 张。
 - 不设置平台侧 4096 UTF-8 字节硬拒绝。提示词长度可作为非阻断质量提示；若上游拒绝，归一为既有 `PROVIDER_REJECTED`，不重复提交。
+- 当前 `aiself-grok / grok-imagine-video-1.5` 已有一条明确的 4096 字节拒绝实测；因此真实 profile 通过内部能力配置自动压缩至 4096，仍不在浏览器或 Control API 入口硬拒绝用户原文。
 
 ## 2. 已知能力与证据边界
 
@@ -69,7 +74,7 @@ type VisualInputSnapshot =
     }
   | {
       mode: "REFERENCE_SET";
-      references: Array<{ asset_id: string; sha256: string; mime_type: string; position: number }>;
+    references: Array<{ asset_id: string; sha256: string; mime_type: string; position: number; role?: "STYLE" | "SUBJECT" | "SCENE" | "HANDOFF" }>;
     };
 ```
 
@@ -167,7 +172,7 @@ flowchart LR
 | 契约 | 三种模式互斥、`FIRST_FRAME` 恰好一张、`REFERENCE_SET` 接受 1-7 张并保序、`LAST_FRAME` 被拒绝 |
 | Provider mapper | 单图仅出现 `image.image_url`；多图仅出现 `reference_images[].url`；无硬 4096 拦截；数量、HTTPS 和上游 4xx 归一化 |
 | Reference delivery | workspace/project 隔离、内容型 MIME/大小/SHA-256、过期/篡改 token、无 object key 泄露、拒绝任意 URL 与内网目标 |
-| Worker | 发出一次 submit 后重启只 GET；提交前 relay 临时失败不留下 request ID；多图顺序不变；下载校验与既有 C06 回归不退化 |
+| Worker | 发出一次 submit 后重启只 GET；提交前 relay 临时失败不留下 request ID；场景锚点语义顺序可验证、交接帧保持第一；下载校验与既有 C06 回归不退化 |
 | UI/E2E | 中文“开场画面/参考素材”选择、最多 7 张、项目隔离、刷新恢复、Mock 成片播放、失败重试 |
 | 边界扫描 | Web/Control API 无视频 Key，公开 DTO/SSE/日志/快照无 token、对象 key、URL query 或 Provider 原始 payload |
 
@@ -234,3 +239,34 @@ flowchart LR
 `ratio` 当前是公开可见但不可修改的 profile 能力，不接受浏览器提交其他比例。`5s / 720p / 16:9` 是当前独立参考素材实测组合；其余界面可选值是同一 profile 的已声明协议范围，不能被表述为已完成相同画质的真实验收。
 
 这不是对已经失败的不可变 TaskRun 的重放。用户选择“调整后生成新版本”时才会形成新的冻结快照和一次新的 Provider submit；平台测试只使用 Mock/injected transport，不自动产生付费调用。
+
+## 13. 2026-08-18 场景参考未被采用的修正
+
+本机真实成功任务证明：两张图片已完成上传、确认、relay 投递和 Provider 接收，但成片仍主要采用第一张人物图，第二张场景图被泛化。这不是传输链路问题，而是此前内部快照把所有 `REFERENCE_SET` 图片都当作 `STYLE`，Prompt 也没有说明哪张图片负责场景；上游多参考模型因此按第一张图主导生成。
+
+本修正不修改公开数据库 `ReferenceBinding.role` 枚举，也不新增浏览器工程字段。创建不可变 `TaskRun.input_snapshot.visual_input` 时增加可选的内部 `role` 语义，并使用可审计的语义选择顺序：
+
+1. C12 自动连续片段的 `HANDOFF` 交接帧保持最高优先级。
+2. 用户在故事/想法中明确写出的图片职责优先，用于覆盖视觉识别结果；非首帧显式主体绑定仅在没有冲突说明时生效。
+3. 视觉分析单元读取图片内容，识别为 `SUBJECT`、`SCENE` 或 `STYLE`，并保存置信度和安全摘要；不得按上传位置猜测。其余用户图片必须有文字说明或已完成的视觉分析，否则段落进入 `WAITING`，不得静默生成。旧快照没有 `role` 时只按历史事实读取，不为新任务回填位置角色。
+4. Worker 的 relay 在生成临时 URL 前按 `HANDOFF -> SCENE -> SUBJECT -> STYLE` 排列；这样场景锚点进入上游多图请求的优先位置，交接帧仍保持第一。Prompt Compiler 同时加入角色说明和上游输入序号映射，明确“有场景锚点时不得替换成泛化环境”，避免传输顺序重排后模型误解角色。
+5. Studio 在素材列表显示“等待内容识别”，不把上传顺序伪装成角色。用户仍可取消任意图片；取消后只更新选择顺序，不改变已完成的视觉分析事实。
+
+## 14. 2026-08-19 用户说明参与参考图角色解析
+
+固定位置规则已弃用。参考图角色解析顺序调整为：
+
+1. `HANDOFF` 首帧绑定保留最高优先级；
+2. 用户在故事/想法输入框中对图片的明确说明优先，例如“第一张是场景图，第二张是人物图”“图 1 为建筑，图 2 为产品”；
+3. 非首帧显式主体绑定只在用户没有提出冲突说明时生效；随后由视觉分析单元读取图片内容，在置信度达到阈值时补充图片内容判断；
+4. 以上都无法确定时，不生成参考图任务，转为可重试的等待/提示状态，直到用户补充说明或视觉分析可用。
+
+当前代码已实现用户说明解析、可配置 OpenAI-compatible 多模态视觉分析适配器和 Control API/C11/C12 的统一阻断逻辑。没有视觉服务配置或置信度不足时，系统明确等待，不把位置规则伪装成识别结果。视觉分析结果只在服务端资产元数据中保存，浏览器不接触密钥或原始模型响应。
+
+用户说明也可以通过已上传素材的原始文件名绑定职责，例如“人物.png 为人物原型，场景.jpg 为口播场地”；当说明明确声明“其余图片为场景/视觉效果参考”时，解析器只把仍未解析的素材映射为对应角色。这些匹配使用用户文字和服务端保存的文件名，不以选择顺序推断；没有文件名或明确用途时仍保持等待。
+
+该修正提高 R2V 对场景图的采用概率，但不宣称模型具备逐帧锁定、完美建筑复现或永久一致性能力。真实任务仍需单独做语义验收；本轮只做离线契约、Worker、Control API、持久化和 Studio 回归，不自动重试或新增付费调用。
+
+## 15. 上游长视频分段复用记录
+
+本地分段规划复用 `upstream/huobao-drama/backend/workspace/skills/storyboard-breaker/SKILL.md` 的规则：一个生成段落为 8-15 秒、显式叙事节拍优先切段、台词时长下限为字数/4.5 秒加 2 秒余量。本文早期记录的“按总时长/12 秒、30 秒约 10 秒的 3 段”只代表当时的实验快照；已由后续 C11.6/C12.5 设计 supersede：在当前已认证的 15 秒单次上限下，规划器按最少 Provider 调用和语义边界选择片段，30 秒普通连续叙事默认是 2×15 秒，口播按实际容量分配，不能恢复机械 3×10 秒规则。`upstream/seedance-2.5/skill/seedance-25/references/long-video.md` 的时间轴脚本和连续性锁原则用于段内动作端点、未完成台词和场景物理约束的编译，不直接假设当前 Provider 支持 Seedance 的原生 30 秒模式。

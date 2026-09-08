@@ -1,9 +1,9 @@
-import type { ApplicationErrorCode, VideoGenerationInputSnapshot } from "@alchemy-video/contracts";
+import type { ApplicationErrorCode, VideoGenerationInputSnapshot, VisualReferenceRole } from "@alchemy-video/contracts";
 
 export type ResolvedVisualInput =
   | { mode: "TEXT" }
   | { mode: "FIRST_FRAME"; url: string }
-  | { mode: "REFERENCE_SET"; urls: readonly string[] };
+  | { mode: "REFERENCE_SET"; urls: readonly string[]; roles?: readonly VisualReferenceRole[] };
 
 export type VideoGenerationInput = {
   taskRunId: string;

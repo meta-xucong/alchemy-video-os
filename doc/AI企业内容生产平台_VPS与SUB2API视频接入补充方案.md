@@ -1,5 +1,7 @@
 # AI 企业内容生产平台：VPS 与 SUB2API 视频接入补充方案
 
+> **2026-09-01 当前口径**：自动旁白不要求用户上传音频/样音；本轮授权只覆盖本机 Aiself Grok/Doubao 对照，不能据此启动本文的 VPS、Veyra、共享积分、DNS、TLS 或部署步骤。默认/CI 仍为 Mock；本文其余部署设计保持后置/历史状态。
+
 > 本文补充 `AI企业内容生产平台_代码实现与仓库整合详细方案.md`，将系统落实到 `video.aiself.vip`、现有 Aiself/Sub2API/Veyra 体系、Seedance/Grok 视频引擎和未来 Codex MCP 入口。本文按学习型项目编写，密钥不写入文档、仓库或浏览器。
 
 ## 1. 本次需要明确的结论
@@ -530,7 +532,7 @@ video:seedance:<model>:<operation>:<resolution>:<duration-bucket>
 MVP 必须具备的网页操作：
 
 1. 从 Veyra 登录进入 Video 平台，显示当前账号和余额。
-2. 创建项目并上传图片、视频、音频、文档、Logo。
+2. 创建项目并上传图片、视频、通用/兼容音频资产、文档、Logo；自动旁白不以用户上传音频为前置条件。
 3. 选择 Grok 或 Seedance Profile，创建一个单镜头文生/单图生视频任务。
 4. 显示提交、排队、上游处理中、下载、完成、失败等实时状态。
 5. 展示但不暴露 API Key 的模型、分辨率、比例、时长、Prompt、引用资产和成本。

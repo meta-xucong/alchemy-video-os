@@ -127,6 +127,22 @@ test("Drizzle ControlPlaneRepository persists command replay, conflicts, and wor
       assert.equal((await secondRepository.findProject(workspaceA, projectB)), undefined);
       assert.equal((await secondRepository.findProject(workspaceB, projectB))?.id, projectB);
       assert.equal(await secondRepository.hasWorkspaceMembership(workspaceA, userB), false);
+
+      const deleteInput = {
+        scope: `c03-pg-${suffix}:DELETE:/api/v1/projects/${projectA}`,
+        idempotencyKey: "delete-1",
+        requestHash: createHash("sha256").update("{}").digest("hex"),
+        workspaceId: workspaceA,
+        projectId: projectA,
+      };
+      const deleted = await secondRepository.deleteProject(deleteInput);
+      assert.equal(deleted.kind, "NEW");
+      if (deleted.kind !== "NEW") return;
+      assert.equal(deleted.value.status, "DELETED");
+      assert.equal((await secondRepository.findProject(workspaceA, projectA)), undefined);
+      assert.equal((await secondRepository.listProjects(workspaceA)).some((project) => project.id === projectA), false);
+      const deleteReplay = await secondRepository.deleteProject(deleteInput);
+      assert.deepEqual(deleteReplay, { kind: "REPLAY", value: deleted.value, status: 200 });
     } finally {
       await secondDatabase.close();
     }

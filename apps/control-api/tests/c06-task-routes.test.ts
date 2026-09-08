@@ -55,12 +55,13 @@ const createReadyReference = async (input: Readonly<{
   storage: InMemoryStoragePort;
   projectId: string;
   keySuffix: string;
+  filename?: string;
 }>) => {
   const bytes = new Uint8Array([1, 2, 3, input.keySuffix.length]);
   const upload = await readJson(await input.app.request(`http://localhost/api/v1/projects/${input.projectId}/assets/upload-requests`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "Idempotency-Key": `c09-c-reference-upload-${input.keySuffix}` },
-    body: JSON.stringify({ kind: "IMAGE", filename: `reference-${input.keySuffix}.png`, mime_type: "image/png", byte_size: bytes.byteLength }),
+    body: JSON.stringify({ kind: "IMAGE", filename: input.filename ?? `reference-${input.keySuffix}.png`, mime_type: "image/png", byte_size: bytes.byteLength }),
   }));
   const assetId = upload.data.asset_id as string;
   const asset = await input.assetStore.findAsset("ws_dev_default", assetId);
@@ -74,6 +75,53 @@ const createReadyReference = async (input: Readonly<{
   assert.equal(confirmed.status, 200);
   return assetId;
 };
+
+test("C09-C keeps UI reference analysis out of direct-generation object locks", async () => {
+  const control = createInMemoryControlPlaneStore();
+  const assets = createInMemoryAssetWorkspaceStore(control);
+  const tasks = createInMemoryTaskRunStore(assets);
+  const storage = new InMemoryStoragePort();
+  const app = createApp({ store: control, assetStore: assets, taskStore: tasks, storage });
+  const { projectId, shotId } = await createReadyShot(app, {
+    keySuffix: "ui-analysis-lock-filter",
+    prompt: "ui-dashboard.png 是产品界面参考，只作为视觉锚点。",
+  });
+  const assetId = await createReadyReference({
+    app,
+    assetStore: assets,
+    storage,
+    projectId,
+    keySuffix: "ui-analysis-lock-filter",
+    filename: "ui-dashboard.png",
+  });
+  await assets.updateVisualReferenceAnalysis({
+    workspaceId: "ws_dev_default",
+    projectId,
+    assetId,
+    visualAnalysis: {
+      role: "SUBJECT",
+      confidence: 0.98,
+      objects: [{ name: "界面模块", description: "屏幕中的模块", relation: "位于界面布局中", prohibited_changes: ["保持原样"] }],
+    },
+    visualAnalysisStatus: "READY",
+  });
+  const binding = await app.request(`http://localhost/api/v1/shots/${shotId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c09-c-ui-analysis-lock-binding" },
+    body: JSON.stringify({ reference_bindings: [{ asset_id: assetId, role: "STYLE", position: 0 }] }),
+  });
+  assert.equal(binding.status, 200);
+  const generation = await app.request(`http://localhost/api/v1/shots/${shotId}/generations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c09-c-ui-analysis-lock-generation" },
+    body: JSON.stringify(command),
+  });
+  assert.equal(generation.status, 202);
+  const created = await readJson(generation);
+  const internal = await tasks.findTaskRun("ws_dev_default", created.data.id);
+  assert.deepEqual(internal?.inputSnapshot.visual_input?.references.map((reference) => reference.asset_id), [assetId]);
+  assert.equal(internal?.inputSnapshot.prompt.includes("界面模块"), false);
+});
 
 test("C06 generation routes are workspace-scoped, idempotent, and expose only public TaskRun fields", async () => {
   const control = createInMemoryControlPlaneStore();
@@ -112,6 +160,48 @@ test("C06 generation routes are workspace-scoped, idempotent, and expose only pu
   }
 });
 
+test("C09-C blocks deletion of a reference asset while its generation task is active", async () => {
+  const control = createInMemoryControlPlaneStore();
+  const assets = createInMemoryAssetWorkspaceStore(control);
+  const tasks = createInMemoryTaskRunStore(assets);
+  const storage = new InMemoryStoragePort();
+  const app = createApp({ store: control, assetStore: assets, taskStore: tasks, storage });
+  const { projectId, shotId } = await createReadyShot(app, { keySuffix: "asset-delete-guard", prompt: "第一张是人物参考图，用于保持人物一致。" });
+  const assetId = await createReadyReference({ app, assetStore: assets, storage, projectId, keySuffix: "asset-delete-guard" });
+  const binding = await app.request(`http://localhost/api/v1/shots/${shotId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c09-c-asset-delete-binding" },
+    body: JSON.stringify({ reference_bindings: [{ asset_id: assetId, role: "STYLE", position: 0 }] }),
+  });
+  assert.equal(binding.status, 200);
+  const generation = await app.request(`http://localhost/api/v1/shots/${shotId}/generations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c09-c-asset-delete-generation" },
+    body: JSON.stringify(command),
+  });
+  assert.equal(generation.status, 202);
+
+  const deleteRequest = () => app.request(`http://localhost/api/v1/assets/${assetId}`, {
+    method: "DELETE",
+    headers: { "Idempotency-Key": "c09-c-asset-delete-command" },
+  });
+  const blocked = await deleteRequest();
+  const blockedBody = await readJson(blocked);
+  assert.equal(blocked.status, 409);
+  assert.equal(blockedBody.error.code, "ASSET_IN_USE");
+  const replayed = await deleteRequest();
+  assert.equal(replayed.status, 409);
+  assert.equal((await readJson(replayed)).error.code, "ASSET_IN_USE");
+
+  await assets.setShotGenerationState({ workspaceId: "ws_dev_default", shotId, status: "FAILED" });
+  const afterFailure = await app.request(`http://localhost/api/v1/assets/${assetId}`, {
+    method: "DELETE",
+    headers: { "Idempotency-Key": "c09-c-asset-delete-after-failure" },
+  });
+  assert.equal(afterFailure.status, 200);
+  assert.equal((await readJson(afterFailure)).data.status, "DELETED");
+});
+
 test("C09-C creates real-provider I2V and R2V snapshots only from saved Shot bindings", async () => {
   const control = createInMemoryControlPlaneStore();
   const assets = createInMemoryAssetWorkspaceStore(control);
@@ -148,12 +238,12 @@ test("C09-C creates real-provider I2V and R2V snapshots only from saved Shot bin
   assert.equal(internal?.inputSnapshot.duration, 5);
   assert.equal(internal?.inputSnapshot.resolution, "720p");
 
-  const referenceSetShot = await createReadyShot(app, { prompt: "A two-reference product film.", keySuffix: "reference-set" });
+  const referenceSetShot = await createReadyShot(app, { prompt: "第一张是人物图，第二张是场景图。保持两者一致。", keySuffix: "reference-set" });
   const referenceAssetIds = await Promise.all(["one", "two"].map((keySuffix) => createReadyReference({ app, assetStore: assets, storage, projectId: referenceSetShot.projectId, keySuffix })));
   const referenceBinding = await app.request(`http://localhost/api/v1/shots/${referenceSetShot.shotId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", "Idempotency-Key": "c09-c-reference-set-binding" },
-    body: JSON.stringify({ reference_bindings: referenceAssetIds.map((asset_id, position) => ({ asset_id, role: position === 0 ? "STYLE" : "SUBJECT", position })) }),
+    body: JSON.stringify({ reference_bindings: referenceAssetIds.map((asset_id, position) => ({ asset_id, role: "STYLE", position })) }),
   });
   assert.equal(referenceBinding.status, 200);
   const referenceSetResponse = await app.request(`http://localhost/api/v1/shots/${referenceSetShot.shotId}/generations`, {
@@ -166,6 +256,8 @@ test("C09-C creates real-provider I2V and R2V snapshots only from saved Shot bin
   const referenceSnapshot = await tasks.findTaskRun("ws_dev_default", referenceSet.data.id);
   assert.equal(referenceSnapshot?.inputSnapshot.visual_input?.mode, "REFERENCE_SET");
   assert.deepEqual(referenceSnapshot?.inputSnapshot.reference_asset_ids, referenceAssetIds);
+  assert.deepEqual(referenceSnapshot?.inputSnapshot.visual_input?.references.map((reference) => reference.role), ["SUBJECT", "SCENE"]);
+  assert.match(referenceSnapshot?.inputSnapshot.prompt ?? "", /do not substitute a generic environment/);
   assert.equal(JSON.stringify(referenceSet).includes("reference_images"), false);
 });
 
@@ -252,7 +344,7 @@ test("C09-C keeps ready reference images available to the local Mock task flow",
   const tasks = createInMemoryTaskRunStore(assets);
   const storage = new InMemoryStoragePort();
   const app = createApp({ store: control, assetStore: assets, taskStore: tasks, storage, videoProviderMode: "mock" });
-  const { projectId, shotId } = await createReadyShot(app);
+  const { projectId, shotId } = await createReadyShot(app, { prompt: "第一张是场景图，第二张是人物图。" });
   const referenceAssetIds = await Promise.all(["one", "two"].map((keySuffix) => createReadyReference({ app, assetStore: assets, storage, projectId, keySuffix })));
   const binding = await app.request(`http://localhost/api/v1/shots/${shotId}`, {
     method: "PATCH",
@@ -271,6 +363,80 @@ test("C09-C keeps ready reference images available to the local Mock task flow",
   const internal = await tasks.findTaskRun("ws_dev_default", created.data.id);
   assert.deepEqual(internal?.inputSnapshot.reference_asset_ids, referenceAssetIds);
   assert.equal(internal?.inputSnapshot.visual_input?.mode, "REFERENCE_SET");
+});
+
+test("generation blocks unresolved reference images instead of guessing STYLE", async () => {
+  const control = createInMemoryControlPlaneStore();
+  const assets = createInMemoryAssetWorkspaceStore(control);
+  const tasks = createInMemoryTaskRunStore(assets);
+  const storage = new InMemoryStoragePort();
+  const app = createApp({ store: control, assetStore: assets, taskStore: tasks, storage, videoProviderMode: "mock" });
+  const project = await readJson(await app.request("http://localhost/api/v1/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c09-c-fallback-project" },
+    body: JSON.stringify({ name: "Reference fallback" }),
+  }));
+  const projectId = project.data.id as string;
+  const referenceAssetIds = await Promise.all(["one", "two"].map((keySuffix) => createReadyReference({ app, assetStore: assets, storage, projectId, keySuffix })));
+  const shot = await readJson(await app.request(`http://localhost/api/v1/projects/${projectId}/shots`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c09-c-fallback-shot" },
+    body: JSON.stringify({
+      position: 0,
+      prompt: "Create a product video using the supplied reference images.",
+      reference_bindings: referenceAssetIds.map((asset_id, position) => ({ asset_id, role: "STYLE", position })),
+    }),
+  }));
+  const shotId = shot.data.id as string;
+  await app.request(`http://localhost/api/v1/shots/${shotId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c09-c-fallback-ready" },
+    body: JSON.stringify({ status: "READY" }),
+  });
+  const response = await app.request(`http://localhost/api/v1/shots/${shotId}/generations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c09-c-fallback-generation" },
+    body: JSON.stringify({}),
+  });
+  assert.equal(response.status, 400);
+  const payload = await readJson(response);
+  assert.equal(payload.error.code, "VALIDATION_FAILED");
+  assert.equal((await tasks.listProjectTaskRuns("ws_dev_default", projectId)).length, 0);
+});
+
+test("reference vision analysis is persisted at confirmation and user text remains authoritative", async () => {
+  const control = createInMemoryControlPlaneStore();
+  const assets = createInMemoryAssetWorkspaceStore(control);
+  const tasks = createInMemoryTaskRunStore(assets);
+  const storage = new InMemoryStoragePort();
+  const app = createApp({
+    store: control,
+    assetStore: assets,
+    taskStore: tasks,
+    storage,
+    referenceVisionAnalyzer: {
+      analyze: async () => ({ role: "SUBJECT" as const, confidence: 0.96, summary: "视觉识别为人物主体" }),
+    },
+  });
+  const { projectId, shotId } = await createReadyShot(app, { prompt: "第一张是场景图，第二张是人物图。", keySuffix: "vision-analysis" });
+  const referenceAssetIds = await Promise.all(["scene", "subject"].map((keySuffix) => createReadyReference({ app, assetStore: assets, storage, projectId, keySuffix })));
+  const detail = await assets.findProjectDetail("ws_dev_default", projectId);
+  assert.ok(detail?.assets.every((asset) => asset.metadata.visual_analysis_status === "READY"));
+  const binding = await app.request(`http://localhost/api/v1/shots/${shotId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c09-c-vision-binding" },
+    body: JSON.stringify({ reference_bindings: referenceAssetIds.map((asset_id, position) => ({ asset_id, role: "STYLE", position })) }),
+  });
+  assert.equal(binding.status, 200);
+  const response = await app.request(`http://localhost/api/v1/shots/${shotId}/generations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c09-c-vision-generation" },
+    body: JSON.stringify(command),
+  });
+  assert.equal(response.status, 202);
+  const created = await readJson(response);
+  const internal = await tasks.findTaskRun("ws_dev_default", created.data.id);
+  assert.deepEqual(internal?.inputSnapshot.visual_input?.references.map((reference) => reference.role), ["SCENE", "SUBJECT"]);
 });
 
 test("C09-C provider-input only streams its encrypted token's scoped image without exposing storage paths", async () => {
@@ -294,6 +460,12 @@ test("C09-C provider-input only streams its encrypted token's scoped image witho
     expiresAt: new Date(Date.now() + 60_000),
   });
   assert.doesNotMatch(token, /ast_|ws_|prj_|original\.png/);
+  const fullInspection = storage.inspectObject.bind(storage);
+  let fullInspectionCalls = 0;
+  storage.inspectObject = async (input) => {
+    fullInspectionCalls += 1;
+    return fullInspection(input);
+  };
   const response = await app.request(`http://localhost/provider-input/${encodeURIComponent(token)}`);
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-type"), "image/png");
@@ -302,7 +474,16 @@ test("C09-C provider-input only streams its encrypted token's scoped image witho
   const head = await app.request(`http://localhost/provider-input/${encodeURIComponent(token)}`, { method: "HEAD" });
   assert.equal(head.status, 200);
   assert.equal(head.headers.get("content-length"), String(asset!.byteSize));
-  assert.equal((await app.request(`http://localhost/provider-input/${encodeURIComponent(`${token}x`)}`)).status, 404);
+  assert.equal(fullInspectionCalls, 0, "provider-input HEAD must use metadata-only storage inspection");
+  // A legacy/custom storage port without the metadata-only capability must
+  // fail closed rather than fall back to a full object download and hash.
+  (storage as unknown as { inspectObjectMetadata?: unknown }).inspectObjectMetadata = undefined;
+  const unsupportedHead = await app.request(`http://localhost/provider-input/${encodeURIComponent(token)}`, { method: "HEAD" });
+  assert.equal(unsupportedHead.status, 404);
+  assert.equal(fullInspectionCalls, 0, "provider-input HEAD must not fall back to full inspection");
+  const invalidTokenResponse = await app.request(`http://localhost/provider-input/${encodeURIComponent(`${token}x`)}`);
+  assert.equal(invalidTokenResponse.status, 404);
+  assert.equal(invalidTokenResponse.headers.get("content-length"), "0");
   const wrongProjectToken = codec.issue({ ...codec.verify(token)!, projectId: "prj_01J4N8QZ8PCW2N2G6D2XJXJXY" as string, expiresAt: new Date(Date.now() + 60_000) });
   assert.equal((await app.request(`http://localhost/provider-input/${encodeURIComponent(wrongProjectToken)}`)).status, 404);
 });

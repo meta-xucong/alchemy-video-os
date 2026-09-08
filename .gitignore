@@ -62,6 +62,7 @@ playwright-report/
 # Video VPS certificate state and private deployment environment.
 infrastructure/deploy/certbot/
 infrastructure/deploy/.env.video
+infrastructure/deploy/.env.video.tmp-*
 
 # Editor / OS
 .idea/

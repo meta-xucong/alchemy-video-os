@@ -204,10 +204,35 @@ const approved = await requestJson(`/api/v1/storyboard-revisions/${storyboard.id
   body: JSON.stringify({}),
 });
 
+const deliveryPlan = await requestJson(`/api/v1/projects/${project.id}/delivery-plan-revisions`, {
+  method: "POST",
+  idempotencyKey: key("delivery-plan"),
+  body: JSON.stringify({
+    creative_brief_revision_id: brief.id,
+    storyboard_revision_id: approved.id,
+    duration_policy: "FLEXIBLE",
+    flexible_duration_percent: 20,
+    caption_policy: "OFF",
+    lip_sync_requirement: "OFF",
+    voice_mode: "PLATFORM_GENERIC",
+    budget_limit: "0",
+  }),
+});
+
+const approvedDeliveryPlan = await requestJson(`/api/v1/delivery-plan-revisions/${deliveryPlan.id}/approve`, {
+  method: "POST",
+  idempotencyKey: key("delivery-plan-approve"),
+  body: JSON.stringify({}),
+});
+
 const productionRun = await requestJson(`/api/v1/projects/${project.id}/production-runs`, {
   method: "POST",
   idempotencyKey: key("production"),
-  body: JSON.stringify({ storyboard_revision_id: approved.id }),
+  body: JSON.stringify({
+    storyboard_revision_id: approved.id,
+    delivery_plan_revision_id: approvedDeliveryPlan.id,
+    music_plan: { mode: "OFF", style_hint: "" },
+  }),
 });
 
 const finalVersion = await waitFor("production", 20 * 60_000, async () => {

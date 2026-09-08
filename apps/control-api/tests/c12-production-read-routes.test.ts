@@ -78,6 +78,9 @@ test("C12 public readers expose progress and completed video versions without st
       async retryProductionSegment() {
         return { kind: "STATE_INVALID" as const };
       },
+      async retryProductionComposition() {
+        return { kind: "STATE_INVALID" as const };
+      },
     },
   });
   const created = await readJson(await post(app, "/api/v1/projects", "c12-public-read-project", { name: "C12 public review" }));
@@ -99,6 +102,10 @@ test("C12 public readers expose progress and completed video versions without st
   const retry = await readJson(retryResponse);
   assert.equal(retryResponse.status, 400);
   assert.equal(retry.error.code, "PRODUCTION_SEGMENT_STATE_INVALID");
+  const compositionRetryResponse = await post(app, `/api/v1/production-runs/${createPrefixedId("prd")}/composition/retry`, "c12-composition-retry-invalid");
+  const compositionRetry = await readJson(compositionRetryResponse);
+  assert.equal(compositionRetryResponse.status, 400);
+  assert.equal(compositionRetry.error.code, "PRODUCTION_RUN_STATE_INVALID");
   const serialized = JSON.stringify({ progress, versions });
   for (const forbidden of ["object_key", "download_url", "provider_request_id", "task_run_id", "prompt", "Authorization"]) {
     assert.equal(serialized.includes(forbidden), false, `C12 public reader leaked ${forbidden}.`);

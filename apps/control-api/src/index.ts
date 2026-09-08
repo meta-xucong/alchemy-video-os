@@ -1,10 +1,15 @@
 import { serve } from "@hono/node-server";
-import { createDatabase, DrizzleAssetWorkspaceRepository, DrizzleControlPlaneRepository, DrizzleCreativePlanningRepository, DrizzleDocumentConversionRepository, DrizzleProductionRepository, DrizzleTaskRunRepository } from "@alchemy-video/persistence";
-import { resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
+import { createDatabase, DrizzleAssetWorkspaceRepository, DrizzleControlPlaneRepository, DrizzleCreativePlanningRepository, DrizzleDeliveryPreflightStore, DrizzleDocumentConversionRepository, DrizzleDocumentKnowledgeRepository, DrizzleNarrationQualityStore, DrizzleProductionRepository, DrizzleTaskRunRepository } from "@alchemy-video/persistence";
+import { resolveVideoPromptMaxUtf8Bytes, resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import { ReferenceDeliveryTokenCodec } from "@alchemy-video/reference-delivery";
+import { createReferenceVisionAnalyzerFromEnv } from "@alchemy-video/reference-analysis";
 import { createS3StoragePort } from "@alchemy-video/storage-client";
+import { HttpVeyraCreditTransport, VideoVeyraBridgeAdapter, VeyraSub2ApiCreditAdapter, VeyraSub2ApiIdentityAdapter } from "@alchemy-video/credit-veyra";
 
 import { createApp } from "./app.js";
+import { HttpPixabayMusicClient } from "./pixabay-music.js";
+import { VideoSessionCodec, VideoSessionIdentityAdapter } from "./veyra-session.js";
+import { createControlProductionTaskRunInputSnapshotFactory } from "./production-video-input-snapshot.js";
 
 const port = Number(process.env.CONTROL_API_PORT ?? 3032);
 const databaseUrl = process.env.DATABASE_URL;
@@ -17,8 +22,14 @@ const store = new DrizzleControlPlaneRepository(database.db);
 const assetStore = new DrizzleAssetWorkspaceRepository(database.db);
 const taskStore = new DrizzleTaskRunRepository(database.db);
 const documentStore = new DrizzleDocumentConversionRepository(database.db);
+const documentKnowledgeStore = new DrizzleDocumentKnowledgeRepository(database.db);
 const planningStore = new DrizzleCreativePlanningRepository(database.db);
-const productionStore = new DrizzleProductionRepository(database.db);
+const deliveryPreflightStore = new DrizzleDeliveryPreflightStore(database.db);
+const narrationQualityStore = new DrizzleNarrationQualityStore(database.db);
+const productionStore = new DrizzleProductionRepository(
+  database.db,
+  createControlProductionTaskRunInputSnapshotFactory(process.env.VIDEO_PROVIDER, process.env.VIDEO_PROMPT_MAX_UTF8_BYTES),
+);
 const requiredStorageConfig = ["S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "S3_ACCESS_KEY", "S3_SECRET_KEY"] as const;
 if (requiredStorageConfig.some((name) => !process.env[name])) {
   throw new Error("S3_ENDPOINT, S3_REGION, S3_BUCKET, S3_ACCESS_KEY, and S3_SECRET_KEY are required for the Control API.");
@@ -36,16 +47,49 @@ const storage = createS3StoragePort({
 });
 const videoProviderMode = resolveVideoProviderRuntimeProfile(process.env.VIDEO_PROVIDER).mode;
 const referenceDeliverySigningKey = process.env.REFERENCE_DELIVERY_SIGNING_KEY;
+const referenceVisionAnalyzer = createReferenceVisionAnalyzerFromEnv();
+const veyraAuthEnabled = process.env.VEYRA_AUTH_ENABLED === "true";
+let veyraBridge: VideoVeyraBridgeAdapter | undefined;
+let videoSessionCodec: VideoSessionCodec | undefined;
+let identity: VideoSessionIdentityAdapter | undefined;
+if (veyraAuthEnabled) {
+  const baseUrl = process.env.VIDEO_VEYRA_INTERNAL_BASE_URL;
+  const internalToken = process.env.VIDEO_VEYRA_INTERNAL_TOKEN;
+  const sessionSecret = process.env.VIDEO_SESSION_SECRET;
+  const billingChargeAmount = process.env.VIDEO_BILLING_CHARGE_AMOUNT;
+  if (!baseUrl || !internalToken || !sessionSecret || !billingChargeAmount || billingChargeAmount === "0") throw new Error("VIDEO_VEYRA_INTERNAL_BASE_URL, VIDEO_VEYRA_INTERNAL_TOKEN, VIDEO_SESSION_SECRET, and VIDEO_BILLING_CHARGE_AMOUNT are required when VEYRA_AUTH_ENABLED=true.");
+  const transport = new HttpVeyraCreditTransport({ baseUrl });
+  const identityAdapter = new VeyraSub2ApiIdentityAdapter({ transport, internalToken });
+  const creditAdapter = new VeyraSub2ApiCreditAdapter({ transport, internalToken });
+  veyraBridge = new VideoVeyraBridgeAdapter(identityAdapter, creditAdapter);
+  videoSessionCodec = new VideoSessionCodec(sessionSecret);
+  identity = new VideoSessionIdentityAdapter(videoSessionCodec);
+}
+const pixabayRuntimeUrl = process.env.MEDIA_RUNTIME_URL;
+const pixabayRuntimeToken = process.env.MEDIA_RUNTIME_TOKEN;
+const pixabayMusic = pixabayRuntimeUrl && pixabayRuntimeToken
+  ? new HttpPixabayMusicClient({ runtimeUrl: pixabayRuntimeUrl, token: pixabayRuntimeToken })
+  : null;
 const app = createApp({
   store,
   assetStore,
   taskStore,
   documentStore,
+  documentKnowledgeStore,
   planningStore,
+  deliveryPreflightStore,
+  narrationQualityStore,
   productionStore,
   storage,
+  ...(identity ? { identity } : {}),
+  ...(veyraBridge ? { videoVeyraBridge: veyraBridge } : {}),
+  ...(videoSessionCodec ? { videoSessionCodec } : {}),
   videoProviderMode,
+  videoPromptMaxUtf8Bytes: resolveVideoPromptMaxUtf8Bytes(process.env.VIDEO_PROMPT_MAX_UTF8_BYTES),
+  ...(process.env.VIDEO_BILLING_CHARGE_AMOUNT ? { videoBillingChargeAmount: process.env.VIDEO_BILLING_CHARGE_AMOUNT } : {}),
   ...(referenceDeliverySigningKey ? { referenceDeliveryTokenCodec: new ReferenceDeliveryTokenCodec(referenceDeliverySigningKey) } : {}),
+  ...(referenceVisionAnalyzer ? { referenceVisionAnalyzer } : {}),
+  pixabayMusic,
 });
 
 console.info("Control API listening on http://127.0.0.1:" + port);

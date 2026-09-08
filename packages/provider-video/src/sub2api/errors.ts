@@ -20,7 +20,18 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined =>
 const findFailureMessage = (payload: unknown) => {
   const record = asRecord(payload);
   const error = asRecord(record?.error);
-  const candidate = error?.message ?? record?.message ?? record?.detail;
+  const data = asRecord(record?.data);
+  const dataError = asRecord(data?.error);
+  const candidate = error?.message
+    ?? (typeof record?.error === "string" ? record.error : undefined)
+    ?? record?.message
+    ?? record?.msg
+    ?? record?.detail
+    ?? dataError?.message
+    ?? (typeof data?.error === "string" ? data.error : undefined)
+    ?? data?.message
+    ?? data?.msg
+    ?? data?.detail;
   return typeof candidate === "string" ? sanitizeText(candidate) : undefined;
 };
 

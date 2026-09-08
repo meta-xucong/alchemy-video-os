@@ -20,6 +20,13 @@ export type ObjectInspection = {
   sha256: string;
 };
 
+/**
+ * The metadata-only view used by the provider-input HEAD relay.  The full
+ * ObjectInspection remains the integrity boundary for upload confirmation and
+ * other callers that need a computed SHA-256.
+ */
+export type ObjectMetadataInspection = Pick<ObjectInspection, "mimeType" | "byteSize">;
+
 export type SignedUpload = {
   uploadUrl: string;
   headers: Record<string, string>;
@@ -43,7 +50,7 @@ export interface StoragePort {
     mimeType: string;
     expiresInSeconds?: number;
   }): Promise<SignedUpload>;
-  inspectObject(input: { objectKey: string }): Promise<ObjectInspection | undefined>;
+  inspectObject(input: { objectKey: string; signal?: AbortSignal }): Promise<ObjectInspection | undefined>;
   putObject(input: { objectKey: string; mimeType: string; bytes: Uint8Array; ifNoneMatch?: "*" }): Promise<void>;
   createDownloadUrl(input: { objectKey: string; expiresInSeconds?: number }): Promise<SignedDownload>;
   readObject(input: { objectKey: string }): Promise<StorageObjectStream | undefined>;
@@ -172,6 +179,19 @@ const asAsyncIterable = (body: unknown): AsyncIterable<Uint8Array> => {
   return body as AsyncIterable<Uint8Array>;
 };
 
+const closeObjectBody = async (body: unknown) => {
+  if (!body || typeof body !== "object") return;
+  const candidate = body as {
+    cancel?: () => Promise<void> | void;
+    destroy?: () => void;
+  };
+  if (typeof candidate.cancel === "function") {
+    await candidate.cancel();
+    return;
+  }
+  candidate.destroy?.();
+};
+
 const asReadableStream = (body: unknown): ReadableStream<Uint8Array> => {
   if (body && typeof (body as { transformToWebStream?: unknown }).transformToWebStream === "function") {
     return (body as { transformToWebStream(): ReadableStream<Uint8Array> }).transformToWebStream();
@@ -191,7 +211,11 @@ const asReadableStream = (body: unknown): ReadableStream<Uint8Array> => {
       }
     },
     async cancel() {
-      await iterator.return?.();
+      try {
+        await iterator.return?.();
+      } finally {
+        await closeObjectBody(body).catch(() => undefined);
+      }
     },
   });
 };
@@ -229,22 +253,45 @@ export class S3StoragePort implements StoragePort {
     }
   }
 
-  async inspectObject(input: { objectKey: string }): Promise<ObjectInspection | undefined> {
+  async inspectObject(input: { objectKey: string; signal?: AbortSignal }): Promise<ObjectInspection | undefined> {
     await this.ensureBucket();
     try {
-      const head = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: input.objectKey }));
-      const object = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: input.objectKey }));
+      const requestOptions = input.signal ? { abortSignal: input.signal } : undefined;
+      const head = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: input.objectKey }), requestOptions);
+      const object = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: input.objectKey }), requestOptions);
       const hash = createHash("sha256");
       let byteSize = 0;
-      for await (const chunk of asAsyncIterable(object.Body)) {
-        const value = Buffer.from(chunk);
-        hash.update(value);
-        byteSize += value.length;
+      try {
+        for await (const chunk of asAsyncIterable(object.Body)) {
+          const value = Buffer.from(chunk);
+          hash.update(value);
+          byteSize += value.length;
+        }
+      } finally {
+        await closeObjectBody(object.Body).catch(() => undefined);
       }
       return {
         mimeType: head.ContentType ?? object.ContentType ?? "application/octet-stream",
         byteSize: head.ContentLength ?? byteSize,
         sha256: hash.digest("hex"),
+      };
+    } catch (error: unknown) {
+      if (error instanceof Error && (error.name === "NotFound" || error.name === "NoSuchKey")) {
+        return undefined;
+      }
+      throw new StorageUnavailableError("Object storage is unavailable.", storageDiagnostic(error));
+    }
+  }
+
+  async inspectObjectMetadata(input: { objectKey: string; signal?: AbortSignal }): Promise<ObjectMetadataInspection | undefined> {
+    await this.ensureBucket();
+    try {
+      const requestOptions = input.signal ? { abortSignal: input.signal } : undefined;
+      const head = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: input.objectKey }), requestOptions);
+      if (typeof head.ContentLength !== "number" || !Number.isSafeInteger(head.ContentLength) || head.ContentLength < 1) return undefined;
+      return {
+        mimeType: head.ContentType ?? "application/octet-stream",
+        byteSize: head.ContentLength,
       };
     } catch (error: unknown) {
       if (error instanceof Error && (error.name === "NotFound" || error.name === "NoSuchKey")) {
@@ -383,13 +430,22 @@ export class InMemoryStoragePort implements StoragePort {
     };
   }
 
-  async inspectObject(input: { objectKey: string }) {
+  async inspectObject(input: { objectKey: string; signal?: AbortSignal }) {
     const object = this.objects.get(input.objectKey);
     if (!object) return undefined;
     return {
       mimeType: object.mimeType,
       byteSize: object.bytes.byteLength,
       sha256: createHash("sha256").update(object.bytes).digest("hex"),
+    };
+  }
+
+  async inspectObjectMetadata(input: { objectKey: string; signal?: AbortSignal }): Promise<ObjectMetadataInspection | undefined> {
+    const object = this.objects.get(input.objectKey);
+    if (!object || object.bytes.byteLength < 1) return undefined;
+    return {
+      mimeType: object.mimeType,
+      byteSize: object.bytes.byteLength,
     };
   }
 

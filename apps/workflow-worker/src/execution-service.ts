@@ -3,22 +3,43 @@ import {
   type PlanningModelPort,
   type StoryboardCompilerPort,
 } from "@alchemy-video/creative-planning";
+import { DeterministicFactSelector, type FactSelectionPort } from "@alchemy-video/document-intelligence";
 import { createPrefixedId } from "@alchemy-video/domain";
 import type { ControlCreativeBriefRevision, CreativePlanningEvent, CreativePlanningStore } from "@alchemy-video/persistence";
+import type { VideoAudioOwner } from "@alchemy-video/contracts";
+
+import type { BoundedDocumentContextReader } from "./document-context-reader.js";
 
 export class CreativePlanningExecutor {
   constructor(
-    private readonly store: Pick<CreativePlanningStore, "completeCreativePlan">,
+    private readonly store: Pick<CreativePlanningStore, "completeCreativePlan"> & Partial<Pick<CreativePlanningStore, "resolveVisualObjectLocks">>,
     private readonly planner: PlanningModelPort,
     private readonly compiler: StoryboardCompilerPort = new DeterministicStoryboardCompiler(),
+    private readonly documentContextReader?: Pick<BoundedDocumentContextReader, "read">,
+    private readonly factSelector: Pick<FactSelectionPort, "selectForSegment"> = new DeterministicFactSelector(),
+    private readonly audioOwner?: VideoAudioOwner,
   ) {}
 
   async execute(input: { brief: ControlCreativeBriefRevision; event: CreativePlanningEvent }) {
+    const factContexts = input.brief.factContexts ?? [];
+    const hasFrozenFacts = factContexts.length > 0;
+    if (input.brief.documentContexts.length > 0 && !hasFrozenFacts && !this.documentContextReader) {
+      throw new Error("Workflow Worker has no bounded Markdown reader for frozen document context.");
+    }
+    const documentContexts = !hasFrozenFacts && input.brief.documentContexts.length > 0
+      ? await this.documentContextReader!.read(input.brief.documentContexts)
+      : [];
+    const visualObjectLocks = this.store.resolveVisualObjectLocks
+      ? await this.store.resolveVisualObjectLocks({ workspaceId: input.brief.workspaceId, projectId: input.brief.projectId, sourceAssetIds: input.brief.sourceAssetIds, sourcePrompt: input.brief.sourceText })
+      : [];
     const planned = await this.planner.plan({
       sourceText: input.brief.sourceText,
       targetDurationSeconds: input.brief.targetDurationSeconds,
       stylePreferences: input.brief.stylePreferences,
       sourceAssetIds: input.brief.sourceAssetIds,
+      documentContexts,
+      factContexts,
+      visualObjectLocks,
     });
     const shotSpecs = planned.shotSpecs.map((shotSpec) => ({
       id: createPrefixedId("ssp"),
@@ -31,13 +52,32 @@ export class CreativePlanningExecutor {
       transitionSummary: shotSpec.transitionSummary,
       referencePolicy: shotSpec.referencePolicy,
       dependsOnSequences: shotSpec.dependsOnSequences,
-      continuityNote: shotSpec.continuityNote,
-      narrativeBeatSequences: shotSpec.narrativeBeatSequences,
-    }));
-    const promptPackages = await Promise.all(shotSpecs.map(async (shotSpec) => {
+        continuityNote: shotSpec.continuityNote,
+        narrativeBeatSequences: shotSpec.narrativeBeatSequences,
+      }));
+    const promptPackages = await Promise.all(shotSpecs.map(async (shotSpec, index) => {
+      const segmentFactPack = hasFrozenFacts
+        ? this.factSelector.selectForSegment({
+          segmentSequence: shotSpec.sequence,
+          narrativeText: shotSpec.narrativeGoal,
+          contexts: factContexts,
+        })
+        : undefined;
       const compiled = await this.compiler.compile({
         ...shotSpec,
+        generationSegmentSequence: shotSpec.sequence,
+        generationSegmentCount: planned.generationSegmentCount,
+        motionPlan: planned.shotSpecs[index]!.motionPlan,
+        motionPlanHash: planned.shotSpecs[index]!.motionPlanHash,
+        cameraShot: planned.shotSpecs[index]!.cameraShot,
+        dialogueLines: planned.shotSpecs[index]!.dialogueLines,
+        voicePerformance: planned.shotSpecs[index]!.voicePerformance,
+        referenceAnchors: planned.shotSpecs[index]!.referenceAnchors,
         stylePreferences: input.brief.stylePreferences,
+        documentContexts,
+        ...(segmentFactPack ? { segmentFactPack } : {}),
+        visualObjectLocks,
+        ...(this.audioOwner ? { audioOwner: this.audioOwner } : {}),
       });
       return {
         id: createPrefixedId("ppk"),
@@ -47,6 +87,8 @@ export class CreativePlanningExecutor {
         visualConstraints: compiled.visualConstraints,
         referenceMap: compiled.referenceMap,
         capabilitySnapshot: compiled.capabilitySnapshot,
+        motionPlan: compiled.motionPlan,
+        motionPlanHash: compiled.motionPlanHash,
       };
     }));
     return this.store.completeCreativePlan({

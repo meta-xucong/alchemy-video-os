@@ -46,8 +46,10 @@ test("C11 Studio hides planning buttons but still runs the public plan-approve-p
 });
 
 test("C11 Studio retains a long-story input, adjustable total duration, user-facing resolution, and default reference material selection", () => {
+  const api = read("app/composables/useControlApi.ts");
   const workspace = read("app/pages/projects/[project_id].vue");
   const panel = read("app/components/studio/StoryPlanningPanel.vue");
+  const styles = read("app/assets/studio.css");
   const references = read("app/components/studio/ReferenceShelf.vue");
   const events = read("app/composables/useProjectEvents.ts");
 
@@ -58,13 +60,20 @@ test("C11 Studio retains a long-story input, adjustable total duration, user-fac
   assert.match(panel, /标准清晰/);
   assert.match(panel, /高清/);
   assert.match(panel, /预计生成 \{\{ estimatedSegments\.length \}\} 段视频/);
-  assert.match(panel, /叙事点只是关键剧情内容，不会截断故事/);
+  assert.match(panel, /以实际生成为准/);
+  assert.match(panel, /segmentEstimateExplanation/);
+  assert.match(panel, /:data-tooltip="segmentEstimateExplanation"/);
+  assert.match(panel, /:title="segmentEstimateExplanation"/);
+  assert.match(styles, /\.segment-estimate-help::after/);
+  assert.match(styles, /content: attr\(data-tooltip\)/);
   assert.match(panel, /aria-label="预计生成片段"/);
   assert.match(panel, /第 \{\{ segment\.sequence \}\} 段/);
   assert.match(panel, /约 \{\{ segment\.durationSeconds \}\} 秒/);
   assert.match(panel, /function estimateGenerationSegments/);
-  assert.match(panel, /Math\.ceil\(safeDurationSeconds \/ 10\)/);
-  assert.match(references, /已自动作为参考素材/);
+  assert.match(panel, /Math\.ceil\(safeDurationSeconds \/ 15\)/);
+  assert.match(references, /将按描述匹配职责/);
+  assert.match(references, /multiple/);
+  assert.match(references, /"update:files"/);
   assert.match(workspace, /targetResolution: "720p" as "480p" \| "720p"/);
   assert.match(workspace, /target_resolution: planningDraft\.targetResolution/);
   assert.match(workspace, /function eligibleReferenceImageIds\(ids: string\[\]\)/);
@@ -72,7 +81,12 @@ test("C11 Studio retains a long-story input, adjustable total duration, user-fac
   assert.match(workspace, /\? eligibleReferenceImageIds\(brief\.source_asset_ids\)/);
   assert.match(workspace, /syncPlanningReferenceSourceIds\(selectedReferenceIds\.value\)/);
   assert.match(workspace, /planningDraft\.sourceAssetIds = uniqueReferenceIds\(\[\.\.\.readyPlanningDocumentIds\.value, \.\.\.selectedReferenceIds\.value\]\);/);
-  assert.match(workspace, /planningDraft\.sourceAssetIds = uniqueReferenceIds\(\[\.\.\.planningDraft\.sourceAssetIds, request\.data\.asset_id\]\);/);
+  assert.match(api, /document_contexts/);
+  assert.match(workspace, /conversion\.status === \"SUCCEEDED\"/);
+  assert.match(workspace, /Boolean\(conversion\.markdown_asset_id\)/);
+  assert.match(workspace, /DOCUMENT_CONTEXT_INVALID/);
+  const documentUpload = workspace.slice(workspace.indexOf("async function uploadDocument"), workspace.indexOf("async function retryDocument"));
+  assert.doesNotMatch(documentUpload, /planningDraft\.sourceAssetIds = uniqueReferenceIds\(\[\.\.\.planningDraft\.sourceAssetIds, request\.data\.asset_id\]\);/);
   assert.doesNotMatch(panel, /story-source-assets|selected-source-asset-ids|sourceAssets/);
   for (const eventType of ["creative_brief.planning_requested", "storyboard_revision.ready_for_review", "storyboard_revision.approved", "production_run.confirmed"]) {
     assert.match(events, new RegExp(eventType.replaceAll(".", "\\.")));

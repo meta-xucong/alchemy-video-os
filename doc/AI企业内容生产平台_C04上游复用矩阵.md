@@ -12,3 +12,5 @@ C04 只实现 Asset、Shot、ReferenceBinding、服务端 object key、短期预
 | 对象存储 | 无可安全迁入的上游 S3 实现；C01 的 MinIO Compose 只提供本地运行环境 | 新建可替换的 S3 兼容 StoragePort，采用 AWS SDK 的签名和 Head/Get Object 协议 | `packages/storage-client/` | 不在 Hono handler 手写 SigV4，不让浏览器读取 S3 管理凭据，不让 StoragePort 导入数据库、页面、Provider 或 Veyra。测试使用内存端口，真实 MinIO 验证只使用本地假值。 |
 
 每个迁入模块通过 `UPSTREAM.md` 记录来源、保留变量、差异和回归命令。C04 不迁入 Huobao 的短剧 API、MySQL、媒体本地目录或进程内任务状态；不迁入 OpenMontage 的文件系统 Artifact 真相。
+
+> **2026-09-01 当前音频口径**：C04 的 StoragePort 不接收用户旁白/样音作为自动视频前置；音频由 Provider 原生或后续显式 Doubao 服务器资产路径处理。本文旧的“真实 Provider/TTS 关闭”仅是本章默认/CI 约束，当前本机对照仍须遵守最新自动音频文档与密钥隔离规则。

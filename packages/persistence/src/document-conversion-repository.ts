@@ -5,10 +5,11 @@ import {
   InternalEventEnvelopeSchema,
   type InternalDocumentConversionQueueMessage,
 } from "@alchemy-video/contracts";
+import { createPrefixedId } from "@alchemy-video/domain";
 
 import type { PlatformDatabase } from "./db.js";
 import type { ControlAsset } from "./asset-workspace-repository.js";
-import { assets, commandDeduplications, documentConversions, documents, eventConsumptions, outboxEvents, projects } from "./schema.js";
+import { assets, commandDeduplications, documentConversions, documentKnowledgeRevisions, documents, eventConsumptions, outboxEvents, projects } from "./schema.js";
 
 export type DocumentConversionStatus = "CREATED" | "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED";
 
@@ -45,6 +46,24 @@ export type DocumentConversionCommandInput = {
 };
 
 export type DocumentConversionTransitionEvent = DocumentConversionCommandInput["event"];
+
+/**
+ * Optional bridge used by the in-memory local composition to mirror the
+ * Drizzle conversion-success transaction.  Production uses the database
+ * transaction below, while the bridge keeps the no-database Control API from
+ * reporting a conversion as complete without creating its knowledge queue
+ * fact.
+ */
+export type DocumentConversionKnowledgeBridgeInput = {
+  workspaceId: string;
+  projectId: string;
+  documentId: string;
+  conversionId: string;
+  markdownAssetId: string;
+  markdownSha256: string;
+  event: DocumentConversionTransitionEvent;
+};
+export type DocumentConversionKnowledgeBridge = (input: DocumentConversionKnowledgeBridgeInput) => Promise<void> | void;
 
 type CommandOutcome<T> = { kind: "NEW" | "REPLAY"; value: T; status: 202 } | { kind: "CONFLICT" | "NOT_FOUND" | "INVALID_SOURCE" | "ACTIVE_CONFLICT" | "STATE_INVALID" };
 export type DocumentConversionSource = Pick<ControlDocumentConversion, "id" | "workspaceId" | "projectId" | "sourceAssetId" | "sourceObjectKey" | "sourceMimeType" | "sourceFilename" | "sourceSha256" | "sourceByteSize" | "status" | "attemptCount">;
@@ -113,7 +132,10 @@ export class InMemoryDocumentConversionStore implements DocumentConversionStore 
   private readonly commands = new Map<string, StoredCommand>();
   private readonly consumedEvents = new Set<string>();
 
-  constructor(private readonly sourceResolver?: Pick<{ findAsset(workspaceId: string, assetId: string): Promise<ControlAsset | undefined> }, "findAsset">) {}
+  constructor(
+    private readonly sourceResolver?: Pick<{ findAsset(workspaceId: string, assetId: string): Promise<ControlAsset | undefined> }, "findAsset">,
+    private readonly knowledgeBridge?: DocumentConversionKnowledgeBridge,
+  ) {}
 
   async listProjectDocumentConversions(workspaceId: string, projectId: string) {
     return [...this.conversions.values()].filter((value) => value.workspaceId === workspaceId && value.projectId === projectId).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
@@ -185,6 +207,15 @@ export class InMemoryDocumentConversionStore implements DocumentConversionStore 
     if (!current || current.status === "SUCCEEDED") return current;
     if (current.status !== "RUNNING" || current.attemptCount !== input.attemptNo) return undefined;
     const updated = { ...current, status: "SUCCEEDED" as const, retryable: false, markdownAssetId: input.markdownAssetId, warnings: input.warnings, updatedAt: now() };
+    await this.knowledgeBridge?.({
+      workspaceId: updated.workspaceId,
+      projectId: updated.projectId,
+      documentId: updated.documentId,
+      conversionId: updated.id,
+      markdownAssetId: input.markdownAssetId,
+      markdownSha256: input.markdownSha256,
+      event: input.event,
+    });
     this.conversions.set(updated.id, updated);
     return updated;
   }
@@ -328,6 +359,37 @@ export class DrizzleDocumentConversionRepository implements DocumentConversionSt
       const [conversion] = await transaction.update(documentConversions).set({ status: "SUCCEEDED", markdownAssetId: asset.id, converter: input.converter, converterVersion: input.converterVersion, warnings: input.warnings, error: null, updatedAt: now() }).where(and(eq(documentConversions.workspaceId, current.conversion.workspaceId), eq(documentConversions.id, current.conversion.id), eq(documentConversions.status, "RUNNING"), eq(documentConversions.attemptCount, input.attemptNo))).returning();
       if (!conversion) throw new Error("Document conversion completion lost its locked state transition.");
       await transaction.insert(outboxEvents).values(eventRow({ ...input.event, workspaceId: conversion.workspaceId, projectId: conversion.projectId, aggregateId: conversion.id, eventType: "document_conversion.succeeded", data: { conversion_id: conversion.id, source_asset_id: conversion.sourceAssetId, markdown_asset_id: asset.id } }));
+      const knowledgeRevisionId = `dkr_${conversion.id.slice("dcv_".length)}`;
+      const [knowledge] = await transaction.insert(documentKnowledgeRevisions).values({
+        id: knowledgeRevisionId,
+        workspaceId: conversion.workspaceId,
+        projectId: conversion.projectId,
+        documentId: conversion.documentId,
+        conversionId: conversion.id,
+        markdownAssetId: asset.id,
+        markdownSha256: input.markdownSha256,
+        analyzerVersion: "deterministic-document-understanding-v1",
+        status: "QUEUED",
+        retryable: false,
+        sectionCount: 0,
+        factCount: 0,
+      }).onConflictDoNothing().returning();
+      if (knowledge) {
+        const occurredAt = now();
+        const knowledgeEventId = createPrefixedId("evt");
+        await transaction.insert(outboxEvents).values({
+          id: knowledgeEventId, workspaceId: conversion.workspaceId, projectId: conversion.projectId,
+          aggregateType: "document_knowledge_revision", aggregateId: knowledge.id,
+          eventType: "document_knowledge.queued", occurredAt,
+          payload: {
+            contract_version: "1.0", message_id: createPrefixedId("msg"), event_id: knowledgeEventId, event_type: "document_knowledge.queued",
+            occurred_at: occurredAt, trace_id: createPrefixedId("trc"), correlation_id: input.event.correlationId,
+            idempotency_key: `internal:${knowledge.id}`, producer: "document-worker", workspace_id: conversion.workspaceId,
+            project_id: conversion.projectId, aggregate: { type: "document_knowledge_revision", id: knowledge.id },
+            data: { document_id: conversion.documentId, conversion_id: conversion.id, knowledge_revision_id: knowledge.id }, version: 1,
+          },
+        });
+      }
       return serialize(conversion, current.sourceObjectKey);
     });
   }

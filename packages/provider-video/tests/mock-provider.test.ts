@@ -18,13 +18,13 @@ const snapshot = {
   reference_asset_ids: [],
 } as const;
 
-test("the local Mock provider has deterministic submit, poll, and download behavior", async () => {
+test("the local Mock provider has deterministic poll/download behavior and unique submit IDs", async () => {
   await verifyBundledMediaTools();
   const fixture = await createMockMp4Fixture();
   const provider = new MockVideoProvider({ fixtureBytes: fixture });
   const submission = await provider.submit({ taskRunId: "tsk_01J00000000000000000000000", inputSnapshot: snapshot });
 
-  assert.equal(submission.providerRequestId, "mock_tsk_01J00000000000000000000000");
+  assert.match(submission.providerRequestId, /^mock_tsk_01J00000000000000000000000_[0-9a-f-]{36}$/);
   assert.deepEqual(await provider.getStatus(submission), { state: "PROCESSING" });
   assert.deepEqual(await provider.getStatus(submission), { state: "SUCCEEDED" });
 
