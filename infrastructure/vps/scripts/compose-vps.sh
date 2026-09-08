@@ -19,6 +19,15 @@ LOG_TAIL=${LOG_TAIL:-100}
 
 COMPOSE_PATH=$REPO_ROOT/infrastructure/deploy/docker-compose.video.yml
 
+if command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE_FLAVOR=legacy
+elif docker compose version >/dev/null 2>&1; then
+  COMPOSE_FLAVOR=plugin
+else
+  printf '%s\n' 'Neither docker-compose nor the Docker Compose plugin is available.' >&2
+  exit 2
+fi
+
 if [ ! -f "$COMPOSE_PATH" ]; then
   printf 'Canonical Compose file not found: %s\n' "$COMPOSE_PATH" >&2
   exit 2
@@ -30,7 +39,11 @@ if [ ! -f "$VIDEO_ENV_FILE" ]; then
 fi
 
 compose() {
-  docker compose --env-file "$VIDEO_ENV_FILE" -f "$COMPOSE_PATH" --profile edge "$@"
+  if [ "$COMPOSE_FLAVOR" = legacy ]; then
+    docker-compose --env-file "$VIDEO_ENV_FILE" -f "$COMPOSE_PATH" --profile edge "$@"
+  else
+    docker compose --env-file "$VIDEO_ENV_FILE" -f "$COMPOSE_PATH" --profile edge "$@"
+  fi
 }
 
 is_service() {
@@ -103,7 +116,7 @@ case "$action" in
     ;;
   restart-app)
     [ "$#" -eq 0 ] || { printf '%s\n' 'restart-app does not accept extra arguments.' >&2; exit 2; }
-    compose up -d --force-recreate control-api task-worker workflow-worker production-worker document-worker document-runtime media-runtime studio-web edge
+    compose up -d --no-deps --force-recreate control-api task-worker workflow-worker production-worker document-worker document-runtime media-runtime studio-web edge
     ;;
   smoke)
     [ "$#" -eq 0 ] || { printf '%s\n' 'smoke does not accept extra arguments.' >&2; exit 2; }

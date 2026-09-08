@@ -8,7 +8,8 @@ infrastructure/deploy/docker-compose.video.yml
 ```
 
 The adapter script always resolves that fixed path from the repository root and
-passes it to Docker Compose with the private env file
+passes it to the available `docker-compose` binary or Docker Compose plugin
+with the private env file
 `/opt/alchemy-video/secrets/video.env`. The edge profile, service names,
 healthchecks, restart policy, internal-only ports, and persistent volumes are
 therefore defined in one place.

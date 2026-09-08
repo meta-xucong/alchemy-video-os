@@ -32,8 +32,10 @@ VIDEO_ENV_FILE=/opt/alchemy-video/secrets/video.env \
   sh infrastructure/vps/scripts/compose-vps.sh config
 ```
 
-The wrapper must be run from the repository root. It does not change the
-canonical env defaults and does not print environment contents.
+The wrapper must be run from the repository root. It accepts the legacy
+`docker-compose` binary used by the current Video VPS and the Docker Compose
+plugin used by newer hosts; it does not change the canonical env defaults and
+does not print environment contents.
 
 ## Safe commands
 
