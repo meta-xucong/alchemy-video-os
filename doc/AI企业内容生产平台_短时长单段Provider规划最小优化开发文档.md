@@ -32,6 +32,7 @@
 - `packages/contracts/src/creative-planning.ts`：Creative Brief/command 的 `target_duration_seconds` 下限 `15 -> 1`；`StoryboardShotSpec.duration_seconds` 下限 `8 -> 1`，上限仍 `15`。
 - `packages/contracts/src/delivery-preflight.ts`：Delivery Plan 的 `target_duration_seconds` 下限 `15 -> 1`，上限仍 `600`。
 - `packages/persistence/src/schema.ts`：只把 Creative Brief 和 Delivery Plan 的数据库 check `between 15 and 600` 降为 `between 1 and 600`；StoryboardShotSpec 数据列已无错误的 8 秒 check，不新增字段。
+- `packages/persistence` 的最终 storyboard 校验必须接收 Workflow 已解析的内部 `durationPolicy`；未携带该内部值时继续使用默认 Huobao `8..15`，不新增公开 API 或数据库字段。
 - 下一条 Drizzle migration 只执行上述两个 check 的替换；历史 migration/meta 不回写。
 - `StoryPlanningPanel.vue` 与项目页输入、估算和提交前校验统一使用 `1..600`。现有估算仍只依据 15 秒 max；短目标显示一个精确时长的 segment，不增加新的 UI 语义或 Provider 信息。
 
@@ -44,6 +45,7 @@
 - `packages/domain/src/creative-planning.ts`、domain 定向测试。
 - `packages/contracts/src/creative-planning.ts`、`packages/contracts/src/delivery-preflight.ts` 及既有 contracts 定向测试。
 - `packages/persistence/src/schema.ts`、下一条 Drizzle migration、schema 定向测试。
+- `packages/persistence/src/creative-planning-repository.ts`、`packages/persistence/tests/creative-planning-repository.test.ts`：仅传递并验证内部 policy，不改变公开持久化契约。
 - `apps/workflow-worker/src/index.ts`、`apps/workflow-worker/src/execution-service.ts` 及定向测试。
 - `apps/studio-web/app/components/studio/StoryPlanningPanel.vue`、`apps/studio-web/app/pages/projects/[project_id].vue` 及必要的 focused UI 证据。
 
@@ -60,8 +62,9 @@
 1. 先保留工作区用户改动，新增本文档。
 2. 在 domain 增加默认 Huobao policy 和可选 profile policy；在 planner 的内部 `PlanningInput` 传递并用于 segment count、duration/capacity 和最终 assertion。
 3. Worker 从 `resolveVideoProviderRuntimeProfile` 解析结果传递 policy；Mock/未知保持默认 policy。
-4. 对齐 contracts、persistence migration 和 Studio 输入/估算边界。
-5. 定向验证至少覆盖：
+4. Workflow draft 在完成规划时把同一 policy 传入 persistence 最终校验；缺省仍 fail-closed 于 Huobao 默认边界。
+5. 对齐 contracts、persistence migration 和 Studio 输入/估算边界。
+6. 定向验证至少覆盖：
    - 显式允许 `1..15` policy 时，目标 `1/6/7/8/15` 各生成一个且精确时长相同；普通多动作不增加段数。
    - 默认 Huobao policy 下 `8/15` 单段，`16 -> 8+8`，`17 -> 9+8`（或同样合法分配），`30 -> 15+15`。
    - 默认 policy 下短显式场景边界若不能满足最小段长则 `STORYBOARD_SPEC_INVALID`；不改目标时长。
@@ -103,6 +106,8 @@
 - `apps/workflow-worker/src/index.ts`
 - `apps/workflow-worker/src/execution-service.ts`
 - `apps/workflow-worker/tests/execution-service.test.ts`
+- `packages/persistence/src/creative-planning-repository.ts`
+- `packages/persistence/tests/creative-planning-repository.test.ts`
 - `apps/studio-web/app/components/studio/StoryPlanningPanel.vue`
 - `apps/studio-web/app/pages/projects/[project_id].vue`
 - 本文档和本章审计记录条目
@@ -125,6 +130,8 @@
 - `pnpm --filter @alchemy-video/contracts test`：`40 pass / 0 fail`；并已运行 `pnpm contracts:generate` 对齐 JSON/YAML/schema 导出。
 - `pnpm --filter @alchemy-video/persistence typecheck`：通过；`pnpm --filter @alchemy-video/persistence exec tsx --test tests/schema-contract.test.ts`：`21 pass / 1 existing skip / 0 fail`。
 - `pnpm --filter @alchemy-video/workflow-worker test`：`19 pass / 0 fail / 0 skip`；包含 `resolveVideoProviderRuntimeProfile("sub2api") -> 1..15`、`"mock"`/缺省保持默认以及未知值由既有 resolver 拒绝。
+- `pnpm --filter @alchemy-video/persistence exec tsx --test tests/creative-planning-repository.test.ts`：`7 pass / 0 fail / 0 skip`；包含 Workflow policy 到最终 storyboard 校验的 6 秒单段回归。
+- `pnpm --filter @alchemy-video/persistence typecheck`：通过；`workflow-worker` 的 pretest build 验证了更新后的 persistence 类型。
 - `pnpm --filter @alchemy-video/studio-web test`：`41 pass / 0 fail / 0 skip`。
 - `git diff --check`：无新增 whitespace error（仅保留工作区既有换行提示）。
 

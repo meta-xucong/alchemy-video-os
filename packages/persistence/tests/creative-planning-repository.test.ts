@@ -69,6 +69,58 @@ test("reference-only UI analysis is not promoted to object locks", async () => {
   assert.deepEqual(locks, []);
 });
 
+test("provider duration policy reaches final storyboard validation", async () => {
+  const planningStore = store();
+  const brief = await planningStore.createCreativeBriefRevision({
+    ...createBrief("idem_short_policy"),
+    creativeBriefRevisionId: "cbr_short_policy",
+    targetDurationSeconds: 6,
+  });
+  assert.equal(brief.kind, "NEW");
+  const requested = await planningStore.requestCreativePlan({
+    scope: "usr_dev_owner:/api/v1/creative-brief-revisions/cbr_short_policy/plan",
+    idempotencyKey: "idem_short_policy_plan",
+    requestHash: hash("idem_short_policy_plan"),
+    workspaceId: "ws_story",
+    creativeBriefRevisionId: "cbr_short_policy",
+    event: event("short_policy_plan"),
+  });
+  assert.equal(requested.kind, "NEW");
+  const storyboard = await planningStore.completeCreativePlan({
+    workspaceId: "ws_story",
+    creativeBriefRevisionId: "cbr_short_policy",
+    event: event("short_policy_complete"),
+    draft: {
+      scriptRevisionId: "scr_short_policy",
+      storyboardRevisionId: "sbr_short_policy",
+      beats: [{ sequence: 1, title: "Short", summary: "One short shot.", narrative_goal: "One short shot.", visible_facts: ["shot"], generation_segment_sequence: 1 }],
+      title: "Short policy",
+      summary: "One exact short shot.",
+      totalDurationSeconds: 6,
+      durationPolicy: { minDurationSeconds: 1, maxDurationSeconds: 15 },
+      continuityLevel: "STANDARD",
+      continuityNote: "One shot.",
+      shotSpecs: [{
+        id: "ssp_short_policy",
+        sequence: 1,
+        title: "Short",
+        durationSeconds: 6,
+        narrativeGoal: "One short shot.",
+        startState: "Start",
+        endState: "End",
+        transitionSummary: "None",
+        referencePolicy: "TEXT_TRANSITION",
+        dependsOnSequences: [],
+        continuityNote: "One shot.",
+        narrativeBeatSequences: [1],
+      }],
+      generationSegmentCount: 1,
+    },
+  });
+  assert.ok(storyboard);
+  assert.equal(storyboard.totalDurationSeconds, 6);
+});
+
 test("mixed references keep explicit foreground analysis locks and filter UI analysis", async () => {
   const sourceAssetIds = ["ast_ui_screen", "ast_person"];
   const assets = new Map(sourceAssetIds.map((assetId, index) => [assetId, {

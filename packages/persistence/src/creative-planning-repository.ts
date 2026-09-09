@@ -27,6 +27,7 @@ import {
   inferVisualReferenceLockPolicies,
   inferVisualReferenceRoles,
   parseVisualReferenceAnalysis,
+  type StoryboardDurationPolicy,
 } from "@alchemy-video/domain";
 
 import type { PlatformDatabase } from "./db.js";
@@ -180,6 +181,8 @@ export type CreativePlanningDraft = {
   narrativeBeatCount?: number;
   generationSegmentCount?: number;
   promptPackages?: PromptPackageDraft[];
+  /** Internal provider-derived policy used when validating the final draft. */
+  durationPolicy?: StoryboardDurationPolicy;
 };
 
 export type CreativeBriefCommandInput = {
@@ -345,9 +348,10 @@ const commandKey = (scope: string, idempotencyKey: string) => `${scope}:${idempo
 // It must not prevent a revised storyboard from starting a separate production run.
 const activeProductionStatuses: ProductionRunStatus[] = ["DRAFT", "PLAN_READY", "CONFIRMED", "GENERATING", "REVIEWING", "RENDERING"];
 
-const planIsValid = (input: Pick<CreativePlanningDraft, "totalDurationSeconds" | "shotSpecs">) => {
+const planIsValid = (input: Pick<CreativePlanningDraft, "totalDurationSeconds" | "shotSpecs" | "durationPolicy">) => {
   assertStoryboardPlan({
     totalDurationSeconds: input.totalDurationSeconds,
+    ...(input.durationPolicy ? { durationPolicy: input.durationPolicy } : {}),
     specs: input.shotSpecs.map((shotSpec) => ({
       sequence: shotSpec.sequence,
       durationSeconds: shotSpec.durationSeconds,

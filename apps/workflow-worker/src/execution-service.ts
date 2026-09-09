@@ -125,6 +125,7 @@ export class CreativePlanningExecutor {
         continuityLevel: planned.continuityLevel,
         continuityNote: planned.continuityNote,
         shotSpecs,
+        ...(this.durationPolicy ? { durationPolicy: this.durationPolicy } : {}),
         narrativeBeatCount: planned.narrativeBeatCount,
         generationSegmentCount: planned.generationSegmentCount,
         promptPackages,

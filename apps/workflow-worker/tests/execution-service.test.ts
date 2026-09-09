@@ -302,6 +302,7 @@ test("CreativePlanningExecutor passes an explicitly resolved Grok duration polic
 
   assert.deepEqual(captured?.shotSpecs.map((shot) => shot.durationSeconds), [1]);
   assert.equal(captured?.promptPackages?.[0]?.motionPlan?.duration_seconds, 1);
+  assert.deepEqual(captured?.durationPolicy, { minDurationSeconds: 1, maxDurationSeconds: 15 });
 });
 
 test("CreativePlanningExecutor carries reference-analysis objects into every private prompt package", async () => {
