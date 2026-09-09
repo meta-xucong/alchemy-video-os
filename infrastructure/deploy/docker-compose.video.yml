@@ -187,6 +187,7 @@ services:
       S3_BUCKET: ${S3_BUCKET:-video-assets}
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-video}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in the private deployment environment file}
+      VIDEO_PROVIDER: ${VIDEO_PROVIDER:-mock}
       CREATIVE_PLANNING_QUEUE_NAME: ${CREATIVE_PLANNING_QUEUE_NAME:-alchemy-video-creative-planning}
       CREATIVE_PLANNING_DEAD_LETTER_QUEUE_NAME: ${CREATIVE_PLANNING_DEAD_LETTER_QUEUE_NAME:-alchemy-video-creative-planning-dead-letter}
     depends_on:
