@@ -11,7 +11,14 @@ import {
   type SegmentFactPack,
   type VideoAudioOwner,
 } from "@alchemy-video/contracts";
-import { assertStoryboardPlan, extractKeyVisualObjectLocks, extractNarrativeSentences, extractVisualConstraints } from "@alchemy-video/domain";
+import {
+  assertStoryboardPlan,
+  DEFAULT_STORYBOARD_DURATION_POLICY,
+  extractKeyVisualObjectLocks,
+  extractNarrativeSentences,
+  extractVisualConstraints,
+  type StoryboardDurationPolicy,
+} from "@alchemy-video/domain";
 import { checkOpenMontageSceneVariation, scoreOpenMontageSlideshowRisk } from "./openmontage-variation-audit.js";
 export { buildNarrationTimeline, normalizeNarrationSections } from "./narration-quality.js";
 
@@ -46,6 +53,8 @@ export type PlanningDocumentContext = {
 export type PlanningInput = {
   sourceText: string;
   targetDurationSeconds: number;
+  /** Internal source-backed provider duration policy; omitted means Huobao 8..15s. */
+  durationPolicy?: StoryboardDurationPolicy;
   stylePreferences: string;
   sourceAssetIds: string[];
   documentContexts?: PlanningDocumentContext[];
@@ -670,11 +679,12 @@ const formatMotionTimeline = (motionPlan: GenerationSegmentMotionPlan, audioOwne
 };
 
 // Keep authored multiline sections intact while determining the minimum
-// number of 8-15s provider segments. This is the same Huobao capacity rule,
-// applied at the source paragraph boundary before any visual plan is built.
-const minimumDialogueSegmentCount = (lines: readonly string[]) => {
+// number of provider segments in the active duration range. This is the same
+// source capacity rule, applied at the source paragraph boundary before any
+// visual plan is built.
+const minimumDialogueSegmentCount = (lines: readonly string[], maxDurationSeconds: number) => {
   if (lines.length === 0) return 0;
-  const capacity = Math.max(1, Math.floor((15 - 2) * 4.5));
+  const capacity = Math.max(1, Math.floor((maxDurationSeconds - 2) * 4.5));
   const units = dialogueUnitsForCapacity(lines, capacity);
   if (units.length === 0) return 0;
   let segments = 1;
@@ -697,27 +707,31 @@ const chooseGenerationSegmentCount = (
   eventCount: number,
   shouldSplitShortNarrative: boolean,
   dialogueLines: readonly string[] = [],
+  durationPolicy: StoryboardDurationPolicy = DEFAULT_STORYBOARD_DURATION_POLICY,
+  hasExplicitSceneChange = false,
 ) => {
-  // Reuse the upstream storyboard-breaker rule: a generation segment is an
-  // 8-15s editorial paragraph. The provider's 15s ceiling is the hard lower
-  // bound on segment count; do not turn a 30s brief into three mechanical
-  // 10s calls merely because an approximate 12s editorial target was used in
-  // an earlier implementation. MotionBeat carries dense actions inside each
-  // segment, and C11.6 explicitly requires the fewest provider calls.
-  if (targetDurationSeconds <= 15) {
-    // Keep a short narrated source in one provider paragraph. Splitting a
-    // 15s target would apply the 8s storyboard floor twice (16s total) before
-    // the authored speech can be assigned, so a valid multi-action source
-    // would fail the storyboard duration invariant. Motion beats still carry
-    // the individual actions inside this one provider request.
-    if (dialogueLines.length > 1) return 1;
-    if (!shouldSplitShortNarrative) return 1;
-    return Math.min(2, Math.max(1, eventCount));
+  // Huobao scene boundaries cannot be merged into one provider segment. If a
+  // short target cannot provide the active minimum to both scenes, preserve
+  // the source boundary and let the existing storyboard invariant reject the
+  // unsatisfiable duration instead of silently crossing the scene cut.
+  if (hasExplicitSceneChange
+    && targetDurationSeconds <= durationPolicy.maxDurationSeconds
+    && targetDurationSeconds < durationPolicy.minDurationSeconds * 2) {
+    return 2;
   }
-  const providerMinimum = Math.ceil(targetDurationSeconds / 15);
+  // A target that fits in the active provider's maximum is one provider
+  // segment when no unsatisfiable scene boundary requires fail-closed
+  // handling above. Ordinary editorial beats remain in that segment's motion
+  // plan; they cannot create a short 8+7 request pair.
+  if (targetDurationSeconds <= durationPolicy.maxDurationSeconds) return 1;
+
+  // Reuse the upstream storyboard-breaker rule after the provider ceiling is
+  // exceeded. MotionBeat carries dense actions inside each segment, and the
+  // planner still chooses the fewest provider calls that can carry the source.
+  const providerMinimum = Math.ceil(targetDurationSeconds / durationPolicy.maxDurationSeconds);
   const editorialCount = shouldSplitShortNarrative ? Math.ceil(Math.max(1, eventCount) / 4) : 0;
   const dialogueSegmentMinimum = dialogueLines.length > 0
-    ? minimumDialogueSegmentCount(dialogueLines)
+    ? minimumDialogueSegmentCount(dialogueLines, durationPolicy.maxDurationSeconds)
     : 0;
   const preferredMaximum = Math.min(60, dialogueLines.length > 0
     // Dialogue is planned from its natural speech budget first. The target
@@ -737,6 +751,7 @@ const planSegmentDurations = (input: {
   targetDurationSeconds: number;
   dialogueLines: readonly string[];
   segmentCount: number;
+  durationPolicy: StoryboardDurationPolicy;
 }) => {
   const durations = distributeDuration(input.targetDurationSeconds, input.segmentCount);
   if (input.dialogueLines.length === 0) {
@@ -750,15 +765,14 @@ const planSegmentDurations = (input: {
   // packed without the old target/equalisation seed. Section budgets here are
   // estimates; the downstream NarrationAsset/TimelinePlan remains the measured
   // source of truth.
-  const capacityWindows = Array.from({ length: input.segmentCount }, () => 15);
+  const capacityWindows = Array.from({ length: input.segmentCount }, () => input.durationPolicy.maxDurationSeconds);
   const dialogueGroups = distributeDialogueLines(input.dialogueLines, input.segmentCount, capacityWindows);
   const speechDurations = dialogueGroups.map((group) => group.length > 0
-    ? Math.max(8, Math.min(15, Math.ceil(dialogueDurationSeconds(group))))
-    // Huobao's transition/visual paragraph floor is eight seconds. Keep an
-    // empty visual segment at that source floor so a short narration does not
-    // make an otherwise expressible plan fail merely because equal target
-    // distribution reserved too much time for the silent segment.
-    : 8);
+    ? Math.max(input.durationPolicy.minDurationSeconds, Math.min(input.durationPolicy.maxDurationSeconds, Math.ceil(dialogueDurationSeconds(group))))
+    // Keep an empty visual segment at the active source minimum so a short
+    // narration does not make an otherwise expressible plan fail merely
+    // because equal target distribution reserved too much time for silence.
+    : input.durationPolicy.minDurationSeconds);
   const speechTotal = speechDurations.reduce((sum, value, index) =>
     dialogueGroups[index]?.length ? sum + value : sum, 0);
   const requiredTotal = speechDurations.reduce((sum, value) => sum + value, 0);
@@ -772,14 +786,14 @@ const planSegmentDurations = (input: {
   let remainder = input.targetDurationSeconds - requiredTotal;
   while (remainder > 0) {
     const availableIndexes = plannedDurations
-      .map((duration, index) => (duration < 15 ? index : -1))
+      .map((duration, index) => (duration < input.durationPolicy.maxDurationSeconds ? index : -1))
       .filter((index) => index >= 0);
     if (availableIndexes.length === 0) break;
     const additions = distributeDuration(remainder, availableIndexes.length);
     let consumed = 0;
     for (let slot = 0; slot < availableIndexes.length; slot += 1) {
       const index = availableIndexes[slot]!;
-      const available = Math.max(0, 15 - plannedDurations[index]!);
+      const available = Math.max(0, input.durationPolicy.maxDurationSeconds - plannedDurations[index]!);
       const addition = Math.min(available, additions[slot] ?? 0);
       plannedDurations[index] = plannedDurations[index]! + addition;
       consumed += addition;
@@ -884,8 +898,11 @@ export class DeterministicPlanningModel implements PlanningModelPort {
     if (!sourceText) throw new Error("Planning requires a non-empty source story.");
     const documentContextCount = (input.documentContexts ?? []).filter((context) => Boolean(normalize(context.content))).length;
     const factContextCount = (input.factContexts ?? []).length;
-    if (!Number.isInteger(input.targetDurationSeconds) || input.targetDurationSeconds < 15 || input.targetDurationSeconds > 600) {
-      throw new Error("Planning duration must be an integer between 15 and 600 seconds.");
+    const durationPolicy = input.durationPolicy ?? DEFAULT_STORYBOARD_DURATION_POLICY;
+    if (!Number.isInteger(input.targetDurationSeconds)
+      || input.targetDurationSeconds < 1
+      || input.targetDurationSeconds > 600) {
+      throw new Error("Planning duration must be an integer between 1 and 600 seconds.");
     }
 
     // Build executable visual events from dialogue-free text. The original
@@ -905,18 +922,28 @@ export class DeterministicPlanningModel implements PlanningModelPort {
     const keyVisualObjects = [...mergedObjects.values()];
     const events = narrative.events;
     const hasExplicitSceneChange = hasExplicitSceneChangeSignal(sourceText);
-    const shouldSplitShortNarrative = hasExplicitSceneChange || hasCinematicEditorialBoundary(sourceText, events.length);
     const dialogueLines = extractDialogueLines(rawSourceText);
+    // A Huobao paragraph is one 8-15s provider request and can carry several
+    // visual sub-shots. Keep visual-only editorial beats inside that request;
+    // only an authored scene-change signal (or a spoken boundary that the
+    // existing planner already treats as a segment boundary) may request a
+    // second short segment. This prevents a visual-only 15s brief from being
+    // distributed as the invalid 8s + 7s pair.
+    const shouldSplitShortNarrative = hasExplicitSceneChange
+      || (dialogueLines.length > 0 && hasCinematicEditorialBoundary(sourceText, events.length));
     const generationSegmentCount = chooseGenerationSegmentCount(
       input.targetDurationSeconds,
       events.length,
       shouldSplitShortNarrative,
       dialogueLines,
+      durationPolicy,
+      hasExplicitSceneChange,
     );
     const plannedTiming = planSegmentDurations({
       targetDurationSeconds: input.targetDurationSeconds,
       dialogueLines,
       segmentCount: generationSegmentCount,
+      durationPolicy,
     });
     const durations = plannedTiming.durations;
     const groups = distributeEvents(events, generationSegmentCount);
@@ -1023,6 +1050,7 @@ export class DeterministicPlanningModel implements PlanningModelPort {
     // path. Do not repair an invalid remainder or invent a filler segment.
     assertStoryboardPlan({
       totalDurationSeconds: input.targetDurationSeconds,
+      durationPolicy,
       specs: shotSpecs.map((shot) => ({
         sequence: shot.sequence,
         durationSeconds: shot.durationSeconds,

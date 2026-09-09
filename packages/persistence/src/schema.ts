@@ -173,7 +173,7 @@ export const creativeBriefRevisions = pgTable(
     }).onDelete("cascade"),
     check("creative_brief_revisions_revision_positive_check", sql`${table.revision} > 0`),
     check("creative_brief_revisions_source_text_nonempty_check", sql`length(trim(${table.sourceText})) > 0`),
-    check("creative_brief_revisions_target_duration_check", sql`${table.targetDurationSeconds} between 15 and 600`),
+    check("creative_brief_revisions_target_duration_check", sql`${table.targetDurationSeconds} between 1 and 600`),
     check("creative_brief_revisions_target_resolution_check", sql`${table.targetResolution} in ('480p', '720p')`),
   ],
 );
@@ -744,7 +744,7 @@ export const deliveryPlanRevisions = pgTable(
       name: "delivery_plan_revisions_workspace_project_consumed_run_fk",
     }).onDelete("restrict"),
     check("delivery_plan_revisions_revision_positive_check", sql`${table.revision} > 0`),
-    check("delivery_plan_revisions_target_duration_check", sql`${table.targetDurationSeconds} between 15 and 600`),
+    check("delivery_plan_revisions_target_duration_check", sql`${table.targetDurationSeconds} between 1 and 600`),
     check("delivery_plan_revisions_flexible_duration_check", sql`${table.flexibleDurationPercent} between 0 and 50`),
     check("delivery_plan_revisions_exact_duration_check", sql`${table.durationPolicy} <> 'EXACT' or ${table.flexibleDurationPercent} = 0`),
     check("delivery_plan_revisions_block_reason_check", sql`${table.status} <> 'PREFLIGHT_BLOCKED' or jsonb_array_length(${table.blockReasons}) > 0`),

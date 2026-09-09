@@ -1,5 +1,7 @@
 # Video OS：Sub2API / Alchemy Veyra 桥接适配器开发设计
 
+> **2026-09-09 计费口径更新**：固定 `chargeAmount` 仅保留为兼容路径；当前视频及未来图片的 Video OS 服务费以《AI企业内容生产平台_轻量视频倍率计费方案.md》为准：产物成功后读取 AISelf/Sub2API 的真实 `actual_cost`，按任务冻结的 `0.20` 服务费倍率加 `1` 固定费计算。Video OS 只 debit 额外服务费，不重复 debit Sub2API 基础费用。该文档仍是 Veyra 身份、账户、debit 和恢复语义的来源。
+
 ## 1. 目的与结论
 
 本设计为 Video OS 增加一个专用的 Veyra 桥接适配器，承接 Alchemy 门户身份、Sub2API 账户和视频扣费之间的协议联动。适配器只负责服务间协议编排和边界校验，不把 Sub2API 用户表、余额账本、Alchemy 会话、Video 项目数据库或 Provider 任务状态合并到一起。
@@ -42,6 +44,7 @@ interface VideoVeyraBridgeAdapter {
 | 换取 Video 身份 | `POST /api/veyra/internal/login-ticket/exchange` | 发送 `{ticket}`，验证 `data.intent=video` 和未来时间的 `expires_at` |
 | 账户查询 | `GET /api/veyra/internal/users/{user_id}/account` | 验证用户 ID、状态、余额精度和并发字段 |
 | 原子扣费 | `POST /api/veyra/internal/billing/debit` | 发送 snake_case 请求，严格回验 user、amount、idempotency key |
+| 已结算视频用量读取 | `GET /api/veyra/internal/users/{user_id}/usage/{request_id}` | 只读复用 `usage_logs` 的 `model`、`request_id`、`actual_cost`；未落账返回可重试的未就绪 |
 
 所有请求使用 `X-Veyra-Internal-Token`。错误统一复用现有 `AUTH_*`、`CREDIT_*` 错误码：`402 -> CREDIT_INSUFFICIENT`，`409 -> CREDIT_CONFLICT`，`401/403 -> AUTH_FORBIDDEN`，网络/5xx -> 可重试的 `CREDIT_UNAVAILABLE`。
 

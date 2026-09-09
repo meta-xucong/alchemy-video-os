@@ -3179,7 +3179,7 @@ components:
           maxLength: 50000
         target_duration_seconds:
           type: integer
-          minimum: 15
+          minimum: 1
           maximum: 600
         target_resolution:
           type: string
@@ -3276,7 +3276,7 @@ components:
               maxLength: 50000
             target_duration_seconds:
               type: integer
-              minimum: 15
+              minimum: 1
               maximum: 600
             target_resolution:
               type: string
@@ -3402,7 +3402,7 @@ components:
           default: 20
         target_duration_seconds:
           type: integer
-          minimum: 15
+          minimum: 1
           maximum: 600
         requires_sample_approval:
           type: boolean
@@ -3514,7 +3514,7 @@ components:
               default: 20
             target_duration_seconds:
               type: integer
-              minimum: 15
+              minimum: 1
               maximum: 600
             requires_sample_approval:
               type: boolean
@@ -3637,7 +3637,7 @@ components:
                 default: 20
               target_duration_seconds:
                 type: integer
-                minimum: 15
+                minimum: 1
                 maximum: 600
               requires_sample_approval:
                 type: boolean
@@ -4681,7 +4681,7 @@ components:
                 maxLength: 160
               duration_seconds:
                 type: integer
-                minimum: 8
+                minimum: 1
                 maximum: 15
               narrative_goal:
                 type: string
@@ -4864,7 +4864,7 @@ components:
                     maxLength: 160
                   duration_seconds:
                     type: integer
-                    minimum: 8
+                    minimum: 1
                     maximum: 15
                   narrative_goal:
                     type: string
@@ -5057,7 +5057,7 @@ components:
                       maxLength: 160
                     duration_seconds:
                       type: integer
-                      minimum: 8
+                      minimum: 1
                       maximum: 15
                     narrative_goal:
                       type: string
@@ -7269,7 +7269,7 @@ components:
           maxLength: 50000
         target_duration_seconds:
           type: integer
-          minimum: 15
+          minimum: 1
           maximum: 600
         target_resolution:
           type: string
@@ -7843,7 +7843,7 @@ components:
                     maxLength: 50000
                   target_duration_seconds:
                     type: integer
-                    minimum: 15
+                    minimum: 1
                     maximum: 600
                   target_resolution:
                     type: string
@@ -7982,7 +7982,7 @@ components:
                           maxLength: 160
                         duration_seconds:
                           type: integer
-                          minimum: 8
+                          minimum: 1
                           maximum: 15
                         narrative_goal:
                           type: string

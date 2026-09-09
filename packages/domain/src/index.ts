@@ -1,4 +1,5 @@
 export * from "./billing.js";
+export * from "./video-billing.js";
 export * from "./continuity.js";
 export * from "./creative-planning.js";
 export * from "./delivery-preflight.js";

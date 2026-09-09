@@ -22,3 +22,16 @@ export class VeyraIdentityError extends Error {
     this.name = "VeyraIdentityError";
   }
 }
+
+export type VideoUsageFailureCode = "USAGE_NOT_READY" | "USAGE_UNAVAILABLE" | "USAGE_INVALID" | "USAGE_FORBIDDEN";
+
+export class VideoUsagePortError extends Error {
+  constructor(
+    readonly code: VideoUsageFailureCode,
+    readonly retryable: boolean,
+    message: string,
+  ) {
+    super(message);
+    this.name = "VideoUsagePortError";
+  }
+}

@@ -12,6 +12,8 @@ import { InMemoryTaskRunStore } from "../../control-api/src/task-run-repository.
 import { InMemoryAssetWorkspaceStore } from "../../control-api/src/asset-repository.js";
 import { InMemoryControlPlaneStore } from "../../control-api/src/repository.js";
 import { MockVideoTaskExecutor } from "../src/execution-service.js";
+import { VideoBillingExecutor, type BillingAttemptStore } from "../src/billing-executor.js";
+import type { CreditPort } from "@alchemy-video/credit-veyra";
 import { createWorkerReferenceDeliveryPort, type ReferenceDeliveryPort } from "../src/reference-delivery.js";
 
 const event = () => ({ eventId: createPrefixedId("evt"), messageId: createPrefixedId("msg"), traceId: createPrefixedId("trc"), correlationId: createPrefixedId("cor") });
@@ -140,7 +142,35 @@ class NeverTerminalProvider implements VideoProviderPort {
   }
 }
 
-const prepareTask = async () => {
+class MustNotDebitCreditPort implements CreditPort {
+  async getAccount() {
+    throw new Error("The failed generation must not query or debit credit.");
+  }
+
+  async debit() {
+    throw new Error("The failed generation must not debit credit.");
+  }
+}
+
+class NoopBillingAttemptStore implements BillingAttemptStore {
+  async recordUsageReceipt() {
+    throw new Error("The failed generation must not record a usage receipt.");
+  }
+
+  async markBillingSucceeded() {
+    throw new Error("The failed generation must not mark billing succeeded.");
+  }
+
+  async markBillingFailed() {
+    throw new Error("The failed generation must not mark billing failed.");
+  }
+
+  async scheduleBillingRetry() {
+    throw new Error("The failed generation must not schedule billing.");
+  }
+}
+
+const prepareTask = async (withBilling = false) => {
   const control = new InMemoryControlPlaneStore();
   const workspaceId = createPrefixedId("ws");
   const userId = createPrefixedId("usr");
@@ -161,7 +191,27 @@ const prepareTask = async () => {
     taskRunId,
     shotId,
     kind: "VIDEO_GENERATION",
-    inputSnapshot: { model: "mock-video-v1", prompt: "Generate an offline mock video.", duration: 1, resolution: "160x90", ratio: "16:9", reference_asset_ids: [] },
+    inputSnapshot: {
+      model: "mock-video-v1",
+      prompt: "Generate an offline mock video.",
+      duration: 1,
+      resolution: "160x90",
+      ratio: "16:9",
+      reference_asset_ids: [],
+      ...(withBilling
+        ? {
+            billing: {
+              external_user_id: 20260909,
+              billing_rule: {
+                creditProvider: "veyra_sub2api" as const,
+                billingRuleKey: "media:usage-surcharge-v1:mock-video-v1",
+                usagePricing: { model: "mock-video-v1", multiplier: "0.20", fixedFee: "1" },
+                source: "media:aiself-actual-cost-plus-service-fee",
+              },
+            },
+          }
+        : {}),
+    },
     event: event(),
   });
   assert.equal(created.kind, "NEW");
@@ -299,6 +349,38 @@ test("C06 executor persists the configured Mock provider failure without an asse
   const result = await executor.execute({ workspaceId, taskRunId });
   assert.equal(result?.status, "FAILED");
   assert.equal(result?.error?.code, "PROVIDER_REJECTED");
+  assert.equal(result?.resultAssetId, null);
+});
+
+test("failed video generation never enters billing even when a service-fee rule is frozen", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask(true);
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture(), outcome: "failed" });
+  const billingExecutor = new VideoBillingExecutor(
+    new MustNotDebitCreditPort(),
+    new NoopBillingAttemptStore(),
+  );
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), { billingExecutor });
+
+  const result = await executor.execute({ workspaceId, taskRunId });
+
+  assert.equal(result?.status, "FAILED");
+  assert.equal(result?.resultAssetId, null);
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "FAILED");
+});
+
+test("invalid video output never enters billing even when a service-fee rule is frozen", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask(true);
+  const provider = new FailFirstDownloadProvider(new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() }));
+  const billingExecutor = new VideoBillingExecutor(
+    new MustNotDebitCreditPort(),
+    new NoopBillingAttemptStore(),
+  );
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), { billingExecutor });
+
+  const result = await executor.execute({ workspaceId, taskRunId });
+
+  assert.equal(result?.status, "FAILED");
+  assert.equal(result?.error?.code, "DOWNLOAD_INVALID");
   assert.equal(result?.resultAssetId, null);
 });
 

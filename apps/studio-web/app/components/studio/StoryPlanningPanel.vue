@@ -27,10 +27,10 @@
         <label class="story-duration-field" for="story-duration">
           <span>希望成片大约多长</span>
           <span class="duration-input">
-            <input id="story-duration" type="number" min="15" max="600" step="1" :value="targetDurationSeconds" :disabled="busy" @input="updateDuration" />
+            <input id="story-duration" type="number" min="1" max="600" step="1" :value="targetDurationSeconds" :disabled="busy" @input="updateDuration" />
             <span>秒</span>
           </span>
-          <small>短想法可以填 15-30 秒，较长故事可以填 60 秒以上；AI 会自动安排内容。</small>
+          <small>短想法可以填 1-30 秒，较长故事可以填 60 秒以上；AI 会自动安排内容。</small>
         </label>
 
         <fieldset class="story-quality-field" :disabled="busy">
@@ -131,7 +131,7 @@ const compactSegmentDurationLabel = computed(() => {
 });
 
 function estimateGenerationSegments(durationSeconds: number): EstimatedGenerationSegment[] {
-  const safeDurationSeconds = Number.isInteger(durationSeconds) ? Math.min(600, Math.max(15, durationSeconds)) : 30;
+  const safeDurationSeconds = Number.isInteger(durationSeconds) ? Math.min(600, Math.max(1, durationSeconds)) : 30;
   const segmentCount = safeDurationSeconds <= 15 ? 1 : Math.min(60, Math.max(1, Math.ceil(safeDurationSeconds / 15)));
   const baseDurationSeconds = Math.floor(safeDurationSeconds / segmentCount);
   const remainder = safeDurationSeconds % segmentCount;
@@ -143,6 +143,6 @@ function estimateGenerationSegments(durationSeconds: number): EstimatedGeneratio
 
 function updateDuration(event: Event) {
   const value = Number((event.target as HTMLInputElement).value);
-  if (Number.isInteger(value)) emit("update:target-duration", Math.min(600, Math.max(15, value)));
+  if (Number.isInteger(value)) emit("update:target-duration", Math.min(600, Math.max(1, value)));
 }
 </script>

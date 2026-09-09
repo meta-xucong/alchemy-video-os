@@ -6,6 +6,7 @@ import {
   createBillingDebitPlan,
   createPrefixedId,
   createUsageReceipt,
+  type MediaUsageFact,
   type UsageReceipt,
 } from "@alchemy-video/domain";
 import type { CreditPort } from "@alchemy-video/credit-veyra";
@@ -105,9 +106,9 @@ export class VideoBillingExecutor {
     } = {},
   ) {}
 
-  async execute(input: { workspaceId: string; chargeRequest: BillingChargeRequest }): Promise<BillingExecutionResult> {
+  async execute(input: { workspaceId: string; chargeRequest: BillingChargeRequest; usage?: MediaUsageFact }): Promise<BillingExecutionResult> {
     const now = this.options.now ?? (() => new Date());
-    const plan = createBillingDebitPlan(input.chargeRequest);
+    const plan = createBillingDebitPlan(input.chargeRequest, input.usage);
     try {
       const debit = await this.credit.debit(plan.debit);
       const receipt = createUsageReceipt(plan, debit);

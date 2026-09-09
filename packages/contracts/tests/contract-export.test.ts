@@ -40,6 +40,7 @@ import {
   MediaRuntimeNarrationDurationFeedbackSchema,
   MediaRuntimeOperationSchema,
   GenerationSegmentMotionPlanSchema,
+  StoryboardShotSpecSchema,
   BrandPolicyRevisionSchema,
   BudgetReservationSchema,
   CapabilityProfileRevisionSchema,
@@ -241,6 +242,24 @@ test("C11 creative planning commands and public DTOs preserve user intent withou
     source_text: "使用默认清晰度的短故事。",
     target_duration_seconds: 15,
   }).target_resolution, "720p");
+  assert.equal(CreateCreativeBriefRevisionCommandSchema.parse({
+    source_text: "Provider 能力允许的一秒短镜头。",
+    target_duration_seconds: 1,
+  }).target_duration_seconds, 1);
+  assert.equal(StoryboardShotSpecSchema.parse({
+    id: "ssp_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    sequence: 1,
+    title: "一秒镜头",
+    duration_seconds: 1,
+    narrative_goal: "完成一个可见动作。",
+    start_state: "开场。",
+    end_state: "结束。",
+    transition_summary: "自然结束。",
+    reference_policy: "TEXT_TRANSITION",
+    depends_on_sequences: [],
+    continuity_note: "保持声明状态。",
+    narrative_beat_sequences: [1],
+  }).duration_seconds, 1);
   assert.throws(() => CreateCreativeBriefRevisionCommandSchema.parse({ ...brief, target_resolution: "1080p" }));
   assert.throws(() => CreateCreativeBriefRevisionCommandSchema.parse({ ...brief, provider: "internal" }));
   assert.throws(() => CreateProductionRunCommandSchema.parse({ storyboard_revision_id: "sbr_01J4N8QZ8PCW2N2G6D2XJXJXJX", prompt: "not public" }));
@@ -328,6 +347,7 @@ test("C11.7 delivery preflight contracts keep approval and authorization facts e
     consumed_by_production_run_id: null,
   });
   assert.equal(deliveryPlan.duration_policy, "FLEXIBLE");
+  assert.equal(DeliveryPlanRevisionSchema.parse({ ...deliveryPlan, target_duration_seconds: 1 }).target_duration_seconds, 1);
   assert.throws(() => DeliveryPlanRevisionSchema.parse({ ...deliveryPlan, status: "PREFLIGHT_BLOCKED", block_reasons: [] }));
   assert.deepEqual(CreateDeliveryPlanRevisionCommandSchema.parse({
     creative_brief_revision_id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",

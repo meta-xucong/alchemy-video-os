@@ -62,7 +62,7 @@ export const DeliveryPlanRevisionSchema = z.object({
   status: PreflightRevisionStatusSchema,
   duration_policy: DurationPolicySchema.default("FLEXIBLE"),
   flexible_duration_percent: z.number().int().min(0).max(50).default(20),
-  target_duration_seconds: z.number().int().min(15).max(600),
+  target_duration_seconds: z.number().int().min(1).max(600),
   requires_sample_approval: z.boolean().default(true),
   caption_policy: CaptionPolicySchema.default("REQUIRED"),
   lip_sync_requirement: LipSyncRequirementSchema.default("OFF"),

@@ -619,7 +619,7 @@ const canStartGeneration = computed(() => Boolean(
   detail.value
   && detail.value.project.status === "ACTIVE"
   && planningDraft.sourceText.trim()
-  && planningDraft.targetDurationSeconds >= 15
+  && planningDraft.targetDurationSeconds >= 1
   && planningDraft.targetDurationSeconds <= 600
   && !creationBusy.value
   && !planningBusy.value

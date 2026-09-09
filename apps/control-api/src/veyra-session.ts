@@ -2,7 +2,10 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { VeyraExternalIdentitySchema, type VeyraExternalIdentity } from "@alchemy-video/contracts";
 import { createVeyraCurrentIdentity, type CurrentIdentity, type IdentityPort } from "./identity.js";
 
-const COOKIE_NAME = "video_session";
+// The host-only prefix prevents a browser from sending the Video session to
+// Alchemy or the shared AISelf parent domain.  The cookie remains signed and
+// scoped to this application; it is never the Portal session.
+const COOKIE_NAME = "__Host-video_session";
 const encode = (value: string | Uint8Array) => Buffer.from(value).toString("base64url");
 const decode = (value: string) => Buffer.from(value, "base64url").toString("utf8");
 

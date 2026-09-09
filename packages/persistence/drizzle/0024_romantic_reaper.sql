@@ -1,0 +1,4 @@
+ALTER TABLE "creative_brief_revisions" DROP CONSTRAINT "creative_brief_revisions_target_duration_check";--> statement-breakpoint
+ALTER TABLE "delivery_plan_revisions" DROP CONSTRAINT "delivery_plan_revisions_target_duration_check";--> statement-breakpoint
+ALTER TABLE "creative_brief_revisions" ADD CONSTRAINT "creative_brief_revisions_target_duration_check" CHECK ("creative_brief_revisions"."target_duration_seconds" between 1 and 600);--> statement-breakpoint
+ALTER TABLE "delivery_plan_revisions" ADD CONSTRAINT "delivery_plan_revisions_target_duration_check" CHECK ("delivery_plan_revisions"."target_duration_seconds" between 1 and 600);

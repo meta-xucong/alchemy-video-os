@@ -56,6 +56,58 @@ test("billing charge contracts remain internal and exact", () => {
   assert.equal(ApplicationErrorCodeSchema.parse("CREDIT_REJECTED"), "CREDIT_REJECTED");
 });
 
+test("usage billing freezes a model multiplier instead of an estimated amount", () => {
+  const parsed = BillingChargeRequestSchema.parse({
+    taskRunId,
+    externalUserId: 42,
+    billingRule: {
+      creditProvider: "veyra_sub2api",
+      billingRuleKey: "video:usage-ratio:grok-imagine-video-1.5",
+      usagePricing: { model: "grok-imagine-video-1.5", multiplier: "1.20" },
+      source: "video:aiself-actual-cost-ratio",
+    },
+  });
+  assert.deepEqual(parsed.billingRule.usagePricing, { model: "grok-imagine-video-1.5", multiplier: "1.20" });
+  assert.equal("chargeAmount" in parsed.billingRule, false);
+  assert.throws(() => BillingChargeRequestSchema.parse({
+    taskRunId,
+    externalUserId: 42,
+    billingRule: {
+      creditProvider: "veyra_sub2api",
+      billingRuleKey: "video:invalid",
+      source: "video:invalid",
+    },
+  }));
+});
+
+test("usage pricing can freeze a Video OS surcharge and fixed service fee together", () => {
+  const parsed = BillingChargeRequestSchema.parse({
+    taskRunId,
+    externalUserId: 42,
+    billingRule: {
+      creditProvider: "veyra_sub2api",
+      billingRuleKey: "media:usage-surcharge-v1:grok-imagine-video-1.5",
+      usagePricing: { model: "grok-imagine-video-1.5", multiplier: "0.20", fixedFee: "1" },
+      source: "media:aiself-actual-cost-plus-service-fee",
+    },
+  });
+  assert.deepEqual(parsed.billingRule.usagePricing, {
+    model: "grok-imagine-video-1.5",
+    multiplier: "0.20",
+    fixedFee: "1",
+  });
+  assert.throws(() => BillingChargeRequestSchema.parse({
+    taskRunId,
+    externalUserId: 42,
+    billingRule: {
+      creditProvider: "veyra_sub2api",
+      billingRuleKey: "media:invalid-fixed-fee",
+      usagePricing: { model: "grok-imagine-video-1.5", multiplier: "0.20", fixedFee: "-1" },
+      source: "media:invalid-fixed-fee",
+    },
+  }));
+});
+
 test("Veyra login ticket contracts are video-intent only and internal", () => {
   assert.deepEqual(
     VeyraLoginTicketExchangeInputSchema.parse({ ticket: "0123456789abcdef0123456789abcdef" }),

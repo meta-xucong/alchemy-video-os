@@ -7,4 +7,5 @@ export * from "./noop.js";
 export * from "./port.js";
 export * from "./transport.js";
 export * from "./video-bridge.js";
+export * from "./video-usage.js";
 export * from "./http-transport.js";

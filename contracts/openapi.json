@@ -4634,7 +4634,7 @@
           },
           "target_duration_seconds": {
             "type": "integer",
-            "minimum": 15,
+            "minimum": 1,
             "maximum": 600
           },
           "target_resolution": {
@@ -4758,7 +4758,7 @@
               },
               "target_duration_seconds": {
                 "type": "integer",
-                "minimum": 15,
+                "minimum": 1,
                 "maximum": 600
               },
               "target_resolution": {
@@ -4918,7 +4918,7 @@
           },
           "target_duration_seconds": {
             "type": "integer",
-            "minimum": 15,
+            "minimum": 1,
             "maximum": 600
           },
           "requires_sample_approval": {
@@ -5059,7 +5059,7 @@
               },
               "target_duration_seconds": {
                 "type": "integer",
-                "minimum": 15,
+                "minimum": 1,
                 "maximum": 600
               },
               "requires_sample_approval": {
@@ -5213,7 +5213,7 @@
                 },
                 "target_duration_seconds": {
                   "type": "integer",
-                  "minimum": 15,
+                  "minimum": 1,
                   "maximum": 600
                 },
                 "requires_sample_approval": {
@@ -6554,7 +6554,7 @@
                 },
                 "duration_seconds": {
                   "type": "integer",
-                  "minimum": 8,
+                  "minimum": 1,
                   "maximum": 15
                 },
                 "narrative_goal": {
@@ -6783,7 +6783,7 @@
                     },
                     "duration_seconds": {
                       "type": "integer",
-                      "minimum": 8,
+                      "minimum": 1,
                       "maximum": 15
                     },
                     "narrative_goal": {
@@ -7025,7 +7025,7 @@
                       },
                       "duration_seconds": {
                         "type": "integer",
-                        "minimum": 8,
+                        "minimum": 1,
                         "maximum": 15
                       },
                       "narrative_goal": {
@@ -9848,7 +9848,7 @@
           },
           "target_duration_seconds": {
             "type": "integer",
-            "minimum": 15,
+            "minimum": 1,
             "maximum": 600
           },
           "target_resolution": {
@@ -10569,7 +10569,7 @@
                     },
                     "target_duration_seconds": {
                       "type": "integer",
-                      "minimum": 15,
+                      "minimum": 1,
                       "maximum": 600
                     },
                     "target_resolution": {
@@ -10738,7 +10738,7 @@
                           },
                           "duration_seconds": {
                             "type": "integer",
-                            "minimum": 8,
+                            "minimum": 1,
                             "maximum": 15
                           },
                           "narrative_goal": {

@@ -332,11 +332,12 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     const now = input.now.toISOString();
     const ready = { ...draft, status: "READY" as const, sha256: input.sha256, mimeType: "video/mp4", byteSize: input.byteSize, width: input.width, height: input.height, durationMs: input.durationMs, updatedAt: now };
     this.generatedAssets.set(ready.id, ready);
-    const completed = { ...current, status: "SUCCEEDED" as const, resultAssetId: ready.id, error: null, updatedAt: now };
+    const needsBilling = Boolean((current.inputSnapshot as { billing?: unknown }).billing);
+    const completed = { ...current, status: needsBilling ? "BILLING_PENDING" as const : "SUCCEEDED" as const, resultAssetId: needsBilling ? null : ready.id, error: null, updatedAt: now };
     this.taskRuns.set(completed.id, completed);
-    await this.assets.setShotGenerationState({ workspaceId: input.workspaceId, shotId: current.shotId, status: "GENERATED", selectedAssetId: ready.id });
+    if (!needsBilling) await this.assets.setShotGenerationState({ workspaceId: input.workspaceId, shotId: current.shotId, status: "GENERATED", selectedAssetId: ready.id });
     const source = this.queuedSource(current.id);
-    if (source) this.addEvent(executionEvent(source, { type: "task_run.succeeded", now, assetId: ready.id, sha256: input.sha256 }));
+    if (source && !needsBilling) this.addEvent(executionEvent(source, { type: "task_run.succeeded", now, assetId: ready.id, sha256: input.sha256 }));
     return completed;
   }
 

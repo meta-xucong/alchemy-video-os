@@ -52,7 +52,7 @@ import {
   type InternalEventEnvelope,
   type DocumentUnderstandingSummary,
 } from "@alchemy-video/contracts";
-import { fingerprintRequest, inferVisualReferenceLockPolicies, inferVisualReferenceRoles, parseVisualReferenceAnalysis } from "@alchemy-video/domain";
+import { fingerprintRequest, inferVisualReferenceLockPolicies, inferVisualReferenceRoles, parseVideoBillingFixedFee, parseVideoBillingModelRates, parseVideoBillingSurchargeMultiplier, parseVisualReferenceAnalysis } from "@alchemy-video/domain";
 import { DeterministicFactSelector } from "@alchemy-video/document-intelligence";
 import {
   UnsupportedVideoGenerationInputError,
@@ -101,7 +101,11 @@ type CreateAppOptions = {
   referenceVisionAnalyzer?: ReferenceVisionAnalyzerPort;
   videoVeyraBridge?: VideoVeyraBridgeAdapter;
   videoSessionCodec?: VideoSessionCodec;
+  videoVeyraPortalBaseUrl?: string;
   videoBillingChargeAmount?: string;
+  videoBillingModelRates?: Readonly<Record<string, string>>;
+  videoBillingSurchargeMultiplier?: string;
+  videoBillingFixedFee?: string;
   audioFreeOnly?: boolean;
   /** Inject the protected Media Runtime client; omit or pass null to disable. */
   pixabayMusic?: PixabayMusicPort | null;
@@ -600,7 +604,24 @@ export function createApp(options: CreateAppOptions = {}) {
   const videoPromptMaxUtf8Bytes = resolveVideoPromptMaxUtf8Bytes(options.videoPromptMaxUtf8Bytes);
   const referenceDeliveryTokenCodec = options.referenceDeliveryTokenCodec;
   const referenceVisionAnalyzer = options.referenceVisionAnalyzer;
-  const videoBillingChargeAmount = options.videoBillingChargeAmount ?? process.env.VIDEO_BILLING_CHARGE_AMOUNT ?? "0";
+  // Environment billing values are active only with the explicit credit
+  // switch. Identity-only AISelf mode must not freeze a billing snapshot just
+  // because deployment secrets happen to contain the fee policy. Tests and
+  // embedded callers may still inject an explicit option.
+  const environmentBillingEnabled = process.env.VEYRA_CREDIT_ENABLED === "true";
+  const videoBillingChargeAmount = options.videoBillingChargeAmount
+    ?? (environmentBillingEnabled ? process.env.VIDEO_BILLING_CHARGE_AMOUNT : undefined)
+    ?? "0";
+  const videoBillingModelRates = options.videoBillingModelRates
+    ?? (environmentBillingEnabled ? parseVideoBillingModelRates(process.env.VIDEO_BILLING_MODEL_RATES_JSON) : {});
+  const videoBillingSurchargeMultiplier = parseVideoBillingSurchargeMultiplier(
+    options.videoBillingSurchargeMultiplier
+      ?? (environmentBillingEnabled ? process.env.VIDEO_BILLING_SURCHARGE_MULTIPLIER : undefined),
+  );
+  const videoBillingFixedFee = parseVideoBillingFixedFee(
+    options.videoBillingFixedFee
+      ?? (environmentBillingEnabled ? process.env.VIDEO_BILLING_FIXED_FEE : undefined),
+  );
   const audioFreeOnly = options.audioFreeOnly ?? process.env.AUDIO_FREE_ONLY !== "false";
   const pixabayMusicEnabled = options.pixabayMusicEnabled ?? process.env.PIXABAY_MUSIC_ENABLED !== "false";
   // Direct Node-side Pixabay fetching is not a production path.  The runtime
@@ -872,6 +893,29 @@ export function createApp(options: CreateAppOptions = {}) {
   // server, rather than relying on a separate HEAD route that is never hit.
   app.get("/provider-input/:token", (context) => providerInputResponse(context, context.req.method !== "HEAD"));
 
+  const redirectToVideoPortal = (context: Context) => {
+    if (!options.videoSessionCodec || !options.videoVeyraBridge) {
+      throw new ControlApiError(503, "AUTH_UNAVAILABLE", "Video account sign-in is not configured.", true);
+    }
+    const baseUrl = options.videoVeyraPortalBaseUrl ?? "https://aiself.vip";
+    let portalUrl: URL;
+    try {
+      portalUrl = new URL(baseUrl);
+      if (portalUrl.protocol !== "https:" || portalUrl.username || portalUrl.password || portalUrl.search || portalUrl.hash) {
+        throw new Error("invalid portal URL");
+      }
+      portalUrl.pathname = "/_veyra/return";
+      portalUrl.search = "?target=video";
+    } catch {
+      throw new ControlApiError(503, "AUTH_UNAVAILABLE", "Video account sign-in is not configured.", true);
+    }
+    return context.redirect(portalUrl.toString(), 303);
+  };
+  // Keep the provider-specific path as a compatibility alias; the browser uses
+  // the provider-neutral public entry point below.
+  app.get("/auth/login", redirectToVideoPortal);
+  app.get("/auth/veyra/login", redirectToVideoPortal);
+
   app.post("/auth/veyra/callback", async (context) => {
     if (!options.videoVeyraBridge || !options.videoSessionCodec) {
       throw new ControlApiError(503, "AUTH_UNAVAILABLE", "Video account sign-in is not configured.", true);
@@ -881,7 +925,11 @@ export function createApp(options: CreateAppOptions = {}) {
     if (typeof ticket !== "string" || ticket.length < 16) throw validationError("The video login ticket is invalid.");
     let identity: VeyraExternalIdentity | undefined;
     try {
-      ({ identity } = await options.videoVeyraBridge.exchangeVideoTicketAndGetAccount({ ticket }));
+      const exchanged = await options.videoVeyraBridge.exchangeVideoTicketAndGetAccount({ ticket });
+      if (exchanged.account.status.toLowerCase() !== "active") {
+        throw new VeyraIdentityError("AUTH_FORBIDDEN", false, "The shared credit account is not active.");
+      }
+      identity = exchanged.identity;
     } catch (error) {
       mapVeyraError(error);
     }
@@ -2028,7 +2076,18 @@ export function createApp(options: CreateAppOptions = {}) {
         generatedPromptParts: compiledPrompt.generatedPromptParts,
         settings: compiledPrompt.settings,
       });
-      if (options.videoVeyraBridge && identity.externalUserId && videoBillingChargeAmount !== "0") {
+      // A global surcharge is the product policy for every provider. The
+      // legacy model map remains a fallback for older snapshots or an
+      // explicitly model-specific override when no global value is set.
+      const usageMultiplier = videoBillingSurchargeMultiplier ?? videoBillingModelRates[videoProfile.model];
+      const usagePricingConfigured = usageMultiplier !== undefined;
+      if (usagePricingConfigured && videoBillingFixedFee === undefined) {
+        throw new ControlApiError(503, "CREDIT_UNAVAILABLE", "Video billing usage pricing requires an explicit fixed service fee.", false);
+      }
+      if (videoBillingFixedFee !== undefined && !usagePricingConfigured) {
+        throw new ControlApiError(503, "CREDIT_UNAVAILABLE", "Video billing fixed fee requires a usage surcharge multiplier.", false);
+      }
+      if (options.videoVeyraBridge && identity.externalUserId && (videoBillingChargeAmount !== "0" || usagePricingConfigured)) {
         const account = await options.videoVeyraBridge.getAccount({ externalUserId: identity.externalUserId });
         if (account.status.toLowerCase() !== "active") {
           throw new ControlApiError(403, "AUTH_FORBIDDEN", "The shared credit account is not active.");
@@ -2039,9 +2098,17 @@ export function createApp(options: CreateAppOptions = {}) {
             external_user_id: identity.externalUserId,
             billing_rule: {
               creditProvider: "veyra_sub2api" as const,
-              billingRuleKey: "video:sub2api-v1",
-              chargeAmount: videoBillingChargeAmount,
-              source: "video:sub2api-v1",
+              billingRuleKey: usagePricingConfigured ? `video:usage-surcharge-v1:${videoProfile.model}` : "video:sub2api-v1",
+              ...(usagePricingConfigured
+                ? {
+                    usagePricing: {
+                      model: videoProfile.model,
+                      multiplier: usageMultiplier,
+                      ...(videoBillingFixedFee !== undefined ? { fixedFee: videoBillingFixedFee } : {}),
+                    },
+                  }
+                : { chargeAmount: videoBillingChargeAmount }),
+              source: usagePricingConfigured ? "video:aiself-actual-cost-plus-service-fee" : "video:sub2api-v1",
             },
           },
         };

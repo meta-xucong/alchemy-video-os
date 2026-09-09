@@ -61,7 +61,7 @@ export const CreativeBriefRevisionSchema = z.object({
   project_id: ProjectIdSchema,
   revision: z.number().int().positive(),
   source_text: z.string().min(1).max(50_000),
-  target_duration_seconds: z.number().int().min(15).max(600),
+  target_duration_seconds: z.number().int().min(1).max(600),
   target_resolution: CreativeBriefTargetResolutionSchema,
   style_preferences: z.string().max(1_000),
   source_asset_ids: z.array(AssetIdSchema).max(20),
@@ -96,7 +96,7 @@ export const StoryboardShotSpecSchema = z.object({
   id: StoryboardShotSpecIdSchema,
   sequence: z.number().int().positive(),
   title: z.string().min(1).max(160),
-  duration_seconds: z.number().int().min(8).max(15),
+  duration_seconds: z.number().int().min(1).max(15),
   narrative_goal: z.string().min(1).max(1_000),
   start_state: z.string().min(1).max(1_000),
   end_state: z.string().min(1).max(1_000),
@@ -315,7 +315,7 @@ export const ProductionRunSchema = z.object({
 
 export const CreateCreativeBriefRevisionCommandSchema = z.object({
   source_text: z.string().min(1).max(50_000),
-  target_duration_seconds: z.number().int().min(15).max(600),
+  target_duration_seconds: z.number().int().min(1).max(600),
   target_resolution: CreativeBriefTargetResolutionSchema.default("720p"),
   style_preferences: z.string().max(1_000).default(""),
   source_asset_ids: z.array(AssetIdSchema).max(20).default([]),

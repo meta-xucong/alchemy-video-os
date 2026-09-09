@@ -22,6 +22,7 @@ import {
   assertProductionRunCreatable,
   assertProductionRunTransition,
   assertStoryboardPlan,
+  DEFAULT_STORYBOARD_DURATION_POLICY,
 } from "../src/index.js";
 import {
   assertProductionAcceptanceCount,
@@ -55,6 +56,23 @@ test("C11 storyboard plans use ordered event boundaries rather than length slici
   );
   assert.throws(
     () => assertStoryboardPlan({ totalDurationSeconds: 8, specs: [{ sequence: 1, durationSeconds: 8, dependsOnSequences: [1] }] }),
+    (error: unknown) => error instanceof DomainInvariantError && error.code === "STORYBOARD_SPEC_INVALID",
+  );
+});
+
+test("storyboard duration policy keeps Huobao defaults and allows an explicit Grok range", () => {
+  assert.equal(DEFAULT_STORYBOARD_DURATION_POLICY.minDurationSeconds, 8);
+  assert.equal(DEFAULT_STORYBOARD_DURATION_POLICY.maxDurationSeconds, 15);
+  assert.doesNotThrow(() => assertStoryboardPlan({
+    totalDurationSeconds: 1,
+    durationPolicy: { minDurationSeconds: 1, maxDurationSeconds: 15 },
+    specs: [{ sequence: 1, durationSeconds: 1, dependsOnSequences: [] }],
+  }));
+  assert.throws(
+    () => assertStoryboardPlan({
+      totalDurationSeconds: 7,
+      specs: [{ sequence: 1, durationSeconds: 7, dependsOnSequences: [] }],
+    }),
     (error: unknown) => error instanceof DomainInvariantError && error.code === "STORYBOARD_SPEC_INVALID",
   );
 });

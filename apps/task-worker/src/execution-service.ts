@@ -3,6 +3,7 @@ import { VideoGenerationInputSnapshotSchema } from "@alchemy-video/contracts";
 import type { AssetWorkspaceStore, TaskRunStore } from "@alchemy-video/persistence";
 import { StorageObjectAlreadyExistsError, createGeneratedVideoObjectKey, type StoragePort } from "@alchemy-video/storage-client";
 import type { VideoProviderPort } from "@alchemy-video/provider-video";
+import { VideoUsagePortError, type VideoUsagePort } from "@alchemy-video/credit-veyra";
 import { VideoBillingExecutor } from "./billing-executor.js";
 import { VideoProviderFailure, VideoProviderProtocolError, validateMp4Bytes } from "@alchemy-video/provider-video";
 
@@ -84,6 +85,7 @@ export class MockVideoTaskExecutor {
       referenceDelivery?: ReferenceDeliveryPort;
       allowLegacyReferenceAssets?: boolean;
       billingExecutor?: VideoBillingExecutor;
+      videoUsage?: VideoUsagePort;
     }> = {},
   ) {}
 
@@ -92,7 +94,14 @@ export class MockVideoTaskExecutor {
     if (!taskRun || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(taskRun.status)) return taskRun;
 
     const inputSnapshot = VideoGenerationInputSnapshotSchema.parse(taskRun.inputSnapshot);
-    if (taskRun.status === "BILLING_PENDING" && inputSnapshot.billing && this.options.billingExecutor) {
+    if (taskRun.status === "BILLING_PENDING" && inputSnapshot.billing) {
+      if (!this.options.billingExecutor) {
+        // Never fall back to another Provider/download pass for an already
+        // generated artifact. Keep the task in its billing state until the
+        // explicitly configured credit path is available.
+        throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", true, "PROVIDER", "Shared credit billing is not configured for this Worker.");
+      }
+      const usage = await this.resolveBillingUsage(input.workspaceId, input.taskRunId, inputSnapshot);
       await this.options.billingExecutor.execute({
         workspaceId: input.workspaceId,
         chargeRequest: {
@@ -100,6 +109,7 @@ export class MockVideoTaskExecutor {
           externalUserId: inputSnapshot.billing.external_user_id,
           billingRule: inputSnapshot.billing.billing_rule,
         },
+        ...(usage ? { usage } : {}),
       });
       return this.store.findTaskRun(input.workspaceId, input.taskRunId);
     }
@@ -253,6 +263,13 @@ export class MockVideoTaskExecutor {
         throw new VideoProviderProtocolError("Downloaded media length does not match Content-Length.");
       }
       const inspection = await validateMp4Bytes(bytes, download.mimeType);
+      const billing = input.inputSnapshot.billing;
+      // Resolve usage only after download/media validation, but before the
+      // asset is marked ready. If the provider output or usage fact is invalid,
+      // the task can fail/retry from DOWNLOADING without entering billing.
+      const usage = billing
+        ? await this.resolveBillingUsage(input.workspaceId, input.taskRunId, input.inputSnapshot, attempt.providerRequestId)
+        : undefined;
       const existingDraft = await this.store.findGeneratedAssetDraft(input.workspaceId, input.taskRunId);
       const taskRun = await this.store.findTaskRun(input.workspaceId, input.taskRunId);
       if (!taskRun) return undefined;
@@ -294,12 +311,12 @@ export class MockVideoTaskExecutor {
         durationMs: inspection.durationMs,
         now: new Date(),
       });
-      const billing = input.inputSnapshot.billing;
       if (!billing) return completed;
       if (!this.options.billingExecutor) throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", true, "PROVIDER", "Shared credit billing is not configured for this Worker.");
       const billingResult = await this.options.billingExecutor.execute({
         workspaceId: input.workspaceId,
         chargeRequest: { taskRunId: input.taskRunId, externalUserId: billing.external_user_id, billingRule: billing.billing_rule },
+        ...(usage ? { usage } : {}),
       });
       if (billingResult.kind === "RETRY_SCHEDULED") return this.store.findTaskRun(input.workspaceId, input.taskRunId);
       return this.store.findTaskRun(input.workspaceId, input.taskRunId);
@@ -317,6 +334,45 @@ export class MockVideoTaskExecutor {
       }
       return this.store.failTaskRun({ workspaceId: input.workspaceId, taskRunId: input.taskRunId, providerAttemptId: input.attemptId, failureStage: "DOWNLOAD", ...failure, now: new Date() });
     }
+  }
+
+  private async resolveBillingUsage(
+    workspaceId: string,
+    taskRunId: string,
+    inputSnapshot: ReturnType<typeof VideoGenerationInputSnapshotSchema.parse>,
+    providerRequestId?: string,
+  ) {
+    const billing = inputSnapshot.billing;
+    if (!billing?.billing_rule.usagePricing) return undefined;
+    if (!this.options.videoUsage) {
+      throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", true, "PROVIDER", "Video usage billing is not configured for this Worker.");
+    }
+    const requestId = providerRequestId ?? (await this.store.listTaskRunAttempts(workspaceId, taskRunId))
+      .slice()
+      .reverse()
+      .find((attempt) => Boolean(attempt.providerRequestId))?.providerRequestId;
+    if (!requestId) {
+      throw new VideoProviderProtocolError("A provider request ID is required before video usage can be billed.");
+    }
+    let usage: Awaited<ReturnType<VideoUsagePort["getUsage"]>>;
+    try {
+      usage = await this.options.videoUsage.getUsage({
+        externalUserId: billing.external_user_id,
+        providerRequestId: requestId,
+      });
+    } catch (error) {
+      if (error instanceof VideoUsagePortError) {
+        if (error.retryable) {
+          throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", true, "PROVIDER", "Provider usage is not settled yet.");
+        }
+        throw new VideoProviderProtocolError("The provider usage fact could not be validated.");
+      }
+      throw error;
+    }
+    if (usage.providerRequestId !== requestId || usage.model !== billing.billing_rule.usagePricing.model) {
+      throw new VideoProviderProtocolError("The provider usage fact does not match the immutable video billing rule.");
+    }
+    return usage;
   }
 
   async recover(input: { limit: number; maxAttempts?: number }) {

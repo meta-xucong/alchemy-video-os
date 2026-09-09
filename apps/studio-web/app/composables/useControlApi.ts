@@ -353,6 +353,8 @@ const commandHeaders = (idempotencyKey: string) => ({
 export function useControlApi() {
   const health = () => $fetch<HealthStatus>("/api/v1/health");
   const currentIdentity = () => $fetch<CurrentIdentity>("/api/v1/me");
+  const loginWithAiself = () => { window.location.assign("/auth/login"); };
+  const logout = () => $fetch<{ data: { logged_out: boolean }; request_id: string }>("/auth/logout", { method: "POST" });
   const projects = () => $fetch<ProjectList>("/api/v1/projects");
   const project = (projectId: string, signal?: AbortSignal) => $fetch<ProjectDetailResponse>(`/api/v1/projects/${projectId}`, { signal });
   const audioCapabilities = (projectId: string) => $fetch<AudioCapabilitiesResponse>(`/api/v1/projects/${projectId}/audio-capabilities`);
@@ -530,6 +532,8 @@ export function useControlApi() {
   return {
     health,
     currentIdentity,
+    loginWithAiself,
+    logout,
     projects,
     project,
     audioCapabilities,

@@ -169,6 +169,13 @@
       "when": 1788839894551,
       "tag": "0023_cheerful_chat",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1788960619106,
+      "tag": "0024_romantic_reaper",
+      "breakpoints": true
     }
   ]
 }

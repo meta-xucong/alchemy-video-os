@@ -428,6 +428,15 @@ test("C11.2 schema freezes project-scoped knowledge and brief fact snapshots", a
   );
 });
 
+test("short-duration migration widens only creative brief and delivery target checks", async () => {
+  const migration = await readFile(resolve(import.meta.dirname, "..", "drizzle", "0024_romantic_reaper.sql"), "utf8");
+  assert.match(migration, /creative_brief_revisions_target_duration_check/);
+  assert.match(migration, /delivery_plan_revisions_target_duration_check/);
+  assert.match(migration, /target_duration_seconds\" between 1 and 600/g);
+  assert.equal((migration.match(/DROP CONSTRAINT/g) ?? []).length, 2);
+  assert.equal((migration.match(/ADD CONSTRAINT/g) ?? []).length, 2);
+});
+
 test("a blocked production run does not retain the project active-run lock", async () => {
   const migration = await readFile(
     resolve(import.meta.dirname, "..", "drizzle", "0015_vengeful_gargoyle.sql"),

@@ -4,10 +4,11 @@ import test from "node:test";
 
 import { DeterministicPlanningModel, DeterministicStoryboardCompiler } from "@alchemy-video/creative-planning";
 import type { ControlCreativeBriefRevision, CreativePlanningDraft } from "@alchemy-video/persistence";
+import { resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import { InMemoryStoragePort } from "@alchemy-video/storage-client";
 
 import { BoundedDocumentContextReader } from "../src/document-context-reader.js";
-import { CreativePlanningExecutor } from "../src/execution-service.js";
+import { CreativePlanningExecutor, resolvePlanningDurationPolicy } from "../src/execution-service.js";
 import { createProductionTaskRunInputSnapshotFactory } from "../../production-worker/src/video-input-snapshot.js";
 
 const brief: ControlCreativeBriefRevision = {
@@ -24,6 +25,14 @@ const brief: ControlCreativeBriefRevision = {
   createdAt: "2026-08-16T00:00:00.000Z",
   updatedAt: "2026-08-16T00:00:00.000Z",
 };
+
+test("runtime profile mapper only enables Grok's one-second minimum", () => {
+  const sub2apiPolicy = resolvePlanningDurationPolicy(resolveVideoProviderRuntimeProfile("sub2api"));
+  assert.deepEqual(sub2apiPolicy, { minDurationSeconds: 1, maxDurationSeconds: 15 });
+  assert.equal(resolvePlanningDurationPolicy(resolveVideoProviderRuntimeProfile("mock")), undefined);
+  assert.equal(resolvePlanningDurationPolicy(undefined), undefined);
+  assert.throws(() => resolveVideoProviderRuntimeProfile("unknown"), /VIDEO_PROVIDER must be mock or sub2api/);
+});
 
 test("compiled source sidecar survives JSON persistence and scheduled production factory compaction", async () => {
   const sourceNarrative = "雨夜抵达工厂，@入口保留，人物进入。";
@@ -261,6 +270,38 @@ test("CreativePlanningExecutor keeps dialogue native when the provider profile o
       && generatedPromptParts.every((part): part is string => typeof part === "string")
       && [sourcePrompt, ...generatedPromptParts].join(" ") === promptPackage.prompt;
   }));
+});
+
+test("CreativePlanningExecutor passes an explicitly resolved Grok duration policy to planning", async () => {
+  let captured: CreativePlanningDraft | undefined;
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan(input) {
+      captured = input.draft;
+      return undefined;
+    },
+  }, new DeterministicPlanningModel(), undefined, undefined, undefined, "NATIVE_PROVIDER", {
+    minDurationSeconds: 1,
+    maxDurationSeconds: 15,
+  });
+
+  await executor.execute({
+    brief: {
+      ...brief,
+      id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXJGROK",
+      sourceText: "人物抬手完成一个清晰动作。",
+      targetDurationSeconds: 1,
+      sourceAssetIds: [],
+    },
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXJGROK",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXJGROK",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXJGROK",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXJGROK",
+    },
+  });
+
+  assert.deepEqual(captured?.shotSpecs.map((shot) => shot.durationSeconds), [1]);
+  assert.equal(captured?.promptPackages?.[0]?.motionPlan?.duration_seconds, 1);
 });
 
 test("CreativePlanningExecutor carries reference-analysis objects into every private prompt package", async () => {

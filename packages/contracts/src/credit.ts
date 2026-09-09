@@ -24,6 +24,9 @@ export const PositiveCreditAmountSchema = CreditDecimalSchema.refine(
   (value) => decimalToScaledUnits(value) > 0n,
   "Credit debit amounts must be greater than zero.",
 );
+// Fixed service fees may be explicitly disabled with zero while still using
+// the same decimal representation as actual provider usage.
+export const NonNegativeCreditAmountSchema = CreditDecimalSchema;
 
 export const CreditAccountSchema = z.object({
   externalUserId: z.number().int().positive(),
@@ -50,12 +53,38 @@ export const CreditDebitResultSchema = z.object({
   replayed: z.boolean(),
 }).strict();
 
+/**
+ * A usage-based rule freezes the model and Video OS service-fee parameters at
+ * task creation. The provider's actual usage is deliberately resolved after
+ * the artifact has passed validation; persisting an estimate here would turn
+ * a usage charge into a fixed-price charge.
+ *
+ * `multiplier` and `fixedFee` describe the Video OS addition, not the
+ * Sub2API/provider base charge. Existing snapshots without `fixedFee` remain
+ * valid and retain their historical pure-multiplier behavior.
+ */
+export const BillingUsagePricingSchema = z.object({
+  model: z.string().min(1).max(128),
+  multiplier: PositiveCreditAmountSchema,
+  fixedFee: NonNegativeCreditAmountSchema.optional(),
+}).strict();
+
 export const BillingRuleSnapshotSchema = z.object({
   creditProvider: CreditProviderSchema,
   billingRuleKey: z.string().min(1).max(128),
-  chargeAmount: PositiveCreditAmountSchema,
+  // Existing fixed-price snapshots remain readable. New usage-based snapshots
+  // omit this field and carry only usage_pricing.
+  chargeAmount: PositiveCreditAmountSchema.optional(),
+  usagePricing: BillingUsagePricingSchema.optional(),
   source: z.string().min(1).max(128),
-}).strict();
+}).strict().superRefine((rule, context) => {
+  if (rule.chargeAmount === undefined && rule.usagePricing === undefined) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["chargeAmount"], message: "A billing rule requires a fixed amount or usage pricing." });
+  }
+  if (rule.chargeAmount !== undefined && rule.usagePricing !== undefined) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["usagePricing"], message: "A billing rule cannot mix fixed amount and usage pricing." });
+  }
+});
 
 export const BillingChargeRequestSchema = z.object({
   taskRunId: TaskRunIdSchema,
@@ -70,6 +99,7 @@ export type VeyraExternalIdentity = z.infer<typeof VeyraExternalIdentitySchema>;
 export type CreditAccount = z.infer<typeof CreditAccountSchema>;
 export type CreditDebitInput = z.infer<typeof CreditDebitInputSchema>;
 export type CreditDebitResult = z.infer<typeof CreditDebitResultSchema>;
+export type BillingUsagePricing = z.infer<typeof BillingUsagePricingSchema>;
 export type BillingRuleSnapshot = z.infer<typeof BillingRuleSnapshotSchema>;
 export type BillingChargeRequest = z.infer<typeof BillingChargeRequestSchema>;
 

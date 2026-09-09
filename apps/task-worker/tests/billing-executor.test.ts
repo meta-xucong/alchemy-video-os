@@ -18,6 +18,26 @@ const chargeRequest = {
     source: "video:grok-imagine-video-1.5",
   },
 };
+const usageChargeRequest = {
+  taskRunId,
+  externalUserId: 20260816,
+  billingRule: {
+    creditProvider: "veyra_sub2api" as const,
+    billingRuleKey: "video:usage-ratio:grok-imagine-video-1.5",
+    usagePricing: { model: "grok-imagine-video-1.5", multiplier: "1.20" },
+    source: "video:aiself-actual-cost-ratio",
+  },
+};
+const serviceFeeChargeRequest = {
+  taskRunId,
+  externalUserId: 20260816,
+  billingRule: {
+    creditProvider: "veyra_sub2api" as const,
+    billingRuleKey: "media:usage-surcharge-v1:grok-imagine-video-1.5",
+    usagePricing: { model: "grok-imagine-video-1.5", multiplier: "0.20", fixedFee: "1" },
+    source: "media:aiself-actual-cost-plus-service-fee",
+  },
+};
 
 class FakeCreditPort implements CreditPort {
   readonly debits: CreditDebitInput[] = [];
@@ -100,6 +120,53 @@ test("C13-A billing executor writes one receipt and marks billing succeeded afte
   });
   assert.equal(store.receipts.size, 1);
   assert.equal(store.succeeded[0]?.usageRecordId, "use_c13a_success");
+});
+
+test("C13-A usage billing debits actual provider cost multiplied by the frozen model ratio", async () => {
+  const credit = new FakeCreditPort([{
+    externalUserId: 20260816,
+    amount: "0.3",
+    balanceAfter: "9.7",
+    idempotencyKey: `${usageChargeRequest.billingRule.billingRuleKey}:${taskRunId}`,
+    replayed: false,
+  }]);
+  const store = new FakeBillingStore();
+  const result = await new VideoBillingExecutor(credit, store, {
+    createUsageRecordId: () => "use_c13a_usage_ratio",
+    now: () => new Date("2026-08-16T00:00:00.000Z"),
+  }).execute({
+    workspaceId,
+    chargeRequest: usageChargeRequest,
+    usage: { providerRequestId: "req_grok_001", model: "grok-imagine-video-1.5", actualCost: "0.25" },
+  });
+
+  assert.deepEqual(result, { kind: "SUCCEEDED", usageRecordId: "use_c13a_usage_ratio", receiptKind: "RECORDED" });
+  assert.equal(credit.debits[0]?.amount, "0.3");
+  assert.equal(store.receipts.get(`${usageChargeRequest.billingRule.billingRuleKey}:${taskRunId}`)?.input.amount, "0.3");
+});
+
+test("Video OS service-fee billing debits only 20 percent plus one fixed unit", async () => {
+  const credit = new FakeCreditPort([{
+    externalUserId: 20260816,
+    amount: "1.0168",
+    balanceAfter: "8.9832",
+    idempotencyKey: `${serviceFeeChargeRequest.billingRule.billingRuleKey}:${taskRunId}`,
+    replayed: false,
+  }]);
+  const store = new FakeBillingStore();
+  const result = await new VideoBillingExecutor(credit, store, {
+    createUsageRecordId: () => "use_service_fee",
+    now: () => new Date("2026-08-16T00:00:00.000Z"),
+  }).execute({
+    workspaceId,
+    chargeRequest: serviceFeeChargeRequest,
+    usage: { providerRequestId: "req_grok_002", model: "grok-imagine-video-1.5", actualCost: "0.084" },
+  });
+
+  assert.deepEqual(result, { kind: "SUCCEEDED", usageRecordId: "use_service_fee", receiptKind: "RECORDED" });
+  assert.equal(credit.debits.length, 1);
+  assert.equal(credit.debits[0]?.amount, "1.0168");
+  assert.equal(store.receipts.get(`${serviceFeeChargeRequest.billingRule.billingRuleKey}:${taskRunId}`)?.input.amount, "1.0168");
 });
 
 test("C13-A billing recovery replays the same debit after local receipt crash and never changes the key", async () => {

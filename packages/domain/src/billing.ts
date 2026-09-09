@@ -9,6 +9,7 @@ import {
 } from "@alchemy-video/contracts";
 
 import { DomainInvariantError } from "./errors.js";
+import { calculateUsageCharge, type MediaUsageFact } from "./video-billing.js";
 
 export type BillingDebitPlan = {
   creditProvider: "veyra_sub2api";
@@ -31,11 +32,21 @@ export type UsageReceipt = {
 export const billingIdempotencyKey = (billingRuleKey: string, taskRunId: string): string =>
   `${billingRuleKey}:${taskRunId}`;
 
-export const createBillingDebitPlan = (request: BillingChargeRequest): BillingDebitPlan => {
+export const createBillingDebitPlan = (request: BillingChargeRequest, usage?: MediaUsageFact): BillingDebitPlan => {
   const parsed = BillingChargeRequestSchema.parse(request);
+  const amount = parsed.billingRule.chargeAmount
+    ?? (parsed.billingRule.usagePricing && usage
+      ? calculateUsageCharge({ usage, pricing: parsed.billingRule.usagePricing })
+      : undefined);
+  if (!amount) {
+    throw new DomainInvariantError(
+      "BILLING_USAGE_REQUIRED",
+      "A provider usage fact is required before this media can be billed.",
+    );
+  }
   const debit = CreditDebitInputSchema.parse({
     externalUserId: parsed.externalUserId,
-    amount: parsed.billingRule.chargeAmount,
+    amount,
     idempotencyKey: billingIdempotencyKey(parsed.billingRule.billingRuleKey, parsed.taskRunId),
     source: parsed.billingRule.source,
     referenceId: parsed.taskRunId,

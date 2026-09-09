@@ -2463,3 +2463,11 @@ Exit Gate 尚未满足；保持 E08 `IN_PROGRESS/implementing`，不得标记 `R
 - 行为证据：`pnpm --filter @alchemy-video/creative-planning test`=`45/45 pass / 0 fail / 0 skip`；`pnpm --filter @alchemy-video/creative-planning typecheck`=`PASS`；`pnpm --filter @alchemy-video/workflow-worker test`=`16/16 pass / 0 fail / 0 skip`。测试覆盖保险 AI 三个 source unit 各自归属连续段、单行句读顺序、native prompt 不含邻段文本、逐段容量门和无合法边界超长行 fail-closed。全部本地 fixture/mock，无真实 Provider/TTS/网络/Veyra/VPS/Git。
 - 纠察结论：代码/测试只证明 source-unit ownership 与容量规划窄适配；视觉事件与正式 `script_section_id` 的一一 owner、实测 NarrationAsset/TimelinePlan/绝对 section window、完整 AudioPlan/transition、字幕/Studio/重启重复及中文人工听感仍无证据，继续 `DEFERRED/BLOCKED`。既有 `hasCinematicEditorialBoundary` 评分逻辑不视为 Huobao 原规则的等价实现。
 - Exit Gate：本辅助片可提交独立 `READY_FOR_AUDIT` 评审，但本轮不升级正式状态；E12/R01 保持 `BLOCKED`，总体 C12.4/C12.5 保持 `IMPLEMENTED_PENDING_AUDIT`，不得据此进入后续章节。
+
+### 短时长单段 Provider 规划最小优化（2026-09-09；IMPLEMENTED_PENDING_AUDIT，申请 READY_FOR_AUDIT）
+
+- 执行文档：《AI企业内容生产平台_短时长单段Provider规划最小优化开发文档.md》。本章只做本地 planner/domain/contracts/persistence/Workflow Worker/Studio 薄适配；未调用网络、真实 Provider、Veyra、VPS 或 Git，未改 billing/auth/deployment。
+- 来源与冲突裁定：Huobao `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 的 `storyboard-breaker/SKILL.md` 与 `prompt-generator/video-prompt/SKILL.md` 保留默认 `8..15s`；OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/video/grok_video.py` 提供 Grok `1..15`；Worker 只通过既有 `resolveVideoProviderRuntimeProfile` 将 `sub2api` 映射到内部 `1..15` policy，Mock/未知不假称 Grok。
+- 关键行为证据：Grok policy 下目标 `1/6/7/8/15` 各为一个精确段；默认 Huobao `16=8+8`、`17=9+8`、`30=15+15`；默认显式跨场景目标 `15` 与 `7` 保持边界并由既有 `STORYBOARD_SPEC_INVALID` fail-closed；短口播无法容纳时拒绝，不拉伸或补长。Mapper 测试以 `resolveVideoProviderRuntimeProfile("sub2api")` 得到 `1..15`，`"mock"`/缺省保持默认，未知值沿用既有 resolver 错误。
+- 本地定向证据：creative-planning `58/58`、domain `58/58`、contracts `40/40`、persistence schema `21 pass / 1 existing skip`、workflow-worker `19/19`、Studio `41/41`，均 `0 fail`；contracts 导出已重新生成；`git diff --check` 无新增 whitespace error。迁移 `0024_romantic_reaper.sql` 仅替换 Creative Brief/Delivery Plan 两个 target duration check 为 `1..600`，max 与其它约束不变。
+- 纠察/Exit Gate：本章实现为 `IMPLEMENTED_PENDING_AUDIT`，现申请独立 `READY_FOR_AUDIT`；不得写成 `ACCEPTED`。独立审计仍需复核 generated artifacts、工作区边界及来源映射；真实 profile 能力认证、计费、部署和完整端到端 Provider 运行不在本章范围。

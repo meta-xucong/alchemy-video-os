@@ -4,11 +4,23 @@ import {
   type StoryboardCompilerPort,
 } from "@alchemy-video/creative-planning";
 import { DeterministicFactSelector, type FactSelectionPort } from "@alchemy-video/document-intelligence";
-import { createPrefixedId } from "@alchemy-video/domain";
+import { createPrefixedId, DEFAULT_STORYBOARD_DURATION_POLICY, type StoryboardDurationPolicy } from "@alchemy-video/domain";
+import type { VideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import type { ControlCreativeBriefRevision, CreativePlanningEvent, CreativePlanningStore } from "@alchemy-video/persistence";
 import type { VideoAudioOwner } from "@alchemy-video/contracts";
 
 import type { BoundedDocumentContextReader } from "./document-context-reader.js";
+
+/**
+ * Keep provider capability adaptation at the Worker boundary. The runtime
+ * profile is the only source of provider identity; Mock and absent profiles
+ * retain the default Huobao policy rather than being treated as Grok.
+ */
+export const resolvePlanningDurationPolicy = (
+  runtimeProfile: Pick<VideoProviderRuntimeProfile, "mode"> | undefined,
+): StoryboardDurationPolicy | undefined => runtimeProfile?.mode === "sub2api"
+  ? { ...DEFAULT_STORYBOARD_DURATION_POLICY, minDurationSeconds: 1 }
+  : undefined;
 
 export class CreativePlanningExecutor {
   constructor(
@@ -18,6 +30,7 @@ export class CreativePlanningExecutor {
     private readonly documentContextReader?: Pick<BoundedDocumentContextReader, "read">,
     private readonly factSelector: Pick<FactSelectionPort, "selectForSegment"> = new DeterministicFactSelector(),
     private readonly audioOwner?: VideoAudioOwner,
+    private readonly durationPolicy?: StoryboardDurationPolicy,
   ) {}
 
   async execute(input: { brief: ControlCreativeBriefRevision; event: CreativePlanningEvent }) {
@@ -35,6 +48,7 @@ export class CreativePlanningExecutor {
     const planned = await this.planner.plan({
       sourceText: input.brief.sourceText,
       targetDurationSeconds: input.brief.targetDurationSeconds,
+      ...(this.durationPolicy ? { durationPolicy: this.durationPolicy } : {}),
       stylePreferences: input.brief.stylePreferences,
       sourceAssetIds: input.brief.sourceAssetIds,
       documentContexts,

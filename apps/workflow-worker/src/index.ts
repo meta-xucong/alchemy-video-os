@@ -5,7 +5,7 @@ import { BullMqCreativePlanningQueue, createBullMqCreativePlanningWorker } from 
 import { createS3StoragePort } from "@alchemy-video/storage-client";
 
 import { BoundedDocumentContextReader } from "./document-context-reader.js";
-import { CreativePlanningExecutor } from "./execution-service.js";
+import { CreativePlanningExecutor, resolvePlanningDurationPolicy } from "./execution-service.js";
 import { CreativePlanningEventConsumer, CreativePlanningOutboxRelay } from "./service.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -29,13 +29,16 @@ const storage = createS3StoragePort({
   accessKeyId: process.env.S3_ACCESS_KEY!,
   secretAccessKey: process.env.S3_SECRET_KEY!,
 });
+const runtimeProfile = resolveVideoProviderRuntimeProfile(process.env.VIDEO_PROVIDER);
+const durationPolicy = resolvePlanningDurationPolicy(runtimeProfile);
 const executor = new CreativePlanningExecutor(
   planningStore,
   new DeterministicPlanningModel(),
   new DeterministicStoryboardCompiler(),
   new BoundedDocumentContextReader(storage),
   undefined,
-  resolveVideoProviderRuntimeProfile(process.env.VIDEO_PROVIDER).audioOwner,
+  runtimeProfile.audioOwner,
+  durationPolicy,
 );
 const queueName = process.env.CREATIVE_PLANNING_QUEUE_NAME;
 const deadLetterQueueName = process.env.CREATIVE_PLANNING_DEAD_LETTER_QUEUE_NAME;

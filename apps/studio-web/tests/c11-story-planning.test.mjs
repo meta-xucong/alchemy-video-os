@@ -54,7 +54,7 @@ test("C11 Studio retains a long-story input, adjustable total duration, user-fac
   const events = read("app/composables/useProjectEvents.ts");
 
   assert.match(panel, /maxlength="50000"/);
-  assert.match(panel, /min="15" max="600"/);
+  assert.match(panel, /min="1" max="600"/);
   assert.match(panel, /story-resolution-480p/);
   assert.match(panel, /story-resolution-720p/);
   assert.match(panel, /标准清晰/);

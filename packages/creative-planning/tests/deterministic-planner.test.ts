@@ -203,6 +203,73 @@ test("camera planning keeps dense fifteen-second story beats inside one provider
   assert.equal(new Set(plan.shotSpecs[0]!.motionPlan.motion_beats.map((beat) => beat.shot_size)).size, 1);
 });
 
+test("visual-only editorial beats stay inside one Huobao paragraph", async () => {
+  const planner = new DeterministicPlanningModel();
+  const plan = await planner.plan({
+    sourceText: "摄影棚内模特从远处走来。随后停下扶腰。重新迈步靠近镜头，构图从全身景变成半身。最后保持微笑。",
+    targetDurationSeconds: 15,
+    stylePreferences: "",
+    sourceAssetIds: [],
+  });
+
+  assert.equal(plan.shotSpecs.length, 1);
+  assert.deepEqual(plan.shotSpecs.map((shot) => shot.durationSeconds), [15]);
+  assert.ok(plan.shotSpecs[0]!.motionPlan.motion_beats.length >= 2);
+});
+
+test("an explicit Grok duration policy keeps every short target in one exact segment", async () => {
+  const planner = new DeterministicPlanningModel();
+  for (const targetDurationSeconds of [1, 6, 7, 8, 15]) {
+    const plan = await planner.plan({
+      sourceText: "人物抬手完成一个清晰动作。",
+      targetDurationSeconds,
+      durationPolicy: { minDurationSeconds: 1, maxDurationSeconds: 15 },
+      stylePreferences: "",
+      sourceAssetIds: [],
+    });
+    assert.equal(plan.generationSegmentCount, 1);
+    assert.deepEqual(plan.shotSpecs.map((shot) => shot.durationSeconds), [targetDurationSeconds]);
+    assert.equal(plan.shotSpecs[0]!.motionPlan.duration_seconds, targetDurationSeconds);
+  }
+});
+
+test("an explicit Grok duration policy rejects authored dialogue that cannot fit the exact short target", async () => {
+  await assert.rejects(() => new DeterministicPlanningModel().plan({
+    sourceText: '口播文案："甲乙丙丁戊己"',
+    targetDurationSeconds: 1,
+    durationPolicy: { minDurationSeconds: 1, maxDurationSeconds: 15 },
+    stylePreferences: "",
+    sourceAssetIds: [],
+  }), (error: unknown) => {
+    const code = (error as { code?: string }).code;
+    return code === "STORYBOARD_SPEC_INVALID" || code === "VOICEOVER_CAPACITY_EXCEEDED";
+  });
+});
+
+test("the default Huobao policy remains fail-closed below its eight-second minimum", async () => {
+  await assert.rejects(() => new DeterministicPlanningModel().plan({
+    sourceText: "人物抬手完成一个清晰动作。",
+    targetDurationSeconds: 7,
+    stylePreferences: "",
+    sourceAssetIds: [],
+  }), (error: unknown) => (error as { code?: string }).code === "STORYBOARD_SPEC_INVALID");
+});
+
+test("duration above the provider maximum keeps legal Huobao segment boundaries", async () => {
+  const planner = new DeterministicPlanningModel();
+  const expected: ReadonlyArray<[number, number[]]> = [[16, [8, 8]], [17, [9, 8]], [30, [15, 15]]];
+  for (const [targetDurationSeconds, durations] of expected) {
+    const plan = await planner.plan({
+      sourceText: "人物完成一个连续动作并在结尾停稳。",
+      targetDurationSeconds,
+      stylePreferences: "",
+      sourceAssetIds: [],
+    });
+    assert.deepEqual(plan.shotSpecs.map((shot) => shot.durationSeconds), durations);
+    assert.equal(plan.shotSpecs.reduce((total, shot) => total + shot.durationSeconds, 0), targetDurationSeconds);
+  }
+});
+
 test("a simple visible action is not duplicated into synthetic motion beats", async () => {
   const planner = new DeterministicPlanningModel();
   const plan = await planner.plan({
@@ -218,7 +285,17 @@ test("a simple visible action is not duplicated into synthetic motion beats", as
   assert.match(beats[0]!.action, /缓缓走来/);
 });
 
-test("camera planning blocks an explicit scene cut when 15 seconds cannot form two Huobao segments", async () => {
+test("camera planning blocks an explicit scene cut when a short target cannot satisfy Huobao minimum", async () => {
+  const planner = new DeterministicPlanningModel();
+  await assert.rejects(() => planner.plan({
+    sourceText: "人物在办公室完成签约。镜头切换到夜晚街头，她走向等候的车辆。",
+    targetDurationSeconds: 7,
+    stylePreferences: "",
+    sourceAssetIds: [],
+  }), (error: unknown) => (error as { code?: string }).code === "STORYBOARD_SPEC_INVALID");
+});
+
+test("camera planning does not merge a fifteen-second explicit scene cut across Huobao segments", async () => {
   const planner = new DeterministicPlanningModel();
   await assert.rejects(() => planner.plan({
     sourceText: "人物在办公室完成签约。镜头切换到夜晚街头，她走向等候的车辆。",
@@ -228,11 +305,11 @@ test("camera planning blocks an explicit scene cut when 15 seconds cannot form t
   }), (error: unknown) => (error as { code?: string }).code === "STORYBOARD_SPEC_INVALID");
 });
 
-test("camera planning blocks a semantic split when 15 seconds cannot form two Huobao segments", async () => {
+test("camera planning blocks a semantic split when a short target cannot satisfy Huobao minimum", async () => {
   const planner = new DeterministicPlanningModel();
   await assert.rejects(() => planner.plan({
     sourceText: "女子沿庭院小路缓缓走来。沾着露水的枝条碰到她的袖口，却被无形气流轻轻拨开。她发现我，主动靠近两步，开口问道：真巧，你什么时候来的？",
-    targetDurationSeconds: 15,
+    targetDurationSeconds: 7,
     stylePreferences: "",
     sourceAssetIds: ["ast_subject", "ast_scene"],
   }), (error: unknown) => (error as { code?: string }).code === "STORYBOARD_SPEC_INVALID");

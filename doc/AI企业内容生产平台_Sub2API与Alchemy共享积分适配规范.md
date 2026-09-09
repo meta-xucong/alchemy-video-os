@@ -1,5 +1,7 @@
 # AI企业内容生产平台：Sub2API 与 Alchemy 共享积分适配规范
 
+> **2026-09-09 计费口径更新**：本文件的账户、原子 debit、receipt 和幂等边界继续有效；视频及未来图片的 Video OS 服务费按《AI企业内容生产平台_轻量视频倍率计费方案.md》计算：`actual_cost × 0.20 + 1`。Sub2API 的 `actual_cost` 保持 1 倍原生费用，Video OS 只 debit 额外服务费。旧的固定 `video:<profile>` 金额只作为兼容历史快照，不得被当作真实 AISelf 用量。
+
 > **2026-09-01 当前口径**：本轮只授权本机 Aiself Grok/Doubao 产物对照，不启用本文的 Veyra/共享积分路径。自动旁白不要求用户上传音频/样音；默认/CI 仍为 Mock，真实凭据不写入仓库。
 
 ## 1. 结论
@@ -43,7 +45,7 @@
 
 - 不复用 Alchemy 的 `.v2_data/veyra_usage.jsonl` 文件存储；视频系统使用自己的 `usage_records` 事务表。
 - 不复用 Alchemy 自签的会话 Token 及 Cookie 名称；未来视频 Web 由 `VeyraIdentityAdapter` 发放本系统 session，签名密钥独立。
-- 不把 Alchemy 当前 `0.25` 的默认费率当成视频费率。视频费用必须由独立规则 `video:<profile>` 明确配置，初值为禁用和 `0`。
+- 不把 Alchemy 当前 `0.25` 的默认费率当成视频费率。Sub2API 的 `actual_cost` 是基础费用；Video OS 的独立规则只冻结服务费倍率和固定费，不能复制 Provider 价格表。
 - 不复制 Sub2API 的用户、余额、扣费 ledger 表，也不在视频平台执行退款或改余额。
 
 ## 4. 视频平台端口
@@ -122,32 +124,36 @@ sequenceDiagram
   end
 ```
 
-推荐费率规则：
+推荐服务费规则：
 
 ```json
 {
-  "key": "video:grok-imagine-video-1.5",
+  "key": "video:usage-surcharge-v1:grok-imagine-video-1.5",
   "enabled": false,
-  "charge_amount": "0.00000000",
-  "source": "video:grok-imagine-video-1.5"
+  "usage_pricing": {
+    "model": "grok-imagine-video-1.5",
+    "multiplier": "0.20",
+    "fixed_fee": "1"
+  },
+  "source": "video:aiself-actual-cost-plus-service-fee"
 }
 ```
 
-每个真实视频 profile 一条规则，不使用“全局每次生成价格”。费用由受版本管理的服务端配置读取；任务创建时把 `billing_rule_key` 与 `charge_amount` 快照写入 `TaskRun.input_snapshot`。规则变更不影响已经开始的任务。
+全局服务费默认使用 `0.20 + 1`；只有确实需要差异化时才用模型映射覆盖。费用由受版本管理的服务端配置读取；任务创建时把 `billing_rule_key` 与 `usage_pricing` 快照写入 `TaskRun.input_snapshot`。规则变更不影响已经开始的任务。固定费按一次成功的 Provider 任务/片段收取；项目级一次固定费需要另行的父级聚合账单，不在本适配内新增。
 
 扣费请求必须是：
 
 ```json
 {
   "user_id": 42,
-  "amount": 1.25000000,
+  "amount": 1.01680000,
   "idempotency_key": "video:grok-imagine-video-1.5:tsk_01J...",
   "source": "video:grok-imagine-video-1.5",
   "reference_id": "tsk_01J..."
 }
 ```
 
-同一 `task_run_id`、规则版本、金额、`source` 与 `reference_id` 是不可变集合。任何重试必须原样发送。变更时创建新 `TaskRun`，不能复用幂等键，否则 Sub2API 将按其请求指纹返回冲突。
+`amount` 是 Video OS 额外服务费，不包含已经由 Sub2API 结算的基础 `actual_cost`。同一 `task_run_id`、规则版本、金额、`source` 与 `reference_id` 是不可变集合。任何重试必须原样发送。变更时创建新 `TaskRun`，不能复用幂等键，否则 Sub2API 将按其请求指纹返回冲突。
 
 ## 7. 错误与恢复策略
 
@@ -164,9 +170,9 @@ sequenceDiagram
 
 产物在扣费失败时保留给运维恢复，不向普通用户生成下载 URL。平台不自动退款；若需要退款，必须由 Sub2API 新增显式、可审计的退款端点后再设计。
 
-### 7.1 C09-A 离线边界
+### 7.1 C09-A 离线边界（历史快照）
 
-本子阶段只验证端口、HTTP 字段、错误映射、金额精度和 receipt 幂等性，不把 adapter 装配至 Worker、Control API 或 Studio，不触发 `BILLING_PENDING` 扣费流程。`NoopCreditAdapter` 必须显式返回本地计费禁用错误，不能返回伪造 debit 成功。真实 Token、HTTP transport、账户查询、票据交换和 debit 都留给独立授权的后续关卡。
+本节保留 C09 阶段的历史限制：当时只验证端口、HTTP 字段、错误映射、金额精度和 receipt 幂等性，不把 adapter 装配至 Worker、Control API 或 Studio。该限制已由 C13-A 本地接线补充记录 supersede；现行实现由 `C13-A Video身份桥接实施记录.md` 与《轻量媒体服务费计费方案》定义，在显式 `VEYRA_CREDIT_ENABLED=true` 时才装配身份/usage/debit 路径，默认仍 fail-closed。`NoopCreditAdapter` 仍不能伪造 debit 成功，真实外部 canary 仍不由本地 fixture 代替。
 
 ## 8. 使用审计
 

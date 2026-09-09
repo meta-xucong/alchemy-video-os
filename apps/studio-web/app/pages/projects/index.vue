@@ -6,14 +6,24 @@
         <h1 id="project-home-title">我的项目</h1>
         <p class="page-subtitle">{{ workspaceName }}</p>
       </div>
-      <button class="command-button" type="button" :disabled="showCreate" @click="showCreate = true">
-        <Plus :size="17" />
-        <span>新建项目</span>
-      </button>
+      <div class="project-home-actions">
+        <button v-if="!loginRequired" class="command-button" type="button" :disabled="showCreate" @click="showCreate = true">
+          <Plus :size="17" />
+          <span>新建项目</span>
+        </button>
+        <button v-if="!loginRequired && identityLoaded" class="text-button" type="button" @click="signOut">退出 AISelf</button>
+      </div>
     </header>
 
     <p v-if="pageError" class="workspace-alert" role="alert">{{ pageError }}</p>
 
+    <section v-if="loginRequired" class="project-empty surface-panel" aria-labelledby="video-login-title">
+      <h2 id="video-login-title">使用 AISelf 账户登录</h2>
+      <p>视频工作台不再使用独立的用户名和密码。登录后会回到当前 Video OS。</p>
+      <button class="command-button" type="button" @click="loginWithAiself">前往 AISelf 登录</button>
+    </section>
+
+    <template v-else>
     <form v-if="showCreate" class="project-create-form surface-panel" @submit.prevent="submitProject">
       <div>
         <p class="eyebrow">新项目</p>
@@ -28,7 +38,7 @@
       </div>
     </form>
 
-    <section v-if="loading" class="project-home-loading surface-panel" aria-live="polite">
+    <section v-else-if="loading" class="project-home-loading surface-panel" aria-live="polite">
       正在读取项目...
     </section>
 
@@ -51,18 +61,21 @@
         <span>新建项目</span>
       </button>
     </section>
+    </template>
   </section>
 </template>
 
 <script setup lang="ts">
 import { FolderPlus, Plus } from "lucide-vue-next";
 
-const { currentIdentity, projects: fetchProjects, createProject } = useControlApi();
+const { currentIdentity, projects: fetchProjects, createProject, loginWithAiself, logout } = useControlApi();
 const projects = ref<Awaited<ReturnType<typeof fetchProjects>>["data"]>([]);
 const workspaceName = ref("我的创作空间");
 const projectName = ref("");
 const pageError = ref("");
 const loading = ref(true);
+const identityLoaded = ref(false);
+const loginRequired = ref(false);
 const showCreate = ref(false);
 const creatingProject = ref(false);
 
@@ -73,15 +86,30 @@ const formatTime = (value: string) => new Date(value).toLocaleString("zh-CN", { 
 async function loadProjects() {
   loading.value = true;
   pageError.value = "";
+  loginRequired.value = false;
+  identityLoaded.value = false;
   try {
     const [identity, list] = await Promise.all([currentIdentity(), fetchProjects()]);
+    identityLoaded.value = true;
     workspaceName.value = identity.data.workspaces[0]?.name === "Default Workspace" ? "我的创作空间" : identity.data.workspaces[0]?.name ?? "我的创作空间";
     projects.value = list.data;
-  } catch {
-    pageError.value = "项目暂时无法读取，请确认本地服务已启动后刷新页面。";
+  } catch (error: any) {
+    const body = error?.data ?? error?.response?._data;
+    const code = body?.error?.code ?? body?.code;
+    const status = Number(error?.statusCode ?? error?.response?.status ?? 0);
+    if (code === "AUTH_FORBIDDEN" || status === 401 || status === 403) {
+      loginRequired.value = true;
+    } else {
+      pageError.value = "项目暂时无法读取，请确认本地服务已启动后刷新页面。";
+    }
   } finally {
     loading.value = false;
   }
+}
+
+async function signOut() {
+  await logout().catch(() => undefined);
+  await navigateTo("/projects", { replace: true });
 }
 
 function cancelCreate() {

@@ -65,6 +65,25 @@ test("the injected transport receives the documented video login-ticket exchange
   }]);
 });
 
+test("the identity adapter canonicalizes Sub2API's HTTP-date ticket expiry", async () => {
+  const transport = new FakeVeyraTransport({
+    status: 200,
+    body: {
+      data: {
+        user_id: 42,
+        intent: "video",
+        expires_at: "Sun, 16 Aug 2026 00:02:00 GMT",
+      },
+    },
+  });
+
+  const identity = await adapter(transport).exchangeTicket({ ticket });
+
+  assert.equal(identity.expiresAt, "2026-08-16T00:02:00.000Z");
+  assert.equal(identity.email, null);
+  assert.equal(identity.role, null);
+});
+
 test("login tickets fail closed when reused, forged, expired, or scoped to another intent", async () => {
   const statusCases: Array<[number, string, boolean]> = [
     [400, "AUTH_FORBIDDEN", false],

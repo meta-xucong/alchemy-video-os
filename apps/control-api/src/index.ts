@@ -1,5 +1,6 @@
 import { serve } from "@hono/node-server";
 import { createDatabase, DrizzleAssetWorkspaceRepository, DrizzleControlPlaneRepository, DrizzleCreativePlanningRepository, DrizzleDeliveryPreflightStore, DrizzleDocumentConversionRepository, DrizzleDocumentKnowledgeRepository, DrizzleNarrationQualityStore, DrizzleProductionRepository, DrizzleTaskRunRepository } from "@alchemy-video/persistence";
+import { parseVideoBillingFixedFee, parseVideoBillingModelRates, parseVideoBillingSurchargeMultiplier } from "@alchemy-video/domain";
 import { resolveVideoPromptMaxUtf8Bytes, resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import { ReferenceDeliveryTokenCodec } from "@alchemy-video/reference-delivery";
 import { createReferenceVisionAnalyzerFromEnv } from "@alchemy-video/reference-analysis";
@@ -49,6 +50,7 @@ const videoProviderMode = resolveVideoProviderRuntimeProfile(process.env.VIDEO_P
 const referenceDeliverySigningKey = process.env.REFERENCE_DELIVERY_SIGNING_KEY;
 const referenceVisionAnalyzer = createReferenceVisionAnalyzerFromEnv();
 const veyraAuthEnabled = process.env.VEYRA_AUTH_ENABLED === "true";
+const veyraCreditEnabled = process.env.VEYRA_CREDIT_ENABLED === "true";
 let veyraBridge: VideoVeyraBridgeAdapter | undefined;
 let videoSessionCodec: VideoSessionCodec | undefined;
 let identity: VideoSessionIdentityAdapter | undefined;
@@ -56,14 +58,37 @@ if (veyraAuthEnabled) {
   const baseUrl = process.env.VIDEO_VEYRA_INTERNAL_BASE_URL;
   const internalToken = process.env.VIDEO_VEYRA_INTERNAL_TOKEN;
   const sessionSecret = process.env.VIDEO_SESSION_SECRET;
-  const billingChargeAmount = process.env.VIDEO_BILLING_CHARGE_AMOUNT;
-  if (!baseUrl || !internalToken || !sessionSecret || !billingChargeAmount || billingChargeAmount === "0") throw new Error("VIDEO_VEYRA_INTERNAL_BASE_URL, VIDEO_VEYRA_INTERNAL_TOKEN, VIDEO_SESSION_SECRET, and VIDEO_BILLING_CHARGE_AMOUNT are required when VEYRA_AUTH_ENABLED=true.");
+  if (!baseUrl || !internalToken || !sessionSecret) throw new Error("VIDEO_VEYRA_INTERNAL_BASE_URL, VIDEO_VEYRA_INTERNAL_TOKEN, and VIDEO_SESSION_SECRET are required when VEYRA_AUTH_ENABLED=true.");
   const transport = new HttpVeyraCreditTransport({ baseUrl });
   const identityAdapter = new VeyraSub2ApiIdentityAdapter({ transport, internalToken });
+  // The account status check is part of the Alchemy/Veyra login flow.  Keep
+  // account lookup available for the identity-only canary, while the separate
+  // credit flag still controls debit/billing behavior.
   const creditAdapter = new VeyraSub2ApiCreditAdapter({ transport, internalToken });
   veyraBridge = new VideoVeyraBridgeAdapter(identityAdapter, creditAdapter);
+  if (veyraCreditEnabled) {
+    const billingChargeAmount = process.env.VIDEO_BILLING_CHARGE_AMOUNT;
+    const billingModelRates = parseVideoBillingModelRates(process.env.VIDEO_BILLING_MODEL_RATES_JSON);
+    const surchargeMultiplier = parseVideoBillingSurchargeMultiplier(process.env.VIDEO_BILLING_SURCHARGE_MULTIPLIER);
+    const fixedFee = parseVideoBillingFixedFee(process.env.VIDEO_BILLING_FIXED_FEE);
+    const usagePricingConfigured = Object.keys(billingModelRates).length > 0 || surchargeMultiplier !== undefined;
+    if (usagePricingConfigured && fixedFee === undefined) {
+      throw new Error("VIDEO_BILLING_SURCHARGE_MULTIPLIER or VIDEO_BILLING_MODEL_RATES_JSON requires VIDEO_BILLING_FIXED_FEE.");
+    }
+    if (fixedFee !== undefined && !usagePricingConfigured) {
+      throw new Error("VIDEO_BILLING_FIXED_FEE requires VIDEO_BILLING_SURCHARGE_MULTIPLIER or VIDEO_BILLING_MODEL_RATES_JSON.");
+    }
+    if ((!billingChargeAmount || billingChargeAmount === "0") && !usagePricingConfigured) {
+      throw new Error("VIDEO_BILLING_CHARGE_AMOUNT, VIDEO_BILLING_SURCHARGE_MULTIPLIER, or VIDEO_BILLING_MODEL_RATES_JSON is required when VEYRA_CREDIT_ENABLED=true.");
+    }
+    if (billingChargeAmount && billingChargeAmount !== "0" && usagePricingConfigured) {
+      throw new Error("VIDEO_BILLING_CHARGE_AMOUNT cannot be combined with usage-based Video OS service fees.");
+    }
+  }
   videoSessionCodec = new VideoSessionCodec(sessionSecret);
   identity = new VideoSessionIdentityAdapter(videoSessionCodec);
+} else if (veyraCreditEnabled) {
+  throw new Error("VEYRA_AUTH_ENABLED=true is required when VEYRA_CREDIT_ENABLED=true.");
 }
 const pixabayRuntimeUrl = process.env.MEDIA_RUNTIME_URL;
 const pixabayRuntimeToken = process.env.MEDIA_RUNTIME_TOKEN;
@@ -84,9 +109,19 @@ const app = createApp({
   ...(identity ? { identity } : {}),
   ...(veyraBridge ? { videoVeyraBridge: veyraBridge } : {}),
   ...(videoSessionCodec ? { videoSessionCodec } : {}),
+  videoVeyraPortalBaseUrl: process.env.VIDEO_VEYRA_PORTAL_BASE_URL ?? "https://aiself.vip",
   videoProviderMode,
   videoPromptMaxUtf8Bytes: resolveVideoPromptMaxUtf8Bytes(process.env.VIDEO_PROMPT_MAX_UTF8_BYTES),
-  ...(process.env.VIDEO_BILLING_CHARGE_AMOUNT ? { videoBillingChargeAmount: process.env.VIDEO_BILLING_CHARGE_AMOUNT } : {}),
+  ...(veyraCreditEnabled && process.env.VIDEO_BILLING_CHARGE_AMOUNT
+    ? { videoBillingChargeAmount: process.env.VIDEO_BILLING_CHARGE_AMOUNT }
+    : {}),
+  videoBillingModelRates: veyraCreditEnabled ? parseVideoBillingModelRates(process.env.VIDEO_BILLING_MODEL_RATES_JSON) : {},
+  ...(veyraCreditEnabled && process.env.VIDEO_BILLING_SURCHARGE_MULTIPLIER
+    ? { videoBillingSurchargeMultiplier: parseVideoBillingSurchargeMultiplier(process.env.VIDEO_BILLING_SURCHARGE_MULTIPLIER) }
+    : {}),
+  ...(veyraCreditEnabled && process.env.VIDEO_BILLING_FIXED_FEE
+    ? { videoBillingFixedFee: parseVideoBillingFixedFee(process.env.VIDEO_BILLING_FIXED_FEE) }
+    : {}),
   ...(referenceDeliverySigningKey ? { referenceDeliveryTokenCodec: new ReferenceDeliveryTokenCodec(referenceDeliverySigningKey) } : {}),
   ...(referenceVisionAnalyzer ? { referenceVisionAnalyzer } : {}),
   pixabayMusic,

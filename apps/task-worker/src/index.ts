@@ -1,5 +1,6 @@
 import { createDatabase, DrizzleAssetWorkspaceRepository, DrizzleBillingRepository, DrizzleTaskRunRepository } from "@alchemy-video/persistence";
-import { HttpVeyraCreditTransport, VeyraSub2ApiCreditAdapter } from "@alchemy-video/credit-veyra";
+import { HttpVeyraCreditTransport, VeyraSub2ApiCreditAdapter, VeyraSub2ApiVideoUsageAdapter } from "@alchemy-video/credit-veyra";
+import { parseVideoBillingFixedFee, parseVideoBillingModelRates, parseVideoBillingSurchargeMultiplier } from "@alchemy-video/domain";
 import { BullMqInternalEventQueue, createBullMqInternalEventWorker } from "@alchemy-video/task-queue";
 import { createS3StoragePort } from "@alchemy-video/storage-client";
 
@@ -32,11 +33,21 @@ class BillingStoreAdapter {
   scheduleBillingRetry(input: Parameters<DrizzleTaskRunRepository["scheduleBillingRetry"]>[0]) { return this.tasks.scheduleBillingRetry(input); }
 }
 let billingExecutor: VideoBillingExecutor | undefined;
-if (process.env.VEYRA_AUTH_ENABLED === "true") {
+let videoUsage: VeyraSub2ApiVideoUsageAdapter | undefined;
+if (process.env.VEYRA_CREDIT_ENABLED === "true") {
   const baseUrl = process.env.VIDEO_VEYRA_INTERNAL_BASE_URL;
   const internalToken = process.env.VIDEO_VEYRA_INTERNAL_TOKEN;
-  if (!baseUrl || !internalToken) throw new Error("VIDEO_VEYRA_INTERNAL_BASE_URL and VIDEO_VEYRA_INTERNAL_TOKEN are required when VEYRA_AUTH_ENABLED=true.");
+  if (!baseUrl || !internalToken) throw new Error("VIDEO_VEYRA_INTERNAL_BASE_URL and VIDEO_VEYRA_INTERNAL_TOKEN are required when VEYRA_CREDIT_ENABLED=true.");
   const transport = new HttpVeyraCreditTransport({ baseUrl });
+  const billingRates = parseVideoBillingModelRates(process.env.VIDEO_BILLING_MODEL_RATES_JSON);
+  const billingSurchargeMultiplier = parseVideoBillingSurchargeMultiplier(process.env.VIDEO_BILLING_SURCHARGE_MULTIPLIER);
+  const billingFixedFee = parseVideoBillingFixedFee(process.env.VIDEO_BILLING_FIXED_FEE);
+  if ((Object.keys(billingRates).length > 0 || billingSurchargeMultiplier !== undefined) && billingFixedFee === undefined) {
+    throw new Error("VIDEO_BILLING_SURCHARGE_MULTIPLIER or VIDEO_BILLING_MODEL_RATES_JSON requires VIDEO_BILLING_FIXED_FEE.");
+  }
+  if (Object.keys(billingRates).length > 0 || billingSurchargeMultiplier !== undefined || billingFixedFee !== undefined) {
+    videoUsage = new VeyraSub2ApiVideoUsageAdapter({ transport, internalToken });
+  }
   billingExecutor = new VideoBillingExecutor(new VeyraSub2ApiCreditAdapter({ transport, internalToken }), new BillingStoreAdapter(new DrizzleBillingRepository(database.db), store));
 }
 const runtime = await createWorkerVideoProviderRuntime({ environment: process.env });
@@ -50,6 +61,7 @@ const executor = new MockVideoTaskExecutor(store, runtime.provider, storage, {
   referenceDelivery: createWorkerReferenceDeliveryPort({ profile: runtime.profile, environment: process.env }),
   allowLegacyReferenceAssets: runtime.profile.mode === "mock",
   ...(billingExecutor ? { billingExecutor } : {}),
+  ...(videoUsage ? { videoUsage } : {}),
 });
 const queueName = process.env.TASK_QUEUE_NAME;
 const deadLetterQueueName = process.env.TASK_DEAD_LETTER_QUEUE_NAME;

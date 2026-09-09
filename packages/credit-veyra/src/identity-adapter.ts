@@ -71,11 +71,14 @@ const responseData = (response: VeyraCreditTransportResponse): JsonObject => {
   return requireObject(requireObject(response.body).data);
 };
 
-const assertNotExpired = (expiresAt: string, now: Date) => {
+const normalizeExpiresAt = (expiresAt: string, now: Date): string => {
   const expiration = Date.parse(expiresAt);
   if (!Number.isFinite(expiration) || expiration <= now.getTime()) {
     throw new VeyraIdentityError("AUTH_FORBIDDEN", false, "The login ticket is invalid, expired, or already used.");
   }
+  // Sub2API's Veyra endpoint serializes the ticket expiry as an HTTP-date,
+  // while the platform contract carries canonical millisecond ISO UTC.
+  return new Date(expiration).toISOString();
 };
 
 export class VeyraSub2ApiIdentityAdapter {
@@ -103,8 +106,7 @@ export class VeyraSub2ApiIdentityAdapter {
     if (intent !== parsed.expectedIntent) {
       throw new VeyraIdentityError("AUTH_FORBIDDEN", false, "The login ticket is not valid for this application.");
     }
-    const expiresAt = requiredString(data.expires_at);
-    assertNotExpired(expiresAt, this.now());
+    const expiresAt = normalizeExpiresAt(requiredString(data.expires_at), this.now());
 
     return VeyraExternalIdentitySchema.parse({
       externalUserId: positiveSafeInteger(data.user_id),
