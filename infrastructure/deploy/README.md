@@ -121,7 +121,7 @@ docker compose --env-file /opt/alchemy-video/secrets/video.env -f infrastructure
 docker compose --env-file /opt/alchemy-video/secrets/video.env -f infrastructure/deploy/docker-compose.video.yml logs --tail=100 control-api task-worker edge
 ```
 
-The deployed Control API must report the workspace music library as the default source. If no authorized READY MUSIC asset exists, AUTO/MANUAL requests must report an actionable unavailable result rather than silently adding external audio.
+The deployed Control API must report the workspace music library as the default source. When no authorized READY MUSIC asset exists, AUTO may perform the single configured OpenMontage/Pixabay import through the private `control-media-runtime` sidecar; MANUAL and OFF never invoke that fallback. If the sidecar or token is unavailable, AUTO must report an actionable `PROVIDER_UNAVAILABLE` result rather than silently dropping music.
 
 Health paths are intentionally internal diagnostics. Verify the browser experience only through `https://video.aiself.vip/projects` after Basic Auth. Do not expose `/internal/*`, database ports, MinIO Console, Worker logs, Provider URLs, Provider request IDs, signing tokens, or private environment files.
 

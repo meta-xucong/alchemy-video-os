@@ -82,6 +82,8 @@ services:
       VIDEO_BILLING_FIXED_FEE: ${VIDEO_BILLING_FIXED_FEE:-}
       VIDEO_BILLING_MODEL_RATES_JSON: ${VIDEO_BILLING_MODEL_RATES_JSON:-}
       VIDEO_PROVIDER: ${VIDEO_PROVIDER:-mock}
+      MEDIA_RUNTIME_URL: http://127.0.0.1:3433/
+      MEDIA_RUNTIME_TOKEN: ${MEDIA_RUNTIME_TOKEN:?set MEDIA_RUNTIME_TOKEN in the private deployment environment file}
       REFERENCE_DELIVERY_SIGNING_KEY: ${REFERENCE_DELIVERY_SIGNING_KEY:?set REFERENCE_DELIVERY_SIGNING_KEY in the private deployment environment file}
       REFERENCE_VISION_BASE_URL: ${REFERENCE_VISION_BASE_URL:-}
       REFERENCE_VISION_API_KEY: ${REFERENCE_VISION_API_KEY:-}
@@ -249,6 +251,24 @@ services:
     network_mode: "service:production-worker"
     depends_on:
       production-worker:
+        condition: service_started
+    restart: unless-stopped
+
+  # Control API keeps the source client loopback-only. This second Runtime
+  # process shares the Control API network namespace so AUTO Pixabay import
+  # does not require a new public port or a non-source hostname exception.
+  control-media-runtime:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile.media-runtime
+    command: ["uvicorn", "main:app", "--host", "127.0.0.1", "--port", "3433"]
+    environment:
+      MEDIA_RUNTIME_TOKEN: ${MEDIA_RUNTIME_TOKEN:?set MEDIA_RUNTIME_TOKEN in the private deployment environment file}
+      MEDIA_RUNTIME_FFMPEG_PATH: /usr/bin/ffmpeg
+      MEDIA_RUNTIME_FFPROBE_PATH: /usr/bin/ffprobe
+    network_mode: "service:control-api"
+    depends_on:
+      control-api:
         condition: service_started
     restart: unless-stopped
 

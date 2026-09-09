@@ -48,7 +48,7 @@ compose() {
 
 is_service() {
   case "$1" in
-    control-api|task-worker|workflow-worker|production-worker|document-worker|document-runtime|media-runtime|studio-web|edge)
+    control-api|task-worker|workflow-worker|production-worker|document-worker|document-runtime|media-runtime|control-media-runtime|studio-web|edge)
       return 0
       ;;
     *)
@@ -116,7 +116,7 @@ case "$action" in
     ;;
   restart-app)
     [ "$#" -eq 0 ] || { printf '%s\n' 'restart-app does not accept extra arguments.' >&2; exit 2; }
-    compose up -d --no-deps --force-recreate control-api task-worker workflow-worker production-worker document-worker document-runtime media-runtime studio-web edge
+    compose up -d --no-deps --force-recreate control-api task-worker workflow-worker production-worker document-worker document-runtime media-runtime control-media-runtime studio-web edge
     ;;
   smoke)
     [ "$#" -eq 0 ] || { printf '%s\n' 'smoke does not accept extra arguments.' >&2; exit 2; }
