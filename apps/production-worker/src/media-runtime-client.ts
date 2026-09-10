@@ -49,25 +49,38 @@ const AUDIO_OWNERSHIP_CODES = {
   LEGACY_PRESERVE: 6,
 } as const;
 
+const MEDIA_RUNTIME_INTERNAL_HOSTS = new Set(["media-runtime", "control-media-runtime"]);
 const isLoopbackRuntimeHost = (hostname: string) => hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "::1";
+const isInternalRuntimeHost = (endpoint: URL) => MEDIA_RUNTIME_INTERNAL_HOSTS.has(endpoint.hostname) && endpoint.port === "3433";
+const hasUnsafeRawRuntimeUrlSyntax = (runtimeUrl: string): boolean => {
+  if (runtimeUrl.trim() !== runtimeUrl || !runtimeUrl.startsWith("http://")) return true;
+  if (runtimeUrl.includes("?") || runtimeUrl.includes("#") || runtimeUrl.includes("@") || runtimeUrl.includes("\\")) return true;
+  const authorityAndPath = runtimeUrl.slice("http://".length);
+  const pathStart = authorityAndPath.indexOf("/");
+  const rawPath = pathStart === -1 ? "" : authorityAndPath.slice(pathStart);
+  return rawPath !== "" && rawPath !== "/";
+};
 
 export const validateMediaRuntimeUrl = (runtimeUrl: string): string => {
+  if (hasUnsafeRawRuntimeUrlSyntax(runtimeUrl)) {
+    throw new Error("MEDIA_RUNTIME_URL must use an allowlisted internal service or loopback http endpoint.");
+  }
   let endpoint: URL;
   try {
     endpoint = new URL(runtimeUrl);
   } catch {
-    throw new Error("MEDIA_RUNTIME_URL must be a loopback http endpoint.");
+    throw new Error("MEDIA_RUNTIME_URL must use an allowlisted internal service or loopback http endpoint.");
   }
   if (
     endpoint.protocol !== "http:"
-    || !isLoopbackRuntimeHost(endpoint.hostname)
+    || (!isLoopbackRuntimeHost(endpoint.hostname) && !isInternalRuntimeHost(endpoint))
     || endpoint.username
     || endpoint.password
     || endpoint.search
     || endpoint.hash
     || endpoint.pathname !== "/"
   ) {
-    throw new Error("MEDIA_RUNTIME_URL must be a loopback http endpoint.");
+    throw new Error("MEDIA_RUNTIME_URL must use an allowlisted internal service or loopback http endpoint.");
   }
   return endpoint.toString();
 };

@@ -12,10 +12,13 @@ The canonical VPS implementation is still under `infrastructure/deploy/`:
 - Edge configs and Dockerfiles: `infrastructure/deploy/`
 - Deployment and real-Provider gates: `infrastructure/deploy/README.md`
 
-The canonical Compose stack also includes a private `control-media-runtime`
-sidecar. It shares the Control API network namespace and keeps the existing
-loopback-only Media Runtime contract, so AUTO Pixabay import does not open a
-new host port. The production worker keeps its own loopback Runtime sidecar.
+The canonical Compose stack also includes private `media-runtime` and
+`control-media-runtime` services. They are separate containers addressed only
+through Compose DNS (`media-runtime:3433` and `control-media-runtime:3433`),
+with no host ports and no shared `service:` network namespace. Their internal
+readiness checks gate the production worker and Control API; AUTO Pixabay
+import therefore remains private without coupling a Runtime process to its
+caller.
 
 This directory deliberately contains no copied Compose, Nginx, or environment
 template. See [`compose/README.md`](compose/README.md) for the synchronization

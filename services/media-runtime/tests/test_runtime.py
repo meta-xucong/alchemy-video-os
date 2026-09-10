@@ -13,7 +13,7 @@ from unittest.mock import patch
 import unittest
 import wave
 
-from main import boundary_frames, burn_captions, compose_video, inspect_audio, inspect_video, final_review, pixabay_music, synthesize_narration, transcribe_video
+from main import boundary_frames, burn_captions, compose_video, encode_pixabay_header, health_live, health_ready, inspect_audio, inspect_video, final_review, pixabay_music, synthesize_narration, transcribe_video
 import runtime
 from adapters.openmontage_audio.pixabay_music import PixabayMusicResult
 from runtime import (
@@ -361,6 +361,33 @@ def complete_music_only_audio_plan_bundle(*segments: bytes) -> bytes:
 
 
 class MediaRuntimeTests(unittest.TestCase):
+    def test_health_live_is_side_effect_free(self) -> None:
+        self.assertEqual(asyncio.run(health_live()), {"status": "ok"})
+
+    def test_health_ready_reports_local_runtime_prerequisites(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "MEDIA_RUNTIME_TOKEN": "test-token",
+                "MEDIA_RUNTIME_FFMPEG_PATH": "/test/ffmpeg",
+                "MEDIA_RUNTIME_FFPROBE_PATH": "/test/ffprobe",
+            },
+            clear=True,
+        ), patch("main.configured_binary", side_effect=["/test/ffmpeg", "/test/ffprobe"]):
+            self.assertEqual(asyncio.run(health_ready()), {"status": "ready"})
+
+    def test_health_ready_is_retryable_when_token_is_missing(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            response = asyncio.run(health_ready())
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            json.loads(response.body),
+            {
+                "status": "not_ready",
+                "error": {"code": "MEDIA_RUNTIME_UNAVAILABLE", "retryable": True},
+            },
+        )
+
     def test_inspect_audio_reports_ffprobe_duration_and_hash(self) -> None:
         body = b"wav-fixture"
         with patch.dict(os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": "C:\\tools\\ffprobe.exe"}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", return_value=json.dumps({"streams": [{"codec_type": "audio", "codec_name": "pcm_s16le", "duration": "1.25"}], "format": {"format_name": "wav", "duration": "1.25"}})):

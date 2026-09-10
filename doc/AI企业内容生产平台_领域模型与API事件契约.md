@@ -219,7 +219,10 @@ TaskRun，也不是新的 `ProductionSegment`、`NarrativeBeat` 或用户可见�
 
 ### C12 内部 Media Runtime 协议
 
-Media Runtime 是仅绑定 loopback 的内部 HTTP 服务。它只接受 `INSPECT_VIDEO`、
+Media Runtime 在本地默认是仅绑定 loopback 的内部 HTTP 服务。VPS Compose 部署可在
+Compose 私网内使用固定的 `media-runtime` 或 `control-media-runtime` 服务名加 `3433` 端口；
+这两个服务不发布 host/public port，客户端只允许 loopback 或该固定 allowlist。该部署传输适配不改变
+工具语义、状态、事件、工作区边界、token 安全语义或公开 DTO。Runtime 只接受 `INSPECT_VIDEO`、
 `EXTRACT_HANDOFF_FRAME`、`EXTRACT_BOUNDARY_FRAMES`、`COMPOSE_VIDEO` 四种固定工具请求，并以 `mop_` operation ID 关联一次
 受控调用。Production Worker 在完成工作区、项目、TaskRun 和 Asset 范围校验后，从对象存储读取
 字节并发送给 Runtime；Runtime 不接收对象 key、URL、路径、Provider 名称、浏览器身份、prompt、

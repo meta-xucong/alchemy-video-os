@@ -11,9 +11,25 @@ import {
 
 const sha256 = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
 
-test("C12 media runtime client rejects every non-loopback endpoint", () => {
+test("C12 media runtime client accepts fixed internal services and loopback only", () => {
   assert.equal(validateMediaRuntimeUrl("http://127.0.0.1:4033/"), "http://127.0.0.1:4033/");
-  for (const value of ["https://127.0.0.1:4033/", "http://localhost:4033/", "http://10.0.0.1:4033/", "http://127.0.0.1:4033/path", "http://token@127.0.0.1:4033/"]) {
+  assert.equal(validateMediaRuntimeUrl("http://media-runtime:3433/"), "http://media-runtime:3433/");
+  assert.equal(validateMediaRuntimeUrl("http://control-media-runtime:3433/"), "http://control-media-runtime:3433/");
+  for (const value of [
+    "https://127.0.0.1:4033/",
+    "http://localhost:4033/",
+    "http://10.0.0.1:4033/",
+    "http://media-runtime:3434/",
+    "http://media-runtime.example:3433/",
+    "http://127.0.0.1:4033/path",
+    "http://token@127.0.0.1:4033/",
+    "http://127.0.0.1:4033/?",
+    "http://127.0.0.1:4033/#",
+    "http://@127.0.0.1:4033/",
+    "http://127.0.0.1:4033/%2e",
+    "http://127.0.0.1:4033/./",
+    "http://127.0.0.1:4033/%2e%2e/",
+  ]) {
     assert.throws(() => validateMediaRuntimeUrl(value));
   }
 });

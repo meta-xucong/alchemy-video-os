@@ -82,7 +82,7 @@ services:
       VIDEO_BILLING_FIXED_FEE: ${VIDEO_BILLING_FIXED_FEE:-}
       VIDEO_BILLING_MODEL_RATES_JSON: ${VIDEO_BILLING_MODEL_RATES_JSON:-}
       VIDEO_PROVIDER: ${VIDEO_PROVIDER:-mock}
-      MEDIA_RUNTIME_URL: http://127.0.0.1:3433/
+      MEDIA_RUNTIME_URL: http://control-media-runtime:3433/
       MEDIA_RUNTIME_TOKEN: ${MEDIA_RUNTIME_TOKEN:?set MEDIA_RUNTIME_TOKEN in the private deployment environment file}
       REFERENCE_DELIVERY_SIGNING_KEY: ${REFERENCE_DELIVERY_SIGNING_KEY:?set REFERENCE_DELIVERY_SIGNING_KEY in the private deployment environment file}
       REFERENCE_VISION_BASE_URL: ${REFERENCE_VISION_BASE_URL:-}
@@ -94,6 +94,8 @@ services:
       minio:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      control-media-runtime:
         condition: service_healthy
     expose:
       - "8032"
@@ -220,7 +222,7 @@ services:
       VIDEO_VEYRA_INTERNAL_BASE_URL: ${VIDEO_VEYRA_INTERNAL_BASE_URL:-https://aiself.vip}
       VIDEO_VEYRA_INTERNAL_TOKEN: ${VIDEO_VEYRA_INTERNAL_TOKEN:-}
       VIDEO_PROMPT_MAX_UTF8_BYTES: ${VIDEO_PROMPT_MAX_UTF8_BYTES:-20000}
-      MEDIA_RUNTIME_URL: http://127.0.0.1:3433/
+      MEDIA_RUNTIME_URL: http://media-runtime:3433/
       MEDIA_RUNTIME_TOKEN: ${MEDIA_RUNTIME_TOKEN:?set MEDIA_RUNTIME_TOKEN in the private deployment environment file}
       PRODUCTION_QUEUE_NAME: ${PRODUCTION_QUEUE_NAME:-alchemy-video-production}
       PRODUCTION_DEAD_LETTER_QUEUE_NAME: ${PRODUCTION_DEAD_LETTER_QUEUE_NAME:-alchemy-video-production-dead-letter}
@@ -237,39 +239,48 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      media-runtime:
+        condition: service_healthy
     restart: unless-stopped
 
   media-runtime:
     build:
       context: ../..
       dockerfile: infrastructure/deploy/Dockerfile.media-runtime
-    command: ["uvicorn", "main:app", "--host", "127.0.0.1", "--port", "3433"]
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3433"]
     environment:
       MEDIA_RUNTIME_TOKEN: ${MEDIA_RUNTIME_TOKEN:?set MEDIA_RUNTIME_TOKEN in the private deployment environment file}
       MEDIA_RUNTIME_FFMPEG_PATH: /usr/bin/ffmpeg
       MEDIA_RUNTIME_FFPROBE_PATH: /usr/bin/ffprobe
-    network_mode: "service:production-worker"
-    depends_on:
-      production-worker:
-        condition: service_started
+    expose:
+      - "3433"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3433/internal/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
     restart: unless-stopped
 
-  # Control API keeps the source client loopback-only. This second Runtime
-  # process shares the Control API network namespace so AUTO Pixabay import
-  # does not require a new public port or a non-source hostname exception.
+  # Control API's Runtime is a separate internal service. Compose DNS keeps
+  # this boundary private without coupling process/network namespaces.
   control-media-runtime:
     build:
       context: ../..
       dockerfile: infrastructure/deploy/Dockerfile.media-runtime
-    command: ["uvicorn", "main:app", "--host", "127.0.0.1", "--port", "3433"]
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3433"]
     environment:
       MEDIA_RUNTIME_TOKEN: ${MEDIA_RUNTIME_TOKEN:?set MEDIA_RUNTIME_TOKEN in the private deployment environment file}
       MEDIA_RUNTIME_FFMPEG_PATH: /usr/bin/ffmpeg
       MEDIA_RUNTIME_FFPROBE_PATH: /usr/bin/ffprobe
-    network_mode: "service:control-api"
-    depends_on:
-      control-api:
-        condition: service_started
+    expose:
+      - "3433"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3433/internal/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
     restart: unless-stopped
 
   studio-web:

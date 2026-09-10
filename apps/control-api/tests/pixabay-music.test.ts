@@ -13,11 +13,36 @@ test("Pixabay loopback client transports bytes and metadata without exposing pro
   assert.deepEqual([...result.bytes], [1]);
 });
 
+test("Pixabay client accepts the fixed internal Runtime service name", async () => {
+  let request = "";
+  const client = new HttpPixabayMusicClient({
+    runtimeUrl: "http://control-media-runtime:3433/",
+    token: "t",
+    fetcher: async (u) => {
+      request = String(u);
+      return new Response(new Uint8Array([1]), {
+        headers: { "content-type": "audio/mpeg" },
+      });
+    },
+  });
+  await client.execute({ query: "ambient" });
+  assert.equal(request, "http://control-media-runtime:3433/internal/v1/media/pixabay-music");
+});
+
 test("Pixabay loopback client rejects unsafe runtime URLs", () => {
   for (const runtimeUrl of [
     "http://user:pass@127.0.0.1:3433/",
     "http://127.0.0.1:3433/?q=x",
     "http://127.0.0.1:3433/#fragment",
+    "http://localhost:3433/",
+    "http://control-media-runtime:3434/",
+    "http://runtime.example:3433/",
+    "http://127.0.0.1:3433/?",
+    "http://127.0.0.1:3433/#",
+    "http://@127.0.0.1:3433/",
+    "http://127.0.0.1:3433/%2e",
+    "http://127.0.0.1:3433/./",
+    "http://127.0.0.1:3433/%2e%2e/",
   ]) {
     assert.throws(() => new HttpPixabayMusicClient({ runtimeUrl, token: "t" }));
   }

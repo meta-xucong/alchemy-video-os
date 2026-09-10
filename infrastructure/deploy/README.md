@@ -123,6 +123,15 @@ docker compose --env-file /opt/alchemy-video/secrets/video.env -f infrastructure
 
 The deployed Control API must report the workspace music library as the default source. When no authorized READY MUSIC asset exists, AUTO may perform the single configured OpenMontage/Pixabay import through the private `control-media-runtime` sidecar; MANUAL and OFF never invoke that fallback. If the sidecar or token is unavailable, AUTO must report an actionable `PROVIDER_UNAVAILABLE` result rather than silently dropping music.
 
+The two Media Runtime processes are private Compose services, not shared
+network namespaces: `production-worker` calls `http://media-runtime:3433/` and
+`control-api` calls `http://control-media-runtime:3433/`. Each Runtime binds
+only inside the Compose network, publishes no host port, and exposes port
+`3433` only for Compose DNS clients. `/internal/health/live` checks process
+liveness and `/internal/health/ready` checks the configured local ffmpeg,
+ffprobe, and Runtime token without calling a paid Provider. The worker and
+Control API wait for their corresponding Runtime readiness before starting.
+
 Health paths are intentionally internal diagnostics. Verify the browser experience only through `https://video.aiself.vip/projects` after Basic Auth. Do not expose `/internal/*`, database ports, MinIO Console, Worker logs, Provider URLs, Provider request IDs, signing tokens, or private environment files.
 
 ## Rollback

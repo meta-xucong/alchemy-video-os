@@ -31,6 +31,14 @@
 | C12.4/C12.5 | 连续旁白、音频编排与口播时长 | `IMPLEMENTED_PENDING_AUDIT` | C12.1/C12.7B | 2026-08-30 |  | S01/E02、E03/HB-STORYBOARD-TIMING 8–15 秒、E04/Piper pace、E05 `_full_mix`/ALCHMED8、E06 approved full narration 窗口与 cue-only、E07 uniform transition/xfade、E08 segmented/HyperFrames、E09 source-expressed transcript/subtitle/FFmpeg fallback、E10 approval/formal asset/TimelinePlan identity-window、E11/S08 measured-duration feedback 均为已独立审计的窄切片 `ACCEPTED`；混合/连续非 cut、完整 section windows、Studio/REQUIRED 字幕、中文口音、自动重规划和其它硬门仍 `BLOCKED/DEFERRED`；E12 实测仍阻断总体硬门未收口 |
 | C13 | 发布前审计和部署准备 | `PENDING` | C09/C12/C12.1 |  |  |  |
 
+### 2.1 当前窄范围审计账本（2026-09-10）
+
+| 范围 | 当前状态 | 本轮含义 |
+| --- | --- | --- |
+| VPS Media Runtime route-guard 窄范围辅助切片 | `ACCEPTED`（仅窄切片） | 固定基线 `a725adf` + 契约修订 `v1.3.1-route-guard` 的 Compose 私网 DNS/readiness、Worker/Control API Runtime URL allowlist 和 Runtime liveness/readiness 已完成独立审计并通过；不改变 C12.4/C12.5=`IMPLEMENTED_PENDING_AUDIT`、E12/R01=`BLOCKED`、C13=`PENDING`、TaskRun/ProductionSegment 状态、事件或公开 DTO，不实现 QC-only replay。 |
+
+本条是部署传输边界的窄范围状态，不是 C13 或整体平台验收。Docker/VPS/AISelf/真实 Provider 仍未实测；详见文末 2026-09-10 正式审计条目。
+
 ## 3. C00 开发前基线审计
 
 | 检查项 | 结果 | 证据 |
@@ -2471,3 +2479,62 @@ Exit Gate 尚未满足；保持 E08 `IN_PROGRESS/implementing`，不得标记 `R
 - 关键行为证据：Grok policy 下目标 `1/6/7/8/15` 各为一个精确段；默认 Huobao `16=8+8`、`17=9+8`、`30=15+15`；默认显式跨场景目标 `15` 与 `7` 保持边界并由既有 `STORYBOARD_SPEC_INVALID` fail-closed；短口播无法容纳时拒绝，不拉伸或补长。Mapper 测试以 `resolveVideoProviderRuntimeProfile("sub2api")` 得到 `1..15`，`"mock"`/缺省保持默认，未知值沿用既有 resolver 错误。
 - 本地定向证据：creative-planning `58/58`、domain `58/58`、contracts `40/40`、persistence schema `21 pass / 1 existing skip`、workflow-worker `19/19`、Studio `41/41`，均 `0 fail`；contracts 导出已重新生成；`git diff --check` 无新增 whitespace error。迁移 `0024_romantic_reaper.sql` 仅替换 Creative Brief/Delivery Plan 两个 target duration check 为 `1..600`，max 与其它约束不变。
 - 纠察/Exit Gate：本章实现为 `IMPLEMENTED_PENDING_AUDIT`，现申请独立 `READY_FOR_AUDIT`；不得写成 `ACCEPTED`。独立审计仍需复核 generated artifacts、工作区边界及来源映射；真实 profile 能力认证、计费、部署和完整端到端 Provider 运行不在本章范围。
+
+## 2026-09-10 VPS Media Runtime route-guard 窄范围审计（历史 READY_FOR_AUDIT 快照；仅窄切片）
+
+> 历史快照：本段记录独立审计前的 `READY_FOR_AUDIT/verifying` 状态；现行结论以文末正式复审条目为准。
+
+状态：`READY_FOR_AUDIT` / `verifying`（只覆盖 VPS Media Runtime route-guard 窄范围；等待独立审计；不能部署或提交；不改变 C12.4/C12.5、E12/R01 或 C13 状态）
+
+固定基线：当前工作区 `HEAD=a725adf`，契约修订 `v1.3.1-route-guard`；本条只核对该固定基线之上的已完成 route-guard/readiness 工作区差异。没有 Git staging、提交、推送、tag 或 VPS 操作。
+
+范围：
+
+- Compose 去除 `production-worker`/`media-runtime` 与 `control-api`/`control-media-runtime` 的 `network_mode: service:...` 耦合；Worker 使用 `http://media-runtime:3433/`，Control API 使用 `http://control-media-runtime:3433/`，Runtime 仅 `expose: 3433`，不发布 Runtime host/public `ports`，调用方依赖对应 `service_healthy` readiness。
+- Worker 与 Control API 的 Runtime URL 只允许本地 loopback，或固定服务名 `media-runtime`/`control-media-runtime` 加端口 `3433`；拒绝公网/别名/localhost/内部 IP、错误端口、凭据、非根路径、query、fragment，以及 URL 规范化后可能伪装成根路径的原始路径绕过样例。
+- Media Runtime 提供无副作用 `/internal/health/live` 与 `/internal/health/ready`；ready 只检查 Runtime token、`ffmpeg` 和 `ffprobe` 的本地配置，不调用 Provider、AISelf、Sub2API 或其它网络服务，并在缺 token 时返回可重试 `MEDIA_RUNTIME_UNAVAILABLE`。
+
+修改文件（route-guard/readiness 相关范围）：
+
+- `infrastructure/deploy/docker-compose.video.yml`
+- `apps/production-worker/src/media-runtime-client.ts`
+- `apps/production-worker/tests/media-runtime-client.test.ts`
+- `apps/control-api/src/pixabay-music.ts`
+- `apps/control-api/tests/pixabay-music.test.ts`
+- `services/media-runtime/main.py`
+- `services/media-runtime/tests/test_runtime.py`
+
+同一工作区中既有的 Studio 文案、Pixabay header 兼容修正和 `.workbuddy/` 等基线差异不归因于本条，也未作为本条能力证据。
+
+Compose/URL/readiness 证据：
+
+- `docker compose --env-file infrastructure/deploy/.env.video.example -f infrastructure/deploy/docker-compose.video.yml config --quiet`：通过；同一静态配置 JSON 复核显示两个 Runtime `network_mode` 均为空、均只 `expose=3433` 且无 Runtime `ports`，Worker/Control API 的 URL 分别为固定 `media-runtime:3433`/`control-media-runtime:3433`，对应依赖条件均为 `service_healthy`。该检查只解析配置，没有 `docker up`、镜像构建或容器启动。
+- Worker Runtime client：`pnpm --filter @alchemy-video/production-worker exec tsx --test tests/media-runtime-client.test.ts`（cwd `apps/production-worker`）=`25/25 pass / 0 fail / 0 skip`。
+- Control API Pixabay client：`pnpm --filter @alchemy-video/control-api exec tsx --test tests/pixabay-music.test.ts`（cwd `apps/control-api`）=`7/7 pass / 0 fail / 0 skip`。
+- Media Runtime readiness：`D:\AI\alchemy_video_OS\.codex-longrun\c10-document-runtime-venv\Scripts\python.exe -m unittest discover -s tests -p 'test_runtime.py' -k health_`（cwd `services/media-runtime`）=`3/3 pass / 0 fail / 0 skip`，覆盖 live、ready 正常和缺 token 可重试失败。
+- 以上测试为本地 fixture/mock 或静态配置解析；没有 Provider、TTS、AISelf、Sub2API、Veyra、真实网络、VPS、SSH、DNS、TLS 或付费调用。
+
+未实测边界与状态保留：
+
+- 未执行 Docker/VPS/SSH/真实网络，因此未证明真实容器间 DNS、独立重建、生产日志、Runtime 队列恢复或生产 result asset 在重建后的 C12 绑定。
+- 全量 Runtime 测试、镜像构建和部署联调不是本窄门的通过条件；当前环境全量 `unittest` 的 146 项中有 2 项既有 Piper interpreter-selection 失败，和本 route-guard/readiness 范围无关，不能据此宣称全量 Runtime 通过。
+- AISelf identity/credit、Sub2API video intent、真实 Provider profile、共享积分和费用仍未认证；`QC-only replay` 因 C12 没有可表达的状态/事件/幂等契约，继续 `DESIGN_QUESTION/DEFERRED`，本轮不实现。
+- 本条不改变 C12.4/C12.5 总体 `IMPLEMENTED_PENDING_AUDIT`、E12/R01 `BLOCKED`、C13 `PENDING`，不新增或改变 TaskRun/ProductionSegment 状态、事件、公开 DTO、数据库事实或公开 API，也不授予部署或真实联调权限。
+
+AUDIT_OWNER：Codex（执行员；已整理窄范围 READY_FOR_AUDIT 证据，等待独立审计）
+
+Exit Gate：`READY_FOR_AUDIT` / `verifying`（仅本窄范围）。Compose 拓扑、固定内部 URL allowlist、Runtime liveness/readiness 和对应定向测试证据已收口，等待独立审计；Docker/VPS/AISelf/真实 Provider/完整 C13 与 QC-only replay 仍未完成，不能将本条解释为整体平台或 C12.4/C12.5 验收，也不能据此部署或提交。
+
+### 2026-09-10 VPS Media Runtime route-guard 正式复审（ACCEPTED；仅窄范围）
+
+- 审计基线固定为 `HEAD=a725adf`、契约修订 `v1.3.1-route-guard`；审计负责人：`Codex`。本条只复核 route-guard/Media Runtime 稳定性切片，不升级 C12.4/C12.5 总体、E12/R01、C13 或其它章节。
+- 状态：`ACCEPTED`（仅本窄范围；独立审计已返回 `ACCEPTED_ALLOWED`；不改变 C12.4/C12.5=`IMPLEMENTED_PENDING_AUDIT`、E12/R01=`BLOCKED`、C13=`PENDING`）。
+- 精确文件与符号：`infrastructure/deploy/docker-compose.video.yml` 的 `production-worker`、`control-api`、`media-runtime`、`control-media-runtime` 服务、`depends_on`、`healthcheck`、`expose` 和 `network_mode`；`apps/production-worker/src/media-runtime-client.ts` 的 `MEDIA_RUNTIME_INTERNAL_HOSTS`、`isLoopbackRuntimeHost`、`isInternalRuntimeHost`、`hasUnsafeRawRuntimeUrlSyntax`、`validateMediaRuntimeUrl`；`apps/control-api/src/pixabay-music.ts` 的 `HttpPixabayMusicClient` 构造器内 Runtime URL raw-syntax/allowlist 校验；`services/media-runtime/main.py` 的 `health_live`、`health_ready`；OpenMontage 适配测试 `services/media-runtime/adapters/openmontage_audio/test_adapters.py`。
+- Compose 静态证据：`docker compose --env-file infrastructure/deploy/.env.video.example -f infrastructure/deploy/docker-compose.video.yml config --quiet` 通过；解析结果确认两个 Runtime 均脱离 `network_mode: service:...`，只 `expose: 3433`、没有 Runtime host/public `ports`，调用方固定使用 `media-runtime:3433`/`control-media-runtime:3433`，依赖均为 `service_healthy`，依赖图无环。该命令只解析 Compose，不启动容器。
+- 两个客户端 raw URL allowlist 证据：`pnpm --filter @alchemy-video/production-worker test`=`72/72 pass / 0 fail / 0 skip`，覆盖 loopback、两个固定内部服务名以及公网/别名/localhost/内部 IP/错误端口/凭据/path/query/fragment/规范化路径绕过拒绝；`pnpm --filter @alchemy-video/control-api test`=`73 pass / 1 skip / 0 fail`，覆盖 `HttpPixabayMusicClient` 同一 raw URL allowlist 及内部 Runtime 传输边界。
+- Runtime 健康与来源适配证据：`D:\AI\alchemy_video_OS\.codex-longrun\c10-document-runtime-venv\Scripts\python.exe -m unittest discover -s tests -p 'test_runtime.py' -k health_`（cwd `services/media-runtime`）=`3/3 pass / 0 fail / 0 skip`，仅覆盖 direct `health_live`/`health_ready` 行为（ready 正常、缺 token 可重试失败）；`D:\AI\alchemy_video_OS\.codex-longrun\c10-document-runtime-venv\Scripts\python.exe -m unittest discover -s adapters/openmontage_audio -p 'test_adapters.py'`（cwd `services/media-runtime`）=`11/11 pass / 0 fail / 0 skip`。readiness 只检查 token、`ffmpeg`、`ffprobe`，不调用 Provider、AISelf、Sub2API 或其它外部网络。
+- 交叉门禁：root `pnpm typecheck`=`PASS`；`docker compose --env-file infrastructure/deploy/.env.video.example -f infrastructure/deploy/docker-compose.video.yml config --quiet`=`PASS`；`git diff --check`=`PASS`，无新增 whitespace error。以上证据均来自本地 fixture/mock、静态配置或已绑定的 OpenMontage 适配测试。
+- 未执行及未授权边界必须保留：未执行 Docker 容器启动、镜像构建、VPS/SSH、真实 DNS/TLS/公网网络；未执行 AISelf identity/credit、Sub2API video intent、共享积分、真实 Provider/TTS 或生产联调；`QC-only replay` 因 C12 尚无可表达的状态/事件/幂等契约继续 `DESIGN_QUESTION/DEFERRED`。
+- 结论：本条为“仅窄范围 `ACCEPTED`”，独立审计已允许收口；不改变总体 C12.4/C12.5=`IMPLEMENTED_PENDING_AUDIT`、E12/R01=`BLOCKED`、C13=`PENDING`，不新增或改变 TaskRun/ProductionSegment 状态、事件、公开 DTO、数据库事实、公开 API 或部署/真实联调权限。
+
+Exit Gate：`ACCEPTED`（仅本窄范围）。Compose 拓扑、固定内部 URL allowlist、Runtime liveness/readiness 和对应定向测试证据已由独立审计收口；Docker/VPS/AISelf/真实 Provider/完整 C13 与 QC-only replay 仍未完成，本条不等同整体平台生产验收或部署验收。

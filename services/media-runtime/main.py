@@ -36,6 +36,7 @@ from runtime import (
     synthesize_doubao_narration_bytes,
     synthesize_narration_segments_bytes,
     transcribe_video_bytes,
+    configured_binary,
     validate_operation_id,
 )
 from adapters.openmontage_audio.pixabay_music import PixabayMusic
@@ -59,6 +60,42 @@ def runtime_token() -> str:
     if not value:
         raise RuntimeError("MEDIA_RUNTIME_TOKEN is required for the media runtime.")
     return value
+
+
+@app.get("/internal/health/live", include_in_schema=False)
+async def health_live() -> dict[str, str]:
+    """Report process liveness without crossing the authenticated media API."""
+    return {"status": "ok"}
+
+
+@app.get("/internal/health/ready", response_model=None, include_in_schema=False)
+async def health_ready() -> Response | dict[str, object]:
+    """Report the local tool prerequisites used by the media operations.
+
+    This endpoint is intentionally internal and side-effect free: it checks
+    only configured local binaries and the presence of the Runtime token. It
+    never calls a Provider or a network service.
+    """
+    if not os.environ.get("MEDIA_RUNTIME_TOKEN"):
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not_ready",
+                "error": {"code": "MEDIA_RUNTIME_UNAVAILABLE", "retryable": True},
+            },
+        )
+    try:
+        configured_binary("MEDIA_RUNTIME_FFMPEG_PATH")
+        configured_binary("MEDIA_RUNTIME_FFPROBE_PATH")
+    except MediaRuntimeError as error:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not_ready",
+                "error": {"code": error.code, "retryable": error.retryable},
+            },
+        )
+    return {"status": "ready"}
 
 
 async def read_bounded_request(request: Request, *, maximum: int) -> bytes:
