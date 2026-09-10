@@ -2538,3 +2538,17 @@ Exit Gate：`READY_FOR_AUDIT` / `verifying`（仅本窄范围）。Compose 拓�
 - 结论：本条为“仅窄范围 `ACCEPTED`”，独立审计已允许收口；不改变总体 C12.4/C12.5=`IMPLEMENTED_PENDING_AUDIT`、E12/R01=`BLOCKED`、C13=`PENDING`，不新增或改变 TaskRun/ProductionSegment 状态、事件、公开 DTO、数据库事实、公开 API 或部署/真实联调权限。
 
 Exit Gate：`ACCEPTED`（仅本窄范围）。Compose 拓扑、固定内部 URL allowlist、Runtime liveness/readiness 和对应定向测试证据已由独立审计收口；Docker/VPS/AISelf/真实 Provider/完整 C13 与 QC-only replay 仍未完成，本条不等同整体平台生产验收或部署验收。
+
+### 2026-09-10 VPS route-guard 用户授权部署复核（运行证据，不升级总体状态）
+
+- 前述 route-guard 窄范围已由独立审计收口为 `ACCEPTED` 后，用户另行明确授权同步并部署。已推送提交
+  `1765c5cad3c4741b6cf674847fc0cbbd6bcba3c5`（`codex/vps-adapter-20260909`）并在
+  `/opt/alchemy-video` 活动目录应用四个运行时文件；部署前备份至
+  `/opt/alchemy-video/backups/route-guard-1765c5c-20260910T014731Z`。VPS 原有用户基线和数据卷、密钥未覆盖。
+- 远端 `docker-compose --env-file secrets/video.env -f infrastructure/deploy/docker-compose.video.yml config --quiet` 通过；仅构建/重建
+  `media-runtime`、`control-media-runtime`、`control-api`、`production-worker`，未执行 `down`、卷删除或数据库迁移。
+- 两个 Runtime 均 `Up (healthy)`；容器内 `/internal/health/live`、`/internal/health/ready` 分别返回
+  `{"status":"ok"}`、`{"status":"ready"}`。Worker/Control API 的 Runtime URL 分别为
+  `http://media-runtime:3433/`、`http://control-media-runtime:3433/`，均在 `deploy_default` 私网，3433 无 host/public 映射，DNS 解析正常。
+- 远端 Control API `/api/v1/health` 和站点根路径均 HTTP 200，数据库依赖报告 `ok`；容器启动日志显示 API/Worker 正常启动。
+- 本条只记录用户授权后的部署运行证据，不改变 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT`、`E12/R01=BLOCKED`、`C13=PENDING`，也不代表 AISelf/Sub2API/真实 Provider/TTS、共享积分、QC-only replay 或完整生产验收。真实 Provider 仍需单独授权和认证。

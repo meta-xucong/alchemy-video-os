@@ -165,6 +165,31 @@ TaskRun）。
 
 以上只证明 route-guard/readiness 窄范围；未执行 Docker 容器启动、镜像构建、VPS/SSH、真实 DNS/TLS/公网网络，也未执行 AISelf identity/credit、Sub2API video intent、共享积分、真实 Provider/TTS 或生产联调。`QC-only replay` 因 C12 没有可表达的状态/事件/幂等契约，继续 `DESIGN_QUESTION/DEFERRED`；本切片状态为 `ACCEPTED`（仅窄范围），不等同 Docker/VPS 实测、部署验收或整体平台生产验收；本条不改变 C12.4/C12.5 总体、E12/R01 或 C13 状态。
 
+### 7.4 用户授权后的 VPS 部署复核（2026-09-10；运行证据，不扩大验收）
+
+前述窄范围获得 `ACCEPTED` 后，用户另行明确授权同步并部署。本次操作只使用已推送的
+`1765c5cad3c4741b6cf674847fc0cbbd6bcba3c5`（分支
+`codex/vps-adapter-20260909`）中的四个运行时文件：Compose 拓扑、Control API Pixabay
+客户端、Production Worker Runtime 客户端和 Media Runtime `main.py`；远端原有
+`encode_pixabay_header(...).rstrip("=")` 基线在替换后保留。部署前将活动文件备份到
+`/opt/alchemy-video/backups/route-guard-1765c5c-20260910T014731Z`，未覆盖数据卷、密钥或
+其它用户文件。
+
+- 远端 `docker-compose ... config --quiet` 通过；只构建并重建
+  `media-runtime`、`control-media-runtime`、`control-api`、`production-worker`，没有执行
+  `down`、卷删除或迁移。
+- 两个 Runtime 容器均 `Up (healthy)`；容器内
+  `/internal/health/live` 和 `/internal/health/ready` 均返回 `{"status":"ok"}` /
+  `{"status":"ready"}`。
+- Worker 的 `MEDIA_RUNTIME_URL` 为 `http://media-runtime:3433/`，Control API 的为
+  `http://control-media-runtime:3433/`；两者均位于 `deploy_default`，3433 只有 Compose
+  `expose`、无 host/public 映射，容器内 DNS 解析正常。
+- 远端 Control API `/api/v1/health` 与站点根路径均返回 HTTP 200，数据库依赖报告为 `ok`。
+
+该条只记录用户明确授权后的运行部署证据，不升级 C12.4/C12.5、E12/R01 或 C13，也不等同
+AISelf/Sub2API/真实 Provider/TTS、共享积分、QC-only replay 或完整端到端生产验收；所有真实
+Provider/计费和未闭合硬门仍按第 9 节保留。
+
 ## 8. 回滚
 
 1. 停止应用层新任务或切回 `VIDEO_PROVIDER=mock`，保留数据库、队列、MinIO、
