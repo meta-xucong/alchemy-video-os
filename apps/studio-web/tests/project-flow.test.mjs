@@ -249,8 +249,9 @@ test("FAILED keeps explicit retry while enabling a separate new-version generati
 test("Studio projects public production progress into safe Chinese autopilot progress", () => {
   const workspace = read("app/pages/projects/[project_id].vue");
   const progress = read("app/composables/useCreationProgress.ts");
+  const productionPanel = read("app/components/studio/ProductionProgressPanel.vue");
   const generation = read("app/components/studio/GenerationPanel.vue");
-  const visibleSource = `${progress}\n${generation}`;
+  const visibleSource = `${progress}\n${productionPanel}\n${generation}`;
 
   assert.match(progress, /export function creationProgressFor/);
   assert.match(progress, /export function productionProgressFor/);
@@ -282,7 +283,15 @@ test("Studio projects public production progress into safe Chinese autopilot pro
     assert.match(progress, new RegExp(`"${status}"`));
   }
 
-  assert.match(workspace, /productionProgressFor\(currentProductionProgress\.value,\s*Boolean\(planningDraft\.sourceText\.trim\(\)\),\s*creationBusy\.value \|\| planningBusy\.value \|\| productionBusy\.value\)/);
+  assert.match(workspace, /productionProgressFor\(currentProductionProgress\.value,\s*Boolean\(planningDraft\.sourceText\.trim\(\)\),\s*creationBusy\.value \|\| planningBusy\.value \|\| productionBusy\.value,\s*billingPending\.value\)/);
+  assert.match(workspace, /:billing-pending="billingPending"/);
+  assert.match(progress, /等待费用结算/);
+  assert.match(productionPanel, /不会重复提交视频任务/);
+  assert.match(progress, /export function isRecoverableWaitingProduction/);
+  assert.match(progress, /status === "WAITING" && segment\.retryable/);
+  assert.match(workspace, /isRecoverableWaitingProduction\(currentProductionProgress\.value\)/);
+  assert.match(productionPanel, /recoverableWaiting/);
+  assert.match(productionPanel, /if \(recoverableWaiting\.value\) return "active"/);
   assert.match(workspace, /:progress="creationProgress"/);
   assert.doesNotMatch(visibleSource, /\b(?:provider_request_id|provider|queue|bullmq|outbox|sse|model|object_key)\b/i);
 });

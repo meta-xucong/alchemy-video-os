@@ -43,13 +43,15 @@
 </template>
 
 <script setup lang="ts">
+import { isRecoverableWaitingProduction } from "../../composables/useCreationProgress";
 import type { ProductionRunProgress, ProductionSegment } from "../../composables/useControlApi";
 
-const props = defineProps<{ progress?: ProductionRunProgress; busy?: boolean }>();
+const props = defineProps<{ progress?: ProductionRunProgress; busy?: boolean; billingPending?: boolean }>();
 const emit = defineEmits<{ retry: [sequence: number]; 'retry-composition': [] }>();
 
 const completedCount = computed(() => props.progress?.segments.filter((segment) => segment.status === "ACCEPTED").length ?? 0);
 const totalSegments = computed(() => props.progress?.production_run.total_segment_count ?? props.progress?.production_run.total_shot_count ?? props.progress?.segments.length ?? 0);
+const recoverableWaiting = computed(() => isRecoverableWaitingProduction(props.progress));
 const canRetryComposition = computed(() => Boolean(
   props.progress?.production_run.status === "FAILED"
   && totalSegments.value > 0
@@ -59,6 +61,11 @@ const progressSummary = computed(() => {
   const run = props.progress?.production_run;
   if (!run) return "";
   if (run.status === "SUCCEEDED") return "完整成片已经整理好，右侧可以直接查看。";
+  if (props.billingPending) return "本段视频已经生成，正在等待费用结算；确认后会继续整理成片。";
+  if (recoverableWaiting.value) {
+    return props.progress?.segments.find((segment) => segment.status === "WAITING" && segment.retryable)?.safe_summary
+      ?? "正在等待必要准备完成，完成后会继续制作。";
+  }
   if (run.status === "FAILED" || run.status === "BLOCKED") {
     const blockedSegment = props.progress?.segments.find((segment) => segment.status === "FAILED" || segment.status === "WAITING");
     if (run.status === "FAILED" && completedCount.value === totalSegments.value && totalSegments.value > 0) {
@@ -78,7 +85,9 @@ const progressSummary = computed(() => {
 const statusLabel = computed(() => {
   const status = props.progress?.production_run.status;
   if (status === "SUCCEEDED") return "完整成片已准备好";
+  if (props.billingPending) return "等待费用结算";
   if (status === "REVIEWING" || status === "RENDERING") return "正在整理完整成片";
+  if (recoverableWaiting.value) return "等待继续制作";
   if (status === "BLOCKED") return "有一段需要处理";
   if (status === "FAILED") return "这次完整制作未完成";
   return "正在制作视频";
@@ -86,11 +95,13 @@ const statusLabel = computed(() => {
 const statusTone = computed(() => {
   const status = props.progress?.production_run.status;
   if (status === "SUCCEEDED") return "success";
+  if (recoverableWaiting.value) return "active";
   if (status === "BLOCKED" || status === "FAILED") return "error";
   return "active";
 });
 
 function segmentLabel(status: ProductionSegment["status"]) {
+  if (props.billingPending && status === "GENERATING") return "等待费用结算";
   return {
     PENDING: "等待开始",
     WAITING: "等待上一段确认",
@@ -102,6 +113,7 @@ function segmentLabel(status: ProductionSegment["status"]) {
 }
 
 function segmentSummary(segment: ProductionSegment) {
+  if (props.billingPending && segment.status === "GENERATING") return "本段视频已生成，正在等待费用结算；不会重复提交视频任务。";
   return segment.safe_summary || (segment.status === "FAILED"
     ? (segment.retryable ? "这一段需要处理，稍后可以重试。" : "这一段未完成，请调整故事后重新规划。")
     : "制作状态正在更新。");

@@ -220,6 +220,123 @@ test("reference planning retries content analysis for READY images without using
   assert.equal((byId.get(subjectId)?.metadata.visual_analysis as { role?: string } | undefined)?.role, "SUBJECT");
 });
 
+test("production creation retries reference analysis for an approved brief", async () => {
+  const store = createInMemoryControlPlaneStore();
+  const assetStore = createInMemoryAssetWorkspaceStore(store);
+  const taskStore = createInMemoryTaskRunStore(assetStore);
+  const storage = new InMemoryStoragePort();
+  const setupApp = createApp({ store, assetStore, taskStore, storage });
+  const project = await readJson(await post(setupApp, "/api/v1/projects", "c11-production-vision-project", { name: "C11 production vision" }));
+  const projectId = project.data.id as string;
+  const sceneId = await createReadyReference({ app: setupApp, assetStore, storage, projectId, keySuffix: "production-scene" });
+  const subjectId = await createReadyReference({ app: setupApp, assetStore, storage, projectId, keySuffix: "production-subject" });
+  const creativeBriefRevisionId = createPrefixedId("cbr");
+  const deliveryPlanRevisionId = createPrefixedId("dpr");
+  const calls: string[] = [];
+  const planningStore = {
+    async findCreativeBriefRevision(workspaceId: string, id: string) {
+      return workspaceId === "ws_dev_default" && id === creativeBriefRevisionId
+        ? {
+          id: creativeBriefRevisionId,
+          workspaceId,
+          projectId,
+          revision: 1,
+          sourceText: "制作企业介绍视频，使用上传的参考图。",
+          targetDurationSeconds: 15,
+          targetResolution: "480p" as const,
+          stylePreferences: "克制",
+          sourceAssetIds: [sceneId, subjectId],
+          documentContexts: [],
+          factContexts: [],
+          status: "APPROVED" as const,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+        : undefined;
+    },
+    async createProductionRun(input: { productionRunId: string; workspaceId: string; projectId: string; storyboardRevisionId: string; deliveryPlanRevisionId?: string }) {
+      return {
+        kind: "NEW" as const,
+        status: 202 as const,
+        value: {
+          id: input.productionRunId,
+          workspaceId: input.workspaceId,
+          projectId: input.projectId,
+          storyboardRevisionId: input.storyboardRevisionId,
+          ...(input.deliveryPlanRevisionId ? { deliveryPlanRevisionId: input.deliveryPlanRevisionId } : {}),
+          status: "CONFIRMED" as const,
+          totalShotCount: 1,
+          acceptedShotCount: 0,
+          totalSegmentCount: 1,
+          acceptedSegmentCount: 0,
+          totalDurationSeconds: 15,
+          continuityStatus: "NOT_CHECKED" as const,
+          plannedSegmentCount: 1,
+          maxAutoRepairCount: 2,
+          autoRepairCount: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    },
+  } as unknown as CreativePlanningStore;
+  const deliveryPreflightStore = {
+    async findDeliveryPlanRevision(workspaceId: string, id: string) {
+      return workspaceId === "ws_dev_default" && id === deliveryPlanRevisionId
+        ? {
+          id: deliveryPlanRevisionId,
+          workspaceId,
+          projectId,
+          creativeBriefRevisionId,
+          storyboardRevisionId: createPrefixedId("sbr"),
+          revision: 1,
+          status: "APPROVED" as const,
+          durationPolicy: "FLEXIBLE" as const,
+          flexibleDurationPercent: 20,
+          targetDurationSeconds: 15,
+          requiresSampleApproval: false,
+          captionPolicy: "OFF" as const,
+          lipSyncRequirement: "OFF" as const,
+          voiceMode: "PLATFORM_GENERIC" as const,
+          safeSummary: "local fixture",
+          blockReasons: [],
+          approvedAt: new Date().toISOString(),
+          consumedByProductionRunId: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+        : undefined;
+    },
+  } as unknown as DeliveryPreflightStore;
+  const app = createApp({
+    store,
+    assetStore,
+    taskStore,
+    storage,
+    planningStore,
+    deliveryPreflightStore,
+    referenceVisionAnalyzer: {
+      analyze: async ({ assetId }) => {
+        calls.push(assetId);
+        return assetId === sceneId
+          ? { role: "SCENE" as const, confidence: 0.96, summary: "建筑环境" }
+          : { role: "SUBJECT" as const, confidence: 0.95, summary: "人物主体" };
+      },
+    },
+  });
+  const production = await post(app, `/api/v1/projects/${projectId}/production-runs`, "c11-production-vision", {
+    storyboard_revision_id: createPrefixedId("sbr"),
+    delivery_plan_revision_id: deliveryPlanRevisionId,
+    music_plan: { mode: "OFF" },
+  });
+  assert.equal(production.status, 202);
+  assert.deepEqual(calls, [sceneId, subjectId]);
+  const detail = await assetStore.findProjectDetail("ws_dev_default", projectId);
+  const byId = new Map(detail?.assets.map((asset) => [asset.id, asset]));
+  assert.equal((byId.get(sceneId)?.metadata.visual_analysis as { role?: string } | undefined)?.role, "SCENE");
+  assert.equal((byId.get(subjectId)?.metadata.visual_analysis as { role?: string } | undefined)?.role, "SUBJECT");
+});
+
 test("explicit image-purpose text avoids visual analysis and remains authoritative", async () => {
   const store = createInMemoryControlPlaneStore();
   const assetStore = createInMemoryAssetWorkspaceStore(store);

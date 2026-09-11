@@ -129,6 +129,38 @@ const relayTimer = setInterval(() => {
   });
 }, 250);
 await relay.runOnce();
+const billingRecoveryIntervalMs = 30_000;
+const billingRecoveryBatchSize = 25;
+let billingRecoveryInFlight = false;
+const runBillingRecovery = async () => {
+  if (!billingExecutor || billingRecoveryInFlight) return;
+  billingRecoveryInFlight = true;
+  try {
+    const recovery = await executor.recoverBillingPending({ limit: billingRecoveryBatchSize, maxAttempts: 1 });
+    for (const result of recovery) {
+      if (!result.failure) continue;
+      await consumer.finalizeExecutionFailure({
+        workspace_id: result.workspaceId,
+        task_run_id: result.taskRunId,
+        reason: result.failure,
+      });
+    }
+    if (recovery.length > 0) {
+      console.info(JSON.stringify({
+        event: "task_worker.billing_recovery.completed",
+        recovered: recovery.filter((result) => !result.failure).length,
+        failed: recovery.filter((result) => result.failure).length,
+      }));
+    }
+  } catch (error) {
+    console.error(JSON.stringify({ event: "task_worker.billing_recovery.failed", reason: error instanceof Error ? error.message : String(error) }));
+  } finally {
+    billingRecoveryInFlight = false;
+  }
+};
+const billingRecoveryTimer = billingExecutor
+  ? setInterval(() => void runBillingRecovery(), billingRecoveryIntervalMs)
+  : undefined;
 console.info(JSON.stringify({ event: "task_worker.ready", worker_id: workerId, provider_mode: runtime.profile.mode, provider_model: runtime.profile.model }));
 
 let shuttingDown = false;
@@ -136,6 +168,7 @@ const shutdown = async () => {
   if (shuttingDown) return;
   shuttingDown = true;
   clearInterval(relayTimer);
+  if (billingRecoveryTimer) clearInterval(billingRecoveryTimer);
   await worker.close();
   await queue.close();
   await database.close();

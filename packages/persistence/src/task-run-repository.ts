@@ -122,7 +122,7 @@ export interface TaskRunStore extends OutboxRelayStore {
   retryTaskRun(input: RetryTaskRunInput): Promise<TaskRunCommandExecution>;
   findTaskRun(workspaceId: string, taskRunId: string): Promise<ControlTaskRun | undefined>;
   listProjectTaskRuns(workspaceId: string, projectId: string): Promise<ControlTaskRun[]>;
-  listRecoverableVideoTaskRuns(input: { limit: number }): Promise<ControlTaskRun[]>;
+  listRecoverableVideoTaskRuns(input: { limit: number; statuses?: readonly TaskRunStatus[] }): Promise<ControlTaskRun[]>;
   findTaskRunResultAsset(workspaceId: string, assetId: string): Promise<ControlAsset | undefined>;
   findGeneratedAssetDraft(workspaceId: string, taskRunId: string): Promise<GeneratedAssetDraft | undefined>;
   listTaskRunAttempts(workspaceId: string, taskRunId: string): Promise<ControlProviderAttempt[]>;
@@ -491,22 +491,32 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
     return rows.map(toControlTaskRun);
   }
 
-  async listRecoverableVideoTaskRuns(input: { limit: number }) {
+  async listRecoverableVideoTaskRuns(input: { limit: number; statuses?: readonly TaskRunStatus[] }) {
     const now = new Date().toISOString();
     const billingRetryScheduled = and(
       eq(taskRuns.status, "RETRY_SCHEDULED"),
       lte(taskRuns.retryAt, now),
       sql`(${taskRuns.error}->>'code') in (${sql.join(BILLING_RETRY_ERROR_CODES.map((code) => sql`${code}`), sql`, `)})`,
     );
+    const statusFilter = input.statuses
+      ? (input.statuses.length > 0
+        ? or(
+          input.statuses.includes("RETRY_SCHEDULED") ? billingRetryScheduled : sql`false`,
+          input.statuses.some((status) => status !== "RETRY_SCHEDULED")
+            ? inArray(taskRuns.status, input.statuses.filter((status) => status !== "RETRY_SCHEDULED"))
+            : sql`false`,
+        )
+        : sql`false`)
+      : or(
+        inArray(taskRuns.status, ["RUNNING", "PROVIDER_PROCESSING", "DOWNLOADING", "BILLING_PENDING"]),
+        billingRetryScheduled,
+      );
     const rows = await this.db
       .select()
       .from(taskRuns)
       .where(and(
         eq(taskRuns.kind, "VIDEO_GENERATION"),
-        or(
-          inArray(taskRuns.status, ["RUNNING", "PROVIDER_PROCESSING", "DOWNLOADING", "BILLING_PENDING"]),
-          billingRetryScheduled,
-        ),
+        statusFilter,
       ))
       .orderBy(asc(taskRuns.updatedAt), asc(taskRuns.id))
       .limit(input.limit);

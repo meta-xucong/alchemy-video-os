@@ -26,7 +26,7 @@
 3. 仅对该简报中现有的 READY、USER_UPLOAD、IMAGE 资产读取对象；按资产 ID 关联，不按位置赋予角色。已有通过 `parseVisualReferenceAnalysis` 的分析不重复调用。
 4. 先用 `inferVisualReferenceRoles` 解析用户说明、明确文件名说明和已有分析；只有仍未解析的图片才调用已经注入的 `ReferenceVisionAnalyzerPort`。
 5. 分析成功后通过内部资产存储端口合并写回 `visual_analysis` 与 `visual_analysis_status=READY`，保留原有哈希、MIME、大小、对象 key 和其它元数据。分析失败只记录已有状态 `UNAVAILABLE`/`FAILED`，规划请求仍走原状态机；后续生产门禁继续给出既有等待提示。
-6. 没有 `REFERENCE_VISION_BASE_URL`、`REFERENCE_VISION_API_KEY`、`REFERENCE_VISION_MODEL` 时不创建分析器，行为保持 fail-closed。配置视觉服务后，用户可以对同一份简报再次请求规划以重试历史 READY 图片。
+6. 没有 `REFERENCE_VISION_BASE_URL`、`REFERENCE_VISION_API_KEY`、`REFERENCE_VISION_MODEL` 时不创建分析器，行为保持 fail-closed。配置视觉服务后，用户可以对同一份简报再次请求规划以重试历史 READY 图片；对已经批准且绑定该简报的生产请求，也复用同一分析器重试，仍按资产 ID 定位，不新增角色推断。
 
 ## 4. 明确不做的事
 
@@ -51,8 +51,10 @@
 - `AssetWorkspaceStore.updateVisualReferenceAnalysis` 仅作为内部可选端口写回同工作区、同项目、READY/USER_UPLOAD/IMAGE 资产的既有元数据；未实现该端口的轻量测试存储保持不可用即阻断。
 - Control API 规划入口复用上述端口和既有对象校验，在分析器已注入且角色仍未解析时按选中的资产 ID 逐张读取；没有任何按上传顺序赋予角色的分支。
 - 视觉适配器的结构化输出预算采用 OpenMontage 固定来源配置中的 `4096`；这是为避免兼容视觉端点在合法 JSON 尚未结束时截断的边界适配，角色枚举、解析规则和错误边界没有变化。定向单测同时锁定该请求参数。
-- `apps/control-api/tests/c11-creative-planning-routes.test.ts`：历史 READY 图片补分析并持久化 `2/2 PASS`；明确图片用途优先且视觉分析调用数为 `0`，`1/1 PASS`。
-- `pnpm --filter @alchemy-video/control-api test`：`60 PASS / 1 SKIP / 0 FAIL`（SKIP 为既有 PostgreSQL 依赖测试）。
+- `apps/control-api/tests/c11-creative-planning-routes.test.ts`：历史 READY 图片补分析并持久化 `2/2 PASS`；明确图片用途优先且视觉分析调用数为 `0`，`1/1 PASS`；已批准简报进入生产创建前复用同一分析器并按资产 ID 持久化 `2/2 PASS`。
+- Studio 对调度器的可恢复等待状态做了最小显示适配：父级 `BLOCKED` 且片段为可重试 `WAITING`、没有 `FAILED` 片段时，显示为蓝色“等待继续制作”；真实失败仍保持红色，后端状态机和公开契约不变。
+- `pnpm --filter @alchemy-video/control-api test`：最近一次完整本地实跑 `81 PASS / 1 SKIP / 0 FAIL`（SKIP 为既有 PostgreSQL 依赖测试）。
+- `pnpm --filter @alchemy-video/studio-web test`：`44 PASS / 0 SKIP / 0 FAIL`；Studio typecheck 与 production build 通过；等待态判定行为 `4/4 PASS`。
 - `pnpm --filter @alchemy-video/reference-analysis test`：`2 PASS / 0 SKIP / 0 FAIL`。
 - `pnpm --filter @alchemy-video/domain test`：`48 PASS / 0 SKIP / 0 FAIL`。
 - `pnpm typecheck`：全工作区通过。

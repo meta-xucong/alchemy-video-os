@@ -520,7 +520,7 @@ test("a scheduled credit retry is recovered after restart without a second Provi
   assert.equal(provider.submitCount, 1);
   assert.equal((await store.listRecoverableVideoTaskRuns({ limit: 10 })).some((task) => task.id === taskRunId), true);
 
-  const recovered = await executor.recover({ limit: 10, maxAttempts: 1 });
+  const recovered = await executor.recoverBillingPending({ limit: 10, maxAttempts: 1 });
   assert.equal(recovered[0]?.failure, undefined);
   assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "SUCCEEDED");
   assert.equal(credit.debitCalls, 2);
@@ -572,8 +572,10 @@ test("a usage 404 after a successful download preserves the artifact and later b
   assert.equal(provider.downloadCount, 1);
   assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "BILLING_PENDING");
 
-  const succeeded = await executor.execute({ workspaceId, taskRunId });
-  assert.equal(succeeded?.status, "SUCCEEDED");
+  const recovered = await executor.recoverBillingPending({ limit: 10, maxAttempts: 1 });
+  assert.equal(recovered[0]?.failure, undefined);
+  assert.equal(recovered[0]?.status, "SUCCEEDED");
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "SUCCEEDED");
   assert.equal(provider.submitCount, 1);
   assert.equal(provider.downloadCount, 1);
   assert.equal(usageReads, 2);

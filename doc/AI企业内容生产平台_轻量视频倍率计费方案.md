@@ -47,13 +47,15 @@ Studio 的“计费配置”页面和 `GET /api/v1/me/billing-policy` 只读展�
 任务快照中的 `usagePricing.multiplier` 表示额外倍率，`usagePricing.fixedFee` 表示额外固定费。旧的 `VIDEO_BILLING_CHARGE_AMOUNT` 固定金额路径保持兼容，但不能与新的 usage 规则同时启用。
 只要服务端配置了任一真实计费规则而 Veyra bridge 或已验证 AISelf 身份缺失，Control API 必须以 `CREDIT_UNAVAILABLE`/`AUTH_UNAVAILABLE` 阻断新任务；不能生成后再静默跳过 Video OS 服务费。全局倍率优先于模型映射，未配置规则时才保持本地无计费模式。
 
-计费异常按任务状态机收口：成功产物落库后才进入 `BILLING_PENDING`；临时 Veyra/信用服务故障进入 `RETRY_SCHEDULED`，Worker 重启恢复时只回到 `BILLING_PENDING`，继续使用同一扣费幂等键，不重新提交 Provider。余额不足、冲突或明确拒绝进入 `BILLING_FAILED`；用户充值后通过既有“重试任务”命令回到 `BILLING_PENDING`，只重试扣费，不重新生成视频。计费唤醒复用内部任务队列，浏览器仍只看到公开 TaskRun 状态。
+计费异常按任务状态机收口：成功产物落库后才进入 `BILLING_PENDING`；临时 Veyra/信用服务故障进入 `RETRY_SCHEDULED`，Worker 重启恢复时只回到 `BILLING_PENDING`，继续使用同一扣费幂等键，不重新提交 Provider。余额不足、冲突或明确拒绝进入 `BILLING_FAILED`；用户充值后通过既有“重试任务”命令回到 `BILLING_PENDING`，只重试扣费，不重新生成视频。启用计费的 Worker 同时按既有恢复扫描机制定期唤醒 `BILLING_PENDING`（单次只读取 usage、扣费和发布既有成功事件，不重提 Provider）；浏览器仍只看到公开 TaskRun 状态。
+
+Studio 将 `BILLING_PENDING` 及可恢复的计费 `RETRY_SCHEDULED` 映射为蓝色“等待费用结算”，明确说明视频已经生成且不会重复提交；只有实际失败或不可恢复阻断才显示红色错误。
 
 ## 当前边界
 
 自动 ProductionRun 已复用既有 `production_runs.budget_guard` 私有字段保存 billing snapshot，调度到每个 segment 的 `ProductionTaskRunInput`，再由现有 Worker billing executor 在成功产物后结算。该字段不进入公开 ProductionRun DTO，也不产生项目级重复扣费。
 
-Sub2API 的受保护 Veyra 端点 `GET /api/veyra/internal/users/{user_id}/usage/{request_id}` 现在只读复用既有 `usage_logs`，支持原 request id 与 Grok 已有的 `grok-video:` 稳定键；Video OS 的 `VeyraSub2ApiVideoUsageAdapter` 只读取这条事实，不创建第二本账。usage 尚未落账时返回可重试的未就绪；Worker 已先保存通过校验的媒体并停在 `BILLING_PENDING`，后续只恢复计费，不重复提交/下载，也不以预估金额代替。
+Sub2API 的受保护 Veyra 端点 `GET /api/veyra/internal/users/{user_id}/usage/{request_id}` 现在只读复用既有 `usage_logs`，支持原 request id 与 Grok 已有的 `grok-video:` 稳定键；Video OS 的 `VeyraSub2ApiVideoUsageAdapter` 只读取这条事实，不创建第二本账。usage 尚未落账时返回可重试的未就绪；Worker 已先保存通过校验的媒体并停在 `BILLING_PENDING`，由启动恢复或运行中的定期恢复扫描继续读取 usage 和扣费，不重复提交/下载，也不以预估金额代替。
 
 AISelf/Sub2API 自身已经会从用户余额扣除 `actual_cost`。本方案明确要求 Video OS 再收取独立的产品服务费，因此两笔账必须在 receipt/source 中区分；Video OS 不得把 Sub2API 基础费用再次作为自己的 debit。默认 `VEYRA_CREDIT_ENABLED=false` 仍保持关闭，真实启用必须使用同一计费单位。
 

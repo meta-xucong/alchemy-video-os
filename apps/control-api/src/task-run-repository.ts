@@ -211,12 +211,18 @@ export class InMemoryTaskRunStore implements TaskRunStore {
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
-  async listRecoverableVideoTaskRuns(input: { limit: number }) {
+  async listRecoverableVideoTaskRuns(input: { limit: number; statuses?: readonly ControlTaskRun["status"][] }) {
     const now = new Date().toISOString();
+    const recoverableStatuses = input.statuses
+      ? new Set(input.statuses)
+      : new Set<ControlTaskRun["status"]>(["RUNNING", "PROVIDER_PROCESSING", "DOWNLOADING", "BILLING_PENDING"]);
     return [...this.taskRuns.values()]
       .filter((taskRun) => taskRun.kind === "VIDEO_GENERATION" && (
-        ["RUNNING", "PROVIDER_PROCESSING", "DOWNLOADING", "BILLING_PENDING"].includes(taskRun.status)
-        || (taskRun.status === "RETRY_SCHEDULED"
+        (recoverableStatuses.has(taskRun.status) && taskRun.status !== "RETRY_SCHEDULED")
+        || recoverableStatuses.has("RETRY_SCHEDULED") && taskRun.status === "RETRY_SCHEDULED"
+          && (!taskRun.retryAt || taskRun.retryAt <= now)
+          && isBillingRetryErrorCode(taskRun.error?.code)
+        || (!input.statuses && taskRun.status === "RETRY_SCHEDULED"
           && (!taskRun.retryAt || taskRun.retryAt <= now)
           && isBillingRetryErrorCode(taskRun.error?.code))
       ))

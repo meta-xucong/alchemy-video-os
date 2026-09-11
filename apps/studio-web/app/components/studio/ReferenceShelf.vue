@@ -40,7 +40,7 @@
       </div>
     </div>
     <p v-if="selectedIds.length" class="selection-copy">本次会使用 {{ selectedIds.length }} 张参考图。</p>
-    <p v-if="selectedIds.length" class="selection-copy">描述中明确写出的图片职责会优先使用；未说明的图片按视觉风格参考处理。</p>
+    <p v-if="selectedIds.length" class="selection-copy">描述中明确写出的图片职责会优先使用；未说明的图片会先做内容识别，识别完成后再继续制作。</p>
     <p v-else class="empty-copy">尚未选择用于本次视频的参考图；也可以直接生成文字创作。</p>
   </section>
 </template>

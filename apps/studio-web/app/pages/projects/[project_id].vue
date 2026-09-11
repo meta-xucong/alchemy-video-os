@@ -198,7 +198,7 @@
             @preview="previewResult"
           />
           <p v-if="documentGenerationGateMessage" class="generation-material-gate" role="status">{{ documentGenerationGateMessage }}</p>
-          <ProductionProgressPanel :progress="currentProductionProgress" :busy="productionBusy" @retry="retryProductionSegment" @retry-composition="retryProductionComposition" />
+          <ProductionProgressPanel :progress="currentProductionProgress" :busy="productionBusy" :billing-pending="billingPending" @retry="retryProductionSegment" @retry-composition="retryProductionComposition" />
         </div>
 
         <aside class="project-results-column" aria-label="项目成果">
@@ -273,7 +273,7 @@ import ProjectResultsPanel, { type ProjectResultItem } from "../../components/st
 import ProductionProgressPanel from "../../components/studio/ProductionProgressPanel.vue";
 import ReferenceShelf from "../../components/studio/ReferenceShelf.vue";
 import StoryPlanningPanel from "../../components/studio/StoryPlanningPanel.vue";
-import { creationProgressFor, productionProgressFor } from "../../composables/useCreationProgress";
+import { creationProgressFor, isRecoverableWaitingProduction, productionProgressFor } from "../../composables/useCreationProgress";
 import type { Asset, CreativeBriefRevision, DocumentConversion, DocumentKnowledgeDetail, ProductionRun, ProductionRunProgress, Shot, StoryboardRevision, TaskRun, VideoVersion } from "../../composables/useControlApi";
 import { useRelayConnection } from "../../composables/useRelayConnection";
 
@@ -628,15 +628,29 @@ const canStartGeneration = computed(() => Boolean(
   && (!currentProductionRun.value || !activeProductionStatuses.has(currentProductionRun.value.status)),
 ));
 const failedProductionSegment = computed(() => currentProductionProgress.value?.segments.find((segment) => segment.status === "FAILED" && segment.retryable));
+const billingPending = computed(() => {
+  const task = latestTask.value;
+  if (!currentProductionProgress.value || !task) return false;
+  if (task.status === "BILLING_PENDING") return true;
+  return task.status === "RETRY_SCHEDULED"
+    && ["AUTH_FORBIDDEN", "AUTH_UNAVAILABLE", "CREDIT_UNAVAILABLE"].includes(task.error?.code ?? "");
+});
 const canRetry = computed(() => latestTask.value?.status === "FAILED" && Boolean(failedProductionSegment.value || !currentProductionProgress.value));
 const createsNewVersion = computed(() => hasProjectResult.value || Boolean(latestTask.value && newVersionTaskStatuses.has(latestTask.value.status)));
 const creationProgress = computed(() => currentProductionProgress.value
-  ? productionProgressFor(currentProductionProgress.value, Boolean(planningDraft.sourceText.trim()), creationBusy.value || planningBusy.value || productionBusy.value)
+  ? productionProgressFor(currentProductionProgress.value, Boolean(planningDraft.sourceText.trim()), creationBusy.value || planningBusy.value || productionBusy.value, billingPending.value)
   : creationProgressFor(latestTask.value?.status, Boolean(currentCreation.value)));
 const generationFeedback = computed<GenerationFeedback | undefined>(() => {
   const productionRun = currentProductionProgress.value?.production_run;
   if (productionRun?.status === "SUCCEEDED") {
     return { tone: "success", message: "完整成片已保存到当前项目，可以在右侧查看。" };
+  }
+  if (productionRun?.status === "BLOCKED" && isRecoverableWaitingProduction(currentProductionProgress.value)) {
+    const waitingSegment = currentProductionProgress.value?.segments.find((segment) => segment.status === "WAITING" && segment.retryable);
+    return { tone: "active", message: waitingSegment?.safe_summary ?? "正在等待必要准备完成，完成后会继续制作。" };
+  }
+  if (billingPending.value && productionRun && activeProductionStatuses.has(productionRun.status)) {
+    return { tone: "active", message: "本段视频已经生成，正在等待费用结算；确认后会继续整理成片。" };
   }
   if (productionRun?.status === "FAILED" || productionRun?.status === "BLOCKED") {
     const blockedSegment = currentProductionProgress.value?.segments.find((segment) => segment.status === "FAILED" || segment.status === "WAITING");

@@ -62,8 +62,9 @@ export function creationProgressFor(status: TaskRun["status"] | undefined, hasCu
     case "PROCESSING":
       return progress("正在生成视频", "正在生成视频。你可以留在当前页面，也可以稍后回到这个项目查看。", "active", 2);
     case "DOWNLOADING":
-    case "BILLING_PENDING":
       return progress("整理成片", "正在整理这次创作结果，完成后会保存到当前项目。", "active", 3);
+    case "BILLING_PENDING":
+      return progress("等待费用结算", "视频已经生成，正在等待费用结算；确认后会保存到当前项目。", "active", 3);
     case "SUCCEEDED":
       return progress("视频已生成", "结果已保存到当前项目。你可以预览，或调整后生成新版本。", "success", undefined, "success");
     case "FAILED":
@@ -73,7 +74,20 @@ export function creationProgressFor(status: TaskRun["status"] | undefined, hasCu
   }
 }
 
-export function productionProgressFor(progressView: ProductionRunProgress | undefined, hasInput: boolean, localBusy: boolean): CreationProgress {
+export function isRecoverableWaitingProduction(progressView: ProductionRunProgress | undefined): boolean {
+  const run = progressView?.production_run;
+  if (!run || run.status !== "BLOCKED") return false;
+  const segments = progressView?.segments ?? [];
+  return segments.some((segment) => segment.status === "WAITING" && segment.retryable)
+    && !segments.some((segment) => segment.status === "FAILED");
+}
+
+export function productionProgressFor(
+  progressView: ProductionRunProgress | undefined,
+  hasInput: boolean,
+  localBusy: boolean,
+  billingPending = false,
+): CreationProgress {
   if (localBusy) {
     return progress("AI 正在理解内容", "正在后台准备这次视频创作。", "active", 0);
   }
@@ -86,11 +100,18 @@ export function productionProgressFor(progressView: ProductionRunProgress | unde
   if (run.status === "SUCCEEDED") {
     return progress("完整成片已生成", "成片已保存到当前项目。你可以查看，或调整描述后生成新版本。", "success", undefined, "success");
   }
+  if (isRecoverableWaitingProduction(progressView)) {
+    const waitingSegment = progressView?.segments.find((segment) => segment.status === "WAITING" && segment.retryable);
+    return progress("等待继续制作", waitingSegment?.safe_summary ?? "正在等待必要准备完成，完成后会继续制作。", "active", 1);
+  }
   if (run.status === "FAILED" || run.status === "BLOCKED") {
     return progress("本次制作未完成", "这次没有完整完成。可以查看制作细节，或调整描述后生成新版本。", "error", undefined, "failure");
   }
   if (run.status === "CONFIRMED") {
     return progress("正在准备视频内容", "AI 正在把你的描述整理成可制作的视频。", "active", 1);
+  }
+  if (billingPending && ["GENERATING", "REVIEWING", "RENDERING"].includes(run.status)) {
+    return progress("等待费用结算", "本段视频已经生成，正在等待费用结算；确认后会继续整理成片。", "active", 3);
   }
   if (run.status === "GENERATING") {
     return progress("正在生成视频", "AI 正在制作这次视频。", "active", 2);

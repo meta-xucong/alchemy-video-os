@@ -1965,6 +1965,37 @@ export function createApp(options: CreateAppOptions = {}) {
     const idempotencyKey = readIdempotencyKey(context);
     const projectDetail = await assetStore.findProjectDetail(identity.workspaceId, projectId);
     if (!projectDetail) throw notFound("Project not found.");
+
+    // A brief can remain approved after an earlier vision service outage.  Reuse
+    // the existing source-aligned analyzer retry before the scheduler evaluates
+    // REFERENCE_SET, so an approved production request can recover that same
+    // persisted image analysis without inventing a role or changing the
+    // reference contract.  If the analyzer is still unavailable, the existing
+    // production gate remains fail-closed and reports its waiting state.
+    if (referenceVisionAnalyzer && command.delivery_plan_revision_id) {
+      const deliveryPlanForReferenceAnalysis = await deliveryPreflightStore.findDeliveryPlanRevision(
+        identity.workspaceId,
+        command.delivery_plan_revision_id,
+      );
+      if (deliveryPlanForReferenceAnalysis?.projectId === projectId && deliveryPlanForReferenceAnalysis.status === "APPROVED") {
+        const briefForReferenceAnalysis = await planningStore.findCreativeBriefRevision(
+          identity.workspaceId,
+          deliveryPlanForReferenceAnalysis.creativeBriefRevisionId,
+        );
+        if (briefForReferenceAnalysis?.projectId === projectId && briefForReferenceAnalysis.sourceAssetIds.length > 0) {
+          await analyzeMissingReferenceImages({
+            workspaceId: identity.workspaceId,
+            projectId,
+            sourcePrompt: briefForReferenceAnalysis.sourceText,
+            sourceAssetIds: briefForReferenceAnalysis.sourceAssetIds,
+            assetStore,
+            storage,
+            analyzer: referenceVisionAnalyzer,
+          });
+        }
+      }
+    }
+
     // Platform narration remains approval-gated for explicit speech.  A
     // source-backed native provider owner is the one exception: its generated
     // MP4 already owns the audible track and must not wait for a platform

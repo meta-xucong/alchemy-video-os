@@ -397,6 +397,30 @@ export class MockVideoTaskExecutor {
     return error instanceof VideoUsagePortError && error.retryable;
   }
 
+  async recoverBillingPending(input: { limit: number; maxAttempts?: number }) {
+    const recovered: Array<{ workspaceId: string; taskRunId: string; attempts: number; status?: string; failure?: string }> = [];
+    for (const taskRun of await this.store.listRecoverableVideoTaskRuns({ limit: input.limit, statuses: ["BILLING_PENDING", "RETRY_SCHEDULED"] })) {
+      const maxAttempts = input.maxAttempts ?? 1;
+      for (let attemptNo = 1; attemptNo <= maxAttempts; attemptNo += 1) {
+        try {
+          const result = await this.execute({ workspaceId: taskRun.workspaceId, taskRunId: taskRun.id });
+          recovered.push({ workspaceId: taskRun.workspaceId, taskRunId: taskRun.id, attempts: attemptNo, status: result?.status });
+          break;
+        } catch (error) {
+          if (attemptNo === maxAttempts) {
+            recovered.push({
+              workspaceId: taskRun.workspaceId,
+              taskRunId: taskRun.id,
+              attempts: attemptNo,
+              failure: error instanceof Error ? error.message.replace(/[\r\n]+/g, " ").slice(0, 500) : "Unknown billing recovery failure.",
+            });
+          }
+        }
+      }
+    }
+    return recovered;
+  }
+
   async recover(input: { limit: number; maxAttempts?: number }) {
     const recovered: Array<{ workspaceId: string; taskRunId: string; attempts: number; status?: string; failure?: string }> = [];
     for (const taskRun of await this.store.listRecoverableVideoTaskRuns({ limit: input.limit })) {
