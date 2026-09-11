@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { DeterministicPlanningModel, DeterministicStoryboardCompiler } from "@alchemy-video/creative-planning";
+import { DeterministicPlanningModel, DeterministicStoryboardCompiler, type StoryboardCompilerPort } from "@alchemy-video/creative-planning";
 import type { ControlCreativeBriefRevision, CreativePlanningDraft } from "@alchemy-video/persistence";
-import { resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
+import { UnsupportedVideoGenerationInputError, resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import { InMemoryStoragePort } from "@alchemy-video/storage-client";
 
 import { BoundedDocumentContextReader } from "../src/document-context-reader.js";
@@ -462,4 +462,286 @@ test("CreativePlanningExecutor scopes frozen facts to the matching generation se
   assert.equal(second.prompt.includes("距高铁站 18 公里"), false);
   assert.deepEqual(first.referenceMap.fact_refs, ["dft_brand_seg", "dft_rail_seg"]);
   assert.deepEqual(second.referenceMap.fact_refs, ["dft_brand_seg", "dft_spa_seg"]);
+});
+
+test("CreativePlanningExecutor replans once after a sub2api prompt budget preflight failure", async () => {
+  const profile = resolveVideoProviderRuntimeProfile("sub2api");
+  const durationPolicy = resolvePlanningDurationPolicy(profile);
+  const baseCompiler = new DeterministicStoryboardCompiler();
+  let plannerCalls = 0;
+  let completeCalls = 0;
+  let captured: CreativePlanningDraft | undefined;
+  const planner = {
+    async plan(input: Parameters<DeterministicPlanningModel["plan"]>[0]) {
+      plannerCalls += 1;
+      return new DeterministicPlanningModel().plan(input);
+    },
+  };
+  const compiler: StoryboardCompilerPort = {
+    async compile(input) {
+      const compiled = await baseCompiler.compile(input);
+      // The fixture models a genuinely combined semantic segment: only when
+      // both authored visual paragraphs are still together does the source
+      // exceed the budget. Splitting the source paragraphs, rather than merely
+      // changing a count flag, is what makes the second plan fit.
+      if (!input.narrativeGoal.includes("第一视觉段") || !input.narrativeGoal.includes("第二视觉段")) return compiled;
+      const sourcePrompt = `${compiled.capabilitySnapshot.source_prompt as string}${"不可删除源事实。".repeat(700)}`;
+      return {
+        ...compiled,
+        prompt: sourcePrompt,
+        capabilitySnapshot: {
+          ...compiled.capabilitySnapshot,
+          source_prompt: sourcePrompt,
+          generated_prompt_parts: [],
+        },
+      };
+    },
+  };
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan(input) {
+      completeCalls += 1;
+      captured = input.draft;
+      return undefined;
+    },
+  }, planner, compiler, undefined, undefined, profile.audioOwner, durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
+
+  const authoredSource = "口播文案：”\n第一段台词。\n第二段台词。”\n\n视频生成意图描述\n第一视觉段：人物走近【@入口】。\n第二视觉段：她停下看向【@屏幕】。";
+  await executor.execute({
+    brief: { ...brief, sourceText: authoredSource, targetDurationSeconds: 15, sourceAssetIds: ["ast_entry", "ast_screen"] },
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXJXREPLAN",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXJXREPLAN",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXJXREPLAN",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXJXREPLAN",
+    },
+  });
+
+  assert.equal(plannerCalls, 2);
+  assert.equal(completeCalls, 1);
+  assert.equal(captured?.generationSegmentCount, 2);
+  assert.deepEqual(captured?.shotSpecs.map((shot) => shot.durationSeconds), [10, 5]);
+  assert.deepEqual(captured?.shotSpecs.flatMap((shot) => shot.narrativeBeatSequences), [1, 2]);
+  const sourcePrompts = captured?.promptPackages?.map((promptPackage) => String(promptPackage.capabilitySnapshot.source_prompt ?? "")) ?? [];
+  assert.equal(sourcePrompts.filter((sourcePrompt) => sourcePrompt.includes("第一段台词。")).length, 1);
+  assert.equal(sourcePrompts.filter((sourcePrompt) => sourcePrompt.includes("第二段台词。")).length, 1);
+  assert.equal(sourcePrompts.join("").includes("第一段台词。\n第二段台词。"), true);
+  assert.ok(sourcePrompts.some((sourcePrompt) => sourcePrompt.includes("第一视觉段") && sourcePrompt.includes("@入口")));
+  assert.ok(sourcePrompts.some((sourcePrompt) => sourcePrompt.includes("第二视觉段") && sourcePrompt.includes("@屏幕")));
+  assert.deepEqual(captured?.promptPackages?.map((promptPackage) => promptPackage.referenceMap.reference_policy), ["REFERENCE_SET", "HANDOFF_FIRST_FRAME"]);
+  assert.ok(captured?.shotSpecs.every((shot) => shot.durationSeconds >= 1 && shot.durationSeconds <= 15));
+  assert.ok(captured?.shotSpecs[0]?.narrativeGoal.includes("第一视觉段"));
+  assert.ok(captured?.shotSpecs[1]?.narrativeGoal.includes("第二视觉段"));
+  assert.ok(!captured?.shotSpecs[0]?.narrativeGoal.includes("第二视觉段"));
+  assert.ok(!captured?.shotSpecs[1]?.narrativeGoal.includes("第一视觉段"));
+  assert.ok(captured?.promptPackages?.every((promptPackage) => {
+    const sourcePrompt = promptPackage.capabilitySnapshot.source_prompt;
+    const generatedPromptParts = promptPackage.capabilitySnapshot.generated_prompt_parts;
+    return typeof sourcePrompt === "string"
+      && Array.isArray(generatedPromptParts)
+      && generatedPromptParts.every((part): part is string => typeof part === "string")
+      && [sourcePrompt, ...generatedPromptParts].join(" ") === promptPackage.prompt;
+  }));
+});
+
+test("CreativePlanningExecutor does not persist when the single allowed replan remains over budget", async () => {
+  const profile = resolveVideoProviderRuntimeProfile("sub2api");
+  const durationPolicy = resolvePlanningDurationPolicy(profile);
+  const baseCompiler = new DeterministicStoryboardCompiler();
+  let plannerCalls = 0;
+  let completeCalls = 0;
+  const planner = {
+    async plan(input: Parameters<DeterministicPlanningModel["plan"]>[0]) {
+      plannerCalls += 1;
+      return new DeterministicPlanningModel().plan(input);
+    },
+  };
+  const compiler: StoryboardCompilerPort = {
+    async compile(input) {
+      const compiled = await baseCompiler.compile(input);
+      const sourcePrompt = `${compiled.capabilitySnapshot.source_prompt as string}${"不可删除源事实。".repeat(700)}`;
+      return {
+        ...compiled,
+        prompt: sourcePrompt,
+        capabilitySnapshot: { ...compiled.capabilitySnapshot, source_prompt: sourcePrompt, generated_prompt_parts: [] },
+      };
+    },
+  };
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan() {
+      completeCalls += 1;
+      return undefined;
+    },
+  }, planner, compiler, undefined, undefined, profile.audioOwner, durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
+
+  await assert.rejects(() => executor.execute({
+    brief: { ...brief, sourceText: "一个不可再分的超长源单元。", targetDurationSeconds: 15 },
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXJXFAIL",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXJXFAIL",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXJXFAIL",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXJXFAIL",
+    },
+  }), (error: unknown) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET");
+  assert.equal(plannerCalls, 2);
+  assert.equal(completeCalls, 0);
+});
+
+test("CreativePlanningExecutor keeps Mock planning single-pass even with an oversized prompt", async () => {
+  const profile = resolveVideoProviderRuntimeProfile("mock");
+  const baseCompiler = new DeterministicStoryboardCompiler();
+  let plannerCalls = 0;
+  let completeCalls = 0;
+  const planner = {
+    async plan(input: Parameters<DeterministicPlanningModel["plan"]>[0]) {
+      plannerCalls += 1;
+      return new DeterministicPlanningModel().plan(input);
+    },
+  };
+  const compiler: StoryboardCompilerPort = {
+    async compile(input) {
+      const compiled = await baseCompiler.compile(input);
+      const prompt = `${compiled.prompt}${"本地 Mock 保留源文本。".repeat(700)}`;
+      return { ...compiled, prompt, capabilitySnapshot: { ...compiled.capabilitySnapshot, source_prompt: prompt, generated_prompt_parts: [] } };
+    },
+  };
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan() {
+      completeCalls += 1;
+      return undefined;
+    },
+  }, planner, compiler, undefined, undefined, undefined, undefined, profile, 4_096);
+  await executor.execute({
+    brief,
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXJMOCK",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXJMOCK",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXJMOCK",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXJMOCK",
+    },
+  });
+  assert.equal(plannerCalls, 1);
+  assert.equal(completeCalls, 1);
+});
+
+test("CreativePlanningExecutor does not replan ordinary compiler errors", async () => {
+  let plannerCalls = 0;
+  let completeCalls = 0;
+  const planner = {
+    async plan(input: Parameters<DeterministicPlanningModel["plan"]>[0]) {
+      plannerCalls += 1;
+      return new DeterministicPlanningModel().plan(input);
+    },
+  };
+  const compiler: StoryboardCompilerPort = {
+    async compile() {
+      throw new Error("ordinary compiler failure");
+    },
+  };
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan() {
+      completeCalls += 1;
+      return undefined;
+    },
+  }, planner, compiler);
+
+  await assert.rejects(() => executor.execute({
+    brief,
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXERR",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXERR",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXERR",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXERR",
+    },
+  }), /ordinary compiler failure/);
+  assert.equal(plannerCalls, 1);
+  assert.equal(completeCalls, 0);
+});
+
+test("CreativePlanningExecutor keeps a missing sidecar fail-closed across the single retry", async () => {
+  const profile = resolveVideoProviderRuntimeProfile("sub2api");
+  const durationPolicy = resolvePlanningDurationPolicy(profile);
+  const baseCompiler = new DeterministicStoryboardCompiler();
+  let plannerCalls = 0;
+  let completeCalls = 0;
+  const planner = {
+    async plan(input: Parameters<DeterministicPlanningModel["plan"]>[0]) {
+      plannerCalls += 1;
+      return new DeterministicPlanningModel().plan(input);
+    },
+  };
+  const compiler: StoryboardCompilerPort = {
+    async compile(input) {
+      const compiled = await baseCompiler.compile(input);
+      return {
+        ...compiled,
+        prompt: "不可表达的完整源事实。".repeat(900),
+        capabilitySnapshot: {},
+      };
+    },
+  };
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan() {
+      completeCalls += 1;
+      return undefined;
+    },
+  }, planner, compiler, undefined, undefined, profile.audioOwner, durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
+
+  await assert.rejects(() => executor.execute({
+    brief: { ...brief, sourceText: "单一不可截断源事实。", targetDurationSeconds: 15 },
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXMISS",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXMISS",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXMISS",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXMISS",
+    },
+  }), (error: unknown) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET");
+  assert.equal(plannerCalls, 2);
+  assert.equal(completeCalls, 0);
+});
+
+test("CreativePlanningExecutor keeps a mismatched sidecar fail-closed across the single retry", async () => {
+  const profile = resolveVideoProviderRuntimeProfile("sub2api");
+  const durationPolicy = resolvePlanningDurationPolicy(profile);
+  const baseCompiler = new DeterministicStoryboardCompiler();
+  let plannerCalls = 0;
+  let completeCalls = 0;
+  const planner = {
+    async plan(input: Parameters<DeterministicPlanningModel["plan"]>[0]) {
+      plannerCalls += 1;
+      return new DeterministicPlanningModel().plan(input);
+    },
+  };
+  const compiler: StoryboardCompilerPort = {
+    async compile(input) {
+      const compiled = await baseCompiler.compile(input);
+      const sourcePrompt = String(compiled.capabilitySnapshot.source_prompt ?? "");
+      return {
+        ...compiled,
+        prompt: `${sourcePrompt} ${"不可安全重排的源事实。".repeat(900)}`,
+        capabilitySnapshot: {
+          ...compiled.capabilitySnapshot,
+          source_prompt: sourcePrompt,
+          generated_prompt_parts: ["与 prompt 不一致的派生片段"],
+        },
+      };
+    },
+  };
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan() {
+      completeCalls += 1;
+      return undefined;
+    },
+  }, planner, compiler, undefined, undefined, profile.audioOwner, durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
+
+  await assert.rejects(() => executor.execute({
+    brief: { ...brief, sourceText: "单一不可重排源事实。", targetDurationSeconds: 15 },
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXMISM",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXMISM",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXMISM",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXMISM",
+    },
+  }), (error: unknown) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET");
+  assert.equal(plannerCalls, 2);
+  assert.equal(completeCalls, 0);
 });

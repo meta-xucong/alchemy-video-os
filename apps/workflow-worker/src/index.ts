@@ -1,5 +1,5 @@
 import { DeterministicPlanningModel, DeterministicStoryboardCompiler } from "@alchemy-video/creative-planning";
-import { resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
+import { resolveEffectiveVideoPromptMaxUtf8Bytes, resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import { DrizzleCreativePlanningRepository, createDatabase } from "@alchemy-video/persistence";
 import { BullMqCreativePlanningQueue, createBullMqCreativePlanningWorker } from "@alchemy-video/task-queue";
 import { createS3StoragePort } from "@alchemy-video/storage-client";
@@ -31,6 +31,7 @@ const storage = createS3StoragePort({
 });
 const runtimeProfile = resolveVideoProviderRuntimeProfile(process.env.VIDEO_PROVIDER);
 const durationPolicy = resolvePlanningDurationPolicy(runtimeProfile);
+const providerPromptMaxUtf8Bytes = resolveEffectiveVideoPromptMaxUtf8Bytes(runtimeProfile, process.env.VIDEO_PROMPT_MAX_UTF8_BYTES);
 const executor = new CreativePlanningExecutor(
   planningStore,
   new DeterministicPlanningModel(),
@@ -39,6 +40,8 @@ const executor = new CreativePlanningExecutor(
   undefined,
   runtimeProfile.audioOwner,
   durationPolicy,
+  runtimeProfile,
+  providerPromptMaxUtf8Bytes,
 );
 const queueName = process.env.CREATIVE_PLANNING_QUEUE_NAME;
 const deadLetterQueueName = process.env.CREATIVE_PLANNING_DEAD_LETTER_QUEUE_NAME;

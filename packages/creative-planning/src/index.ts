@@ -55,6 +55,8 @@ export type PlanningInput = {
   targetDurationSeconds: number;
   /** Internal source-backed provider duration policy; omitted means Huobao 8..15s. */
   durationPolicy?: StoryboardDurationPolicy;
+  /** Internal retry floor; it never enters a public DTO or persisted plan. */
+  minimumGenerationSegmentCount?: number;
   stylePreferences: string;
   sourceAssetIds: string[];
   documentContexts?: PlanningDocumentContext[];
@@ -709,7 +711,11 @@ const chooseGenerationSegmentCount = (
   dialogueLines: readonly string[] = [],
   durationPolicy: StoryboardDurationPolicy = DEFAULT_STORYBOARD_DURATION_POLICY,
   hasExplicitSceneChange = false,
+  minimumGenerationSegmentCount = 1,
 ) => {
+  const minimumSegmentCount = Number.isSafeInteger(minimumGenerationSegmentCount)
+    ? Math.max(1, minimumGenerationSegmentCount)
+    : 1;
   // Huobao scene boundaries cannot be merged into one provider segment. If a
   // short target cannot provide the active minimum to both scenes, preserve
   // the source boundary and let the existing storyboard invariant reject the
@@ -717,13 +723,13 @@ const chooseGenerationSegmentCount = (
   if (hasExplicitSceneChange
     && targetDurationSeconds <= durationPolicy.maxDurationSeconds
     && targetDurationSeconds < durationPolicy.minDurationSeconds * 2) {
-    return 2;
+    return Math.max(2, minimumSegmentCount);
   }
   // A target that fits in the active provider's maximum is one provider
   // segment when no unsatisfiable scene boundary requires fail-closed
   // handling above. Ordinary editorial beats remain in that segment's motion
   // plan; they cannot create a short 8+7 request pair.
-  if (targetDurationSeconds <= durationPolicy.maxDurationSeconds) return 1;
+  if (targetDurationSeconds <= durationPolicy.maxDurationSeconds) return minimumSegmentCount;
 
   // Reuse the upstream storyboard-breaker rule after the provider ceiling is
   // exceeded. MotionBeat carries dense actions inside each segment, and the
@@ -742,7 +748,7 @@ const chooseGenerationSegmentCount = (
   // sections under the upstream 8-15s ceiling. A paragraph boundary that
   // cannot fit in the current segment therefore creates the next segment,
   // rather than being pulled across by character balancing.
-  return preferredMaximum;
+  return Math.max(preferredMaximum, minimumSegmentCount);
 };
 
 // Thin adaptation of huobao storyboard-breaker: spoken copy gets the time it
@@ -938,6 +944,7 @@ export class DeterministicPlanningModel implements PlanningModelPort {
       dialogueLines,
       durationPolicy,
       hasExplicitSceneChange,
+      input.minimumGenerationSegmentCount,
     );
     const plannedTiming = planSegmentDurations({
       targetDurationSeconds: input.targetDurationSeconds,

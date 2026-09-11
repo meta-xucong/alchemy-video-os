@@ -233,6 +233,23 @@ test("an explicit Grok duration policy keeps every short target in one exact seg
   }
 });
 
+test("internal minimum generation segment count reuses the existing semantic planner", async () => {
+  const plan = await new DeterministicPlanningModel().plan({
+    sourceText: "人物走近。她停下。",
+    targetDurationSeconds: 15,
+    durationPolicy: { minDurationSeconds: 1, maxDurationSeconds: 15 },
+    minimumGenerationSegmentCount: 2,
+    stylePreferences: "",
+    sourceAssetIds: [],
+  });
+
+  assert.equal(plan.generationSegmentCount, 2);
+  assert.deepEqual(plan.shotSpecs.map((shot) => shot.durationSeconds), [8, 7]);
+  assert.deepEqual(plan.shotSpecs.map((shot) => shot.dependsOnSequences), [[], [1]]);
+  assert.deepEqual(plan.beats.map((beat) => beat.generationSegmentSequence), [1, 2]);
+  assert.deepEqual(plan.shotSpecs.map((shot) => shot.narrativeBeatSequences), [[1], [2]]);
+});
+
 test("an explicit Grok duration policy rejects authored dialogue that cannot fit the exact short target", async () => {
   await assert.rejects(() => new DeterministicPlanningModel().plan({
     sourceText: '口播文案："甲乙丙丁戊己"',
