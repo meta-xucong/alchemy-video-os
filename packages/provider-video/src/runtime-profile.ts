@@ -252,6 +252,7 @@ export const createRuntimeVideoInputSnapshot = (input: Readonly<{
   motionPlanHash?: string;
   motionTimeline?: MotionBeat[];
   deliveryPlanRevisionId?: string;
+  billing?: VideoGenerationInputSnapshot["billing"];
 }>): VideoGenerationInputSnapshot => {
   const visualInput = VisualInputSnapshotSchema.safeParse(input.visualInput);
   if (!visualInput.success) {
@@ -310,6 +311,9 @@ export const createRuntimeVideoInputSnapshot = (input: Readonly<{
   }
   if (input.motionTimeline !== undefined) {
     snapshot.motion_timeline = input.motionTimeline;
+  }
+  if (input.billing !== undefined) {
+    snapshot.billing = input.billing;
   }
   return snapshot;
 };

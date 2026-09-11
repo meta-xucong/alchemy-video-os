@@ -1,4 +1,4 @@
-import { createPrefixedId } from "@alchemy-video/domain";
+import { createPrefixedId, isBillingRetryErrorCode } from "@alchemy-video/domain";
 import { VideoGenerationInputSnapshotSchema } from "@alchemy-video/contracts";
 import type { AssetWorkspaceStore, TaskRunStore } from "@alchemy-video/persistence";
 import { StorageObjectAlreadyExistsError, createGeneratedVideoObjectKey, type StoragePort } from "@alchemy-video/storage-client";
@@ -71,7 +71,7 @@ export class MockVideoTaskExecutor {
   constructor(
     private readonly store: Pick<
       TaskRunStore,
-      "findTaskRun" | "listRecoverableVideoTaskRuns" | "listTaskRunAttempts" | "ensureProviderAttempt" | "recordProviderSubmission" | "recordProviderProcessing" | "beginDownload" | "recordDownloadRetryableFailure" | "findGeneratedAssetDraft" | "ensureGeneratedAsset" | "completeGeneratedTaskRun" | "failTaskRun"
+      "findTaskRun" | "listRecoverableVideoTaskRuns" | "listTaskRunAttempts" | "ensureProviderAttempt" | "recordProviderSubmission" | "recordProviderProcessing" | "beginDownload" | "recordDownloadRetryableFailure" | "findGeneratedAssetDraft" | "ensureGeneratedAsset" | "completeGeneratedTaskRun" | "failTaskRun" | "resumeBillingRetry"
     >,
     private readonly provider: VideoProviderPort,
     private readonly storage: StoragePort,
@@ -90,10 +90,14 @@ export class MockVideoTaskExecutor {
   ) {}
 
   async execute(input: { workspaceId: string; taskRunId: string }) {
-    const taskRun = await this.store.findTaskRun(input.workspaceId, input.taskRunId);
+    let taskRun = await this.store.findTaskRun(input.workspaceId, input.taskRunId);
     if (!taskRun || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(taskRun.status)) return taskRun;
 
     const inputSnapshot = VideoGenerationInputSnapshotSchema.parse(taskRun.inputSnapshot);
+    if (taskRun.status === "RETRY_SCHEDULED" && inputSnapshot.billing && isBillingRetryErrorCode(taskRun.error?.code)) {
+      taskRun = await this.store.resumeBillingRetry({ workspaceId: input.workspaceId, taskRunId: input.taskRunId, now: new Date() }) ?? taskRun;
+      if (taskRun.status === "RETRY_SCHEDULED") return taskRun;
+    }
     if (taskRun.status === "BILLING_PENDING" && inputSnapshot.billing) {
       if (!this.options.billingExecutor) {
         // Never fall back to another Provider/download pass for an already

@@ -2541,9 +2541,10 @@ Exit Gate：`ACCEPTED`（仅本窄范围）。Compose 拓扑、固定内部 URL 
 
 ### 2026-09-10 VPS route-guard 用户授权部署复核（运行证据，不升级总体状态）
 
-- 前述 route-guard 窄范围已由独立审计收口为 `ACCEPTED` 后，用户另行明确授权同步并部署。已推送提交
-  `1765c5cad3c4741b6cf674847fc0cbbd6bcba3c5`（`codex/vps-adapter-20260909`）并在
-  `/opt/alchemy-video` 活动目录应用四个运行时文件；部署前备份至
+- 前述 route-guard 窄范围已由独立审计收口为 `ACCEPTED` 后，用户另行明确授权同步并部署。四个目标文件的基线来自提交
+  `1765c5cad3c4741b6cf674847fc0cbbd6bcba3c5`（`codex/vps-adapter-20260909`）；远端活动
+  `services/media-runtime/main.py` 保留部署前已存在的 `encode_pixabay_header(...).rstrip('=')`
+  差异，因此远端运行副本不完全等同该提交。四个目标文件在 `/opt/alchemy-video` 活动目录应用；部署前备份至
   `/opt/alchemy-video/backups/route-guard-1765c5c-20260910T014731Z`。VPS 原有用户基线和数据卷、密钥未覆盖。
 - 远端 `docker-compose --env-file secrets/video.env -f infrastructure/deploy/docker-compose.video.yml config --quiet` 通过；仅构建/重建
   `media-runtime`、`control-media-runtime`、`control-api`、`production-worker`，未执行 `down`、卷删除或数据库迁移。

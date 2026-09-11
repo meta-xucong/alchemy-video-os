@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createApp } from "../src/app.js";
-import { createVeyraCurrentIdentity, type CurrentIdentity, type IdentityPort } from "../src/identity.js";
+import { createVeyraCurrentIdentity, DevIdentityAdapter, type CurrentIdentity, type IdentityPort } from "../src/identity.js";
 import { createInMemoryControlPlaneStore } from "../src/repository.js";
 import { createInMemoryAssetWorkspaceStore } from "../src/asset-repository.js";
 import { createInMemoryTaskRunStore } from "../src/task-run-repository.js";
@@ -11,13 +11,14 @@ import { VideoSessionCodec } from "../src/veyra-session.js";
 
 const readJson = async (response: Response) => response.json() as Promise<Record<string, any>>;
 
-const canaryIdentity = createVeyraCurrentIdentity({
+const canaryExternalIdentity = {
   externalUserId: 20260816,
   intent: "video",
   email: "video_canary_20260816@example.test",
   role: "owner",
   expiresAt: "2099-01-01T00:00:00.000Z",
-});
+} as const;
+const canaryIdentity = createVeyraCurrentIdentity(canaryExternalIdentity);
 
 class StaticIdentityAdapter implements IdentityPort {
   constructor(private readonly identity: CurrentIdentity) {}
@@ -82,17 +83,29 @@ test("C13-A rejects a tampered bootstrap that does not match the resolved identi
   assert.equal(JSON.stringify(body).includes("video_canary_20260816"), false);
 });
 
+test("C13-A derives administrator capability only from the supported Veyra roles", async () => {
+  for (const role of ["admin", "ADMIN "]) {
+    assert.equal(createVeyraCurrentIdentity({ ...canaryExternalIdentity, role }).isAdmin, true);
+  }
+  for (const role of ["user", "owner", "editor", "administrator", "ADMINISTRATOR "]) {
+    const identity = createVeyraCurrentIdentity({ ...canaryExternalIdentity, role });
+    assert.equal(identity.isAdmin, false);
+  }
+  assert.equal((await new DevIdentityAdapter().resolve(new Request("http://localhost"))).isAdmin, false);
+});
+
 test("C13-A exposes the Sub2API account through a public, provider-neutral credit DTO", async () => {
   const app = createApp({
     identity: new StaticIdentityAdapter(canaryIdentity),
     videoVeyraBridge: {
-      getAccount: async () => ({ externalUserId: 20260816, email: "video_canary_20260816@example.test", role: "owner", balance: "12.5", status: "active", concurrency: 2 }),
+      getAccount: async () => ({ externalUserId: 20260816, email: "video_canary_20260816@example.test", role: " ADMIN ", balance: "12.5", status: "active", concurrency: 2 }),
     } as never,
   });
   const response = await app.request("http://localhost/api/v1/me/credits");
   const body = await readJson(response);
   assert.equal(response.status, 200);
-  assert.deepEqual(body.data, { external_user_id: 20260816, email: "video_canary_20260816@example.test", role: "owner", balance: "12.5", status: "active", concurrency: 2 });
+  assert.deepEqual(body.data, { email: "video_canary_20260816@example.test", role: "admin", balance: "12.5", status: "active", concurrency: 2 });
+  assert.equal("external_user_id" in body.data, false);
 });
 
 test("C13-A freezes the global Video OS service fee without copying the Sub2API base price", async () => {
@@ -147,6 +160,44 @@ test("C13-A freezes the global Video OS service fee without copying the Sub2API 
   assert.equal(task?.inputSnapshot.billing?.billing_rule.chargeAmount, undefined);
 });
 
+test("C13-A exposes only the effective server billing policy", async () => {
+  const app = createApp({
+    identity: new StaticIdentityAdapter(canaryIdentity),
+    videoBillingModelRates: { "grok-imagine-video-1.5": "1.20" },
+    videoBillingSurchargeMultiplier: "0.20",
+    videoBillingFixedFee: "1",
+    videoVeyraBridge: { getAccount: async () => ({ externalUserId: 20260816, email: "hidden@example.test", role: "owner", balance: "9", status: "active", concurrency: 1 }) } as never,
+  });
+  const response = await app.request("http://localhost/api/v1/me/billing-policy");
+  const body = await readJson(response);
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.data, {
+    enabled: true,
+    mode: "USAGE_PLUS_SERVICE_FEE",
+    surcharge_multiplier: "0.20",
+    fixed_fee: "1",
+    charge_amount: null,
+    model_multipliers: { "grok-imagine-video-1.5": "1.20" },
+    source: "SERVER_ENVIRONMENT",
+  });
+  assert.equal(JSON.stringify(body).includes("external_user_id"), false);
+  assert.equal(JSON.stringify(body).includes("hidden@example.test"), false);
+});
+
+test("mixed legacy and usage billing settings are rejected instead of silently choosing one", async () => {
+  const app = createApp({
+    identity: new StaticIdentityAdapter(canaryIdentity),
+    videoBillingChargeAmount: "2",
+    videoBillingSurchargeMultiplier: "0.20",
+    videoBillingFixedFee: "1",
+    videoVeyraBridge: { getAccount: async () => ({ externalUserId: 20260816, email: "hidden@example.test", role: "owner", balance: "9", status: "active", concurrency: 1 }) } as never,
+  });
+  const response = await app.request("http://localhost/api/v1/me/billing-policy");
+  const body = await readJson(response);
+  assert.equal(response.status, 503);
+  assert.equal(body.error.code, "CREDIT_UNAVAILABLE");
+});
+
 test("usage-based Video OS billing fails closed when the fixed service fee is missing", async () => {
   const store = createInMemoryControlPlaneStore();
   const assets = createInMemoryAssetWorkspaceStore(store);
@@ -182,6 +233,46 @@ test("usage-based Video OS billing fails closed when the fixed service fee is mi
   const generation = await app.request(`http://localhost/api/v1/shots/${shot.data.id}/generations`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "Idempotency-Key": "c13a-missing-fixed-generation" },
+    body: JSON.stringify({}),
+  });
+  const body = await readJson(generation);
+  assert.equal(generation.status, 503);
+  assert.equal(body.error.code, "CREDIT_UNAVAILABLE");
+});
+
+test("configured Video OS billing fails closed when the server credit bridge is absent", async () => {
+  const store = createInMemoryControlPlaneStore();
+  const assets = createInMemoryAssetWorkspaceStore(store);
+  const tasks = createInMemoryTaskRunStore(assets);
+  const app = createApp({
+    store,
+    assetStore: assets,
+    taskStore: tasks,
+    storage: new InMemoryStoragePort(),
+    identity: new StaticIdentityAdapter(canaryIdentity),
+    videoProviderMode: "mock",
+    videoBillingSurchargeMultiplier: "0.20",
+    videoBillingFixedFee: "1",
+  });
+  const project = await readJson(await app.request("http://localhost/api/v1/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c13a-no-bridge-project" },
+    body: JSON.stringify({ name: "C13-A no-bridge project" }),
+  }));
+  const shot = await readJson(await app.request(`http://localhost/api/v1/projects/${project.data.id}/shots`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c13a-no-bridge-shot" },
+    body: JSON.stringify({ position: 0, prompt: "A no-bridge billing fixture shot.", reference_bindings: [] }),
+  }));
+  const ready = await app.request(`http://localhost/api/v1/shots/${shot.data.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c13a-no-bridge-ready" },
+    body: JSON.stringify({ status: "READY" }),
+  });
+  assert.equal(ready.status, 200);
+  const generation = await app.request(`http://localhost/api/v1/shots/${shot.data.id}/generations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": "c13a-no-bridge-generation" },
     body: JSON.stringify({}),
   });
   const body = await readJson(generation);

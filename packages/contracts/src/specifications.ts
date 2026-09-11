@@ -2,6 +2,7 @@ import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
 import { ApiErrorSchema, ApiFailureEnvelopeSchema, successEnvelope } from "./errors.js";
+import { BillingPolicySummarySchema, PublicCreditAccountSchema } from "./credit.js";
 import { AudioCapabilitiesSchema, PixabayMusicImportCommandSchema, PixabayMusicImportSchema, PixabayMusicImportSuccessSchema } from "./audio.js";
 import { InternalCreativePlanningQueueMessageSchema, InternalDocumentConversionQueueMessageSchema, InternalDocumentKnowledgeQueueMessageSchema, InternalEventEnvelopeSchema, InternalTaskRunQueueMessageSchema, PublicWorkspaceEventEnvelopeSchema } from "./events.js";
 import { ApproveDeliveryPlanRevisionCommandSchema, CreateDeliveryPlanRevisionCommandSchema, DeliveryPlanRevisionSchema } from "./delivery-preflight.js";
@@ -34,6 +35,8 @@ import {
   CreateUploadRequestCommandSchema,
   CurrentIdentitySchema,
   HealthSchema,
+  ProjectHistoryProjectSchema,
+  ProjectHistorySchema,
   ProjectDetailSchema,
   ProjectSchema,
   RetryTaskRunCommandSchema,
@@ -72,6 +75,8 @@ export const publicContractSchemas = {
   Project: ProjectSchema,
   ProjectSuccess: successEnvelope(ProjectSchema),
   ProjectListSuccess: successEnvelope(z.array(ProjectSchema)),
+  ProjectHistorySuccess: successEnvelope(ProjectHistorySchema),
+  ProjectHistoryProject: ProjectHistoryProjectSchema,
   Asset: AssetSchema,
   AssetSuccess: successEnvelope(AssetSchema),
   AssetDownloadUrlSuccess: successEnvelope(AssetDownloadUrlSchema),
@@ -109,6 +114,10 @@ export const publicContractSchemas = {
   VideoVersionListSuccess: successEnvelope(z.array(VideoVersionSchema)),
   ReferenceBinding: ReferenceBindingSchema,
   CurrentIdentitySuccess: successEnvelope(CurrentIdentitySchema),
+  CreditAccountSummary: PublicCreditAccountSchema,
+  CreditAccountSummarySuccess: successEnvelope(PublicCreditAccountSchema),
+  BillingPolicySummary: BillingPolicySummarySchema,
+  BillingPolicySummarySuccess: successEnvelope(BillingPolicySummarySchema),
   HealthSuccess: successEnvelope(HealthSchema),
   Shot: ShotSchema,
   ShotSuccess: successEnvelope(ShotSchema),
@@ -195,6 +204,36 @@ export const createOpenApiDocument = (): JsonSchema => ({
           "200": response("CurrentIdentitySuccess", "Current identity and workspaces"),
           "403": response("ApiFailure", "Workspace access denied"),
           "503": response("ApiFailure", "Identity unavailable"),
+        },
+      },
+    },
+    "/api/v1/me/history": {
+      get: {
+        operationId: "getProjectHistory",
+        responses: {
+          "200": response("ProjectHistorySuccess", "Project history visible to the current identity"),
+          "403": response("ApiFailure", "Workspace access denied"),
+          "503": response("ApiFailure", "Identity unavailable"),
+        },
+      },
+    },
+    "/api/v1/me/credits": {
+      get: {
+        operationId: "getCreditAccountSummary",
+        responses: {
+          "200": response("CreditAccountSummarySuccess", "Current account summary"),
+          "403": response("ApiFailure", "Workspace access denied"),
+          "503": response("ApiFailure", "Credit service unavailable"),
+        },
+      },
+    },
+    "/api/v1/me/billing-policy": {
+      get: {
+        operationId: "getBillingPolicy",
+        responses: {
+          "200": response("BillingPolicySummarySuccess", "Effective server-side billing policy"),
+          "403": response("ApiFailure", "Workspace access denied"),
+          "503": response("ApiFailure", "Billing policy unavailable"),
         },
       },
     },

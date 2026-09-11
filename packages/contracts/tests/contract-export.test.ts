@@ -50,6 +50,7 @@ import {
   OutputProfileRevisionSchema,
   PronunciationGlossaryRevisionSchema,
   ProductionRunSchema,
+  ProjectHistorySchema,
   QualityGateDecisionSchema,
   VoiceAuthorizationSchema,
   publicContractSchemas,
@@ -263,6 +264,19 @@ test("C11 creative planning commands and public DTOs preserve user intent withou
   assert.throws(() => CreateCreativeBriefRevisionCommandSchema.parse({ ...brief, target_resolution: "1080p" }));
   assert.throws(() => CreateCreativeBriefRevisionCommandSchema.parse({ ...brief, provider: "internal" }));
   assert.throws(() => CreateProductionRunCommandSchema.parse({ storyboard_revision_id: "sbr_01J4N8QZ8PCW2N2G6D2XJXJXJX", prompt: "not public" }));
+});
+
+test("project history is a non-deleted public projection", () => {
+  const project = {
+    id: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    workspace_id: "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    name: "History fixture",
+    created_at: "2026-08-16T00:00:00.000Z",
+    updated_at: "2026-08-16T00:00:00.000Z",
+  };
+  assert.equal(ProjectHistorySchema.parse({ scope: "WORKSPACE", is_admin: false, projects: [{ ...project, status: "ACTIVE" }] }).projects[0]?.status, "ACTIVE");
+  assert.equal(ProjectHistorySchema.parse({ scope: "ALL_WORKSPACES", is_admin: true, projects: [{ ...project, status: "ARCHIVED" }] }).projects[0]?.status, "ARCHIVED");
+  assert.throws(() => ProjectHistorySchema.parse({ scope: "WORKSPACE", is_admin: false, projects: [{ ...project, status: "DELETED" }] }));
 });
 
 test("audio owner is an internal immutable snapshot fact and never a public TaskRun field", () => {
@@ -1089,6 +1103,9 @@ test("OpenAPI declares the C03 control-plane surface before later route implemen
     "/api/v1/events",
     "/api/v1/health",
     "/api/v1/me",
+    "/api/v1/me/billing-policy",
+    "/api/v1/me/credits",
+    "/api/v1/me/history",
     "/api/v1/narration-script-revisions/{narration_script_revision_id}/approve",
     "/api/v1/narration-script-revisions/{narration_script_revision_id}/timeline-plans",
     "/api/v1/production-runs/{production_run_id}/composition/retry",

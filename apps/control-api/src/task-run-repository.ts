@@ -5,7 +5,8 @@ import {
   type InternalTaskRunQueueMessage,
   type VideoGenerationInputSnapshot,
 } from "@alchemy-video/contracts";
-import { assertTaskRunTransition, createPrefixedId, fingerprintRequest } from "@alchemy-video/domain";
+import { assertTaskRunTransition, createPrefixedId, fingerprintRequest, isBillingRetryErrorCode } from "@alchemy-video/domain";
+import { VideoGenerationInputSnapshotSchema } from "@alchemy-video/contracts";
 import type {
   AssetWorkspaceStore,
   ControlAsset,
@@ -171,6 +172,16 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     if (prior) return prior.requestHash === input.requestHash ? prior.outcome : { kind: "CONFLICT" };
     const current = this.taskRuns.get(input.taskRunId);
     if (!current || current.workspaceId !== input.workspaceId) return this.store(input, { kind: "NOT_FOUND", status: 404 });
+    if (current.status === "BILLING_FAILED") {
+      const parsed = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
+      if (!parsed.success || !parsed.data.billing) return this.store(input, { kind: "STATE_INVALID" });
+      assertTaskRunTransition(current.status, "BILLING_PENDING");
+      const now = new Date().toISOString();
+      const retried = { ...current, status: "BILLING_PENDING" as const, error: null, retryAt: null, updatedAt: now };
+      this.taskRuns.set(retried.id, retried);
+      this.addEvent(queuedEvent({ command: input, taskRun: retried, now }));
+      return this.store(input, { kind: "NEW", value: retried, status: 202 });
+    }
     if (current.status !== "FAILED") return this.store(input, { kind: "STATE_INVALID" });
     assertTaskRunTransition(current.status, "QUEUED");
     const now = new Date().toISOString();
@@ -201,8 +212,14 @@ export class InMemoryTaskRunStore implements TaskRunStore {
   }
 
   async listRecoverableVideoTaskRuns(input: { limit: number }) {
+    const now = new Date().toISOString();
     return [...this.taskRuns.values()]
-      .filter((taskRun) => taskRun.kind === "VIDEO_GENERATION" && ["RUNNING", "PROVIDER_PROCESSING", "DOWNLOADING"].includes(taskRun.status))
+      .filter((taskRun) => taskRun.kind === "VIDEO_GENERATION" && (
+        ["RUNNING", "PROVIDER_PROCESSING", "DOWNLOADING", "BILLING_PENDING"].includes(taskRun.status)
+        || (taskRun.status === "RETRY_SCHEDULED"
+          && (!taskRun.retryAt || taskRun.retryAt <= now)
+          && isBillingRetryErrorCode(taskRun.error?.code))
+      ))
       .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id))
       .slice(0, input.limit);
   }
@@ -368,9 +385,28 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     this.taskRuns.set(current.id, { ...current, status: "RETRY_SCHEDULED", retryAt: input.retryAt.toISOString(), error: { code: input.code, message: input.safeMessage, retryable: true }, updatedAt: input.now.toISOString() });
   }
 
+  async resumeBillingRetry(input: { workspaceId: string; taskRunId: string; now: Date }) {
+    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
+    if (!current || current.status !== "RETRY_SCHEDULED") return current;
+    if (current.retryAt && current.retryAt > input.now.toISOString()) return current;
+    const parsed = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
+    if (!parsed.success || !parsed.data.billing || !isBillingRetryErrorCode(current.error?.code)) return current;
+    assertTaskRunTransition(current.status, "BILLING_PENDING");
+    const resumed = { ...current, status: "BILLING_PENDING" as const, error: null, retryAt: null, updatedAt: input.now.toISOString() };
+    this.taskRuns.set(resumed.id, resumed);
+    return resumed;
+  }
+
   async finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; code: string; message: string; now: Date }) {
     const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
     if (!current || current.kind !== "VIDEO_GENERATION" || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(current.status)) return current;
+    const billingSnapshot = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
+    if (current.status === "BILLING_PENDING" && billingSnapshot.success && billingSnapshot.data.billing) {
+      assertTaskRunTransition(current.status, "BILLING_FAILED");
+      const failedBilling = { ...current, status: "BILLING_FAILED" as const, error: { code: "CREDIT_UNAVAILABLE", message: "The credit service is unavailable; retry billing after restoring the credit bridge.", retryable: false }, updatedAt: input.now.toISOString() };
+      this.taskRuns.set(failedBilling.id, failedBilling);
+      return failedBilling;
+    }
     assertTaskRunTransition(current.status, "FAILED");
     const now = input.now.toISOString();
     const attempts = await this.listTaskRunAttempts(input.workspaceId, input.taskRunId);
@@ -479,15 +515,21 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     this.consumptions.set(key, consumption);
     const current = await this.findTaskRun(message.workspace_id, message.task_run_id);
     if (!current) return "RETRY";
-    if (current.status !== "QUEUED") {
+    const billingWakeSnapshot = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
+    const isBillingWake = current.status === "BILLING_PENDING"
+      && billingWakeSnapshot.success
+      && Boolean(billingWakeSnapshot.data.billing);
+    if (current.status !== "QUEUED" && !isBillingWake) {
       consumption.completedAt = now;
       consumption.leaseOwner = undefined;
       consumption.leaseExpiresAt = undefined;
       return "DUPLICATE";
     }
-    assertTaskRunTransition(current.status, "RUNNING");
-    this.taskRuns.set(current.id, { ...current, status: "RUNNING", updatedAt: now });
-    this.addEvent(startedEvent(parsed.data, consumption.attempts, afterEvent(parsed.data.occurred_at, input.now)));
+    if (current.status === "QUEUED") {
+      assertTaskRunTransition(current.status, "RUNNING");
+      this.taskRuns.set(current.id, { ...current, status: "RUNNING", updatedAt: now });
+      this.addEvent(startedEvent(parsed.data, consumption.attempts, afterEvent(parsed.data.occurred_at, input.now)));
+    }
     consumption.completedAt = now;
     consumption.leaseOwner = undefined;
     consumption.leaseExpiresAt = undefined;

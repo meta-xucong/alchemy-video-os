@@ -8,7 +8,7 @@
 | 当前版本 | `0.4.0-real-local-r01-auto-audio` |
 | 当前阶段 | C11.2 保持本地范围 `ACCEPTED`；C12.4/C12.5 总体仍为 `IMPLEMENTED_PENDING_AUDIT`；既有 E01–E11/E08 窄切片按历史审计状态保留；E12/R01 当前仍为 `BLOCKED`。本机实际操作模式已获用户授权并切换为 Aiself Grok 原生音频优先、明确选择时使用 Doubao；这不等于章节验收。source registry/rank、profile capability 认证、自动生成样音→审批→正式 NarrationAsset/TimelinePlan、approved section windows、完整 AudioPlan、Studio/字幕/长旁白和人工中文口音等硬门仍 `DEFERRED/BLOCKED`。付费 Kling/本地 Wav2Lip 口型同步按用户决定延期，不作为当前范围阻断。 |
 | 当前允许范围 | 按最新《自动生成音频与视频匹配正式使用开发文档》执行：自动视频不要求用户上传旁白/样音；本机真实模式使用 `VIDEO_PROVIDER=sub2api` 的 Aiself Grok，优先保留 native 音频，操作者明确选择替换时使用 Doubao `seed-tts-2.0`/`zh_female_meilinvyou_uranus_bigtts`；继续做固定来源薄适配、定向测试和茅山历史项目同脚本对照。Doubao 不自动选择、不静默 fallback、不新增协议/算法/阈值 |
-| 当前禁止范围 | E12/R01 完整 Exit Gate 为 `BLOCKED`，不得进入 R02；不得开启 Veyra、共享积分、VPS、SSH、DNS、TLS、生产部署、Git 写入或把 canary/ASR 结果冒充中文口音验收；不得擅自改写公共契约或旧 prompt owner 语义 |
+| 当前禁止范围 | E12/R01 完整 Exit Gate 为 `BLOCKED`，不得进入 R02；Veyra、共享积分以及未获单独用户授权的 Provider/TTS、网络、VPS、SSH、DNS、TLS、生产部署、Git 写入仍禁止；旧“VPS/部署/Git 禁止”表述属于部署前/历史默认，2026-09-10 用户授权的 route-guard 运行证据例外见下方，不构成一般部署授权或章节验收；不得把 canary/ASR 结果冒充中文口音验收，也不得擅自改写公共契约或旧 prompt owner 语义 |
 | 当前执行方案 | `AI企业内容生产平台_自动生成音频与视频匹配正式使用开发文档.md`（覆盖语音专项旧口径）与 `AI企业内容生产平台_多源仓库逐项迁移矩阵与冲突审计开发方案.md`；以固定来源文件/符号为主键，先做多源冲突对账，再按授权切片薄适配和验收 |
 | 语音路线专项参考 | `AI企业内容生产平台_原仓库语音路线与旁白质量迁移修复开发文档.md`；仅用于 native Provider/TTS owner、来源 selector、样音 gate、时长/混音/QC 的冲突裁定，不自动授权代码、状态或外部调用 |
 | 唯一长期架构参考 | `AI企业内容生产平台_代码实现与仓库整合详细方案.md` |
@@ -41,6 +41,14 @@
 | 真实视频 Provider | `AUTHORIZED_LOCAL_OPERATIONAL` | 用户已授权本机 Aiself Grok/Sub2API 实际使用和茅山对照；产物仍需技术与人工复核，不据此宣称中文口音或完整旁白验收；默认 CI/Mock 不变 |
 | Doubao TTS | `AUTHORIZED_LOCAL_OPERATIONAL` | 用户已授权本机显式 Doubao 实际使用/对照；profile 为 `seed-tts-2.0` + `zh_female_meilinvyou_uranus_bigtts`，只在操作者选择时调用，密钥仅来自未入库环境，不自动 fallback、不写入默认配置 |
 | Veyra/共享积分/VPS/DNS/TLS/部署/Git | `DISABLED` | 本轮不启用、不扣费、不部署、不提交 |
+
+部署前/历史默认与用户授权例外对账（2026-09-10；仅运行证据）：上表及本文较早“VPS/部署/Git 禁止”段落按未获单独授权的部署前/历史默认理解，不抹掉本地 MVP 默认值或未授权外部边界。前述 route-guard 窄范围独立审计收口为 `ACCEPTED` 后，用户另行明确授权同步并部署：
+
+- 四个目标文件的基线来自提交 `1765c5cad3c4741b6cf674847fc0cbbd6bcba3c5`（分支 `codex/vps-adapter-20260909`）；远端活动 `services/media-runtime/main.py` 保留部署前已存在的 `encode_pixabay_header(...).rstrip('=')` 差异，因此远端运行副本不完全等同该提交。部署前备份到 `/opt/alchemy-video/backups/route-guard-1765c5c-20260910T014731Z`，未覆盖原有数据卷、密钥或用户文件。
+- 只构建/重建 `media-runtime`、`control-media-runtime`、`control-api`、`production-worker` 四个服务；两个 Runtime 均 `Up (healthy)`，容器内 `/internal/health/live` 与 `/internal/health/ready` 返回 `{"status":"ok"}` / `{"status":"ready"}`。
+- Worker/Control API 分别使用 `http://media-runtime:3433/` / `http://control-media-runtime:3433/`；两者在 `deploy_default` 私网 DNS 内，3433 仅 Compose `expose`、无 host/public 映射，DNS 解析正常；远端 `/api/v1/health` 与站点根路径均 HTTP 200，数据库依赖为 `ok`。
+
+本条只记录用户授权后的 route-guard 运行证据，不改变 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT`、`E12/R01=BLOCKED` 或 `C13=PENDING`，也不代表 AISelf/Sub2API/真实 Provider/TTS、Veyra/共享积分、QC-only replay 或完整生产验收；本地默认仍为 `VIDEO_PROVIDER=mock`，其它未授权外部边界继续保持关闭。
 
 E02/S01 最新 focused 验证账本（基础 `last_verified_at=2026-08-31T01:52:23+08:00`）：合并 Control API 命令 `23/23`（Pixabay client `6/6` + Control API `17/17`）；独立窄切片为 Control API Pixabay client `6/6`、OpenMontage Runtime source adapter `4/4`、Runtime handler `3/3`、Control API 角色/导入/幂等 `5/5`、capability BLOCKED `1/1`、loopback `1/1`、Studio explicit Pixabay/no-automatic-catalog `1/1`，均为 fixture/mock、0 skip；另有 `last_verified_at=2026-08-31T08:25:25+08:00` 的 Runtime finite supplemental fixture `1/1`，拒绝 `NaN`、`Infinity`、`-Infinity` duration。窄切片与合并命令覆盖重叠，不另行相加。该证据已通过独立审计，S01/E02 当前为 `ACCEPTED`（仅切片），C12.4/C12.5 仍 `IMPLEMENTED_PENDING_AUDIT`；E03/HB-STORYBOARD-TIMING 的 8–15 秒窄切片已完成 READY→ACCEPTED 独立审计流程，E04/Piper pace、E05、E06、E07、E08 和 E09 均已完成相应窄切片独立审计并 `ACCEPTED`。E12/R01 现有 native 与显式 Doubao canary 均仅为用户授权的产物/连通性证据；不替代正式资产、TimelinePlan、中文口音或人工质量验收，E12/R01 及 C12.4/C12.5 总体继续阻断/待审计。当前自动旁白不要求用户上传样音，样音由服务端生成并经人工审批。
 

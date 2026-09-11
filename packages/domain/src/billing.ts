@@ -11,6 +11,26 @@ import {
 import { DomainInvariantError } from "./errors.js";
 import { calculateUsageCharge, type MediaUsageFact } from "./video-billing.js";
 
+/**
+ * Billing failures are the only retryable task errors that may resume from
+ * RETRY_SCHEDULED into the already-generated billing phase.  Keeping this
+ * list beside the debit-plan semantics prevents a provider retry from being
+ * mistaken for a second debit.
+ */
+export const BILLING_RETRY_ERROR_CODES = [
+  "AUTH_FORBIDDEN",
+  "AUTH_UNAVAILABLE",
+  "CREDIT_INSUFFICIENT",
+  "CREDIT_CONFLICT",
+  "CREDIT_UNAVAILABLE",
+  "CREDIT_REJECTED",
+] as const;
+
+export type BillingRetryErrorCode = (typeof BILLING_RETRY_ERROR_CODES)[number];
+
+export const isBillingRetryErrorCode = (value: unknown): value is BillingRetryErrorCode =>
+  typeof value === "string" && (BILLING_RETRY_ERROR_CODES as readonly string[]).includes(value);
+
 export type BillingDebitPlan = {
   creditProvider: "veyra_sub2api";
   taskRunId: string;

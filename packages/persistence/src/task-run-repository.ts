@@ -4,12 +4,13 @@ import {
   InternalEventEnvelopeSchema,
   InternalTaskRunQueueMessageSchema,
   TASK_RUN_TERMINAL_STATUSES,
+  VideoGenerationInputSnapshotSchema,
   type InternalEventEnvelope,
   type InternalTaskRunQueueMessage,
   type TaskRunStatus,
   type VideoGenerationInputSnapshot,
 } from "@alchemy-video/contracts";
-import { assertTaskRunTransition, createPrefixedId, fingerprintRequest } from "@alchemy-video/domain";
+import { assertTaskRunTransition, BILLING_RETRY_ERROR_CODES, createPrefixedId, fingerprintRequest, isBillingRetryErrorCode } from "@alchemy-video/domain";
 
 import type { PlatformDatabase } from "./db.js";
 import type { ControlAsset } from "./asset-workspace-repository.js";
@@ -135,6 +136,7 @@ export interface TaskRunStore extends OutboxRelayStore {
   markBillingSucceeded(input: { workspaceId: string; taskRunId: string; usageRecordId: string; now: Date }): Promise<void>;
   markBillingFailed(input: { workspaceId: string; taskRunId: string; code: string; safeMessage: string; now: Date }): Promise<void>;
   scheduleBillingRetry(input: { workspaceId: string; taskRunId: string; code: string; safeMessage: string; retryAt: Date; now: Date }): Promise<void>;
+  resumeBillingRetry(input: { workspaceId: string; taskRunId: string; now: Date }): Promise<ControlTaskRun | undefined>;
   finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; code: string; message: string; now: Date }): Promise<ControlTaskRun | undefined>;
   failTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId?: string; failureStage?: "PROVIDER" | "DOWNLOAD"; code: string; message: string; retryable: boolean; now: Date }): Promise<ControlTaskRun | undefined>;
   listWorkspaceEvents(input: { workspaceId: string; afterEventId?: string; limit: number }): Promise<InternalEventEnvelope[]>;
@@ -394,6 +396,33 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
 
       const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
       if (!current) return this.storeCommandOutcome(transaction, input.scope, input.idempotencyKey, { kind: "NOT_FOUND", status: 404 });
+      if (current.status === "BILLING_FAILED") {
+        const parsed = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
+        if (!parsed.success || !parsed.data.billing) {
+          return this.storeCommandOutcome(transaction, input.scope, input.idempotencyKey, { kind: "STATE_INVALID" });
+        }
+        assertTaskRunTransition(current.status, "BILLING_PENDING");
+        const now = new Date().toISOString();
+        const [retried] = await transaction
+          .update(taskRuns)
+          .set({ status: "BILLING_PENDING", error: null, retryAt: null, updatedAt: now })
+          .where(taskRunScope(input.workspaceId, input.taskRunId))
+          .returning();
+        if (!retried) return this.storeCommandOutcome(transaction, input.scope, input.idempotencyKey, { kind: "STATE_INVALID" });
+        const taskRun = toControlTaskRun(retried);
+        const event = queuedEvent({
+          event: input.event,
+          idempotencyKey: input.idempotencyKey,
+          workspaceId: input.workspaceId,
+          projectId: taskRun.projectId,
+          taskRun,
+          occurredAt: now,
+          producer: "control-api",
+        });
+        await insertOutboxEvent(transaction, event);
+        await this.storeSnapshot(transaction, input.scope, input.idempotencyKey, { kind: "TASK_RUN", task_run: taskRun });
+        return { kind: "NEW", value: taskRun, status: 202 };
+      }
       if (current.status !== "FAILED") {
         return this.storeCommandOutcome(transaction, input.scope, input.idempotencyKey, { kind: "STATE_INVALID" });
       }
@@ -463,12 +492,21 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
   }
 
   async listRecoverableVideoTaskRuns(input: { limit: number }) {
+    const now = new Date().toISOString();
+    const billingRetryScheduled = and(
+      eq(taskRuns.status, "RETRY_SCHEDULED"),
+      lte(taskRuns.retryAt, now),
+      sql`(${taskRuns.error}->>'code') in (${sql.join(BILLING_RETRY_ERROR_CODES.map((code) => sql`${code}`), sql`, `)})`,
+    );
     const rows = await this.db
       .select()
       .from(taskRuns)
       .where(and(
         eq(taskRuns.kind, "VIDEO_GENERATION"),
-        inArray(taskRuns.status, ["RUNNING", "PROVIDER_PROCESSING", "DOWNLOADING"]),
+        or(
+          inArray(taskRuns.status, ["RUNNING", "PROVIDER_PROCESSING", "DOWNLOADING", "BILLING_PENDING"]),
+          billingRetryScheduled,
+        ),
       ))
       .orderBy(asc(taskRuns.updatedAt), asc(taskRuns.id))
       .limit(input.limit);
@@ -726,11 +764,37 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
     });
   }
 
+  async resumeBillingRetry(input: { workspaceId: string; taskRunId: string; now: Date }) {
+    return this.db.transaction(async (transaction) => {
+      await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
+      const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
+      if (!current || current.status !== "RETRY_SCHEDULED") return current ? toControlTaskRun(current) : undefined;
+      if (current.retryAt && current.retryAt > input.now.toISOString()) return toControlTaskRun(current);
+      const parsed = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
+      if (!parsed.success || !parsed.data.billing || !isBillingRetryErrorCode(current.error?.code)) return toControlTaskRun(current);
+      assertTaskRunTransition(current.status, "BILLING_PENDING");
+      const [resumed] = await transaction.update(taskRuns)
+        .set({ status: "BILLING_PENDING", error: null, retryAt: null, updatedAt: input.now.toISOString() })
+        .where(taskRunScope(input.workspaceId, input.taskRunId))
+        .returning();
+      return resumed ? toControlTaskRun(resumed) : undefined;
+    });
+  }
+
   async finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; code: string; message: string; now: Date }) {
     return this.db.transaction(async (transaction) => {
       await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
       const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
       if (!current || current.kind !== "VIDEO_GENERATION" || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(current.status)) return current ? toControlTaskRun(current) : undefined;
+      const billingSnapshot = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
+      if (current.status === "BILLING_PENDING" && billingSnapshot.success && billingSnapshot.data.billing) {
+        assertTaskRunTransition(current.status, "BILLING_FAILED");
+        const [failedBilling] = await transaction.update(taskRuns)
+          .set({ status: "BILLING_FAILED", error: { code: "CREDIT_UNAVAILABLE", message: "The credit service is unavailable; retry billing after restoring the credit bridge.", retryable: false }, updatedAt: input.now.toISOString() })
+          .where(taskRunScope(input.workspaceId, input.taskRunId))
+          .returning();
+        return failedBilling ? toControlTaskRun(failedBilling) : undefined;
+      }
       assertTaskRunTransition(current.status, "FAILED");
       const [submittedAttempt] = await transaction
         .select({ id: providerAttempts.id, providerRequestId: providerAttempts.providerRequestId })
@@ -971,7 +1035,11 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
         .where(taskRunScope(message.workspace_id, message.task_run_id))
         .limit(1);
       if (!taskRun) return "RETRY";
-      if (taskRun.status !== "QUEUED") {
+      const billingWakeSnapshot = VideoGenerationInputSnapshotSchema.safeParse(taskRun.inputSnapshot);
+      const isBillingWake = taskRun.status === "BILLING_PENDING"
+        && billingWakeSnapshot.success
+        && Boolean(billingWakeSnapshot.data.billing);
+      if (taskRun.status !== "QUEUED" && !isBillingWake) {
         await transaction
           .update(eventConsumptions)
           .set({ completedAt: input.now.toISOString(), leaseOwner: null, leaseExpiresAt: null, updatedAt: input.now.toISOString() })
@@ -984,13 +1052,15 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
         return "DUPLICATE";
       }
 
-      assertTaskRunTransition(taskRun.status, "RUNNING");
-      await transaction
-        .update(taskRuns)
-        .set({ status: "RUNNING", updatedAt: input.now.toISOString() })
-        .where(taskRunScope(message.workspace_id, taskRun.id));
-      const started = startedEvent({ source: parsed.data, attemptNo: attemptNo ?? 1, occurredAt: afterEvent(parsed.data.occurred_at, input.now) });
-      await insertOutboxEvent(transaction, started);
+      if (taskRun.status === "QUEUED") {
+        assertTaskRunTransition(taskRun.status, "RUNNING");
+        await transaction
+          .update(taskRuns)
+          .set({ status: "RUNNING", updatedAt: input.now.toISOString() })
+          .where(taskRunScope(message.workspace_id, taskRun.id));
+        const started = startedEvent({ source: parsed.data, attemptNo: attemptNo ?? 1, occurredAt: afterEvent(parsed.data.occurred_at, input.now) });
+        await insertOutboxEvent(transaction, started);
+      }
       await transaction
         .update(eventConsumptions)
       .set({ completedAt: input.now.toISOString(), leaseOwner: null, leaseExpiresAt: null, updatedAt: input.now.toISOString() })

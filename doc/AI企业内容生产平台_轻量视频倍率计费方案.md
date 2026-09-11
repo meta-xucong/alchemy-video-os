@@ -42,9 +42,16 @@ VIDEO_BILLING_FIXED_FEE=1
 VIDEO_BILLING_MODEL_RATES_JSON=
 ```
 
+Studio 的“计费配置”页面和 `GET /api/v1/me/billing-policy` 只读展示上述服务端环境的有效值；它们不提供浏览器写入能力。启用真实扣费时必须同时开启 `VEYRA_CREDIT_ENABLED=true`、注入 Veyra bridge/Token，并重启 Control API 与 Worker；任务创建时冻结规则，不能在运行中被配置变化改写。
+
 任务快照中的 `usagePricing.multiplier` 表示额外倍率，`usagePricing.fixedFee` 表示额外固定费。旧的 `VIDEO_BILLING_CHARGE_AMOUNT` 固定金额路径保持兼容，但不能与新的 usage 规则同时启用。
+只要服务端配置了任一真实计费规则而 Veyra bridge 或已验证 AISelf 身份缺失，Control API 必须以 `CREDIT_UNAVAILABLE`/`AUTH_UNAVAILABLE` 阻断新任务；不能生成后再静默跳过 Video OS 服务费。全局倍率优先于模型映射，未配置规则时才保持本地无计费模式。
+
+计费异常按任务状态机收口：成功产物落库后才进入 `BILLING_PENDING`；临时 Veyra/信用服务故障进入 `RETRY_SCHEDULED`，Worker 重启恢复时只回到 `BILLING_PENDING`，继续使用同一扣费幂等键，不重新提交 Provider。余额不足、冲突或明确拒绝进入 `BILLING_FAILED`；用户充值后通过既有“重试任务”命令回到 `BILLING_PENDING`，只重试扣费，不重新生成视频。计费唤醒复用内部任务队列，浏览器仍只看到公开 TaskRun 状态。
 
 ## 当前边界
+
+自动 ProductionRun 已复用既有 `production_runs.budget_guard` 私有字段保存 billing snapshot，调度到每个 segment 的 `ProductionTaskRunInput`，再由现有 Worker billing executor 在成功产物后结算。该字段不进入公开 ProductionRun DTO，也不产生项目级重复扣费。
 
 Sub2API 的受保护 Veyra 端点 `GET /api/veyra/internal/users/{user_id}/usage/{request_id}` 现在只读复用既有 `usage_logs`，支持原 request id 与 Grok 已有的 `grok-video:` 稳定键；Video OS 的 `VeyraSub2ApiVideoUsageAdapter` 只读取这条事实，不创建第二本账。usage 尚未落账时返回可重试的未就绪，不以预估金额代替。
 
@@ -61,3 +68,5 @@ AISelf/Sub2API 自身已经会从用户余额扣除 `actual_cost`。本方案明
 - 相同任务恢复或远端 replay 只产生一笔 Video OS 服务费；不成功的图片/视频任务不得进入 `BILLING_PENDING`。
 - 相同任务恢复只复用同一幂等键，不重复提交 Provider。
 - 本地默认 `VEYRA_CREDIT_ENABLED=false`，不调用真实 Provider、usage reader 或 debit。
+
+本轮补充的离线证据：Control API 计费策略 DTO/快照、Worker 50 项（45 pass、5 个既有基础设施 skip；含 `BILLING_FAILED -> BILLING_PENDING` 充值重试与 `RETRY_SCHEDULED` 重启恢复）均通过；数据库级 PostgreSQL/真实 Veyra 证据仍须在启用对应环境后单独验收，不能由内存夹具替代。

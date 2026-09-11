@@ -16,6 +16,7 @@ import {
   type MusicPlan,
   type CreativeBriefFactContext,
   type FrozenDocumentFact,
+  type VideoGenerationInputSnapshot,
 } from "@alchemy-video/contracts";
 import { DeterministicFactSelector } from "@alchemy-video/document-intelligence";
 import {
@@ -229,6 +230,8 @@ export type ProductionRunCommandInput = {
   // Optional only for direct repository callers replaying pre-C11.7 history.
   deliveryPlanRevisionId?: DeliveryPlanRevisionId;
   musicPlan?: MusicPlan;
+  /** Private billing fact; persisted only inside production_runs.budget_guard. */
+  billing?: VideoGenerationInputSnapshot["billing"];
   event: CreativePlanningEvent;
 };
 
@@ -1492,7 +1495,10 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
           continuityStatus: "NOT_CHECKED",
           maxAutoRepairCount: 2,
           autoRepairCount: 0,
-          budgetGuard: { music_plan: input.musicPlan ?? { mode: "AUTO", style_hint: "" } },
+          budgetGuard: {
+            music_plan: input.musicPlan ?? { mode: "AUTO", style_hint: "" },
+            ...(input.billing ? { billing: input.billing } : {}),
+          },
         })
         .returning();
       if (input.deliveryPlanRevisionId) {

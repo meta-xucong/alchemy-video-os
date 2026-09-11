@@ -87,6 +87,12 @@ export interface ControlPlaneStore {
   getDatabaseStatus(): Promise<"ok" | "unavailable" | "not_configured">;
   findUser(userId: string): Promise<ControlUser | undefined>;
   listWorkspaces(userId: string): Promise<ControlWorkspace[]>;
+  /**
+   * Returns the explicit workspace targets an already verified administrator
+   * may inspect. Callers must still scope every project/resource query to one
+   * returned workspace id.
+   */
+  listWorkspacesForAdmin(): Promise<ControlWorkspace[]>;
   hasWorkspaceMembership(workspaceId: string, userId: string): Promise<boolean>;
   listProjects(workspaceId: string): Promise<ControlProject[]>;
   findProject(workspaceId: string, projectId: string): Promise<ControlProject | undefined>;
@@ -159,6 +165,19 @@ export class DrizzleControlPlaneRepository implements ControlPlaneStore {
       .from(workspaces)
       .innerJoin(workspaceMembers, eq(workspaceMembers.workspaceId, workspaces.id))
       .where(eq(workspaceMembers.userId, userId))
+      .orderBy(asc(workspaces.createdAt));
+  }
+
+  async listWorkspacesForAdmin() {
+    return this.db
+      .select({
+        id: workspaces.id,
+        name: workspaces.name,
+        createdBy: workspaces.createdBy,
+        createdAt: workspaces.createdAt,
+        updatedAt: workspaces.updatedAt,
+      })
+      .from(workspaces)
       .orderBy(asc(workspaces.createdAt));
   }
 

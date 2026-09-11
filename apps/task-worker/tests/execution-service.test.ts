@@ -170,6 +170,50 @@ class NoopBillingAttemptStore implements BillingAttemptStore {
   }
 }
 
+class RetryOnceCreditPort implements CreditPort {
+  debitCalls = 0;
+
+  constructor(private readonly firstRetryable = false) {}
+
+  async getAccount() {
+    throw new Error("The billing executor should use the debit path only.");
+  }
+
+  async debit(input: Parameters<CreditPort["debit"]>[0]) {
+    this.debitCalls += 1;
+    if (this.debitCalls === 1) {
+      throw { code: this.firstRetryable ? "CREDIT_UNAVAILABLE" : "CREDIT_INSUFFICIENT", retryable: this.firstRetryable };
+    }
+    return {
+      externalUserId: input.externalUserId,
+      amount: input.amount,
+      balanceAfter: "98",
+      idempotencyKey: input.idempotencyKey,
+      replayed: false,
+    };
+  }
+}
+
+class InMemoryBillingAttemptStore implements BillingAttemptStore {
+  constructor(private readonly tasks: InMemoryTaskRunStore) {}
+
+  async recordUsageReceipt(input: Parameters<BillingAttemptStore["recordUsageReceipt"]>[0]) {
+    return { kind: "RECORDED" as const, record: { id: input.id } };
+  }
+
+  markBillingSucceeded(input: Parameters<BillingAttemptStore["markBillingSucceeded"]>[0]) {
+    return this.tasks.markBillingSucceeded(input);
+  }
+
+  markBillingFailed(input: Parameters<BillingAttemptStore["markBillingFailed"]>[0]) {
+    return this.tasks.markBillingFailed(input);
+  }
+
+  scheduleBillingRetry(input: Parameters<BillingAttemptStore["scheduleBillingRetry"]>[0]) {
+    return this.tasks.scheduleBillingRetry(input);
+  }
+}
+
 const prepareTask = async (withBilling = false) => {
   const control = new InMemoryControlPlaneStore();
   const workspaceId = createPrefixedId("ws");
@@ -382,6 +426,110 @@ test("invalid video output never enters billing even when a service-fee rule is 
   assert.equal(result?.status, "FAILED");
   assert.equal(result?.error?.code, "DOWNLOAD_INVALID");
   assert.equal(result?.resultAssetId, null);
+});
+
+test("billing failure retry resumes the validated artifact without resubmitting the Provider", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask(true);
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const credit = new RetryOnceCreditPort();
+  const billingExecutor = new VideoBillingExecutor(credit, new InMemoryBillingAttemptStore(store), {
+    createUsageRecordId: () => createPrefixedId("use"),
+  });
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    billingExecutor,
+    videoUsage: {
+      async getUsage(input) {
+        return { providerRequestId: input.providerRequestId, model: "mock-video-v1", actualCost: "1" };
+      },
+    },
+  });
+
+  const failedBilling = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(failedBilling?.status, "BILLING_FAILED");
+  assert.equal(provider.submitCount, 1);
+
+  const retried = await store.retryTaskRun({
+    scope: "c13:billing-retry",
+    idempotencyKey: "billing-retry",
+    requestHash: "billing-retry".padEnd(64, "0"),
+    workspaceId,
+    taskRunId,
+    event: event(),
+  });
+  assert.equal(retried.kind, "NEW");
+  assert.equal(retried.kind === "NEW" ? retried.value.status : "STATE_INVALID", "BILLING_PENDING");
+  const wake = (await store.listWorkspaceEvents({ workspaceId, limit: 30 }))
+    .filter((item) => item.event_type === "task_run.queued")
+    .at(-1);
+  assert.ok(wake && wake.event_type === "task_run.queued");
+  if (!wake || wake.event_type !== "task_run.queued") throw new Error("billing retry wake event missing");
+  assert.equal(await store.processEvent({
+    message: { contract_version: "1.0", event_id: wake.event_id, workspace_id: workspaceId, task_run_id: taskRunId, attempt_no: 1, correlation_id: wake.correlation_id, input_snapshot: wake.data.input_snapshot },
+    consumerName: "c13-billing-retry",
+    workerId: "c13-worker",
+    now: new Date(),
+    leaseMs: 100,
+  }), "PROCESSED");
+
+  const recovered = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(recovered?.status, "SUCCEEDED");
+  assert.equal(credit.debitCalls, 2);
+  assert.equal(provider.submitCount, 1);
+});
+
+test("a scheduled credit retry is recovered after restart without a second Provider submission", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask(true);
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const credit = new RetryOnceCreditPort(true);
+  const billingExecutor = new VideoBillingExecutor(credit, new InMemoryBillingAttemptStore(store), {
+    createUsageRecordId: () => createPrefixedId("use"),
+    now: () => new Date(0),
+  });
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    billingExecutor,
+    videoUsage: {
+      async getUsage(input) {
+        return { providerRequestId: input.providerRequestId, model: "mock-video-v1", actualCost: "1" };
+      },
+    },
+  });
+
+  const scheduled = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(scheduled?.status, "RETRY_SCHEDULED");
+  assert.equal(provider.submitCount, 1);
+  assert.equal((await store.listRecoverableVideoTaskRuns({ limit: 10 })).some((task) => task.id === taskRunId), true);
+
+  const recovered = await executor.recover({ limit: 10, maxAttempts: 1 });
+  assert.equal(recovered[0]?.failure, undefined);
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "SUCCEEDED");
+  assert.equal(credit.debitCalls, 2);
+  assert.equal(provider.submitCount, 1);
+});
+
+test("a billing bridge outage during recovery becomes an explicit billing failure", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask(true);
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    videoUsage: {
+      async getUsage(input) {
+        return { providerRequestId: input.providerRequestId, model: "mock-video-v1", actualCost: "1" };
+      },
+    },
+  });
+
+  await assert.rejects(executor.execute({ workspaceId, taskRunId }), /video download or result write/);
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "BILLING_PENDING");
+  const recovery = await executor.recover({ limit: 10, maxAttempts: 1 });
+  assert.equal(recovery[0]?.failure, "Shared credit billing is not configured for this Worker.");
+  await store.finalizeTaskRunExecutionFailure({
+    workspaceId,
+    taskRunId,
+    code: "PROVIDER_UNAVAILABLE",
+    message: "Video execution exhausted its recoverable delivery attempts.",
+    now: new Date(),
+  });
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "BILLING_FAILED");
+  assert.equal(provider.submitCount, 1);
 });
 
 test("C06 executor resumes an uploaded draft without a second submission or replacement", async () => {

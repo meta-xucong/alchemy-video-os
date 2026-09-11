@@ -37,6 +37,32 @@ export const CreditAccountSchema = z.object({
   concurrency: z.number().int().nonnegative(),
 }).strict();
 
+export const PublicCreditRoleSchema = z.string().trim().min(1).max(64);
+
+// The Control API account panel exposes only the provider-neutral account
+// summary.  The external numeric identity remains an internal adapter fact.
+export const PublicCreditAccountSchema = CreditAccountSchema
+  .omit({ externalUserId: true })
+  .extend({ role: PublicCreditRoleSchema });
+
+/**
+ * Public, read-only view of the effective Video OS billing policy.  The
+ * policy is loaded from the server environment; no credential or account
+ * identifier is exposed and the browser cannot mutate it.
+ */
+export const BillingPolicySourceSchema = z.enum(["SERVER_ENVIRONMENT", "DISABLED"]);
+export const BillingPolicyModeSchema = z.enum(["DISABLED", "FIXED_AMOUNT", "USAGE_PLUS_SERVICE_FEE"]);
+export const BillingPolicySummarySchema = z.object({
+  enabled: z.boolean(),
+  mode: BillingPolicyModeSchema,
+  surcharge_multiplier: NonNegativeCreditAmountSchema.nullable(),
+  fixed_fee: NonNegativeCreditAmountSchema.nullable(),
+  charge_amount: PositiveCreditAmountSchema.nullable(),
+  model_multipliers: z.record(z.string().min(1).max(128), PositiveCreditAmountSchema),
+  source: BillingPolicySourceSchema,
+}).strict();
+export type BillingPolicySummary = z.infer<typeof BillingPolicySummarySchema>;
+
 export const CreditDebitInputSchema = z.object({
   externalUserId: z.number().int().positive(),
   amount: PositiveCreditAmountSchema,
@@ -97,6 +123,7 @@ export type VeyraLoginIntent = z.infer<typeof VeyraLoginIntentSchema>;
 export type VeyraLoginTicketExchangeInput = z.infer<typeof VeyraLoginTicketExchangeInputSchema>;
 export type VeyraExternalIdentity = z.infer<typeof VeyraExternalIdentitySchema>;
 export type CreditAccount = z.infer<typeof CreditAccountSchema>;
+export type PublicCreditAccount = z.infer<typeof PublicCreditAccountSchema>;
 export type CreditDebitInput = z.infer<typeof CreditDebitInputSchema>;
 export type CreditDebitResult = z.infer<typeof CreditDebitResultSchema>;
 export type BillingUsagePricing = z.infer<typeof BillingUsagePricingSchema>;

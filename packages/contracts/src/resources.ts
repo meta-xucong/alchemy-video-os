@@ -123,6 +123,19 @@ export const ProjectSchema = z.object({
   updated_at: UtcTimestampSchema,
 });
 
+// History is a non-deleted projection.  Keep its public fields aligned with
+// Project while making the exclusion of soft-deleted records contractual.
+export const ProjectHistoryProjectSchema = ProjectSchema.extend({
+  status: z.enum(["ACTIVE", "ARCHIVED"]),
+});
+
+export const ProjectHistoryScopeSchema = z.enum(["WORKSPACE", "ALL_WORKSPACES"]);
+export const ProjectHistorySchema = z.object({
+  scope: ProjectHistoryScopeSchema,
+  is_admin: z.boolean(),
+  projects: z.array(ProjectHistoryProjectSchema),
+}).strict();
+
 export const AssetRecordSchema = z.object({
   id: AssetIdSchema,
   workspace_id: WorkspaceIdSchema,

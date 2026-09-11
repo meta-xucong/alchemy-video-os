@@ -96,6 +96,30 @@ export type CurrentIdentity = {
 
 export type ProjectList = { data: Project[]; request_id: string };
 export type ProjectResponse = { data: Project; request_id: string };
+export type ProjectHistory = {
+  scope: "WORKSPACE" | "ALL_WORKSPACES";
+  is_admin: boolean;
+  projects: Array<Omit<Project, "status"> & { status: "ACTIVE" | "ARCHIVED" }>;
+};
+export type ProjectHistoryResponse = { data: ProjectHistory; request_id: string };
+export type CreditAccountSummary = {
+  email: string;
+  role: string;
+  balance: string;
+  status: string;
+  concurrency: number;
+};
+export type CreditAccountSummaryResponse = { data: CreditAccountSummary; request_id: string };
+export type BillingPolicySummary = {
+  enabled: boolean;
+  mode: "DISABLED" | "FIXED_AMOUNT" | "USAGE_PLUS_SERVICE_FEE";
+  surcharge_multiplier: string | null;
+  fixed_fee: string | null;
+  charge_amount: string | null;
+  model_multipliers: Record<string, string>;
+  source: "SERVER_ENVIRONMENT" | "DISABLED";
+};
+export type BillingPolicySummaryResponse = { data: BillingPolicySummary; request_id: string };
 export type ProjectDetailResponse = {
   data: {
     project: Project;
@@ -356,6 +380,9 @@ export function useControlApi() {
   const loginWithAiself = () => { window.location.assign("/auth/login"); };
   const logout = () => $fetch<{ data: { logged_out: boolean }; request_id: string }>("/auth/logout", { method: "POST" });
   const projects = () => $fetch<ProjectList>("/api/v1/projects");
+  const history = () => $fetch<ProjectHistoryResponse>("/api/v1/me/history");
+  const credits = () => $fetch<CreditAccountSummaryResponse>("/api/v1/me/credits");
+  const billingPolicy = () => $fetch<BillingPolicySummaryResponse>("/api/v1/me/billing-policy");
   const project = (projectId: string, signal?: AbortSignal) => $fetch<ProjectDetailResponse>(`/api/v1/projects/${projectId}`, { signal });
   const audioCapabilities = (projectId: string) => $fetch<AudioCapabilitiesResponse>(`/api/v1/projects/${projectId}/audio-capabilities`);
   const importPixabayMusic = (projectId: string, input: { query: string; min_duration?: number; max_duration?: number }, idempotencyKey: string) =>
@@ -535,6 +562,9 @@ export function useControlApi() {
     loginWithAiself,
     logout,
     projects,
+    history,
+    credits,
+    billingPolicy,
     project,
     audioCapabilities,
     importPixabayMusic,

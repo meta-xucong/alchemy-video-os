@@ -60,9 +60,17 @@ S01-S09 编号继续保留，改为实施和验收批次。参考仓库能力的
 ### 3.2 不得借矩阵扩大范围的内容
 
 - 新增 Provider、TTS、曲库、评分模型、时长算法、静默 fallback 或 UI 语义；
-- 真实 Provider/TTS/Veyra/共享积分、网络、VPS、SSH、DNS、TLS、部署和付费调用；
+- 未获单独用户授权的真实 Provider/TTS/Veyra/共享积分、网络、VPS、SSH、DNS、TLS、部署和付费调用；2026-09-10 route-guard 用户授权部署仅作为下方运行证据例外，不把矩阵范围扩展为一般部署能力或新的外部调用授权；
 - 将多个来源的算法混合成第三套算法；
 - 把源仓库的本地目录、进程内状态、全局 Agent 或原始凭据当作平台事实源。
+
+部署前/历史默认与用户授权例外对账（2026-09-10；仅运行证据）：本文较早“VPS/部署/Git 禁止”表述适用于未获单独用户授权的部署前/历史默认，不抹掉本地 MVP 默认值或未授权外部边界。route-guard 窄范围独立审计收口为 `ACCEPTED` 后，用户另行明确授权同步并部署：
+
+- 四个目标文件的基线来自提交 `1765c5cad3c4741b6cf674847fc0cbbd6bcba3c5`（分支 `codex/vps-adapter-20260909`）；远端活动 `services/media-runtime/main.py` 保留部署前已存在的 `encode_pixabay_header(...).rstrip('=')` 差异，因此远端运行副本不完全等同该提交。部署前备份 `/opt/alchemy-video/backups/route-guard-1765c5c-20260910T014731Z`，未覆盖原有数据卷、密钥或用户文件。
+- 仅构建/重建 `media-runtime`、`control-media-runtime`、`control-api`、`production-worker` 四个服务；两个 Runtime 均 `Up (healthy)`，`/internal/health/live` / `/internal/health/ready` 分别返回 `{"status":"ok"}` / `{"status":"ready"}`。
+- Worker/Control API 使用 `http://media-runtime:3433/` / `http://control-media-runtime:3433/`，均在 `deploy_default` 私网 DNS 内；3433 无 host/public 映射且 DNS 解析正常；远端 `/api/v1/health` 与站点根路径均 HTTP 200，数据库依赖为 `ok`。
+
+该条只记录用户授权后的 VPS route-guard 运行证据，不改变 `E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT` 或 `C13=PENDING`，不构成章节验收/一般部署授权，也不代表 AISelf/Sub2API/真实 Provider/TTS、Veyra/共享积分、QC-only replay 或完整生产验收；本地默认仍为 `VIDEO_PROVIDER=mock`，其它未授权外部边界继续保持关闭。
 
 ## 4. 矩阵的规范行
 

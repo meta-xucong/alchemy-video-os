@@ -251,7 +251,11 @@ def parse_pixabay_payload(payload: object) -> dict[str, object]:
 
 
 def encode_pixabay_header(value: object) -> str:
-    return base64.urlsafe_b64encode(str(value).encode("utf-8")).decode("ascii")
+    # The loopback Control API transport accepts the source metadata as
+    # unpadded base64url. Keep the private header representation canonical so
+    # values whose byte length is not divisible by three do not fail strict
+    # client decoding.
+    return base64.urlsafe_b64encode(str(value).encode("utf-8")).decode("ascii").rstrip("=")
 
 
 def source_pixabay_filename(title: object) -> str:

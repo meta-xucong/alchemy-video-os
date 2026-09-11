@@ -80,6 +80,10 @@ export class InMemoryControlPlaneStore implements ControlPlaneStore {
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
+  async listWorkspacesForAdmin() {
+    return [...this.workspaces.values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
   async findProject(workspaceId: string, projectId: string) {
     const project = this.projects.get(projectId);
     return project?.workspaceId === workspaceId && project.status !== "DELETED" ? project : undefined;

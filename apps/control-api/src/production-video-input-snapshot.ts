@@ -29,6 +29,7 @@ const createMockProductionSnapshot = (input: ProductionTaskRunInput): VideoGener
     ...(input.motionPlanVersion ? { motion_plan_version: input.motionPlanVersion } : {}),
     ...(input.motionPlanHash ? { motion_plan_hash: input.motionPlanHash } : {}),
     ...(input.motionTimeline ? { motion_timeline: input.motionTimeline } : {}),
+    ...(input.billing ? { billing: input.billing } : {}),
     visual_input: input.visualInput,
   });
 
@@ -59,5 +60,6 @@ export const createControlProductionTaskRunInputSnapshotFactory = (
       motionPlanHash: input.motionPlanHash,
       motionTimeline: input.motionTimeline,
       deliveryPlanRevisionId: input.deliveryPlanRevisionId,
+      billing: input.billing,
     });
 };

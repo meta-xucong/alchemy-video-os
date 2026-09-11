@@ -6,6 +6,7 @@ import {
   InternalMediaRuntimeQueueMessageSchema,
   InternalProductionQueueMessageSchema,
   GenerationSegmentMotionPlanSchema,
+  BillingRuleSnapshotSchema,
   VideoGenerationInputSnapshotSchema,
   type InternalEventEnvelope,
   type InternalMediaRuntimeQueueMessage,
@@ -246,6 +247,8 @@ export type ProductionTaskRunInput = Readonly<{
   motionPlanHash?: string;
   motionTimeline?: MotionBeat[];
   deliveryPlanRevisionId?: string;
+  /** Private billing fact frozen when the production run is created. */
+  billing?: VideoGenerationInputSnapshot["billing"];
 }>;
 
 export type ProductionTaskRunInputFactory = (input: ProductionTaskRunInput) => VideoGenerationInputSnapshot;
@@ -549,6 +552,15 @@ const readPromptCompactionSidecar = (capabilitySnapshot: Record<string, unknown>
   if (typeof sourcePrompt !== "string" || !Array.isArray(generatedPromptParts)
     || !generatedPromptParts.every((part): part is string => typeof part === "string")) return {};
   return { sourcePrompt, generatedPromptParts };
+};
+const readProductionBilling = (budgetGuard: unknown): ProductionTaskRunInput["billing"] => {
+  if (!budgetGuard || typeof budgetGuard !== "object") return undefined;
+  const candidate = (budgetGuard as Record<string, unknown>).billing;
+  if (!candidate || typeof candidate !== "object") return undefined;
+  const externalUserId = (candidate as Record<string, unknown>).external_user_id;
+  const billingRule = BillingRuleSnapshotSchema.safeParse((candidate as Record<string, unknown>).billing_rule);
+  if (!Number.isInteger(externalUserId) || Number(externalUserId) <= 0 || !billingRule.success) return undefined;
+  return { external_user_id: externalUserId as number, billing_rule: billingRule.data };
 };
 const retryCommandScope = (scope: string, idempotencyKey: string) =>
   and(eq(commandDeduplications.scope, scope), eq(commandDeduplications.idempotencyKey, idempotencyKey));
@@ -1142,6 +1154,7 @@ const createDefaultProductionTaskRunInputSnapshot: ProductionTaskRunInputFactory
     ...(input.motionPlanVersion ? { motion_plan_version: input.motionPlanVersion } : {}),
     ...(input.motionPlanHash ? { motion_plan_hash: input.motionPlanHash } : {}),
     ...(input.motionTimeline ? { motion_timeline: input.motionTimeline } : {}),
+    ...(input.billing ? { billing: input.billing } : {}),
   });
 
 export class DrizzleProductionRepository implements ProductionStore {
@@ -3263,6 +3276,7 @@ export class DrizzleProductionRepository implements ProductionStore {
         .where(and(eq(shots.workspaceId, segment.workspaceId), eq(shots.projectId, segment.projectId)));
       const shotId = createPrefixedId("sht");
       const taskRunId = createPrefixedId("tsk");
+      const productionBilling = readProductionBilling(input.productionRun.budgetGuard);
       let snapshot: VideoGenerationInputSnapshot;
       try {
         snapshot = this.createTaskRunInputSnapshot({
@@ -3278,6 +3292,7 @@ export class DrizzleProductionRepository implements ProductionStore {
           motionPlanVersion: motionPlan?.version,
           motionPlanHash,
           motionTimeline: motionPlan?.motion_beats,
+          ...(productionBilling ? { billing: productionBilling } : {}),
           ...(input.productionRun.deliveryPlanRevisionId ? { deliveryPlanRevisionId: input.productionRun.deliveryPlanRevisionId } : {}),
         });
       } catch (error) {

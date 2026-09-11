@@ -30,6 +30,15 @@ test("the real production factory creates a Grok-compatible immutable task snaps
       { sequence: 1, start_seconds: 0, end_seconds: 2, action: "Walk.", subject_refs: ["primary_subject"], start_pose: "Standing.", end_pose: "At the door.", shot_size: "Medium", camera_movement: "Follow", continuity_locks: ["Same wardrobe."], prohibited_changes: ["No new person."], source_narrative_beat_sequences: [7] },
       { sequence: 2, start_seconds: 2, end_seconds: 5, action: "Stop.", subject_refs: ["primary_subject"], start_pose: "At the door.", end_pose: "Still.", shot_size: "Medium", camera_movement: "Static", continuity_locks: ["Same wardrobe."], prohibited_changes: ["No jump."], source_narrative_beat_sequences: [8] },
     ],
+    billing: {
+      external_user_id: 20260816,
+      billing_rule: {
+        creditProvider: "veyra_sub2api",
+        billingRuleKey: "video:usage-surcharge-v1:grok-imagine-video-1.5",
+        usagePricing: { model: "grok-imagine-video-1.5", multiplier: "1.20", fixedFee: "1" },
+        source: "video:aiself-actual-cost-plus-service-fee",
+      },
+    },
   });
 
   assert.equal(snapshot.model, "grok-imagine-video-1.5");
@@ -47,6 +56,8 @@ test("the real production factory creates a Grok-compatible immutable task snaps
   assert.equal(snapshot.motion_plan_version, "c11.3-motion-plan-v1");
   assert.equal(snapshot.motion_plan_hash, "b".repeat(64));
   assert.equal(snapshot.motion_timeline?.length, 2);
+  assert.equal(snapshot.billing?.external_user_id, 20260816);
+  assert.deepEqual(snapshot.billing?.billing_rule.usagePricing, { model: "grok-imagine-video-1.5", multiplier: "1.20", fixedFee: "1" });
 });
 
 test("the real production factory compacts only workflow-verified generated parts", () => {

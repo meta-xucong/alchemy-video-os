@@ -16,7 +16,10 @@ export const TASK_RUN_TRANSITIONS: Readonly<Record<TaskRunStatus, readonly TaskR
   SUCCEEDED: [],
   BILLING_FAILED: ["BILLING_PENDING"],
   FAILED: ["QUEUED"],
-  RETRY_SCHEDULED: ["QUEUED"],
+  // A scheduled credit retry resumes the already-downloaded artifact into
+  // BILLING_PENDING; provider retries still use QUEUED through the normal
+  // delivery path.
+  RETRY_SCHEDULED: ["QUEUED", "BILLING_PENDING"],
   ABANDONED: [],
 };
 

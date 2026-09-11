@@ -5,6 +5,13 @@ export type CurrentIdentity = {
   userId: string;
   workspaceId: string;
   externalUserId?: number;
+  /**
+   * The role is copied from the signed/verified Veyra identity for display
+   * only.  Authorization must use the derived capability below.
+   */
+  readonly role?: string | null;
+  /** Only a verified Veyra administrator may receive this capability. */
+  readonly isAdmin?: boolean;
   bootstrap?: ControlIdentitySeed;
 };
 
@@ -28,10 +35,20 @@ export class DevIdentityAdapter implements IdentityPort {
     return {
       userId: DEV_IDENTITY_SEED.user.id,
       workspaceId: DEV_IDENTITY_SEED.workspace.id,
+      isAdmin: false,
       bootstrap: DEV_IDENTITY_SEED,
     };
   }
 }
+
+export const normalizeVeyraRole = (role: string | null): string | null => {
+  if (role === null) return null;
+  const normalized = role.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+};
+
+export const isVerifiedVeyraAdminRole = (role: string | null) =>
+  role === "admin";
 
 export const createVeyraIdentitySeed = (identity: VeyraExternalIdentity): ControlIdentitySeed => {
   const parsed = VeyraExternalIdentitySchema.parse(identity);
@@ -51,11 +68,15 @@ export const createVeyraIdentitySeed = (identity: VeyraExternalIdentity): Contro
 };
 
 export const createVeyraCurrentIdentity = (identity: VeyraExternalIdentity): CurrentIdentity => {
-  const bootstrap = createVeyraIdentitySeed(identity);
+  const parsed = VeyraExternalIdentitySchema.parse(identity);
+  const role = normalizeVeyraRole(parsed.role);
+  const bootstrap = createVeyraIdentitySeed(parsed);
   return {
     userId: bootstrap.user.id,
     workspaceId: bootstrap.workspace.id,
-    externalUserId: identity.externalUserId,
+    externalUserId: parsed.externalUserId,
+    role,
+    isAdmin: isVerifiedVeyraAdminRole(role),
     bootstrap,
   };
 };

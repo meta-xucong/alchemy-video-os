@@ -399,10 +399,13 @@ ADR-0014 将本图确定为 TaskRun 迁移的唯一完整规则；根目录 `AGE
 | --- | --- | --- |
 | `GET /health` | 健康检查 | `ok`、依赖状态、构建版本 |
 | `GET /me` | 当前身份 | 本地返回 `usr_dev_owner` |
+| `GET /me/credits` | 当前账户摘要 | provider-neutral 的 `email`、规范化 `role`、`balance`、`status`、`concurrency`；不得返回 `external_user_id`、票据或 Provider 凭据；Veyra 不可用时返回既有安全错误 |
+| `GET /me/billing-policy` | 当前计费策略（只读） | 返回是否启用、固定金额/实际用量+附加费模式、全局倍率、固定附加费和模型倍率；来源仅为 `SERVER_ENVIRONMENT|DISABLED`，不得返回 token、外部账户 ID 或余额；浏览器不可修改 |
+| `GET /me/history` | 项目生成历史 | 普通身份固定返回 `scope=WORKSPACE` 的当前工作区非 `DELETED` 项目；仅当每次请求通过已验证 Veyra 账户实时确认 `status=active` 且规范化 `role=admin` 时返回 `scope=ALL_WORKSPACES`，并明确 `is_admin=true`。管理员读取通过显式 workspace 列表逐工作区查询；请求参数不能扩大范围；响应只含公开 `Project[]`，不含对象 key、Provider、token |
 | `GET /workspaces` | 工作区列表 | 当前可访问工作区 |
 | `GET /projects` | 项目列表 | 当前工作区中的 `Project[]` |
 | `POST /projects` | 创建项目 | `201` + `Project` |
-| `GET /projects/:projectId` | 项目详情 | 项目、分镜、资产摘要和该项目的公开 `TaskRun` 摘要；不含 ProviderAttempt 内部字段 |
+| `GET /projects/:projectId` | 项目详情 | 普通身份按当前工作区读取；已实时验证的 `role=admin` 可按项目所属 workspace 只读跨工作区读取项目、分镜、资产摘要和公开 `TaskRun` 摘要；详情的所有查询均带所属 `workspace_id`，不含 ProviderAttempt 内部字段；写入和其他子路由仍固定当前工作区 |
 | `PATCH /projects/:projectId` | 重命名/归档 | 更新的 `Project` |
 | `DELETE /projects/:projectId` | 软删除项目 | `200` + `Project(DELETED)`；活动任务/制作批次返回 `409 PROJECT_IN_USE`，命令必须幂等 |
 | `POST /projects/:projectId/creative-brief-revisions` | 保存故事输入 | `201` + `CreativeBriefRevision`；仅接受原文、总时长、`480p/720p` 成片清晰度、风格和同项目已确认的用户上传素材 ID；派生交接帧不能作为新的创作参考 |

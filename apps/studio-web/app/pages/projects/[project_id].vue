@@ -775,7 +775,7 @@ function safeErrorMessage(error: unknown, fallback: string) {
     TASK_STATE_INVALID: "当前内容还不能开始创作，请刷新后再试。",
     PROVIDER_UNAVAILABLE: "视频服务暂时不可用，请稍后重试。",
     PROVIDER_REJECTED: "本次创作已进入生成阶段，但没有完成。请调整描述后生成新版本。",
-    PROVIDER_PROTOCOL_INVALID: "参考素材已失效或与本次创作不一致，请保留有效素材后生成新版本。",
+    PROVIDER_PROTOCOL_INVALID: "视频服务返回了无法识别的结果，请稍后重试；如果使用参考素材，请确认素材仍有效。",
     ASSET_IN_USE: "这份素材正在被当前制作使用，完成或停止后才能删除。",
     DOCUMENT_UNSUPPORTED: "这份资料暂时无法整理，请确认文件格式后重试。",
     DOCUMENT_CONVERSION_ACTIVE_CONFLICT: "这份资料正在整理，请稍后查看。",

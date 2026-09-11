@@ -81,6 +81,207 @@ textarea:focus-visible,
   font-weight: 700;
 }
 
+.app-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  min-width: 0;
+}
+
+.account-history-link,
+.account-login {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.account-history-link:hover,
+.account-login:hover {
+  color: var(--wine);
+}
+
+.account-user {
+  overflow: hidden;
+  max-width: 190px;
+  color: var(--ink);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-menu {
+  position: relative;
+  min-width: 0;
+}
+
+.account-menu > summary {
+  list-style: none;
+}
+
+.account-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.account-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 7px 4px 4px;
+  color: var(--ink);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.account-menu-trigger:hover,
+.account-menu[open] .account-menu-trigger {
+  border-color: var(--line);
+  background: rgb(255 255 255 / 78%);
+}
+
+.account-avatar {
+  display: grid;
+  flex: 0 0 28px;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: #fff;
+  background: var(--wine);
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.account-menu-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.account-credit {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-menu-caret {
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  transform: translateY(-1px);
+}
+
+.account-popover {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(300px, calc(100vw - 32px));
+  padding: 15px;
+  background: rgb(255 255 255 / 98%);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 16px 38px rgb(46 35 28 / 14%);
+}
+
+.account-popover-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 13px;
+}
+
+.account-popover-heading strong {
+  display: block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-details {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 11px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.account-details > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.account-details dt {
+  color: var(--muted);
+}
+
+.account-details dd {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 700;
+  text-align: right;
+}
+
+.account-popover-actions {
+  display: grid;
+  gap: 8px;
+  padding-top: 11px;
+}
+
+.account-popover-actions .account-history-link {
+  justify-content: flex-start;
+  padding: 7px 8px;
+  border-radius: 8px;
+}
+
+.account-popover-actions .account-history-link:hover {
+  background: var(--black-soft);
+}
+
+.account-logout {
+  justify-content: flex-start;
+  padding: 7px 8px;
+  color: var(--muted);
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.account-logout:hover {
+  color: var(--wine);
+  background: var(--black-soft);
+}
+
+.account-role {
+  padding: 3px 7px;
+  color: var(--wine);
+  background: rgb(107 38 56 / 8%);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.account-status {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 .app-content {
   width: min(100% - 32px, 1480px);
   margin: 0 auto;
@@ -2622,5 +2823,24 @@ h3 {
 .music-plan-disclosure[open] summary::after { content: "−"; }
 .music-plan-disclosure-body { display: grid; gap: 7px; padding: 8px; }
 .music-plan-disclosure-body > .music-plan-catalog { margin: 0; }
+.billing-settings-page { display: grid; gap: 18px; max-width: 980px; margin: 0 auto; padding: 28px 24px 48px; }
+.billing-settings-page .page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.billing-settings-page .page-heading h1 { margin: 4px 0 7px; }
+.billing-settings-page .page-lede, .settings-footnote, .muted-copy { color: var(--muted); font-size: 13px; line-height: 1.55; }
+.settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.settings-card { padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); box-shadow: 0 8px 24px rgb(36 30 24 / 5%); }
+.settings-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.settings-card-heading h2 { margin: 0; font-size: 16px; }
+.settings-list { display: grid; gap: 10px; margin: 0; }
+.settings-list > div { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; padding-bottom: 9px; border-bottom: 1px solid var(--line); }
+.settings-list > div:last-child { padding-bottom: 0; border-bottom: 0; }
+.settings-list dt { color: var(--muted); font-size: 12px; }
+.settings-list dd { margin: 0; color: var(--ink); font-size: 13px; font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
+.status-pill { padding: 3px 8px; border-radius: 999px; font-size: 11px; }
+.status-pill-success { color: var(--green); background: rgb(47 90 69 / 10%); }
+.status-pill-muted { color: var(--muted); background: rgb(36 30 24 / 7%); }
+.settings-formula { margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); background: rgb(47 90 69 / 5%); font-size: 13px; line-height: 1.55; }
+.settings-footnote { margin: 0; }
+@media (max-width: 760px) { .billing-settings-page { padding: 20px 14px 36px; } .billing-settings-page .page-heading { align-items: stretch; flex-direction: column; } .settings-grid { grid-template-columns: 1fr; } }
 @media (max-width: 1180px) { .project-results-column { position: static; } }
 @media (max-width: 760px) { .music-plan-options { grid-template-columns: 1fr; } .music-plan-source { align-items: flex-start; flex-direction: column; } .music-plan-source-link { width: 100%; justify-content: center; } .music-plan-catalog-search { grid-template-columns: 1fr; } .music-plan-catalog-search-button { min-height: 32px; } .music-plan-upload { align-items: flex-start; flex-direction: column; } .music-plan-upload input { max-width: 100%; } }

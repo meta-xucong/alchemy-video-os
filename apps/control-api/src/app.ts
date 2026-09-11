@@ -69,10 +69,10 @@ import { deriveTranscriptScript, InMemoryCreativePlanningStore, InMemoryDelivery
 import { InMemoryStoragePort, StorageObjectAlreadyExistsError, StorageUnavailableError, createAssetObjectKey, type ObjectMetadataInspection, type StoragePort } from "@alchemy-video/storage-client";
 import type { z } from "zod";
 import { CreditPortError, VeyraIdentityError, type VideoVeyraBridgeAdapter } from "@alchemy-video/credit-veyra";
-import type { CreditAccount, VeyraExternalIdentity } from "@alchemy-video/contracts";
+import type { CreditAccount, VeyraExternalIdentity, VideoGenerationInputSnapshot } from "@alchemy-video/contracts";
 
 import { ControlApiError, validationError } from "./errors.js";
-import { DevIdentityAdapter, DEV_IDENTITY_SEED, type CurrentIdentity, type IdentityPort } from "./identity.js";
+import { DevIdentityAdapter, DEV_IDENTITY_SEED, isVerifiedVeyraAdminRole, normalizeVeyraRole, type CurrentIdentity, type IdentityPort } from "./identity.js";
 import { VideoSessionCodec } from "./veyra-session.js";
 import { createPrefixedId } from "./ids.js";
 import { errorHandler, requestLogger } from "./middleware/logger.js";
@@ -243,6 +243,60 @@ const resolveWorkspaceAccess = async (
     throw new ControlApiError(403, "WORKSPACE_FORBIDDEN", "The current identity cannot access this workspace.");
   }
   return identity;
+};
+
+/**
+ * A signed session role is a display/cached hint only.  Cross-workspace
+ * reads require a fresh, active Veyra account lookup on every request so a
+ * stale or tampered bootstrap can never grant administrator visibility.
+ */
+const resolveVerifiedAdminAccess = async (
+  identity: CurrentIdentity,
+  bridge: VideoVeyraBridgeAdapter | undefined,
+) => {
+  if (identity.isAdmin !== true || !identity.externalUserId || !bridge) return false;
+  try {
+    const account = await bridge.getAccount({ externalUserId: identity.externalUserId });
+    return account.externalUserId === identity.externalUserId
+      && account.status.trim().toLowerCase() === "active"
+      && isVerifiedVeyraAdminRole(normalizeVeyraRole(account.role));
+  } catch {
+    // An unavailable authority must never widen visibility.  The caller may
+    // continue with the normal workspace-scoped read.
+    return false;
+  }
+};
+
+const listProjectsForRead = async (
+  identity: CurrentIdentity,
+  store: ControlPlaneStore,
+  isAdmin: boolean,
+) => {
+  // Even for administrators, every project lookup is made through the
+  // workspace-scoped repository method.  The explicit workspace target list
+  // is obtained only after the live Veyra capability check above.
+  const workspaces = isAdmin
+    ? await store.listWorkspacesForAdmin()
+    : [{ id: identity.workspaceId }];
+  const projectLists = await Promise.all(workspaces.map((workspace) => store.listProjects(workspace.id)));
+  return projectLists
+    .flat()
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+};
+
+const findProjectForRead = async (
+  identity: CurrentIdentity,
+  store: ControlPlaneStore,
+  projectId: string,
+  isAdmin: boolean,
+) => {
+  if (!isAdmin) return store.findProject(identity.workspaceId, projectId);
+  const workspaces = await store.listWorkspacesForAdmin();
+  for (const workspace of workspaces) {
+    const project = await store.findProject(workspace.id, projectId);
+    if (project) return project;
+  }
+  return undefined;
 };
 
 const idempotencyConflict = () =>
@@ -622,6 +676,56 @@ export function createApp(options: CreateAppOptions = {}) {
     options.videoBillingFixedFee
       ?? (environmentBillingEnabled ? process.env.VIDEO_BILLING_FIXED_FEE : undefined),
   );
+  const resolveVideoBillingConfig = () => {
+    const usageMultiplier = videoBillingSurchargeMultiplier ?? videoBillingModelRates[videoProfile.model];
+    const usagePricingConfigured = usageMultiplier !== undefined;
+    const legacyChargeConfigured = videoBillingChargeAmount !== "0";
+    if (usagePricingConfigured && videoBillingFixedFee === undefined) {
+      throw new ControlApiError(503, "CREDIT_UNAVAILABLE", "Video billing usage pricing requires an explicit fixed service fee.", false);
+    }
+    if (videoBillingFixedFee !== undefined && !usagePricingConfigured) {
+      throw new ControlApiError(503, "CREDIT_UNAVAILABLE", "Video billing fixed fee requires a usage surcharge multiplier.", false);
+    }
+    if (usagePricingConfigured && legacyChargeConfigured) {
+      throw new ControlApiError(503, "CREDIT_UNAVAILABLE", "Video billing usage pricing cannot be combined with the legacy fixed charge.", false);
+    }
+    return {
+      usageMultiplier,
+      usagePricingConfigured,
+      billingConfigured: legacyChargeConfigured || usagePricingConfigured,
+    };
+  };
+  const createFrozenVideoBilling = async (identity: CurrentIdentity): Promise<VideoGenerationInputSnapshot["billing"]> => {
+    const { usageMultiplier, usagePricingConfigured, billingConfigured } = resolveVideoBillingConfig();
+    if (!billingConfigured) return undefined;
+    if (!options.videoVeyraBridge) {
+      throw new ControlApiError(503, "CREDIT_UNAVAILABLE", "Shared credit billing is configured but its server bridge is unavailable.", true);
+    }
+    if (!identity.externalUserId) {
+      throw new ControlApiError(503, "AUTH_UNAVAILABLE", "Shared credit billing requires a verified AISelf account.", true);
+    }
+    const account = await options.videoVeyraBridge.getAccount({ externalUserId: identity.externalUserId });
+    if (account.status.toLowerCase() !== "active") {
+      throw new ControlApiError(403, "AUTH_FORBIDDEN", "The shared credit account is not active.");
+    }
+    return {
+      external_user_id: identity.externalUserId,
+      billing_rule: {
+        creditProvider: "veyra_sub2api" as const,
+        billingRuleKey: usagePricingConfigured ? `video:usage-surcharge-v1:${videoProfile.model}` : "video:sub2api-v1",
+        ...(usagePricingConfigured
+          ? {
+              usagePricing: {
+                model: videoProfile.model,
+                multiplier: usageMultiplier,
+                ...(videoBillingFixedFee !== undefined ? { fixedFee: videoBillingFixedFee } : {}),
+              },
+            }
+          : { chargeAmount: videoBillingChargeAmount }),
+        source: usagePricingConfigured ? "video:aiself-actual-cost-plus-service-fee" : "video:sub2api-v1",
+      },
+    };
+  };
   const audioFreeOnly = options.audioFreeOnly ?? process.env.AUDIO_FREE_ONLY !== "false";
   const pixabayMusicEnabled = options.pixabayMusicEnabled ?? process.env.PIXABAY_MUSIC_ENABLED !== "false";
   // Direct Node-side Pixabay fetching is not a production path.  The runtime
@@ -1070,6 +1174,17 @@ export function createApp(options: CreateAppOptions = {}) {
     });
   });
 
+  app.get("/api/v1/me/history", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    const isAdmin = await resolveVerifiedAdminAccess(identity, options.videoVeyraBridge);
+    const projects = await listProjectsForRead(identity, store, isAdmin);
+    return response(context, {
+      scope: isAdmin ? "ALL_WORKSPACES" as const : "WORKSPACE" as const,
+      is_admin: isAdmin,
+      projects: projects.map(serializeProject),
+    });
+  });
+
   app.get("/api/v1/workspaces", async (context) => {
     const identity = await resolveWorkspaceAccess(context, identityPort, store);
     const workspaces = await store.listWorkspaces(identity.userId);
@@ -1103,19 +1218,26 @@ export function createApp(options: CreateAppOptions = {}) {
   app.get("/api/v1/projects/:project_id", async (context) => {
     const identity = await resolveWorkspaceAccess(context, identityPort, store);
     const projectId = parseProjectId(context);
-    const detail = await assetStore.findProjectDetail(identity.workspaceId, projectId);
+    // Administrators receive a read-only cross-workspace view from the
+    // trusted Veyra capability.  Resolve the owning workspace first, then
+    // keep every detail repository query scoped to that workspace.
+    const isAdmin = await resolveVerifiedAdminAccess(identity, options.videoVeyraBridge);
+    const project = await findProjectForRead(identity, store, projectId, isAdmin);
+    if (!project) throw notFound("Project not found.");
+    const projectWorkspaceId = project.workspaceId;
+    const detail = await assetStore.findProjectDetail(projectWorkspaceId, projectId);
     if (!detail) throw notFound("Project not found.");
-    const taskRuns = await taskStore.listProjectTaskRuns(identity.workspaceId, projectId);
+    const taskRuns = await taskStore.listProjectTaskRuns(projectWorkspaceId, projectId);
     const generatedAssets = (await Promise.all(
       taskRuns.flatMap((taskRun) => taskRun.resultAssetId
-        ? [taskStore.findTaskRunResultAsset(identity.workspaceId, taskRun.resultAssetId)]
+        ? [taskStore.findTaskRunResultAsset(projectWorkspaceId, taskRun.resultAssetId)]
         : []),
     )).filter((asset): asset is NonNullable<typeof asset> => Boolean(asset));
     const assetIds = new Set(detail.assets.map((asset) => asset.id));
     const [creativeBriefRevisions, storyboardRevisions, productionRuns] = await Promise.all([
-      planningStore.listProjectCreativeBriefRevisions(identity.workspaceId, projectId),
-      planningStore.listProjectStoryboardRevisions(identity.workspaceId, projectId),
-      planningStore.listProjectProductionRuns(identity.workspaceId, projectId),
+      planningStore.listProjectCreativeBriefRevisions(projectWorkspaceId, projectId),
+      planningStore.listProjectStoryboardRevisions(projectWorkspaceId, projectId),
+      planningStore.listProjectProductionRuns(projectWorkspaceId, projectId),
     ]);
     return response(context, serializeProjectDetail({
       ...detail,
@@ -1285,12 +1407,31 @@ export function createApp(options: CreateAppOptions = {}) {
     }
     if (!account) throw new ControlApiError(503, "CREDIT_UNAVAILABLE", "The credit service is unavailable.", true);
     return response(context, {
-      external_user_id: account.externalUserId,
       email: account.email,
-      role: account.role,
+      role: normalizeVeyraRole(account.role) ?? "unknown",
       balance: account.balance,
       status: account.status,
       concurrency: account.concurrency,
+    });
+  });
+
+  app.get("/api/v1/me/billing-policy", async (context) => {
+    await resolveWorkspaceAccess(context, identityPort, store);
+    const { usagePricingConfigured: hasUsagePricing, billingConfigured: hasConfiguredBilling } = resolveVideoBillingConfig();
+    const hasFixedAmount = videoBillingChargeAmount !== "0";
+    const enabled = Boolean(options.videoVeyraBridge && hasConfiguredBilling);
+    return response(context, {
+      enabled,
+      mode: !enabled
+        ? "DISABLED" as const
+        : hasUsagePricing
+          ? "USAGE_PLUS_SERVICE_FEE" as const
+          : "FIXED_AMOUNT" as const,
+      surcharge_multiplier: videoBillingSurchargeMultiplier ?? null,
+      fixed_fee: videoBillingFixedFee ?? null,
+      charge_amount: hasFixedAmount ? videoBillingChargeAmount : null,
+      model_multipliers: videoBillingModelRates,
+      source: enabled ? "SERVER_ENVIRONMENT" as const : "DISABLED" as const,
     });
   });
 
@@ -1841,6 +1982,11 @@ export function createApp(options: CreateAppOptions = {}) {
       }
     }
 
+    // Freeze the same account/rule fact used by direct shot generation before
+    // the production run is persisted.  The existing worker settles it only
+    // after each validated artifact; this is a preflight, never a debit.
+    const billing = await createFrozenVideoBilling(identity);
+
     // AUTO is local-first.  Only when the same source-aligned candidate
     // predicate finds no usable workspace MUSIC asset do we perform one
     // server-side Pixabay import before creating the production run.  The
@@ -1898,6 +2044,7 @@ export function createApp(options: CreateAppOptions = {}) {
       storyboardRevisionId: command.storyboard_revision_id,
       deliveryPlanRevisionId: command.delivery_plan_revision_id,
       musicPlan: command.music_plan,
+      ...(billing ? { billing } : {}),
       event: {
         eventId: createPrefixedId("evt"),
         messageId: createPrefixedId("msg"),
@@ -2079,38 +2226,11 @@ export function createApp(options: CreateAppOptions = {}) {
       // A global surcharge is the product policy for every provider. The
       // legacy model map remains a fallback for older snapshots or an
       // explicitly model-specific override when no global value is set.
-      const usageMultiplier = videoBillingSurchargeMultiplier ?? videoBillingModelRates[videoProfile.model];
-      const usagePricingConfigured = usageMultiplier !== undefined;
-      if (usagePricingConfigured && videoBillingFixedFee === undefined) {
-        throw new ControlApiError(503, "CREDIT_UNAVAILABLE", "Video billing usage pricing requires an explicit fixed service fee.", false);
-      }
-      if (videoBillingFixedFee !== undefined && !usagePricingConfigured) {
-        throw new ControlApiError(503, "CREDIT_UNAVAILABLE", "Video billing fixed fee requires a usage surcharge multiplier.", false);
-      }
-      if (options.videoVeyraBridge && identity.externalUserId && (videoBillingChargeAmount !== "0" || usagePricingConfigured)) {
-        const account = await options.videoVeyraBridge.getAccount({ externalUserId: identity.externalUserId });
-        if (account.status.toLowerCase() !== "active") {
-          throw new ControlApiError(403, "AUTH_FORBIDDEN", "The shared credit account is not active.");
-        }
+      const billing = await createFrozenVideoBilling(identity);
+      if (billing) {
         inputSnapshot = {
           ...inputSnapshot,
-          billing: {
-            external_user_id: identity.externalUserId,
-            billing_rule: {
-              creditProvider: "veyra_sub2api" as const,
-              billingRuleKey: usagePricingConfigured ? `video:usage-surcharge-v1:${videoProfile.model}` : "video:sub2api-v1",
-              ...(usagePricingConfigured
-                ? {
-                    usagePricing: {
-                      model: videoProfile.model,
-                      multiplier: usageMultiplier,
-                      ...(videoBillingFixedFee !== undefined ? { fixedFee: videoBillingFixedFee } : {}),
-                    },
-                  }
-                : { chargeAmount: videoBillingChargeAmount }),
-              source: usagePricingConfigured ? "video:aiself-actual-cost-plus-service-fee" : "video:sub2api-v1",
-            },
-          },
+          billing,
         };
       }
     } catch (error) {
