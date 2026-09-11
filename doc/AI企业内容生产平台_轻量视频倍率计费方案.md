@@ -29,7 +29,7 @@ Video OS 的 debit 只发送 `video_os_extra`，不能再次发送 `total_charge
 3. Worker 通过注入的 `VideoUsagePort` 按 `external_user_id + provider_request_id` 读取唯一真实 usage 事实，并校验返回模型与快照模型一致。
 4. 领域层使用十进制定点数计算 `actual_cost × multiplier + fixed_fee`，结果规范化为现有 8 位 credit decimal。
 5. 复用现有 `CreditPort.debit`，幂等键仍为 `billing_rule_key:task_run_id`；成功后只写一条 `usage_records` receipt，远端 replay 只补写本地 receipt。
-6. usage reader 缺失、无记录、模型不匹配或 actual cost 非法时保持 fail-closed，任务不按预计时长/固定金额扣费。
+6. usage reader 暂时不可用或尚无记录时，已通过媒体校验的产物保持 `BILLING_PENDING`，不按预计时长/固定金额扣费，也不重新提交或下载 Provider；usage 到达后只恢复计费。模型不匹配或 actual cost 非法仍保持 fail-closed，不执行 debit。
 
 ## 配置
 
@@ -53,7 +53,7 @@ Studio 的“计费配置”页面和 `GET /api/v1/me/billing-policy` 只读展�
 
 自动 ProductionRun 已复用既有 `production_runs.budget_guard` 私有字段保存 billing snapshot，调度到每个 segment 的 `ProductionTaskRunInput`，再由现有 Worker billing executor 在成功产物后结算。该字段不进入公开 ProductionRun DTO，也不产生项目级重复扣费。
 
-Sub2API 的受保护 Veyra 端点 `GET /api/veyra/internal/users/{user_id}/usage/{request_id}` 现在只读复用既有 `usage_logs`，支持原 request id 与 Grok 已有的 `grok-video:` 稳定键；Video OS 的 `VeyraSub2ApiVideoUsageAdapter` 只读取这条事实，不创建第二本账。usage 尚未落账时返回可重试的未就绪，不以预估金额代替。
+Sub2API 的受保护 Veyra 端点 `GET /api/veyra/internal/users/{user_id}/usage/{request_id}` 现在只读复用既有 `usage_logs`，支持原 request id 与 Grok 已有的 `grok-video:` 稳定键；Video OS 的 `VeyraSub2ApiVideoUsageAdapter` 只读取这条事实，不创建第二本账。usage 尚未落账时返回可重试的未就绪；Worker 已先保存通过校验的媒体并停在 `BILLING_PENDING`，后续只恢复计费，不重复提交/下载，也不以预估金额代替。
 
 AISelf/Sub2API 自身已经会从用户余额扣除 `actual_cost`。本方案明确要求 Video OS 再收取独立的产品服务费，因此两笔账必须在 receipt/source 中区分；Video OS 不得把 Sub2API 基础费用再次作为自己的 debit。默认 `VEYRA_CREDIT_ENABLED=false` 仍保持关闭，真实启用必须使用同一计费单位。
 
@@ -64,9 +64,9 @@ AISelf/Sub2API 自身已经会从用户余额扣除 `actual_cost`。本方案明
 - 旧固定金额 billing 测试保持通过。
 - 动态规则只接受正倍率、非负固定费、正 actual cost、模型完全匹配。
 - 计算使用定点十进制并可重复；不同模型只改变倍率。
-- Provider 产物失败、下载/媒体校验失败、usage 尚未落账或 usage 不匹配均不触发 debit；usage 未就绪只按既有任务重试。
+- Provider 产物失败、下载/媒体校验失败、usage 尚未落账或 usage 不匹配均不触发 debit；usage 未就绪保持 `BILLING_PENDING`，后续只重试用量读取和 debit，不重跑 Provider。
 - 相同任务恢复或远端 replay 只产生一笔 Video OS 服务费；不成功的图片/视频任务不得进入 `BILLING_PENDING`。
 - 相同任务恢复只复用同一幂等键，不重复提交 Provider。
 - 本地默认 `VEYRA_CREDIT_ENABLED=false`，不调用真实 Provider、usage reader 或 debit。
 
-本轮补充的离线证据：Control API 计费策略 DTO/快照、Worker 50 项（45 pass、5 个既有基础设施 skip；含 `BILLING_FAILED -> BILLING_PENDING` 充值重试与 `RETRY_SCHEDULED` 重启恢复）均通过；数据库级 PostgreSQL/真实 Veyra 证据仍须在启用对应环境后单独验收，不能由内存夹具替代。
+本轮补充的离线证据：Worker 51 项（46 pass、5 个既有基础设施 skip；含用量暂未落账时保留已下载产物、后续只计费且不重复下载）均通过；数据库级 PostgreSQL/真实 Veyra 证据仍须在启用对应环境后单独验收，不能由内存夹具替代。

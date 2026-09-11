@@ -287,6 +287,19 @@ test("Studio projects public production progress into safe Chinese autopilot pro
   assert.doesNotMatch(visibleSource, /\b(?:provider_request_id|provider|queue|bullmq|outbox|sse|model|object_key)\b/i);
 });
 
+test("Studio production details keep the backend failure reason and use a stable two-row segment layout", () => {
+  const panel = read("app/components/studio/ProductionProgressPanel.vue");
+  const styles = read("app/assets/studio.css");
+
+  assert.match(panel, /class="production-segment-copy"/);
+  assert.match(panel, /class="production-segment-reason"/);
+  assert.match(panel, /class="production-segment-actions"/);
+  assert.match(panel, /return segment\.safe_summary \|\|/);
+  assert.doesNotMatch(panel, /if \(segment\.status === "FAILED"\) return segment\.retryable \?/);
+  assert.match(styles, /\.production-segment-list li\s*\{[\s\S]*grid-template-areas:[\s\S]*"number copy status"[\s\S]*"number actions actions"/);
+  assert.match(styles, /\.production-segment-reason\s*\{[\s\S]*overflow-wrap:\s*anywhere/);
+});
+
 test("Studio acknowledges automated generation before waiting for later project refreshes", () => {
   const workspace = read("app/pages/projects/[project_id].vue");
   const generation = read("app/components/studio/GenerationPanel.vue");

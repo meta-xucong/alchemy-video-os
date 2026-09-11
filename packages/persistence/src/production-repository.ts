@@ -52,6 +52,7 @@ import {
   outboxEvents,
   productionRuns,
   productionSegments,
+  providerAttempts,
   qcReports,
   promptPackages,
   referenceBindings,
@@ -65,6 +66,7 @@ import {
 } from "./schema.js";
 import { findApprovedNarrationTimeline, type ApprovedNarrationTimeline } from "./approved-narration-timeline.js";
 import { NARRATION_MEASURED_DURATION_TOLERANCE_MS } from "./narration-quality-repository.js";
+import { productionTaskFailureSummary } from "./production-failure-summary.js";
 
 type QueryExecutor = Pick<PlatformDatabase, "select" | "insert" | "update" | "execute">;
 
@@ -1611,13 +1613,24 @@ export class DrizzleProductionRepository implements ProductionStore {
       await lockProductionRun(transaction, segment.workspaceId, segment.productionRunId);
       if (segment.status === "GENERATING" || segment.status === "CHECKING") {
         assertProductionSegmentTransition(segment.status, "FAILED");
+        const [attempt] = input.event.data.provider_attempt_id
+          ? await transaction
+            .select({ status: providerAttempts.status })
+            .from(providerAttempts)
+            .where(and(
+              eq(providerAttempts.workspaceId, segment.workspaceId),
+              eq(providerAttempts.id, input.event.data.provider_attempt_id),
+              eq(providerAttempts.taskRunId, input.event.data.task_run_id),
+            ))
+            .limit(1)
+          : [];
         // A missing/expired upstream request is terminal for the persisted
         // request, but remains explicitly retryable because the production
         // segment retry path creates a fresh Provider task.
         const retryable = input.event.data.retryable || input.event.data.error_code === "PROVIDER_REJECTED";
         await transaction
           .update(productionSegments)
-          .set({ status: "FAILED", retryable, safeSummary: "本段制作未完成，可重新提交本段。", updatedAt: timestamp(input.now) })
+          .set({ status: "FAILED", retryable, safeSummary: productionTaskFailureSummary(input.event.data.error_code, attempt?.status), updatedAt: timestamp(input.now) })
           .where(and(eq(productionSegments.workspaceId, segment.workspaceId), eq(productionSegments.id, segment.id), inArray(productionSegments.status, ["GENERATING", "CHECKING"])));
       }
       const [run] = await transaction

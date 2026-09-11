@@ -1501,7 +1501,10 @@ h3 {
 .production-segment-list li {
   display: grid;
   grid-template-columns: 26px minmax(0, 1fr) auto;
-  align-items: center;
+  grid-template-areas:
+    "number copy status"
+    "number actions actions";
+  align-items: start;
   gap: 9px;
   padding: 9px;
   background: var(--paper);
@@ -1510,6 +1513,7 @@ h3 {
 }
 
 .production-segment-number {
+  grid-area: number;
   width: 26px;
   height: 26px;
   display: grid;
@@ -1520,6 +1524,11 @@ h3 {
   background: rgb(154 117 53 / 10%);
   border: 1px solid rgb(154 117 53 / 20%);
   border-radius: 5px;
+}
+
+.production-segment-copy {
+  grid-area: copy;
+  min-width: 0;
 }
 
 .production-segment-list strong {
@@ -1533,11 +1542,25 @@ h3 {
   line-height: 1.4;
 }
 
+.production-segment-reason {
+  overflow-wrap: anywhere;
+}
+
 .production-segment-status {
+  grid-area: status;
   color: var(--blue);
   font-size: 12px;
   font-weight: 750;
   white-space: nowrap;
+}
+
+.production-segment-actions {
+  grid-area: actions;
+  min-width: 0;
+}
+
+.production-segment-actions .text-button {
+  margin-top: 1px;
 }
 
 .production-segment-list li.accepted .production-segment-status {
@@ -2595,6 +2618,18 @@ h3 {
 }
 
 @media (max-width: 760px) {
+  .production-segment-list li {
+    grid-template-columns: 26px minmax(0, 1fr);
+    grid-template-areas:
+      "number copy"
+      "number status"
+      "number actions";
+  }
+
+  .production-segment-status {
+    justify-self: start;
+  }
+
   .creation-progress {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }

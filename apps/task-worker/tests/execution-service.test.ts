@@ -13,7 +13,7 @@ import { InMemoryAssetWorkspaceStore } from "../../control-api/src/asset-reposit
 import { InMemoryControlPlaneStore } from "../../control-api/src/repository.js";
 import { MockVideoTaskExecutor } from "../src/execution-service.js";
 import { VideoBillingExecutor, type BillingAttemptStore } from "../src/billing-executor.js";
-import type { CreditPort } from "@alchemy-video/credit-veyra";
+import { VideoUsagePortError, type CreditPort } from "@alchemy-video/credit-veyra";
 import { createWorkerReferenceDeliveryPort, type ReferenceDeliveryPort } from "../src/reference-delivery.js";
 
 const event = () => ({ eventId: createPrefixedId("evt"), messageId: createPrefixedId("msg"), traceId: createPrefixedId("trc"), correlationId: createPrefixedId("cor") });
@@ -97,6 +97,7 @@ class FailFirstWriteStorage implements StoragePort {
 
 class CapturingProvider implements VideoProviderPort {
   readonly submittedVisualInputs: Parameters<VideoProviderPort["submit"]>[0]["visualInput"][] = [];
+  downloadCount = 0;
 
   constructor(private readonly provider: MockVideoProvider) {}
 
@@ -114,6 +115,7 @@ class CapturingProvider implements VideoProviderPort {
   }
 
   download(input: Parameters<VideoProviderPort["download"]>[0]) {
+    this.downloadCount += 1;
     return this.provider.download(input);
   }
 }
@@ -184,6 +186,25 @@ class RetryOnceCreditPort implements CreditPort {
     if (this.debitCalls === 1) {
       throw { code: this.firstRetryable ? "CREDIT_UNAVAILABLE" : "CREDIT_INSUFFICIENT", retryable: this.firstRetryable };
     }
+    return {
+      externalUserId: input.externalUserId,
+      amount: input.amount,
+      balanceAfter: "98",
+      idempotencyKey: input.idempotencyKey,
+      replayed: false,
+    };
+  }
+}
+
+class SuccessfulCreditPort implements CreditPort {
+  debitCalls = 0;
+
+  async getAccount() {
+    throw new Error("The billing executor should use the debit path only.");
+  }
+
+  async debit(input: Parameters<CreditPort["debit"]>[0]) {
+    this.debitCalls += 1;
     return {
       externalUserId: input.externalUserId,
       amount: input.amount,
@@ -506,7 +527,7 @@ test("a scheduled credit retry is recovered after restart without a second Provi
   assert.equal(provider.submitCount, 1);
 });
 
-test("a billing bridge outage during recovery becomes an explicit billing failure", async () => {
+test("a missing billing bridge leaves the validated artifact pending without a Provider retry", async () => {
   const { store, workspaceId, taskRunId } = await prepareTask(true);
   const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
   const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
@@ -517,19 +538,46 @@ test("a billing bridge outage during recovery becomes an explicit billing failur
     },
   });
 
-  await assert.rejects(executor.execute({ workspaceId, taskRunId }), /video download or result write/);
+  const completed = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(completed?.status, "BILLING_PENDING");
   assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "BILLING_PENDING");
   const recovery = await executor.recover({ limit: 10, maxAttempts: 1 });
-  assert.equal(recovery[0]?.failure, "Shared credit billing is not configured for this Worker.");
-  await store.finalizeTaskRunExecutionFailure({
-    workspaceId,
-    taskRunId,
-    code: "PROVIDER_UNAVAILABLE",
-    message: "Video execution exhausted its recoverable delivery attempts.",
-    now: new Date(),
-  });
-  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "BILLING_FAILED");
+  assert.equal(recovery[0]?.failure, undefined);
   assert.equal(provider.submitCount, 1);
+});
+
+test("a usage 404 after a successful download preserves the artifact and later bills without redownloading", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask(true);
+  const provider = new CapturingProvider(new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() }));
+  const credit = new SuccessfulCreditPort();
+  const billingExecutor = new VideoBillingExecutor(credit, new InMemoryBillingAttemptStore(store), {
+    createUsageRecordId: () => createPrefixedId("use"),
+  });
+  let usageReads = 0;
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    billingExecutor,
+    videoUsage: {
+      async getUsage(input) {
+        usageReads += 1;
+        if (usageReads === 1) throw new VideoUsagePortError("USAGE_NOT_READY", true, "Usage row is not settled yet.");
+        return { providerRequestId: input.providerRequestId, model: "mock-video-v1", actualCost: "1" };
+      },
+    },
+  });
+
+  const pending = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(pending?.status, "BILLING_PENDING");
+  assert.equal(provider.submitCount, 1);
+  assert.equal(usageReads, 1);
+  assert.equal(provider.downloadCount, 1);
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "BILLING_PENDING");
+
+  const succeeded = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(succeeded?.status, "SUCCEEDED");
+  assert.equal(provider.submitCount, 1);
+  assert.equal(provider.downloadCount, 1);
+  assert.equal(usageReads, 2);
+  assert.equal(credit.debitCalls, 1);
 });
 
 test("C06 executor resumes an uploaded draft without a second submission or replacement", async () => {

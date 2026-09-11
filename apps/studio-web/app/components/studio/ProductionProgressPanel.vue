@@ -23,18 +23,19 @@
       <ol class="production-segment-list" aria-label="制作细节">
         <li v-for="segment in progress.segments" :key="segment.id" :class="segment.status.toLowerCase()">
           <span class="production-segment-number">{{ segment.sequence }}</span>
-          <div>
+          <div class="production-segment-copy">
             <strong>{{ segment.title }}</strong>
-            <p>{{ segmentSummary(segment) }}</p>
+            <p class="production-segment-reason">{{ segmentSummary(segment) }}</p>
           </div>
           <span class="production-segment-status">{{ segmentLabel(segment.status) }}</span>
-          <button
-            v-if="segment.status === 'FAILED' && segment.retryable"
-            class="text-button"
-            type="button"
-            :disabled="busy"
-            @click="emit('retry', segment.sequence)"
-          >{{ busy ? "正在重新制作" : "重新制作这一段" }}</button>
+          <div v-if="segment.status === 'FAILED' && segment.retryable" class="production-segment-actions">
+            <button
+              class="text-button"
+              type="button"
+              :disabled="busy"
+              @click="emit('retry', segment.sequence)"
+            >{{ busy ? "正在重新制作" : "重新制作这一段" }}</button>
+          </div>
         </li>
       </ol>
     </details>
@@ -101,7 +102,8 @@ function segmentLabel(status: ProductionSegment["status"]) {
 }
 
 function segmentSummary(segment: ProductionSegment) {
-  if (segment.status === "FAILED") return segment.retryable ? "这一段需要处理，稍后可以重试。" : "这一段未完成，请调整故事后重新规划。";
-  return segment.safe_summary;
+  return segment.safe_summary || (segment.status === "FAILED"
+    ? (segment.retryable ? "这一段需要处理，稍后可以重试。" : "这一段未完成，请调整故事后重新规划。")
+    : "制作状态正在更新。");
 }
 </script>

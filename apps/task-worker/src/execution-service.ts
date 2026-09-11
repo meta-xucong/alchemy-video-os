@@ -100,12 +100,19 @@ export class MockVideoTaskExecutor {
     }
     if (taskRun.status === "BILLING_PENDING" && inputSnapshot.billing) {
       if (!this.options.billingExecutor) {
-        // Never fall back to another Provider/download pass for an already
-        // generated artifact. Keep the task in its billing state until the
-        // explicitly configured credit path is available.
-        throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", true, "PROVIDER", "Shared credit billing is not configured for this Worker.");
+        // A validated artifact is already durable. Never fall back to another
+        // Provider/download pass while the credit bridge is unavailable.
+        // Leave the task in BILLING_PENDING so an explicitly configured
+        // billing recovery can resume it without a second Provider submit.
+        return taskRun;
       }
-      const usage = await this.resolveBillingUsage(input.workspaceId, input.taskRunId, inputSnapshot);
+      let usage: Awaited<ReturnType<MockVideoTaskExecutor["resolveBillingUsage"]>> | undefined;
+      try {
+        usage = await this.resolveBillingUsage(input.workspaceId, input.taskRunId, inputSnapshot);
+      } catch (error) {
+        if (this.isRetryableUsagePending(error)) return taskRun;
+        throw error;
+      }
       await this.options.billingExecutor.execute({
         workspaceId: input.workspaceId,
         chargeRequest: {
@@ -268,12 +275,21 @@ export class MockVideoTaskExecutor {
       }
       const inspection = await validateMp4Bytes(bytes, download.mimeType);
       const billing = input.inputSnapshot.billing;
-      // Resolve usage only after download/media validation, but before the
-      // asset is marked ready. If the provider output or usage fact is invalid,
-      // the task can fail/retry from DOWNLOADING without entering billing.
-      const usage = billing
-        ? await this.resolveBillingUsage(input.workspaceId, input.taskRunId, input.inputSnapshot, attempt.providerRequestId)
-        : undefined;
+      // A usage row may be written by Sub2API after the content endpoint has
+      // already returned 200. Read it before publishing the asset only when
+      // the fact is available; a retryable 404/5xx is retained as a billing
+      // pending condition and must never turn a valid download into a
+      // Provider/download retry.
+      let usage: Awaited<ReturnType<MockVideoTaskExecutor["resolveBillingUsage"]>> | undefined;
+      let usagePending = false;
+      if (billing && this.options.billingExecutor) {
+        try {
+          usage = await this.resolveBillingUsage(input.workspaceId, input.taskRunId, input.inputSnapshot, attempt.providerRequestId);
+        } catch (error) {
+          if (!this.isRetryableUsagePending(error)) throw error;
+          usagePending = true;
+        }
+      }
       const existingDraft = await this.store.findGeneratedAssetDraft(input.workspaceId, input.taskRunId);
       const taskRun = await this.store.findTaskRun(input.workspaceId, input.taskRunId);
       if (!taskRun) return undefined;
@@ -316,7 +332,7 @@ export class MockVideoTaskExecutor {
         now: new Date(),
       });
       if (!billing) return completed;
-      if (!this.options.billingExecutor) throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", true, "PROVIDER", "Shared credit billing is not configured for this Worker.");
+      if (!this.options.billingExecutor || usagePending) return this.store.findTaskRun(input.workspaceId, input.taskRunId);
       const billingResult = await this.options.billingExecutor.execute({
         workspaceId: input.workspaceId,
         chargeRequest: { taskRunId: input.taskRunId, externalUserId: billing.external_user_id, billingRule: billing.billing_rule },
@@ -349,7 +365,7 @@ export class MockVideoTaskExecutor {
     const billing = inputSnapshot.billing;
     if (!billing?.billing_rule.usagePricing) return undefined;
     if (!this.options.videoUsage) {
-      throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", true, "PROVIDER", "Video usage billing is not configured for this Worker.");
+      throw new VideoUsagePortError("USAGE_UNAVAILABLE", true, "The provider usage bridge is not configured for this Worker.");
     }
     const requestId = providerRequestId ?? (await this.store.listTaskRunAttempts(workspaceId, taskRunId))
       .slice()
@@ -366,9 +382,7 @@ export class MockVideoTaskExecutor {
       });
     } catch (error) {
       if (error instanceof VideoUsagePortError) {
-        if (error.retryable) {
-          throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", true, "PROVIDER", "Provider usage is not settled yet.");
-        }
+        if (error.retryable) throw error;
         throw new VideoProviderProtocolError("The provider usage fact could not be validated.");
       }
       throw error;
@@ -377,6 +391,10 @@ export class MockVideoTaskExecutor {
       throw new VideoProviderProtocolError("The provider usage fact does not match the immutable video billing rule.");
     }
     return usage;
+  }
+
+  private isRetryableUsagePending(error: unknown): boolean {
+    return error instanceof VideoUsagePortError && error.retryable;
   }
 
   async recover(input: { limit: number; maxAttempts?: number }) {
