@@ -250,6 +250,59 @@ test("internal minimum generation segment count reuses the existing semantic pla
   assert.deepEqual(plan.shotSpecs.map((shot) => shot.narrativeBeatSequences), [[1], [2]]);
 });
 
+test("semantic segment windows use one shared contiguous event-to-beat mapping", async () => {
+  const plan = await new DeterministicPlanningModel().plan({
+    sourceText: "人物走进大厅。人物抬头寻找指示牌。人物拿出手机。人物查看消息。人物转身走向出口。",
+    targetDurationSeconds: 15,
+    durationPolicy: { minDurationSeconds: 1, maxDurationSeconds: 15 },
+    minimumGenerationSegmentCount: 4,
+    stylePreferences: "纪实",
+    sourceAssetIds: [],
+  });
+
+  assert.equal(plan.generationSegmentCount, 4);
+  assert.deepEqual(plan.beats.map((beat) => beat.generationSegmentSequence), [1, 2, 3, 4, 4]);
+  assert.deepEqual(plan.shotSpecs.map((shot) => shot.narrativeBeatSequences), [[1], [2], [3], [4, 5]]);
+  assert.deepEqual(plan.shotSpecs.map((shot) => shot.narrativeGoal), [
+    "人物走进大厅。",
+    "人物抬头寻找指示牌。",
+    "人物拿出手机。",
+    "人物查看消息。 人物转身走向出口。",
+  ]);
+});
+
+test("budget re-planning never fabricates an empty or repeated visual window", async () => {
+  const plan = await new DeterministicPlanningModel().plan({
+    sourceText: "人物走进大厅。人物抬头寻找指示牌。人物走向出口。",
+    targetDurationSeconds: 15,
+    durationPolicy: { minDurationSeconds: 1, maxDurationSeconds: 15 },
+    minimumGenerationSegmentCount: 4,
+    stylePreferences: "纪实",
+    sourceAssetIds: [],
+  });
+
+  assert.equal(plan.generationSegmentCount, 3);
+  assert.deepEqual(plan.shotSpecs.map((shot) => shot.narrativeBeatSequences), [[1], [2], [3]]);
+  assert.equal(new Set(plan.shotSpecs.flatMap((shot) => shot.narrativeBeatSequences)).size, 3);
+  assert.ok(plan.shotSpecs.every((shot) => shot.narrativeGoal.length > 0));
+});
+
+test("duration-only continuation does not repeat the authored event in a later prompt window", async () => {
+  const source = "人物完成一个连续动作并在结尾停稳。";
+  const plan = await new DeterministicPlanningModel().plan({
+    sourceText: source,
+    targetDurationSeconds: 30,
+    stylePreferences: "纪实",
+    sourceAssetIds: [],
+  });
+
+  assert.deepEqual(plan.shotSpecs.map((shot) => shot.durationSeconds), [15, 15]);
+  assert.deepEqual(plan.shotSpecs.map((shot) => shot.narrativeBeatSequences), [[1], []]);
+  assert.ok(plan.shotSpecs[0]!.narrativeGoal.includes(source));
+  assert.ok(!plan.shotSpecs[1]!.narrativeGoal.includes(source));
+  assert.equal(plan.shotSpecs[1]!.motionPlan.motion_beats[0]!.source_description, "承接第 1 段的结束状态");
+});
+
 test("an explicit Grok duration policy rejects authored dialogue that cannot fit the exact short target", async () => {
   await assert.rejects(() => new DeterministicPlanningModel().plan({
     sourceText: '口播文案："甲乙丙丁戊己"',

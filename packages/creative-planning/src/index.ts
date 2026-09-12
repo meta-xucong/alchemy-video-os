@@ -14,6 +14,7 @@ import {
 import {
   assertStoryboardPlan,
   DEFAULT_STORYBOARD_DURATION_POLICY,
+  DomainInvariantError,
   extractKeyVisualObjectLocks,
   extractNarrativeSentences,
   extractVisualConstraints,
@@ -713,9 +714,24 @@ const chooseGenerationSegmentCount = (
   hasExplicitSceneChange = false,
   minimumGenerationSegmentCount = 1,
 ) => {
-  const minimumSegmentCount = Number.isSafeInteger(minimumGenerationSegmentCount)
+  // A provider-budget retry may ask for more segments than the source has
+  // executable events.  Clamp only that retry floor so the existing worker
+  // observes no segment-count progress and keeps the original PROMPT_BUDGET
+  // failure.  A normal duration split may still create a continuation window
+  // for one authored action; that window is handled without repeating source
+  // text below.
+  const maximumRepresentableSegmentCount = Math.max(1, eventCount);
+  const requestedMinimumSegmentCount = Number.isSafeInteger(minimumGenerationSegmentCount)
     ? Math.max(1, minimumGenerationSegmentCount)
     : 1;
+  // Only a budget retry is allowed to use the event-window representability
+  // guard.  A normal duration split may still need a continuation window for
+  // one authored action (for example a 30s target under a 15s provider cap),
+  // but that continuation must not duplicate the authored event text.
+  const isBudgetReplan = requestedMinimumSegmentCount > 1;
+  const minimumSegmentCount = isBudgetReplan
+    ? Math.min(maximumRepresentableSegmentCount, requestedMinimumSegmentCount)
+    : requestedMinimumSegmentCount;
   // Huobao scene boundaries cannot be merged into one provider segment. If a
   // short target cannot provide the active minimum to both scenes, preserve
   // the source boundary and let the existing storyboard invariant reject the
@@ -748,7 +764,8 @@ const chooseGenerationSegmentCount = (
   // sections under the upstream 8-15s ceiling. A paragraph boundary that
   // cannot fit in the current segment therefore creates the next segment,
   // rather than being pulled across by character balancing.
-  return Math.max(preferredMaximum, minimumSegmentCount);
+  const preferredCount = Math.max(preferredMaximum, minimumSegmentCount);
+  return isBudgetReplan ? Math.min(maximumRepresentableSegmentCount, preferredCount) : preferredCount;
 };
 
 // Thin adaptation of huobao storyboard-breaker: spoken copy gets the time it
@@ -870,11 +887,40 @@ const distributeDuration = (totalDurationSeconds: number, count: number) => {
   return Array.from({ length: count }, (_, index) => base + (index < remainder ? 1 : 0));
 };
 
-const distributeEvents = (events: string[], count: number) => Array.from({ length: count }, (_, index) => {
-  const start = Math.floor((index * events.length) / count);
-  const end = Math.floor(((index + 1) * events.length) / count);
-  return events.slice(start, Math.max(start, end));
-});
+const distributeEvents = (events: string[], count: number) => {
+  if (!Number.isSafeInteger(count) || count < 1) {
+    throw new DomainInvariantError(
+      "STORYBOARD_SPEC_INVALID",
+      "Storyboard generation segments must be a positive integer.",
+    );
+  }
+  if (count > events.length) {
+    // Preserve authored order and put any duration-only continuation windows
+    // after the last authored event; never create an empty leading window.
+    return {
+      groups: Array.from({ length: count }, (_, index) => (index < events.length ? [events[index]!] : [])),
+      eventSegmentSequences: events.map((_event, index) => index + 1),
+    };
+  }
+  const groups = Array.from({ length: count }, (_, index) => {
+    const start = Math.floor((index * events.length) / count);
+    const end = Math.floor(((index + 1) * events.length) / count);
+    const group = events.slice(start, Math.max(start, end));
+    return group;
+  });
+  const eventSegmentSequences = events.map((_event, eventIndex) => {
+    for (let segmentIndex = 0; segmentIndex < groups.length; segmentIndex += 1) {
+      const start = Math.floor((segmentIndex * events.length) / count);
+      const end = Math.floor(((segmentIndex + 1) * events.length) / count);
+      if (eventIndex >= start && eventIndex < end) return segmentIndex + 1;
+    }
+    throw new DomainInvariantError(
+      "STORYBOARD_SPEC_INVALID",
+      "Every authored event must belong to exactly one storyboard window.",
+    );
+  });
+  return { groups, eventSegmentSequences };
+};
 
 // The source long-video guide names an extreme push/pull as a physical
 // transition and requires a destination opening.  The existing Chinese
@@ -953,7 +999,8 @@ export class DeterministicPlanningModel implements PlanningModelPort {
       durationPolicy,
     });
     const durations = plannedTiming.durations;
-    const groups = distributeEvents(events, generationSegmentCount);
+    const eventDistribution = distributeEvents(events, generationSegmentCount);
+    const groups = eventDistribution.groups;
     const dialogueGroups = [
       ...plannedTiming.dialogueGroups,
       ...Array.from({ length: Math.max(0, generationSegmentCount - plannedTiming.dialogueGroups.length) }, () => [] as string[]),
@@ -961,10 +1008,7 @@ export class DeterministicPlanningModel implements PlanningModelPort {
     const continuityLevel: ContinuityLevel = input.sourceAssetIds.length > 0 && generationSegmentCount > 1 ? "REVIEW_REQUIRED" : "STANDARD";
     const title = concise(stripSpokenDialogue(events[0] ?? sourceText), "故事计划");
     const beats = events.map((event, index) => {
-      const segmentSequence = Math.min(
-        generationSegmentCount,
-        Math.floor((index * generationSegmentCount) / Math.max(1, events.length)) + 1,
-      );
+      const segmentSequence = eventDistribution.eventSegmentSequences[index]!;
       const primaryEvent = concise(stripSpokenDialogue(event), "故事推进");
       return {
         sequence: index + 1,
@@ -985,7 +1029,12 @@ export class DeterministicPlanningModel implements PlanningModelPort {
       const narrativeBeatSequences = beats
         .filter((beat) => beat.generationSegmentSequence === sequence)
         .map((beat) => beat.sequence);
-      const primaryEvent = concise(stripSpokenDialogue(group[0] ?? events[Math.min(events.length - 1, index)] ?? sourceText), "故事推进");
+      // A duration-only continuation may have no new authored event.  Keep it
+      // source-free instead of falling back to the final event and repeating
+      // that event in a later provider prompt.
+      const primaryEvent = group.length > 0
+        ? concise(stripSpokenDialogue(group[0]!), "故事推进")
+        : `承接第 ${index} 段的结束状态`;
       const summary = concise(stripSpokenDialogue(group.join(" ")), primaryEvent);
       const startState = index === 0 ? "故事开场状态" : `承接第 ${index} 段的结束状态`;
       const endState = index === groups.length - 1 ? "完整故事目标完成" : `为第 ${index + 2} 段建立可见过渡`;
@@ -1038,9 +1087,7 @@ export class DeterministicPlanningModel implements PlanningModelPort {
               ? "优先保持已选参考素材中的人物或品牌风格一致。"
               : "分镜声明转场到新场景，不锁定上一段交接帧；仅携带已选用户参考图保持人物身份、服装和道具连续。"
           : "使用明确转场说明承接叙事，不承诺视觉帧级连续。",
-        narrativeBeatSequences: narrativeBeatSequences.length > 0
-          ? narrativeBeatSequences
-          : [Math.max(1, Math.min(beats.length, index + 1))],
+        narrativeBeatSequences,
         motionPlan: motion.motionPlan,
         motionPlanHash: motion.motionPlanHash,
         cameraShot,
