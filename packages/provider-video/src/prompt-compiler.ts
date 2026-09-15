@@ -3,8 +3,20 @@ import type { KeyVisualObjectLock, VisualReferenceRole } from "@alchemy-video/co
 import {
   DEFAULT_VIDEO_PROMPT_MAX_UTF8_BYTES,
   compactRuntimePrompt,
+  UnsupportedVideoGenerationInputError,
   type VideoProviderRuntimeProfile,
 } from "./runtime-profile.js";
+
+// Source: Seedance-2.5@ebc68d3c19a62fba0f9ba9d2805af1f711a82aa7
+// skill/seedance-25/references/prompting.md (sound policy) and
+// references/prompt-recipes.md ("无字幕"); OpenMontage@4eab34c5cfcccaa4f1970554928feccce73ee930
+// skills/creative/prompting/veo-prompting.md (subtitle prevention). Keep
+// this generated part narrow: post-production owns captions, while scene/UI
+// text remains part of the authored source.
+const PROVIDER_CAPTION_SUPPRESSION_DIRECTIVE = "全程无字幕；no subtitles, no captions。字幕只在后期统一添加。";
+
+const hasProviderCaptionSuppressionDirective = (value: string) =>
+  value.includes(PROVIDER_CAPTION_SUPPRESSION_DIRECTIVE);
 
 const extractObjectNames = (sourcePrompt: string) => {
   const matches = [
@@ -157,7 +169,11 @@ export const compileVideoPrompt = (input: Readonly<{
   const referenceDirective = buildReferenceRoleDirective(input.referenceRoles ?? []);
   const objectDirective = buildObjectContinuityDirective(sourcePrompt, input.visualObjectLocks);
   const dialogueDirective = buildDialogueDirective(sourcePrompt, input.profile.audioOwner);
-  const generatedPromptParts = [objectDirective, referenceDirective, dialogueDirective].filter(Boolean);
+  const captionSuppressionDirective = input.profile.mode === "sub2api"
+    && !hasProviderCaptionSuppressionDirective(sourcePrompt)
+    ? PROVIDER_CAPTION_SUPPRESSION_DIRECTIVE
+    : "";
+  const generatedPromptParts = [captionSuppressionDirective, objectDirective, referenceDirective, dialogueDirective].filter(Boolean);
   const prompt = [sourcePrompt, ...generatedPromptParts].filter(Boolean).join(" ");
   const compactedPrompt = compactRuntimePrompt(
     prompt,
@@ -165,6 +181,12 @@ export const compileVideoPrompt = (input: Readonly<{
     input.profile.providerPromptMaxUtf8Bytes ?? DEFAULT_VIDEO_PROMPT_MAX_UTF8_BYTES,
     { sourcePrompt, generatedPromptParts },
   );
+  if (input.profile.mode === "sub2api" && !hasProviderCaptionSuppressionDirective(compactedPrompt)) {
+    throw new UnsupportedVideoGenerationInputError(
+      "The real video prompt cannot fit the provider ceiling while retaining the required caption-suppression directive.",
+      "PROMPT_BUDGET",
+    );
+  }
   // Keep the sidecar aligned with the prompt actually returned.  This lets a
   // later, lower configured platform budget omit another whole generated part
   // without treating the already compacted string as a provenance mismatch.

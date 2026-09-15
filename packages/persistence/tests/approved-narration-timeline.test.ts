@@ -141,6 +141,18 @@ test("approved timeline maps absolute cues and approved audio metadata", async (
   assert.equal(result?.narrationAsset?.objectKey, `${workspaceId}/${projectId}/${assetId}/narration.wav`);
 });
 
+test("approved timeline normalizes PostgreSQL timestamp strings at the DB boundary", async () => {
+  const postgresTimestamp = "2026-08-30 00:00:00.000+00";
+  const result = await findApprovedNarrationTimeline(fakeDatabase({
+    timeline_plans: [timelineRow({ createdAt: postgresTimestamp })],
+    narration_script_revisions: [scriptRow({ createdAt: postgresTimestamp, updatedAt: postgresTimestamp })],
+    narration_asset_versions: [assetVersionRow({ createdAt: postgresTimestamp, updatedAt: postgresTimestamp })],
+    assets: [audioAssetRow()],
+  }), workspaceId, projectId, deliveryPlanRevisionId);
+
+  assert.equal(result?.narrationAsset?.durationMs, 1_000);
+});
+
 test("approved timeline preserves an explicit HOLD tail without treating it as spoken text", async () => {
   const result = await findApprovedNarrationTimeline(fakeDatabase({
     timeline_plans: [timelineRow({ narrationAssetVersionId: null,
@@ -222,6 +234,35 @@ test("approved timeline maps measured formal narration assets no longer than eac
     { sectionId: "sec_2", assetVersionId: "nav_section_two", id: "ast_section_two", durationMs: 900 },
   ]);
   assert.deepEqual(result?.narrationSections.map((section) => section.narrationAssetVersionId), ["nav_section_one", "nav_section_two"]);
+});
+
+test("approved timeline rejects distinct section versions that reuse one AUDIO asset identity", async () => {
+  const sections = ["sec_1", "sec_2"].map((id, index) => ({
+    id,
+    display_text: `第${index + 1}段`,
+    provider_text: `第${index + 1}段`,
+    pronunciation_guides: [],
+    delivery: { pace: "NATURAL", energy: "NEUTRAL", emphasis: [], pause_before_ms: 0, pause_after_ms: 0 },
+  }));
+  const sharedAssetId = "ast_section_shared";
+  const result = await findApprovedNarrationTimeline(fakeDatabase({
+    timeline_plans: [timelineRow({
+      narrationAssetVersionId: null,
+      effectiveDurationMs: 2_000,
+      narrationSections: [
+        { section_id: "sec_1", start_ms: 0, end_ms: 1_000, visual_role: "PRIMARY", narration_asset_version_id: "nav_section_one" },
+        { section_id: "sec_2", start_ms: 1_000, end_ms: 2_000, visual_role: "PRIMARY", narration_asset_version_id: "nav_section_two" },
+      ],
+      visualSegments: [{ sequence: 1, start_ms: 0, end_ms: 2_000, provider_duration_seconds: 2 }],
+    })],
+    narration_script_revisions: [scriptRow({ spokenSections: sections, displaySections: sections.map((section) => ({ id: section.id, text: section.display_text })) })],
+    outbox_events: [],
+  }, {
+    narration_asset_versions: [[assetVersionRow({ id: "nav_section_one", assetId: sharedAssetId, durationMs: 900 })], [assetVersionRow({ id: "nav_section_two", assetId: sharedAssetId, durationMs: 900 })]],
+    assets: [[audioAssetRow({ id: sharedAssetId, objectKey: `${workspaceId}/${projectId}/${sharedAssetId}/shared.wav`, durationMs: 900 })], [audioAssetRow({ id: sharedAssetId, objectKey: `${workspaceId}/${projectId}/${sharedAssetId}/shared.wav`, durationMs: 900 })]],
+  }), workspaceId, projectId, deliveryPlanRevisionId);
+
+  assert.equal(result, undefined);
 });
 
 test("formal full narration rejects multi-section windows until Runtime consumes OpenMontage full_mix facts", async () => {

@@ -290,17 +290,22 @@ export class InMemoryNarrationQualityStore implements NarrationQualityStore {
     if (sectionAssetIds.length > 0) {
       if (timeline.narration_asset_version_id || sectionAssetIds.length !== primarySections.length
         || new Set(sectionAssetIds).size !== sectionAssetIds.length) return false;
+      const persistedAssetIds = new Set<string>();
       for (const section of primarySections) {
         const versionId = section.narration_asset_version_id;
         const version = versionId ? this.assets.get(versionId) : undefined;
         if (!version || version.workspace_id !== workspaceId || version.project_id !== projectId
           || version.narration_script_revision_id !== script.id || version.sample_approved
           || sampleAssetIdFromApprovalPayload(approvedSampleAssetId) === version.asset_id
+          || version.duration_ms > (section.end_ms - section.start_ms)
           || Math.abs(version.duration_ms - (section.end_ms - section.start_ms)) > Math.max(1, Math.round((section.end_ms - section.start_ms) * 0.15))) return false;
         const asset = this.assetResolver
           ? await this.assetResolver.findAsset(workspaceId, version.asset_id)
           : undefined;
-        if (!asset || asset.projectId !== projectId || asset.kind !== "AUDIO" || asset.status !== "READY") return false;
+        if (!asset || asset.projectId !== projectId || asset.kind !== "AUDIO" || asset.status !== "READY"
+          || (typeof asset.durationMs === "number" && asset.durationMs !== version.duration_ms)) return false;
+        if (persistedAssetIds.has(version.asset_id)) return false;
+        persistedAssetIds.add(version.asset_id);
       }
       return true;
     }
@@ -317,7 +322,8 @@ export class InMemoryNarrationQualityStore implements NarrationQualityStore {
     const asset = this.assetResolver
       ? await this.assetResolver.findAsset(workspaceId, version.asset_id)
       : undefined;
-    return Boolean(asset && asset.projectId === projectId && asset.kind === "AUDIO" && asset.status === "READY");
+    return Boolean(asset && asset.projectId === projectId && asset.kind === "AUDIO" && asset.status === "READY"
+      && (typeof asset.durationMs !== "number" || asset.durationMs === version.duration_ms));
   }
 
   async createNarrationScriptRevision(
@@ -458,11 +464,13 @@ export class InMemoryNarrationQualityStore implements NarrationQualityStore {
       return this.storeTimeline(input, { kind: "INVALID_TIMELINE" }, 201);
     }
     if (hasSectionAssets) {
+      const persistedAssetIds = new Set<string>();
       for (const section of primarySections) {
         const versionId = section.narration_asset_version_id;
         const version = versionId ? this.assets.get(versionId) : undefined;
         if (!version || version.narration_script_revision_id !== script.id || version.sample_approved
           || sampleAssetIdFromApprovalPayload(approvedSampleAssetId) === version.asset_id
+          || version.duration_ms > section.duration_ms
           || !durationsMatch(version.duration_ms, section.duration_ms)
           || Math.abs(version.duration_ms - section.duration_ms) > Math.max(1, Math.round(section.duration_ms * 0.15))) {
           return this.storeTimeline(input, { kind: "INVALID_TIMELINE" }, 201);
@@ -474,6 +482,8 @@ export class InMemoryNarrationQualityStore implements NarrationQualityStore {
             return this.storeTimeline(input, { kind: "INVALID_TIMELINE" }, 201);
           }
         }
+        if (persistedAssetIds.has(version.asset_id)) return this.storeTimeline(input, { kind: "INVALID_TIMELINE" }, 201);
+        persistedAssetIds.add(version.asset_id);
       }
     } else if (this.assetResolver && measuredAsset) {
       const asset = await this.assetResolver.findAsset(input.workspaceId, measuredAsset.asset_id);
@@ -780,6 +790,17 @@ export class InMemoryNarrationQualityStore implements NarrationQualityStore {
   }
 }
 
+/**
+ * Drizzle's string-mode timestamptz decoder preserves PostgreSQL's space
+ * separator (for example `2026-09-14 08:08:18.191+00`).  The public/domain
+ * narration contracts require RFC3339 timestamps, so normalize only this
+ * persistence boundary before the existing schema parser runs.
+ */
+const normalizeDatabaseTimestamp = (value: string): string => {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+};
+
 const serializeScriptRow = (row: typeof narrationScriptRevisions.$inferSelect): NarrationScriptRevision => toScript({
   id: row.id,
   workspace_id: row.workspaceId,
@@ -792,8 +813,8 @@ const serializeScriptRow = (row: typeof narrationScriptRevisions.$inferSelect): 
   language: "zh-CN",
   normalization_version: row.normalizationVersion,
   decision_reasons: row.decisionReasons,
-  created_at: row.createdAt,
-  updated_at: row.updatedAt,
+  created_at: normalizeDatabaseTimestamp(row.createdAt),
+  updated_at: normalizeDatabaseTimestamp(row.updatedAt),
 });
 
 const serializeAssetVersionRow = (row: typeof narrationAssetVersions.$inferSelect): NarrationAssetVersion => toAssetVersion({
@@ -809,8 +830,8 @@ const serializeAssetVersionRow = (row: typeof narrationAssetVersions.$inferSelec
   sample_approved: row.sampleApproved,
   word_timestamps_asset_id: row.wordTimestampsAssetId,
   canonical_transcript_check: row.canonicalTranscriptCheck as CanonicalTranscriptCheck,
-  created_at: row.createdAt,
-  updated_at: row.updatedAt,
+  created_at: normalizeDatabaseTimestamp(row.createdAt),
+  updated_at: normalizeDatabaseTimestamp(row.updatedAt),
 });
 
 const serializeTimelineRow = (row: typeof timelinePlans.$inferSelect): TimelinePlan => toTimeline({
@@ -825,7 +846,7 @@ const serializeTimelineRow = (row: typeof timelinePlans.$inferSelect): TimelineP
   visual_segments: row.visualSegments as TimelinePlan["visual_segments"],
   status: row.status as TimelinePlan["status"],
   decision_reasons: row.decisionReasons,
-  created_at: row.createdAt,
+  created_at: normalizeDatabaseTimestamp(row.createdAt),
 });
 
 type NarrationTransaction = Pick<PlatformDatabase, "select" | "insert" | "update">;
@@ -892,22 +913,33 @@ export class DrizzleNarrationQualityStore implements NarrationQualityStore {
       eq(outboxEvents.aggregateId, script.id),
       eq(outboxEvents.eventType, "narration_script.approved"),
     )).orderBy(desc(outboxEvents.occurredAt)).limit(1);
-    const primarySections = (timeline.narrationSections as Array<{ visual_role?: unknown; narration_asset_version_id?: unknown }>).filter((section) => section.visual_role === "PRIMARY");
+    const primarySections = (timeline.narrationSections as Array<{
+      visual_role?: unknown;
+      narration_asset_version_id?: unknown;
+      start_ms?: unknown;
+      end_ms?: unknown;
+    }>).filter((section) => section.visual_role === "PRIMARY");
     const sectionAssetIds = primarySections
       .map((section) => section.narration_asset_version_id)
       .filter((value): value is string => typeof value === "string");
     if (sectionAssetIds.length > 0) {
       if (timeline.narrationAssetVersionId || sectionAssetIds.length !== primarySections.length
         || new Set(sectionAssetIds).size !== sectionAssetIds.length) return false;
-      for (const versionId of sectionAssetIds) {
+      const persistedAssetIds = new Set<string>();
+      for (const section of primarySections) {
+        const versionId = section.narration_asset_version_id;
+        const sectionDurationMs = typeof section.start_ms === "number" && typeof section.end_ms === "number"
+          ? section.end_ms - section.start_ms
+          : undefined;
         const [version] = await this.db.select().from(narrationAssetVersions).where(and(
           eq(narrationAssetVersions.workspaceId, workspaceId),
           eq(narrationAssetVersions.projectId, projectId),
-          eq(narrationAssetVersions.id, versionId),
+          eq(narrationAssetVersions.id, versionId as string),
           eq(narrationAssetVersions.narrationScriptRevisionId, script.id),
           eq(narrationAssetVersions.sampleApproved, false),
         )).limit(1);
-        if (!version || sampleAssetIdFromApprovalPayload(approvalEvent?.payload) === version.assetId) return false;
+        if (!version || sectionDurationMs === undefined || version.durationMs > sectionDurationMs
+          || sampleAssetIdFromApprovalPayload(approvalEvent?.payload) === version.assetId) return false;
         const [asset] = await this.db.select().from(assets).where(and(
           eq(assets.workspaceId, workspaceId),
           eq(assets.projectId, projectId),
@@ -915,7 +947,10 @@ export class DrizzleNarrationQualityStore implements NarrationQualityStore {
           eq(assets.status, "READY"),
           eq(assets.kind, "AUDIO"),
         )).limit(1);
-        if (!asset || !asset.byteSize || asset.byteSize <= 0 || !asset.sha256 || !asset.objectKey || !asset.mimeType?.startsWith("audio/")) return false;
+        if (!asset || !asset.byteSize || asset.byteSize <= 0 || !asset.sha256 || !asset.objectKey || !asset.mimeType?.startsWith("audio/")
+          || (asset.durationMs !== null && asset.durationMs !== undefined && asset.durationMs !== version.durationMs)) return false;
+        if (persistedAssetIds.has(version.assetId)) return false;
+        persistedAssetIds.add(version.assetId);
       }
       return true;
     }
@@ -935,7 +970,8 @@ export class DrizzleNarrationQualityStore implements NarrationQualityStore {
       eq(assets.status, "READY"),
       eq(assets.kind, "AUDIO"),
     )).limit(1);
-    return Boolean(asset && asset.byteSize && asset.byteSize > 0 && asset.sha256 && asset.objectKey && asset.mimeType?.startsWith("audio/"));
+    return Boolean(asset && asset.byteSize && asset.byteSize > 0 && asset.sha256 && asset.objectKey && asset.mimeType?.startsWith("audio/")
+      && (asset.durationMs === null || asset.durationMs === undefined || asset.durationMs === version.durationMs));
   }
 
   async listNarrationScriptRevisions(workspaceId: string, deliveryPlanRevisionId: string) {
@@ -1453,6 +1489,7 @@ export class DrizzleNarrationQualityStore implements NarrationQualityStore {
         return this.storeFailure<TimelinePlan>(transaction, input, { kind: "INVALID_TIMELINE" });
       }
       if (hasSectionAssets) {
+        const persistedAssetIds = new Set<string>();
         for (const section of input.command.section_durations_ms) {
           const versionId = section.narration_asset_version_id;
           const [sectionVersion] = await transaction.select().from(narrationAssetVersions).where(and(
@@ -1464,6 +1501,7 @@ export class DrizzleNarrationQualityStore implements NarrationQualityStore {
           )).limit(1);
           if (!sectionVersion
             || sampleAssetIdFromApprovalPayload(approvalEvent?.payload) === sectionVersion.assetId
+            || sectionVersion.durationMs > section.duration_ms
             || !durationsMatch(sectionVersion.durationMs, section.duration_ms)
             || Math.abs(sectionVersion.durationMs - section.duration_ms) > Math.max(1, Math.round(section.duration_ms * 0.15))) {
             return this.storeFailure<TimelinePlan>(transaction, input, { kind: "INVALID_TIMELINE" });
@@ -1482,6 +1520,8 @@ export class DrizzleNarrationQualityStore implements NarrationQualityStore {
             || (typeof formalAsset.durationMs === "number" && !durationsMatch(formalAsset.durationMs, sectionVersion.durationMs))) {
             return this.storeFailure<TimelinePlan>(transaction, input, { kind: "INVALID_TIMELINE" });
           }
+          if (persistedAssetIds.has(sectionVersion.assetId)) return this.storeFailure<TimelinePlan>(transaction, input, { kind: "INVALID_TIMELINE" });
+          persistedAssetIds.add(sectionVersion.assetId);
         }
       } else if (measuredAsset) {
         const [formalAsset] = await transaction.select({

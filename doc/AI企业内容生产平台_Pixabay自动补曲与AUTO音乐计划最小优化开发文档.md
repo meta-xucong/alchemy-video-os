@@ -91,6 +91,10 @@ max_duration = 300
 
 这只是把已存在的目标时长字段传给现有 `PixabayMusic` 输入，不新增时长算法。若来源筛选无匹配，继续使用来源已有的“回退全部结果再取首条”行为；不添加循环、变速、裁剪、补静音或自动改稿。
 
+### 3.4 本地候选的“合适”判定
+
+OpenMontage 的同一工作流在准备音频时要求验证“music duration covers video duration”。因此 `AUTO` 的本地候选除了既有的服务端 `AUDIO + READY + audio_role=MUSIC`、对象范围、MIME、SHA 和字节事实外，还必须有已测量的 `duration_ms >= target_duration_ms`。时长未知或不足的本地曲目不会阻止 Pixabay fallback；不会把短曲目交给 Runtime 依靠 `apad` 补静音。`MANUAL` 仍只执行用户指定的现有 MUSIC 资产校验，不把自动补曲改写成另一种手动选择语义。
+
 ## 4. 唯一执行链路
 
 ```text
@@ -109,7 +113,7 @@ Studio 选择 AUTO 并点击生成
 
 ### 4.1 代码落点（仅允许这些）
 
-1. **复用现有候选事实**：从 `production-repository.ts` 提取或暴露一个内部只读候选检查，使 Control API 前置检查与最终 composition 使用同一谓词；不得复制第二套 `likelyMusic`、角色、workspace 或时长选择逻辑。
+1. **复用现有候选事实**：从 `production-repository.ts` 提取或暴露一个内部只读候选检查，使 Control API 前置检查与最终 composition 使用同一谓词；不得复制第二套 `likelyMusic`、角色、workspace 或时长选择逻辑。AUTO 调用该谓词时同时传入本次目标时长，沿用来源的覆盖校验。
 2. **复用现有导入**：将 `app.ts` 当前显式 Pixabay 导入中的下载、Storage 写入、MIME/bytes/SHA、Asset confirmation 抽成内部 helper；显式导入和 AUTO fallback 调用同一个 helper。不得新增 Runtime scraper、公开导入路由或第二个 `PixabayMusicPort`。本来源只提供轨道时长 metadata，本版不新增 ffprobe 探测。
 3. **生成命令前置编排**：仅在现有 `createProductionRun` 路由的 `AUTO + 无候选` 分支调用 helper；`MANUAL/OFF` 分支完全不触碰 Pixabay。
 4. **保持公共形状**：不新增 `auto_pixabay_fallback`、事件、表、队列消息、Storage key 规则或 Provider 协议。`MusicPlanSchema` 只需同步 AUTO 的文字语义/注释；字段形状保持不变。
@@ -140,22 +144,24 @@ Studio 选择 AUTO 并点击生成
 
 1. `AUTO + 已有有效 MUSIC`：Pixabay client 调用次数为 `0`，生成路径保持原结果。
 2. `AUTO + 无候选 + 可用 Pixabay fixture`：首次成功路径 client 调用一次，导入一个 `AUDIO + READY + MUSIC`，随后原有 AUTO 选择成功。
-3. 同一生成命令以相同幂等键重放：返回同一结果/资产，不产生第二个 READY 资产，也不再次调用已完成的导入。
-4. `MANUAL`、`OFF`：Pixabay client 调用次数均为 `0`。
-5. capability 未注入/禁用、空 query、无结果、非 2xx、unsafe URL、非法 MIME、超限和坏 metadata：保持现有阻断/错误归一化。
-6. 样音、`USER_SOURCE_AUDIO`、未声明角色不能成为 AUTO 候选；现有跨角色回归继续通过。
-7. 全仓代码仍只有 `services/media-runtime/adapters/openmontage_audio/pixabay_music.py` 执行 Pixabay 网络逻辑；不出现第二 scraper、自动 catalog polling 或新协议。
+3. `AUTO + 本地 MUSIC 时长不足`：短曲目不被视为合适候选，Pixabay client 调用一次；最终 composition 只接受覆盖目标时长的 MUSIC。
+4. 同一生成命令以相同幂等键重放：返回同一结果/资产，不产生第二个 READY 资产，也不再次调用已完成的导入。
+5. `MANUAL`、`OFF`：Pixabay client 调用次数均为 `0`。
+6. capability 未注入/禁用、空 query、无结果、非 2xx、unsafe URL、非法 MIME、超限和坏 metadata：保持现有阻断/错误归一化。
+7. 样音、`USER_SOURCE_AUDIO`、未声明角色不能成为 AUTO 候选；现有跨角色回归继续通过。
+8. 全仓代码仍只有 `services/media-runtime/adapters/openmontage_audio/pixabay_music.py` 执行 Pixabay 网络逻辑；不出现第二 scraper、自动 catalog polling 或新协议。
 
 真实 Pixabay smoke 只能作为单独的外部可达性检查，不能替代上述离线证据，也不能作为本切片的 CI 前提。
 
-## 6.1 实施证据（2026-09-02）
+## 6.1 实施证据（2026-09-15 时长覆盖补齐）
 
 本版最小实现已经落在既有模块，当前标记为 `IMPLEMENTED / PENDING_AUDIT`，不是 `READY_FOR_AUDIT` 或 `ACCEPTED`：
 
 - `packages/persistence/src/production-repository.ts` 导出并复用同一个 `isUsableMusicAsset`，组合选择与 Control API AUTO 前置检查不再各自维护候选规则。
 - `apps/control-api/src/app.ts` 将既有显式 Pixabay 导入的 Asset 预留、Runtime 调用、对象 `If-None-Match`、MIME/字节/SHA 校验和确认流程抽为内部 helper；`AUTO + 无候选` 只调用该 helper 一次，`MANUAL/OFF` 不进入该分支。
-- `apps/control-api/tests/pixabay-auto-fallback.test.ts`：`4/4`；覆盖 AUTO 有/无候选、幂等重放、MANUAL/OFF 和未注入能力阻断。
-- Control API 定向组合测试：`35/35`；新增 AUTO fallback 夹具：`4/4`；Control API 全量：`64` pass、`1` 个既有服务门控 skip、`0` fail；Studio 全量：`40/40`；Persistence 全量：`66` pass、`11` 个既有数据库门控 skip、`0` fail；Media Runtime adapters：`38/38`，Runtime：`136/136`。根 `pnpm test` 退出码为 `0`；workspace typecheck、build、`validate_state.py` 和 `git diff --check` 均通过。所有新增证据均为 fixture/mock 或本地 bundled media，未调用真实网络或 Provider。
+- `apps/control-api/tests/pixabay-auto-fallback.test.ts`：`5/5`；覆盖 AUTO 有/无候选、短本地曲目触发 fallback、幂等重放、MANUAL/OFF 和未注入能力阻断。
+- `packages/persistence/tests/production-repository.native-audio.test.ts`：`12/12`；覆盖最终 composition 只接受已测量且覆盖目标时长的 AUTO MUSIC，短曲目 fail-closed，不把 Runtime 的 `apad` 静音尾巴当作合适曲目。
+- 当前复核证据：AUTO fallback 定向夹具 `5/5`；Persistence composition/native-audio 定向夹具 `12/12`；Control API 全量 `82` pass、`1` 个既有服务门控 skip、`0` fail；Persistence 全量 `74` pass、`12` 个既有数据库门控 skip、`0` fail；Media Runtime `147/147`、OpenMontage adapter `38/38`；Studio 既有测试 `44/44` 通过。Control API/Persistence typecheck、build 与 `git diff --check` 均通过。所有本次新增证据均为 fixture/mock 或本地 bundled media，未调用真实网络、Provider、TTS、Veyra、VPS 或 Git。
 - `apps/studio-web` 只更新 AUTO 说明文案；没有增加公开字段、路由、第二开关或后台轮询。
 
 正式总控、`.codex-longrun/state.json` 和总体 `C12.4/C12.5` 状态本轮不升级；E02/S01 的历史账本也不被重开。本节是当前增量的实现证据，仍需独立审计后才能申请切片 `READY_FOR_AUDIT`。

@@ -1,6 +1,11 @@
 import type { VideoGenerationInput } from "../port.js";
 import { VideoProviderProtocolError } from "../port.js";
 
+// Must remain identical to the provider-video and creative-planning generated
+// part. Source: Seedance-2.5 sound policy/prompt recipes and OpenMontage VEO
+// subtitle prevention; captions are owned by the later delivery runtime.
+const PROVIDER_CAPTION_SUPPRESSION_DIRECTIVE = "全程无字幕；no subtitles, no captions。字幕只在后期统一添加。";
+
 export type Sub2ApiGenerationRequest = {
   model: string;
   prompt: string;
@@ -31,7 +36,10 @@ const providerReadableUrl = (value: string) => {
 };
 
 export const mapSub2ApiGenerationRequest = (input: VideoGenerationInput): Sub2ApiGenerationRequest => {
-  const { model, prompt, duration, resolution, ratio } = input.inputSnapshot;
+  const { model, prompt, duration, resolution, ratio, audio_owner } = input.inputSnapshot;
+  if (audio_owner !== undefined && !prompt.includes(PROVIDER_CAPTION_SUPPRESSION_DIRECTIVE)) {
+    throw new VideoProviderProtocolError("The real video prompt is missing the required caption-suppression directive.");
+  }
   const visualFields = input.visualInput.mode === "TEXT"
     ? {}
     : input.visualInput.mode === "FIRST_FRAME"

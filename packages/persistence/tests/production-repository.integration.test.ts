@@ -6,6 +6,7 @@ import { and, eq } from "drizzle-orm";
 import {
   InternalEventEnvelopeSchema,
   InternalMediaRuntimeQueueMessageSchema,
+  VideoGenerationInputSnapshotSchema,
   type InternalEventEnvelope,
 } from "@alchemy-video/contracts";
 import { createPrefixedId, fingerprintRequest } from "@alchemy-video/domain";
@@ -14,7 +15,7 @@ import { DrizzleControlPlaneRepository } from "../src/control-plane-repository.j
 import { DrizzleCreativePlanningRepository } from "../src/creative-planning-repository.js";
 import { createDatabase } from "../src/db.js";
 import { DrizzleAssetWorkspaceRepository } from "../src/asset-workspace-repository.js";
-import { DrizzleProductionRepository, narrationDurationFeedbackLogId } from "../src/production-repository.js";
+import { DrizzleProductionRepository, narrationDurationFeedbackLogId, type ProductionTaskRunInputFactory } from "../src/production-repository.js";
 import {
   assets,
   creativeBriefRevisions,
@@ -139,7 +140,37 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
   try {
     const control = new DrizzleControlPlaneRepository(database.db);
     const planning = new DrizzleCreativePlanningRepository(database.db);
-    const production = new DrizzleProductionRepository(database.db);
+    const productionSnapshotInputs: Array<{
+      prompt: string;
+      sourcePrompt?: string;
+      generatedPromptParts?: string[];
+      referenceAssetIds: string[];
+    }> = [];
+    const productionSnapshotFactory: ProductionTaskRunInputFactory = (input) => {
+      productionSnapshotInputs.push({
+        prompt: input.prompt,
+        ...(input.sourcePrompt !== undefined ? { sourcePrompt: input.sourcePrompt } : {}),
+        ...(input.generatedPromptParts !== undefined ? { generatedPromptParts: [...input.generatedPromptParts] } : {}),
+        referenceAssetIds: [...input.referenceAssetIds],
+      });
+      return VideoGenerationInputSnapshotSchema.parse({
+        model: "c12-integration-snapshot",
+        prompt: input.prompt,
+        duration: input.duration,
+        resolution: input.resolution,
+        ratio: input.ratio,
+        reference_asset_ids: input.referenceAssetIds,
+        generation_segment_sequence: input.generationSegmentSequence,
+        narrative_beat_sequences: input.narrativeBeatSequences,
+        ...(input.motionPlanVersion ? { motion_plan_version: input.motionPlanVersion } : {}),
+        ...(input.motionPlanHash ? { motion_plan_hash: input.motionPlanHash } : {}),
+        ...(input.motionTimeline ? { motion_timeline: input.motionTimeline } : {}),
+        ...(input.deliveryPlanRevisionId ? { delivery_plan_revision_id: input.deliveryPlanRevisionId } : {}),
+        ...(input.billing ? { billing: input.billing } : {}),
+        visual_input: input.visualInput,
+      });
+    };
+    const production = new DrizzleProductionRepository(database.db, productionSnapshotFactory);
     await control.ensureDevIdentity({ user: { id: userId, displayName: "C12 PostgreSQL" }, workspace: { id: workspaceId, name: "C12 PostgreSQL" } });
     assert.equal((await control.createProject({
       scope: `${scope}:project`,
@@ -215,6 +246,16 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     assert.equal(requested.kind, "NEW");
     const firstShotSpecId = createPrefixedId("ssp");
     const secondShotSpecId = createPrefixedId("ssp");
+    const firstSourcePrompt = "第一段口播：黎明前完成交付。\n保留 @anchor 与 ASCII \"引号\"，不得改写。";
+    const firstGeneratedPromptParts = [
+      "视觉补充第一项：雨夜工厂入口。",
+      "视觉补充第二项：保持 @anchor 与 ASCII \"引号\" 的顺序。",
+    ];
+    const secondSourcePrompt = "第二段口播：团队在车间完成交接。\n第二行保留 @anchor 与 ASCII \"收尾\"。";
+    const secondGeneratedPromptParts = [
+      "视觉补充第一项：车间灯光从冷到暖。",
+      "视觉补充第二项：镜头停在交接动作。",
+    ];
     const completed = await planning.completeCreativePlan({
       workspaceId,
       creativeBriefRevisionId: briefId,
@@ -235,8 +276,8 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
           { id: secondShotSpecId, sequence: 2, title: "黎明交付", durationSeconds: 15, narrativeGoal: "兑现承诺", startState: "车间亮灯", endState: "客户收到成果", transitionSummary: "淡入黎明", referencePolicy: "HANDOFF_FIRST_FRAME", dependsOnSequences: [1], continuityNote: "使用前段交接帧承接画面" },
         ],
         promptPackages: [
-          { id: createPrefixedId("ppk"), shotSpecId: firstShotSpecId, compilerVersion: "c12-integration", prompt: "雨夜抵达工厂，进入车间。", visualConstraints: {}, referenceMap: { reference_policy: "TEXT_TRANSITION" }, capabilitySnapshot: { max_duration_seconds: 15 } },
-          { id: createPrefixedId("ppk"), shotSpecId: secondShotSpecId, compilerVersion: "c12-integration", prompt: "承接车间亮灯，团队在黎明完成交付。", visualConstraints: {}, referenceMap: { reference_policy: "HANDOFF_FIRST_FRAME" }, capabilitySnapshot: { max_duration_seconds: 15 } },
+          { id: createPrefixedId("ppk"), shotSpecId: firstShotSpecId, compilerVersion: "c12-integration", prompt: [firstSourcePrompt, ...firstGeneratedPromptParts].join(" "), visualConstraints: {}, referenceMap: { reference_policy: "TEXT_TRANSITION" }, capabilitySnapshot: { max_duration_seconds: 15, source_prompt: firstSourcePrompt, generated_prompt_parts: firstGeneratedPromptParts } },
+          { id: createPrefixedId("ppk"), shotSpecId: secondShotSpecId, compilerVersion: "c12-integration", prompt: [secondSourcePrompt, ...secondGeneratedPromptParts].join(" "), visualConstraints: {}, referenceMap: { reference_policy: "HANDOFF_FIRST_FRAME" }, capabilitySnapshot: { max_duration_seconds: 15, source_prompt: secondSourcePrompt, generated_prompt_parts: secondGeneratedPromptParts } },
         ],
       },
       event: eventMetadata(),
@@ -246,6 +287,12 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     const persistedPromptPackages = await database.db.select().from(promptPackages)
       .where(and(eq(promptPackages.workspaceId, workspaceId), eq(promptPackages.projectId, projectId)));
     assert.equal(persistedPromptPackages.length, 2);
+    const persistedFirstPromptPackage = persistedPromptPackages.find((value) => value.shotSpecId === firstShotSpecId);
+    const persistedSecondPromptPackage = persistedPromptPackages.find((value) => value.shotSpecId === secondShotSpecId);
+    assert.deepEqual((persistedFirstPromptPackage?.capabilitySnapshot as { source_prompt?: unknown; generated_prompt_parts?: unknown }).source_prompt, firstSourcePrompt);
+    assert.deepEqual((persistedFirstPromptPackage?.capabilitySnapshot as { source_prompt?: unknown; generated_prompt_parts?: unknown }).generated_prompt_parts, firstGeneratedPromptParts);
+    assert.deepEqual((persistedSecondPromptPackage?.capabilitySnapshot as { source_prompt?: unknown; generated_prompt_parts?: unknown }).source_prompt, secondSourcePrompt);
+    assert.deepEqual((persistedSecondPromptPackage?.capabilitySnapshot as { source_prompt?: unknown; generated_prompt_parts?: unknown }).generated_prompt_parts, secondGeneratedPromptParts);
     const approved = await planning.approveStoryboardRevision({
       scope: `${scope}:approve`,
       idempotencyKey: "approve",
@@ -288,6 +335,20 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     const [firstSegment] = await database.db.select().from(productionSegments)
       .where(and(eq(productionSegments.workspaceId, workspaceId), eq(productionSegments.productionRunId, firstRunId), eq(productionSegments.sequence, 1)));
     assert.ok(firstSegment?.taskRunId);
+    const [firstTask] = await database.db.select().from(taskRuns)
+      .where(and(eq(taskRuns.workspaceId, workspaceId), eq(taskRuns.id, firstSegment!.taskRunId!)));
+    const firstSnapshot = firstTask?.inputSnapshot as { prompt?: string } | undefined;
+    assert.deepEqual(productionSnapshotInputs[0]?.sourcePrompt, firstSourcePrompt);
+    assert.deepEqual(productionSnapshotInputs[0]?.generatedPromptParts, firstGeneratedPromptParts);
+    assert.equal(firstSnapshot?.prompt, [firstSourcePrompt, ...firstGeneratedPromptParts].join(" "));
+    assert.ok(firstSnapshot?.prompt?.includes("@anchor"));
+    assert.ok(firstSnapshot?.prompt?.includes("ASCII \"引号\""));
+    const taskCountBeforeDuplicateInitialization = (await database.db.select().from(taskRuns)
+      .where(and(eq(taskRuns.workspaceId, workspaceId), eq(taskRuns.projectId, projectId)))).length;
+    await production.initializeProductionRun({ event: confirmed, now: new Date() });
+    assert.equal((await database.db.select().from(taskRuns)
+      .where(and(eq(taskRuns.workspaceId, workspaceId), eq(taskRuns.projectId, projectId)))).length, taskCountBeforeDuplicateInitialization);
+    assert.equal(productionSnapshotInputs.length, 1);
 
     // Simulate a process restart after a legacy scheduler left the segment waiting.
     await database.db.update(productionSegments).set({ status: "WAITING", shotId: null, taskRunId: null, updatedAt: new Date().toISOString() })
@@ -299,6 +360,8 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     assert.equal(recoveredSegment?.status, "GENERATING");
     assert.ok(recoveredSegment?.taskRunId);
     assert.notEqual(recoveredSegment?.taskRunId, firstSegment?.taskRunId);
+    assert.deepEqual(productionSnapshotInputs[1]?.sourcePrompt, firstSourcePrompt);
+    assert.deepEqual(productionSnapshotInputs[1]?.generatedPromptParts, firstGeneratedPromptParts);
     const queuedEvents = await database.db.select().from(outboxEvents)
       .where(and(eq(outboxEvents.workspaceId, workspaceId), eq(outboxEvents.eventType, "task_run.queued")));
     assert.ok(queuedEvents.some((row) => (row.payload as { data?: { task_run_id?: string } }).data?.task_run_id === recoveredSegment?.taskRunId));
@@ -377,6 +440,11 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     assert.deepEqual(snapshot?.reference_asset_ids, [firstHandoffAssetId, sourceImageAssetId]);
     assert.deepEqual(snapshot?.visual_input?.references?.map((reference) => reference.asset_id), [firstHandoffAssetId, sourceImageAssetId]);
     assert.deepEqual(snapshot?.visual_input?.references?.map((reference) => reference.role), ["HANDOFF", "SUBJECT"]);
+    assert.deepEqual(productionSnapshotInputs.at(-1)?.sourcePrompt, secondSourcePrompt);
+    assert.deepEqual(productionSnapshotInputs.at(-1)?.generatedPromptParts, secondGeneratedPromptParts);
+    assert.equal(snapshot?.prompt, [secondSourcePrompt, ...secondGeneratedPromptParts].join(" "));
+    assert.ok(snapshot?.prompt?.includes("@anchor"));
+    assert.ok(snapshot?.prompt?.includes("ASCII \"收尾\""));
 
     const secondAssetId = await generatedAsset(database.db, { workspaceId, projectId, taskRunId: secondSegment.taskRunId! });
     await production.recordProductionTaskSucceeded({ event: taskSucceededEvent({ workspaceId, projectId, taskRunId: secondSegment.taskRunId!, assetId: secondAssetId }), now: new Date() });
@@ -454,7 +522,12 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     assert.equal(progress?.productionRun.status, "SUCCEEDED");
     assert.equal(progress?.productionRun.acceptedShotCount, 2);
     assert.deepEqual((await database.db.select().from(videoVersions).where(and(eq(videoVersions.workspaceId, workspaceId), eq(videoVersions.productionRunId, firstRunId)))).map((version) => version.status), ["SUCCEEDED"]);
-    assert.equal((await database.db.select().from(eventConsumptions).where(and(eq(eventConsumptions.workspaceId, workspaceId), eq(eventConsumptions.eventId, firstQcEvent.event_id)))).length, 1);
+    const firstQcConsumptions = await database.db.select().from(eventConsumptions).where(and(
+      eq(eventConsumptions.workspaceId, workspaceId),
+      eq(eventConsumptions.eventId, firstQcEvent.event_id),
+      eq(eventConsumptions.consumerName, "c12-pg-media"),
+    ));
+    assert.equal(firstQcConsumptions.length, 1);
 
     const failedRunId = createPrefixedId("prd");
     assert.equal((await planning.createProductionRun({

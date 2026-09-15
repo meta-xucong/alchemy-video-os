@@ -2024,19 +2024,26 @@ export function createApp(options: CreateAppOptions = {}) {
     // public command shape stays unchanged; MANUAL and OFF never enter this
     // branch.
     if (command.music_plan.mode === "AUTO") {
-      const existingMusic = (await assetStore.listWorkspaceMusicAssets(identity.workspaceId)).filter(isUsableMusicAsset);
+      const deliveryPlan = await deliveryPreflightStore.findDeliveryPlanRevision(identity.workspaceId, command.delivery_plan_revision_id);
+      if (!deliveryPlan || deliveryPlan.projectId !== projectId) throw notFound("Delivery plan not found.");
+      if (deliveryPlan.status !== "APPROVED") throw deliveryPreflightBlocked();
+      const storyboard = await planningStore.findStoryboardRevision(identity.workspaceId, command.storyboard_revision_id);
+      if (!storyboard || storyboard.projectId !== projectId || storyboard.id !== deliveryPlan.storyboardRevisionId) {
+        throw notFound("Storyboard revision not found.");
+      }
+      const targetDurationSeconds = deliveryPlan.targetDurationSeconds ?? storyboard.totalDurationSeconds;
+      const minimumMusicDurationMs = targetDurationSeconds * 1_000;
+      // OpenMontage's explainer flow verifies that the selected music covers
+      // the complete video.  A measured short/unknown local asset is not a
+      // suitable AUTO candidate; it must not suppress the existing Pixabay
+      // fallback and leave an `apad` silence tail in the final mix.
+      const existingMusic = (await assetStore.listWorkspaceMusicAssets(identity.workspaceId))
+        .filter((asset) => isUsableMusicAsset(asset, { minimumDurationMs: minimumMusicDurationMs }));
       if (existingMusic.length === 0) {
         if (!pixabayMusicEnabled || !pixabayMusic) {
           throw new ControlApiError(503, "PROVIDER_UNAVAILABLE", "AUTO music needs a configured Pixabay Music capability when the workspace catalog is empty.", true);
         }
-        const deliveryPlan = await deliveryPreflightStore.findDeliveryPlanRevision(identity.workspaceId, command.delivery_plan_revision_id);
-        if (!deliveryPlan || deliveryPlan.projectId !== projectId) throw notFound("Delivery plan not found.");
-        if (deliveryPlan.status !== "APPROVED") throw deliveryPreflightBlocked();
         const brief = await planningStore.findCreativeBriefRevision(identity.workspaceId, deliveryPlan.creativeBriefRevisionId);
-        const storyboard = await planningStore.findStoryboardRevision(identity.workspaceId, command.storyboard_revision_id);
-        if (!storyboard || storyboard.projectId !== projectId || storyboard.id !== deliveryPlan.storyboardRevisionId) {
-          throw notFound("Storyboard revision not found.");
-        }
         const query = firstValidPixabayQuery([
           command.music_plan.style_hint,
           brief?.stylePreferences,
@@ -2045,7 +2052,7 @@ export function createApp(options: CreateAppOptions = {}) {
         if (!query) throw validationError("AUTO music needs a non-empty style hint, creative preference, or project name before Pixabay can be searched.");
         const sourceCommand = PixabayMusicImportCommandSchema.safeParse({
           query,
-          min_duration: deliveryPlan.targetDurationSeconds ?? storyboard.totalDurationSeconds,
+          min_duration: targetDurationSeconds,
           max_duration: 300,
         });
         if (!sourceCommand.success) throw validationError("AUTO music search parameters are invalid.");
@@ -2059,9 +2066,10 @@ export function createApp(options: CreateAppOptions = {}) {
           scope: `${productionScope}:pixabay-import`,
           idempotencyKey: fallbackKey,
         });
-        const importedMusic = (await assetStore.listWorkspaceMusicAssets(identity.workspaceId)).filter(isUsableMusicAsset);
+        const importedMusic = (await assetStore.listWorkspaceMusicAssets(identity.workspaceId))
+          .filter((asset) => isUsableMusicAsset(asset, { minimumDurationMs: minimumMusicDurationMs }));
         if (importedMusic.length === 0) {
-          throw new ControlApiError(503, "PROVIDER_PROTOCOL_INVALID", "Pixabay did not produce a usable MUSIC asset.", false);
+          throw new ControlApiError(503, "PROVIDER_PROTOCOL_INVALID", "Pixabay did not produce a MUSIC asset that covers the target video duration.", false);
         }
       }
     }

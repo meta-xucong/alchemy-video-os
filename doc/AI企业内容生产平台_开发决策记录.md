@@ -1018,7 +1018,7 @@ ADR-0051/0052 中关于“所有新任务固定 `PLATFORM_NARRATION`/后期 Pipe
 | 决策 | 仅把 source submit→poll→download 链以薄壳落到 `doubao.py` → `runtime.py` → `main.py` 显式 `preferred_provider=doubao|doubao_tts` → Worker loopback；保留 source URL/header/body、voice/resource、format/sample-rate/speech-rate/timestamp/usage、poll/timeout、status/error、metadata 顺序。selector auto/unknown 无 registry 时 fail-closed，显式 Doubao 需 key，显式 Piper 保留旧离线兼容。 |
 | 适配边界 | 只复用既有内部 bytes/MIME/SHA/size/ffprobe/临时目录/错误脱敏；source fields 是 loopback 私有字段，不扩散到公开视频 DTO、AudioPlan、UI、计费或第二协议。缺失 Content-Type 按 source 接受，MIME 由 source format 映射；Worker outer timeout 跟随 source `timeout_seconds`。 |
 | 验证 | 本地 Media Runtime `151/151`、Doubao/selector adapters `24/24`、Worker Runtime Client `23/23`、handler explicit/auto fixtures、typecheck/py_compile/diff-check 全通过；用户授权真实 Runtime smoke 返回 `audio/mpeg`、`37212` bytes、bundled ffprobe `1850ms`。 |
-| 未关闭 | source registry/rank 正向映射、native audio owner、正式 NarrationAsset/TimelinePlan、approved section windows、Studio 样音审批、REQUIRED 字幕、人工中文口音和超长 consumer 仍 `BLOCKED/DEFERRED`；不进入 R02，不升级 `ACCEPTED`。 |
+| 未关闭 | 已选 profile 的 native audio owner、正式 NarrationAsset/TimelinePlan、approved section windows、Studio 样音审批、REQUIRED 字幕、人工中文口音和超长 consumer 仍 `BLOCKED/DEFERRED`；统一 source registry/rank 按 2026-09-15 范围决策 `DEFERRED`，不进入 R02，不升级 `ACCEPTED`。 |
 
 ADR-0065 覆盖 ADR-0064 中“未接入 Runtime/Worker/Contracts/API、route disabled”的当前事实表述；ADR-0064 原文保留为授权前历史审计轨迹。
 
@@ -1035,7 +1035,7 @@ ADR-0065 覆盖 ADR-0064 中“未接入 Runtime/Worker/Contracts/API、route di
 | 拒绝方案 | 不新增 `generate_audio` 公共字段、第二 AudioPlan、硬性用量/金额上限、native 失败后的静默 TTS/Piper 回退、手工 provider tuple、变速/补静音/裁切或新的评分协议。Doubao 仍只能由已有显式 `preferred_provider` 路径调用。 |
 | 证据 | Provider/runtime snapshot、prompt compiler、creative-planning native/legacy 正负 fixtures；Persistence owner 一致性单测。真实 Provider/TTS、人工中文口音和正式 NarrationAsset/TimelinePlan 仍需独立实测/审计，不在本 ADR 中自动接受。 |
 
-ADR-0066 只解决 owner 事实的最小表达与消费边界；R02 selector registry/rank、R03 样音/正式资产、完整 TimelinePlan、section windows 和人工听感仍按总控文档保持 `DEFERRED/BLOCKED`。
+ADR-0066 只解决 owner 事实的最小表达与消费边界；R03 样音/正式资产、完整 TimelinePlan、section windows 和人工听感仍按总控文档保持 `DEFERRED/BLOCKED`。R02 的统一 selector registry/rank 不属于当前要求，实际 profile 仍按各自来源显式核对，auto/unknown fail-closed。
 
 ## ADR-0067：自动生成样音与正式旁白资产（覆盖用户上传前提）
 
@@ -1081,3 +1081,15 @@ ADR-0068 不改变公开 API、TaskRun/AudioPlan 语义或默认 Mock 配置；�
 | 证据要求 | 必须有 task-worker/control-api 定向测试、build/typecheck、Video VPS edge/Control API/Worker relay 只读健康检查；真实付费 Provider 生成不是本 ADR 的验收条件。 |
 
 ADR-0069 只解决 Aiself 自有参考图交付链路的可达性与可审计性，不宣称 KIE 上游稳定性、余额或权限已被改变。
+
+## ADR-0070：2026-09-15 用户验收范围与正式 section 音频技术窄片
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `READY_FOR_AUDIT` 候选（仅独立 section 技术窄片；正式 E12/R01 不升级） |
+| 用户明确排除 | 中文口音、断句/停顿/语速/情绪、音画听感、样音人工审批和最终成片人工质量；单一 full-track 跨 section 偏移、non-cut 连续旁白、任意复杂 xfade、自动变速/补静音/重新切片及固定来源没有定义的通用音频算法。以上统一 `OUT_OF_SCOPE/DEFERRED`。 |
+| 已收口事实 | 正式 `NarrationAssetVersion`、独立 `PRIMARY` 时间窗、实测时长、底层 AUDIO identity、ALCHMED8 `start/gain/fade`、既有 CUT/BLEND/BRIDGE；InMemory/Drizzle、scheduler→factory→Runtime→Compose 保持同一事实。 |
+| 证据 | persistence 隔离 PostgreSQL `88/88`；独立 C11/Composition `14/14`；production-worker `72/72`；workflow-worker `38/38`；Media Runtime `147/147`；workspace typecheck 通过；无新增外部调用。 |
+| 约束 | 只消费固定来源已有字段和现有薄壳，禁止新增第二 AudioPlan、通用时长算法、静默回退或公开契约。正式 `E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT`；T11 真实账本和实际启用 profile 的逐项外部证据仍独立保留。 |
+
+本 ADR 仅覆盖用户明确范围内的技术收口，不把人工质量证据改写为自动测试通过，也不把未配置 Veyra/计费环境视为已完成。

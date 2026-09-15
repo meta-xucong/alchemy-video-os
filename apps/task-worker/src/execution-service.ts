@@ -1,4 +1,4 @@
-import { createPrefixedId, isBillingRetryErrorCode } from "@alchemy-video/domain";
+import { createPrefixedId, isBillingRetryErrorCode, isVideoUsageModelCompatible } from "@alchemy-video/domain";
 import { VideoGenerationInputSnapshotSchema } from "@alchemy-video/contracts";
 import type { AssetWorkspaceStore, TaskRunStore } from "@alchemy-video/persistence";
 import { StorageObjectAlreadyExistsError, createGeneratedVideoObjectKey, type StoragePort } from "@alchemy-video/storage-client";
@@ -299,6 +299,7 @@ export class MockVideoTaskExecutor {
         taskRunId: input.taskRunId,
         assetId,
         objectKey: createGeneratedVideoObjectKey({ workspaceId: input.workspaceId, projectId: input.projectId, assetId }),
+        provider: attempt.provider,
         now: new Date(),
       });
       if (!draft) throw new VideoProviderProtocolError("Generated asset could not be reserved.");
@@ -387,7 +388,7 @@ export class MockVideoTaskExecutor {
       }
       throw error;
     }
-    if (usage.providerRequestId !== requestId || usage.model !== billing.billing_rule.usagePricing.model) {
+    if (usage.providerRequestId !== requestId || !isVideoUsageModelCompatible(billing.billing_rule.usagePricing.model, usage.model)) {
       throw new VideoProviderProtocolError("The provider usage fact does not match the immutable video billing rule.");
     }
     return usage;

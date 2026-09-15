@@ -141,15 +141,15 @@ Exit Gate：字幕开启/缺事实/非法时间的正负行为测试齐全；最
 
 Exit Gate：来源规则的正向/负向 fixture 和现有 E03 回归均通过；不改变既有 MotionPlan 公共字段，若必须改契约先走 ADR。
 
-### N06：TTSSelector registry/rank（对应 E12/R01、R02）
+### N06：TTSSelector registry/rank（已移出当前执行，DEFERRED）
 
-前置：固定来源 registry、工具树、`lib.scoring.rank_providers` 和 provider capability/profile 事实可复核。
+范围决策：固定来源没有可安全移植的跨 Provider registry/rank 实现，新增该层会违反原仓库优先规则；本项不再作为当前执行章节或 R01/R02 的前置。
 
-只做：原样移植 discovery、preferred/allowed、availability 和 rank；无可用 provider 时返回现有 `UNAVAILABLE`。
+实际需要：未来实际启用某个 provider/profile 时，只按该 profile 的固定来源、adapter 和能力事实逐个核对；未知或 auto 仍返回现有 `UNAVAILABLE`/保持 fail-closed。
 
-禁止：手工 provider tuple、平台自造评分/阈值、默认云路由、auto→Piper 静默 fallback。
+禁止：手工 provider tuple、平台自造评分/阈值、默认云路由、auto→Piper 静默 fallback，也不新增统一 registry 替代来源。
 
-没有上述前置事实时，R01/R02 保持 `BLOCKED/DEFERRED`，不以“实现了 selector 文件”替代 Exit Gate。
+本项状态为 `DEFERRED`，不以“实现了 selector 文件”或一次 profile canary 宣称统一 registry 完成；R01 仍由已选 profile 的正式旁白、时间线、AudioPlan 和质量证据单独决定。
 
 ## 5. 明确不列入当前执行的项目
 
@@ -170,7 +170,7 @@ Exit Gate：来源规则的正向/负向 fixture 和现有 E03 回归均通过�
 | E01 | 多源身份/冲突矩阵文字 | 另外两套 OpenMontage 身份仍未知 | 全部 R | 只能证明来源登记方法，不证明三源实现 |
 | E02/S01 | Pixabay 单一路径、MUSIC 角色、显式导入 | 无本项缺口 | 不适用 | 不重开 |
 | E03 | 8–15 秒正式段 | 2–4 子镜头、2–6 秒子镜头语义 | 影响 R05 | 仅可新增来源校验，不可新增拆镜头算法 |
-| E04/S02 | Piper stdin、原始参数、WAV 实测 | 完整 owner/registry/云 profile | R01/R02/R04 | Piper 不是默认 owner |
+| E04/S02 | Piper stdin、原始参数、WAV 实测 | 已选 profile 的 owner/云 profile 事实 | R01/R04 | Piper 不是默认 owner；统一 registry 不属于当前要求 |
 | E05 | 已表达 ALCHMED8 `_full_mix` 字段 | 完整多轨和 section asset 消费 | R05 | N01/N02 的主要前置 |
 | E06 | 来源可表达旁白窗口/cue-only 边界 | 全量正式资产和完整 absolute windows | R03/R05 | 不能把窄切片写成完整旁白 |
 | E07 | uniform cut/crossfade/fade-through-black | mixed transition、continuous non-cut | R05/R06 | 未有来源等价语义就继续阻断 |
@@ -178,14 +178,14 @@ Exit Gate：来源规则的正向/负向 fixture 和现有 E03 回归均通过�
 | E09 | checked transcript→SRT→FFmpeg | REQUIRED Studio 事实链、丰富模式 | R06 | N04 只补已有链路 |
 | E10 | approval fact、正式 asset、TimelinePlan identity/window 窄切片 | 完整 Studio/voice/provider 语义 | R03/R05 | N03 只补事实门 |
 | E11/S08 | measured duration feedback、幂等、consumer fail-closed | 自动 SEND_BACK/视觉重规划 | R05/R06 | 阻断原因仍是来源冲突，不是代码遗漏 |
-| E12 | 一次历史 native/Doubao 产物与工程回归 | profile certification、人工口音、正式资产/TimelinePlan | R01/R02/R04 | 继续 `BLOCKED`，不进入 R02 |
+| E12 | 一次历史 native/Doubao 产物与工程回归 | 已选 profile 的能力事实、人工口音、正式资产/TimelinePlan | R01/R04 | 继续 `BLOCKED`，统一 registry/rank `DEFERRED` |
 
 ### 6.1 R 系列交叉结论
 
 | R 阶段 | 来源缺口 | E 系列已有证据 | 当前判断 |
 | --- | --- | --- | --- |
-| R01 owner/能力事实 | native owner、profile capability、正式 TTS owner | E04/E10/E12 只有窄切片或历史 canary | `BLOCKED` |
-| R02 TTSSelector | registry discovery/rank/preferred/allowed | E04 只证明显式 Piper；无 registry 正向证据 | `DEFERRED/BLOCKED` |
+| R01 owner/能力事实 | 已选 profile 的 native owner、profile capability、正式 TTS owner | E04/E10/E12 只有窄切片或历史 canary | `BLOCKED` |
+| R02 TTSSelector | 各已选 profile 的显式来源映射；不建立统一 registry/rank | E04 只证明显式 Piper；auto/unknown 继续 fail-closed | `DEFERRED`（统一 registry/rank） |
 | R03 voice performance/sample | 完整 cue、样音审批、设置不可变、正式资产关系 | E10 窄切片 | 可从 N03 开始，不能直接 ACCEPT |
 | R04 native/TTS generation | provider-specific 请求、原生音频 owner、实际音轨 | E04 Piper、E12 历史 Doubao/native | `BLOCKED`，需 profile 认证 |
 | R05 duration/TimelinePlan/mix | section windows、完整 AudioPlan、来源 `_full_mix` 全量消费 | E05/E06/E08 窄切片 | N01→N02 可补来源可表达部分 |
@@ -206,7 +206,7 @@ Exit Gate：来源规则的正向/负向 fixture 和现有 E03 回归均通过�
 
 ## 8. 建议执行顺序和停止条件
 
-建议顺序：`N01 → N02 → N03 → N04 → N05 → N06`。其中 N01/N02 最直接对应当前旁白与画面对齐问题；N06 必须等待 R01 的 registry/profile 前置事实，不应为了“进入 R02”而先造 registry。
+建议顺序：`N01 → N02 → N03 → N04 → N05`。其中 N01/N02 最直接对应当前旁白与画面对齐问题；N06 已明确 `DEFERRED`，不为了“进入 R02”创建统一 registry。
 
 任一项出现以下情况，立即停在当前章节并记录为 `DEFERRED`/`BLOCKED`：
 

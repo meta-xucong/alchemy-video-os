@@ -610,6 +610,30 @@ class MediaRuntimeTests(unittest.TestCase):
                     runtime._piper_runtime()
             self.assertEqual(raised.exception.code, "MEDIA_RUNTIME_UNAVAILABLE")
 
+    def test_piper_runtime_keeps_known_executable_precedence_without_bound_interpreter(self) -> None:
+        with TemporaryDirectory(prefix="alchemy-runtime-piper-known-runtime-") as directory:
+            root = Path(directory)
+            model = root / "voice.onnx"
+            config = root / "voice.onnx.json"
+            model.write_bytes(b"model")
+            config.write_bytes(b"{}")
+
+            def unexpected_probe(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                raise AssertionError("the known local executable must remain preferred without a bound interpreter")
+
+            known_python = Path(runtime.__file__).resolve().parents[2] / ".codex-longrun" / "c10-document-runtime-venv" / "Scripts" / "python.exe"
+
+            with patch.dict(
+                os.environ,
+                {
+                    "PIPER_MODEL_PATH": str(model),
+                    "PIPER_MODEL_CONFIG_PATH": str(config),
+                },
+                clear=True,
+            ), patch("runtime.Path.is_file", return_value=True), patch("runtime.subprocess.run", side_effect=unexpected_probe):
+                command, _, _ = runtime._piper_runtime()
+            self.assertEqual(command, [str(known_python.parent / "piper.exe")])
+
     def test_synthesize_narration_segments_preserves_absolute_offsets(self) -> None:
         calls: list[dict[str, object]] = []
 

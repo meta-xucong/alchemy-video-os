@@ -121,7 +121,7 @@ const waitFor = async (label, timeoutMs, poll) => {
 };
 
 const assertRealStack = async () => {
-  const state = JSON.parse(await readFile(statePath, "utf8"));
+  const state = JSON.parse((await readFile(statePath, "utf8")).replace(/^\uFEFF/u, ""));
   if (state?.mode?.video_provider !== "sub2api") {
     throw new Error("The persistent local stack is not running in VIDEO_PROVIDER=sub2api mode.");
   }
@@ -169,7 +169,7 @@ const brief = await requestJson(`/api/v1/projects/${project.id}/creative-brief-r
   method: "POST",
   idempotencyKey: key("brief"),
   body: JSON.stringify({
-    source_text: "一个简洁的商业级视频：干净桌面上，红色圆环与蓝色三角作为品牌元素被柔和光线扫过，镜头缓慢推进，最后形成稳定的科技感展示画面。",
+    source_text: "视频生成意图描述：一个简洁的商业级视频：干净桌面上，红色圆环与蓝色三角作为品牌元素被柔和光线扫过，镜头缓慢推进，最后形成稳定的科技感展示画面。",
     target_duration_seconds: 15,
     target_resolution: "720p",
     style_preferences: "写实、干净、商业广告质感、柔和自然光、稳定镜头。",

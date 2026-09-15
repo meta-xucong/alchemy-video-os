@@ -282,7 +282,8 @@ test("C09-C freezes saved visible video settings without rewriting the creative 
   assert.equal(internal?.inputSnapshot.duration, 15);
   assert.equal(internal?.inputSnapshot.resolution, "480p");
   assert.equal(internal?.inputSnapshot.ratio, "16:9");
-  assert.equal(internal?.inputSnapshot.prompt, "A product demonstration with clear actions, 15S, 480P.");
+  assert.match(internal?.inputSnapshot.prompt ?? "", /^A product demonstration with clear actions, 15S, 480P\./);
+  assert.match(internal?.inputSnapshot.prompt ?? "", /no subtitles, no captions/);
   assert.equal(JSON.stringify(created).includes("A product demonstration"), false);
 });
 

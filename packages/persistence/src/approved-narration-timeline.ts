@@ -96,6 +96,15 @@ const isSupportedNarrationMimeType = (value: unknown): value is "audio/wav" | "a
 // approved narration window and must fail closed.
 const MAX_UNDECLARED_NARRATION_GAP_MS = 1_000;
 
+// PostgreSQL timestamp columns may be returned as a space-separated value
+// (for example `2026-09-14 08:08:18.191+00`) while the public contract
+// requires RFC3339. Keep this conversion at the DB/contract boundary so the
+// approved-timeline loader does not silently discard an otherwise valid plan.
+const normalizeDatabaseTimestamp = (value: string) => {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+};
+
 /**
  * Load only a READY TimelinePlan whose script/sample/audio facts are approved
  * in the same workspace and project. A plan without an asset-version id is
@@ -208,7 +217,7 @@ export async function findApprovedNarrationTimeline(
       visual_segments: timeline.visualSegments,
       status: timeline.status,
       decision_reasons: timeline.decisionReasons,
-      created_at: String(timeline.createdAt),
+      created_at: normalizeDatabaseTimestamp(String(timeline.createdAt)),
     });
     parsedScript = NarrationScriptRevisionSchema.parse({
       id: script.id,
@@ -222,8 +231,8 @@ export async function findApprovedNarrationTimeline(
       language: script.language,
       normalization_version: script.normalizationVersion,
       decision_reasons: script.decisionReasons,
-      created_at: String(script.createdAt),
-      updated_at: String(script.updatedAt),
+      created_at: normalizeDatabaseTimestamp(String(script.createdAt)),
+      updated_at: normalizeDatabaseTimestamp(String(script.updatedAt)),
     });
     if (assetVersion) {
       NarrationAssetVersionSchema.parse({
@@ -239,8 +248,8 @@ export async function findApprovedNarrationTimeline(
         sample_approved: assetVersion.sampleApproved,
         word_timestamps_asset_id: assetVersion.wordTimestampsAssetId,
         canonical_transcript_check: assetVersion.canonicalTranscriptCheck,
-        created_at: String(assetVersion.createdAt),
-        updated_at: String(assetVersion.updatedAt),
+        created_at: normalizeDatabaseTimestamp(String(assetVersion.createdAt)),
+        updated_at: normalizeDatabaseTimestamp(String(assetVersion.updatedAt)),
       });
     }
   } catch {
@@ -299,6 +308,11 @@ export async function findApprovedNarrationTimeline(
   const narrationAssets: NonNullable<ApprovedNarrationTimeline["narrationAssets"]> = [];
   if (hasSectionAssets) {
     if (new Set(sectionAssetVersionIds).size !== sectionAssetVersionIds.length) return undefined;
+    // A section track is identified downstream by the concrete AUDIO asset id.
+    // Two formal versions pointing at one object would therefore create
+    // duplicate track identities and make the TimelinePlan/AudioPlan mapping
+    // ambiguous.  Keep the one-section/one-asset fact fail-closed here.
+    const sectionAssetIds = new Set<string>();
     for (const section of primarySections) {
       const assetVersionId = section.narration_asset_version_id;
       if (!assetVersionId) return undefined;
@@ -332,6 +346,8 @@ export async function findApprovedNarrationTimeline(
         || !isSupportedNarrationMimeType(sectionAsset.mimeType)
         || (sectionAsset.durationMs !== null && sectionAsset.durationMs !== undefined
           && (typeof sectionAsset.durationMs !== "number" || sectionAsset.durationMs !== sectionVersion.durationMs))) return undefined;
+      if (sectionAssetIds.has(sectionAsset.id)) return undefined;
+      sectionAssetIds.add(sectionAsset.id);
       try {
         NarrationAssetVersionSchema.parse({
           id: sectionVersion.id,
@@ -346,8 +362,8 @@ export async function findApprovedNarrationTimeline(
           sample_approved: sectionVersion.sampleApproved,
           word_timestamps_asset_id: sectionVersion.wordTimestampsAssetId,
           canonical_transcript_check: sectionVersion.canonicalTranscriptCheck,
-          created_at: String(sectionVersion.createdAt),
-          updated_at: String(sectionVersion.updatedAt),
+          created_at: normalizeDatabaseTimestamp(String(sectionVersion.createdAt)),
+          updated_at: normalizeDatabaseTimestamp(String(sectionVersion.updatedAt)),
         });
       } catch {
         return undefined;

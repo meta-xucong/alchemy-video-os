@@ -33,6 +33,46 @@ const isPromptBudgetError = (error: unknown): error is UnsupportedVideoGeneratio
 const isValidPromptCeiling = (value: number | undefined): value is number =>
   value !== undefined && Number.isSafeInteger(value) && value > 0;
 
+const resolveMaximumGenerationSegmentCount = (
+  targetDurationSeconds: number,
+  durationPolicy: StoryboardDurationPolicy | undefined,
+): number | undefined => {
+  if (!durationPolicy
+    || !Number.isSafeInteger(targetDurationSeconds)
+    || !Number.isSafeInteger(durationPolicy.minDurationSeconds)
+    || durationPolicy.minDurationSeconds < 1) {
+    return undefined;
+  }
+  return Math.floor(targetDurationSeconds / durationPolicy.minDurationSeconds);
+};
+
+/**
+ * Keep the private sidecar aligned with the single runtime compaction pass.
+ * This only projects the complete generated parts that are still present; it
+ * does not select or rewrite prompt content.
+ */
+const retainCompactedGeneratedPromptParts = (
+  sourcePrompt: string,
+  generatedPromptParts: readonly string[],
+  compactedPrompt: string,
+): readonly string[] | undefined => {
+  // Source-clause compaction changes the authored prefix.  A string-only
+  // result cannot safely reconstruct that source sidecar, so leave the
+  // original prompt/sidecar pair intact and let the production snapshot run
+  // the same source-first compactor with its complete sidecar.
+  if (!compactedPrompt.startsWith(sourcePrompt)) return undefined;
+  const retained: string[] = [];
+  let cursor = sourcePrompt.length;
+  for (const part of generatedPromptParts) {
+    const prefix = ` ${part}`;
+    if (compactedPrompt.slice(cursor).startsWith(prefix)) {
+      retained.push(part);
+      cursor += prefix.length;
+    }
+  }
+  return [sourcePrompt, ...retained].join(" ") === compactedPrompt ? retained : undefined;
+};
+
 export class CreativePlanningExecutor {
   constructor(
     private readonly store: Pick<CreativePlanningStore, "completeCreativePlan"> & Partial<Pick<CreativePlanningStore, "resolveVisualObjectLocks">>,
@@ -101,30 +141,47 @@ export class CreativePlanningExecutor {
           dialogueLines: planned.shotSpecs[index]!.dialogueLines,
           voicePerformance: planned.shotSpecs[index]!.voicePerformance,
           referenceAnchors: planned.shotSpecs[index]!.referenceAnchors,
+          visualPrompt: planned.shotSpecs[index]!.visualPrompt,
           stylePreferences: input.brief.stylePreferences,
           documentContexts,
           ...(segmentFactPack ? { segmentFactPack } : {}),
           visualObjectLocks,
           ...(this.audioOwner ? { audioOwner: this.audioOwner } : {}),
         });
+        let prompt = compiled.prompt;
+        let capabilitySnapshot = compiled.capabilitySnapshot;
         if (this.runtimeProfile?.mode === "sub2api" && isValidPromptCeiling(this.providerPromptMaxUtf8Bytes)) {
           const sourcePrompt = compiled.capabilitySnapshot.source_prompt;
           const generatedPromptParts = compiled.capabilitySnapshot.generated_prompt_parts;
-          compactRuntimePrompt(compiled.prompt, this.runtimeProfile.mode, this.providerPromptMaxUtf8Bytes, {
+          prompt = compactRuntimePrompt(compiled.prompt, this.runtimeProfile.mode, this.providerPromptMaxUtf8Bytes, {
             ...(typeof sourcePrompt === "string" ? { sourcePrompt } : {}),
             ...(Array.isArray(generatedPromptParts) && generatedPromptParts.every((part): part is string => typeof part === "string")
               ? { generatedPromptParts }
               : {}),
           });
+          if (prompt !== compiled.prompt
+            && typeof sourcePrompt === "string"
+            && Array.isArray(generatedPromptParts)
+            && generatedPromptParts.every((part): part is string => typeof part === "string")) {
+            const retainedGeneratedPromptParts = retainCompactedGeneratedPromptParts(sourcePrompt, generatedPromptParts, prompt);
+            if (retainedGeneratedPromptParts !== undefined) {
+              capabilitySnapshot = {
+                ...compiled.capabilitySnapshot,
+                generated_prompt_parts: retainedGeneratedPromptParts,
+              };
+            } else {
+              prompt = compiled.prompt;
+            }
+          }
         }
         return {
           id: createPrefixedId("ppk"),
           shotSpecId: shotSpec.id,
           compilerVersion: compiled.compilerVersion,
-          prompt: compiled.prompt,
+          prompt,
           visualConstraints: compiled.visualConstraints,
           referenceMap: compiled.referenceMap,
-          capabilitySnapshot: compiled.capabilitySnapshot,
+          capabilitySnapshot,
           motionPlan: compiled.motionPlan,
           motionPlanHash: compiled.motionPlanHash,
         };
@@ -155,15 +212,34 @@ export class CreativePlanningExecutor {
 
     let planned = await this.planner.plan(planningInput);
     let draft: CreativePlanningDraft;
-    try {
-      draft = await buildDraft(planned);
-    } catch (error) {
-      if (!isPromptBudgetError(error)) throw error;
-      planned = await this.planner.plan({
-        ...planningInput,
-        minimumGenerationSegmentCount: planned.generationSegmentCount + 1,
-      });
-      draft = await buildDraft(planned);
+    for (;;) {
+      try {
+        draft = await buildDraft(planned);
+        break;
+      } catch (error) {
+        if (!isPromptBudgetError(error)) throw error;
+        const nextMinimumGenerationSegmentCount = planned.generationSegmentCount + 1;
+        const maximumGenerationSegmentCount = resolveMaximumGenerationSegmentCount(
+          input.brief.targetDurationSeconds,
+          this.durationPolicy,
+        );
+        // A duration policy is required to bound semantic replanning. If the
+        // existing policy cannot express another segment, preserve the
+        // original source-first budget failure instead of looping or guessing.
+        if (maximumGenerationSegmentCount === undefined
+          || nextMinimumGenerationSegmentCount > maximumGenerationSegmentCount) {
+          throw error;
+        }
+        const nextPlanned = await this.planner.plan({
+          ...planningInput,
+          minimumGenerationSegmentCount: nextMinimumGenerationSegmentCount,
+        });
+        if (nextPlanned.generationSegmentCount <= planned.generationSegmentCount
+          || nextPlanned.generationSegmentCount > maximumGenerationSegmentCount) {
+          throw error;
+        }
+        planned = nextPlanned;
+      }
     }
     return this.store.completeCreativePlan({
       workspaceId: input.brief.workspaceId,

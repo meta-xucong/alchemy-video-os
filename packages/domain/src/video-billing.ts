@@ -22,6 +22,21 @@ export type VideoUsageFact = {
 // workers can pass the same shape without introducing another pricing path.
 export type MediaUsageFact = VideoUsageFact;
 
+/**
+ * The fixed KIE compatibility note in
+ * `doc/AI企业内容生产平台_KIE视频响应兼容最小修复开发文档.md` records that
+ * Sub2API's KIE transport uses a provider model alias in the
+ * settled usage row. Keep the raw usage model for audit, but compare it to
+ * the frozen billing rule through this exact, source-backed compatibility
+ * map. Unknown aliases remain incompatible and fail closed.
+ */
+const documentedVideoUsageModelAliases: Readonly<Record<string, readonly string[]>> = {
+  "grok-imagine-video-1.5": ["grok-imagine-video-1-5-preview"],
+};
+
+export const isVideoUsageModelCompatible = (expectedModel: string, actualModel: string): boolean =>
+  actualModel === expectedModel || documentedVideoUsageModelAliases[expectedModel]?.includes(actualModel) === true;
+
 export const parseVideoBillingModelRates = (raw: string | undefined): Readonly<Record<string, string>> => {
   if (!raw?.trim()) return {};
   let value: unknown;
@@ -64,7 +79,7 @@ export const calculateUsageCharge = (input: {
   pricing: BillingUsagePricing;
 }): string => {
   const pricing = BillingUsagePricingSchema.parse(input.pricing);
-  if (input.usage.model !== pricing.model) {
+  if (!isVideoUsageModelCompatible(pricing.model, input.usage.model)) {
     throw new DomainInvariantError(
       "BILLING_USAGE_MISMATCH",
       "The provider usage model does not match the frozen billing rule.",

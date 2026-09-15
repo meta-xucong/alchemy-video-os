@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { DeterministicPlanningModel, DeterministicStoryboardCompiler, type StoryboardCompilerPort } from "@alchemy-video/creative-planning";
+import {
+  DeterministicPlanningModel,
+  DeterministicStoryboardCompiler,
+  LlmFreeformPromptPlanningModel,
+  LlmSemanticPlanningModel,
+  type StoryboardCompilerPort,
+} from "@alchemy-video/creative-planning";
 import type { ControlCreativeBriefRevision, CreativePlanningDraft } from "@alchemy-video/persistence";
 import { UnsupportedVideoGenerationInputError, resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import { InMemoryStoragePort } from "@alchemy-video/storage-client";
@@ -24,6 +30,47 @@ const brief: ControlCreativeBriefRevision = {
   status: "PLANNING",
   createdAt: "2026-08-16T00:00:00.000Z",
   updatedAt: "2026-08-16T00:00:00.000Z",
+};
+
+const toRawSemanticFixture = (draft: Awaited<ReturnType<DeterministicPlanningModel["plan"]>>) => {
+  let dialogueSequence = 0;
+  return {
+    draft: {
+      title: draft.title,
+      summary: draft.summary,
+      continuityNote: draft.continuityNote,
+      beats: draft.beats.map(({ generationSegmentSequence: _generationSegmentSequence, ...beat }) => beat),
+      shotSpecs: draft.shotSpecs.map((shot) => {
+        const {
+          motionPlan,
+          motionPlanHash: _motionPlanHash,
+          dialogueLines: _dialogueLines,
+          sceneId: _sceneId,
+          characterIds: _characterIds,
+          propIds: _propIds,
+          referenceAnchors: _referenceAnchors,
+          ...semanticShot
+        } = shot;
+        const { version: _version, ...rawMotionPlan } = motionPlan;
+        return {
+          ...semanticShot,
+          motionPlan: rawMotionPlan,
+          ...(shot.voicePerformance ? { voicePerformance: shot.voicePerformance } : {}),
+        };
+      }),
+    },
+    sourceCoverage: {
+      segments: draft.shotSpecs.map((shot) => {
+        const dialogueLineSequences = shot.dialogueLines.map((_line, index) => dialogueSequence + index + 1);
+        dialogueSequence += shot.dialogueLines.length;
+        return {
+          segmentSequence: shot.sequence,
+          sourceBeatSequences: [...shot.narrativeBeatSequences],
+          dialogueLineSequences,
+        };
+      }),
+    },
+  };
 };
 
 test("runtime profile mapper only enables Grok's one-second minimum", () => {
@@ -161,6 +208,244 @@ test("CreativePlanningExecutor persists many narrative beats as fewer executable
   ]);
   assert.equal(captured.promptPackages?.length, 2);
   assert.ok(captured.promptPackages?.every((promptPackage) => promptPackage.motionPlan?.source_narrative_beat_sequences.length >= 1));
+});
+
+test("CreativePlanningExecutor injects freeform visual prompts while preserving authored dialogue", async () => {
+  const freeformBrief = {
+    ...brief,
+    id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXFREE",
+    sourceText: "雨夜抵达工厂。林岚说：“必须逐字保留。”团队在黎明前完成交付。",
+  };
+  let captured: CreativePlanningDraft | undefined;
+  let receivedSegmentContext: { segmentCount: number; segments: readonly { sequence: number }[] } | undefined;
+  const planner = new LlmFreeformPromptPlanningModel(async (context) => {
+    receivedSegmentContext = context;
+    return {
+      segments: context.segments.map((segment) => ({
+        sequence: segment.sequence,
+        visual_prompt: `自由视觉 ${segment.sequence}\n保留原文格式`,
+      })),
+    };
+  });
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan(input) {
+      captured = input.draft;
+      return undefined;
+    },
+  }, planner);
+
+  await executor.execute({
+    brief: freeformBrief,
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXFREE",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXFREE",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXFREE",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXFREE",
+    },
+  });
+
+  assert.ok(captured?.promptPackages);
+  if (!captured?.promptPackages) return;
+  assert.equal(receivedSegmentContext?.segmentCount, captured.promptPackages.length);
+  assert.deepEqual(receivedSegmentContext?.segments.map((segment) => segment.sequence), captured.promptPackages.map((_package, index) => index + 1));
+  assert.ok(captured.shotSpecs.every((shot) => !("visualPrompt" in shot)));
+  for (const [index, promptPackage] of captured.promptPackages.entries()) {
+    const generatedPromptParts = promptPackage.capabilitySnapshot.generated_prompt_parts;
+    assert.ok(Array.isArray(generatedPromptParts));
+    assert.equal(generatedPromptParts[0], "全程无字幕；no subtitles, no captions。字幕只在后期统一添加。");
+    const freeformVisualPrompt = `自由视觉 ${index + 1}\n保留原文格式`;
+    const visualPromptIndex = generatedPromptParts.findIndex((part) =>
+      part === freeformVisualPrompt || part.replace(/\s+/gu, " ") === freeformVisualPrompt.replace(/\s+/gu, " "));
+    assert.ok(visualPromptIndex > 0);
+    assert.equal(promptPackage.prompt.includes(freeformVisualPrompt.replace(/\n/gu, " ")), true);
+  }
+  const sourcePrompts = captured.promptPackages
+    .map((promptPackage) => promptPackage.capabilitySnapshot.source_prompt)
+    .filter((value): value is string => typeof value === "string");
+  assert.equal(sourcePrompts.join(" ").includes("必须逐字保留。"), true);
+});
+
+test("CreativePlanningExecutor consumes a verified semantic planner fixture without widening each segment source", async () => {
+  const planningInput = {
+    sourceText: brief.sourceText,
+    targetDurationSeconds: brief.targetDurationSeconds,
+    stylePreferences: brief.stylePreferences,
+    sourceAssetIds: brief.sourceAssetIds,
+  };
+  const deterministicDraft = await new DeterministicPlanningModel().plan(planningInput);
+  const semanticFixture = toRawSemanticFixture(deterministicDraft);
+  let captured: CreativePlanningDraft | undefined;
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan(input) {
+      captured = input.draft;
+      return undefined;
+    },
+  }, new LlmSemanticPlanningModel(() => semanticFixture));
+
+  await executor.execute({
+    brief,
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXJXJY",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXJXJY",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXJXJY",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXJXJY",
+    },
+  });
+
+  assert.ok(captured);
+  if (!captured) return;
+  assert.equal(captured.shotSpecs.length, deterministicDraft.shotSpecs.length);
+  assert.deepEqual(
+    captured.promptPackages?.map((promptPackage) => promptPackage.capabilitySnapshot.source_prompt),
+    deterministicDraft.shotSpecs.map((shot) => shot.narrativeGoal),
+  );
+  assert.ok(captured.promptPackages?.every((promptPackage, index) => {
+    const sourcePrompt = promptPackage.capabilitySnapshot.source_prompt;
+    const laterSources = deterministicDraft.shotSpecs.slice(index + 1).map((shot) => shot.narrativeGoal);
+    return typeof sourcePrompt === "string" && laterSources.every((source) => !sourcePrompt.includes(source));
+  }));
+});
+
+test("injected semantic planner keeps each JSON-sidecar source ordered through the production snapshot factory", async () => {
+  const planningInput = {
+    sourceText: brief.sourceText,
+    targetDurationSeconds: brief.targetDurationSeconds,
+    stylePreferences: brief.stylePreferences,
+    sourceAssetIds: brief.sourceAssetIds,
+  };
+  const deterministicDraft = await new DeterministicPlanningModel().plan(planningInput);
+  const semanticFixture = toRawSemanticFixture(deterministicDraft);
+  let captured: CreativePlanningDraft | undefined;
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan(input) {
+      captured = input.draft;
+      return undefined;
+    },
+  }, new LlmSemanticPlanningModel(() => semanticFixture));
+
+  await executor.execute({
+    brief,
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXJSIDE",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXJSIDE",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXJSIDE",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXJSIDE",
+    },
+  });
+
+  assert.ok(captured?.promptPackages);
+  if (!captured?.promptPackages) return;
+  const createSnapshot = createProductionTaskRunInputSnapshotFactory("sub2api");
+  for (const [index, promptPackage] of captured.promptPackages.entries()) {
+    const persistedSidecar = JSON.parse(JSON.stringify(promptPackage.capabilitySnapshot)) as Record<string, unknown>;
+    const sourcePrompt = persistedSidecar.source_prompt;
+    const generatedPromptParts = persistedSidecar.generated_prompt_parts;
+    assert.equal(typeof sourcePrompt, "string");
+    assert.ok(Array.isArray(generatedPromptParts));
+    if (typeof sourcePrompt !== "string" || !Array.isArray(generatedPromptParts)
+      || !generatedPromptParts.every((part): part is string => typeof part === "string")) return;
+
+    const laterOrEarlierSource = deterministicDraft.shotSpecs
+      .filter((_, sourceIndex) => sourceIndex !== index)
+      .map((shot) => shot.narrativeGoal);
+    assert.equal([sourcePrompt, ...generatedPromptParts].join(" "), promptPackage.prompt);
+    assert.ok(laterOrEarlierSource.every((source) => !sourcePrompt.includes(source)));
+
+    const shot = captured.shotSpecs[index]!;
+    const snapshot = createSnapshot({
+      prompt: promptPackage.prompt,
+      sourcePrompt,
+      generatedPromptParts,
+      duration: shot.durationSeconds,
+      resolution: "480p",
+      ratio: "16:9",
+      referenceAssetIds: [],
+      visualInput: { mode: "TEXT", references: [] },
+      generationSegmentSequence: shot.sequence,
+      narrativeBeatSequences: shot.narrativeBeatSequences,
+    });
+    assert.equal(snapshot.prompt, promptPackage.prompt);
+    assert.ok(laterOrEarlierSource.every((source) => !snapshot.prompt.includes(source)));
+  }
+});
+
+test("injected semantic planner keeps compacted segment sidecars ordered through JSON and the production snapshot", async () => {
+  const profile = resolveVideoProviderRuntimeProfile("sub2api");
+  const durationPolicy = resolvePlanningDurationPolicy(profile);
+  const planningInput = {
+    sourceText: brief.sourceText,
+    targetDurationSeconds: brief.targetDurationSeconds,
+    durationPolicy,
+    stylePreferences: brief.stylePreferences,
+    sourceAssetIds: brief.sourceAssetIds,
+  };
+  const deterministicDraft = await new DeterministicPlanningModel().plan(planningInput);
+  const semanticFixture = toRawSemanticFixture(deterministicDraft);
+  const retainedPart = "Motion timeline: preserve the declared segment order.";
+  const baseCompiler = new DeterministicStoryboardCompiler();
+  const compiler: StoryboardCompilerPort = {
+    async compile(input) {
+      const compiled = await baseCompiler.compile(input);
+      const sourcePrompt = input.narrativeGoal;
+      const generatedPromptParts = [retainedPart, `Derived presentation: ${"派生说明。".repeat(1_000)}`];
+      return {
+        ...compiled,
+        prompt: [sourcePrompt, ...generatedPromptParts].join(" "),
+        capabilitySnapshot: {
+          ...compiled.capabilitySnapshot,
+          source_prompt: sourcePrompt,
+          generated_prompt_parts: generatedPromptParts,
+        },
+      };
+    },
+  };
+  let captured: CreativePlanningDraft | undefined;
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan(input) {
+      captured = input.draft;
+      return undefined;
+    },
+  }, new LlmSemanticPlanningModel(() => semanticFixture), compiler, undefined, undefined, profile.audioOwner,
+  durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
+
+  await executor.execute({
+    brief,
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXJSCMP",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXJSCMP",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXJSCMP",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXJSCMP",
+    },
+  });
+
+  assert.ok(captured?.promptPackages);
+  if (!captured?.promptPackages) return;
+  const createSnapshot = createProductionTaskRunInputSnapshotFactory("sub2api");
+  for (const [index, promptPackage] of captured.promptPackages.entries()) {
+    const sourcePrompt = deterministicDraft.shotSpecs[index]!.narrativeGoal;
+    const persistedSidecar = JSON.parse(JSON.stringify(promptPackage.capabilitySnapshot)) as Record<string, unknown>;
+    assert.equal(persistedSidecar.source_prompt, sourcePrompt);
+    assert.deepEqual(persistedSidecar.generated_prompt_parts, [retainedPart]);
+    assert.equal(promptPackage.prompt, [sourcePrompt, retainedPart].join(" "));
+
+    const snapshot = createSnapshot({
+      prompt: promptPackage.prompt,
+      sourcePrompt: persistedSidecar.source_prompt as string,
+      generatedPromptParts: persistedSidecar.generated_prompt_parts as string[],
+      duration: captured.shotSpecs[index]!.durationSeconds,
+      resolution: "480p",
+      ratio: "16:9",
+      referenceAssetIds: [],
+      visualInput: { mode: "TEXT", references: [] },
+      generationSegmentSequence: captured.shotSpecs[index]!.sequence,
+      narrativeBeatSequences: captured.shotSpecs[index]!.narrativeBeatSequences,
+    });
+    assert.equal(snapshot.prompt, promptPackage.prompt);
+    assert.equal(snapshot.prompt.includes("Derived presentation:"), false);
+    assert.ok(deterministicDraft.shotSpecs
+      .filter((_, sourceIndex) => sourceIndex !== index)
+      .every((shot) => !snapshot.prompt.includes(shot.narrativeGoal)));
+  }
 });
 
 test("CreativePlanningExecutor preserves the source-aligned camera plan in one timestamped segment", async () => {
@@ -381,6 +666,143 @@ test("CreativePlanningExecutor sends frozen Markdown facts only to internal plan
   }]);
 });
 
+test("CreativePlanningExecutor persists the compacted prompt used by the production snapshot", async () => {
+  const profile = resolveVideoProviderRuntimeProfile("sub2api");
+  const storage = new InMemoryStoragePort();
+  const markdown = "内部资料事实。".repeat(700);
+  const markdownBytes = new TextEncoder().encode(markdown);
+  const markdownObjectKey = "ws_story/prj_story/ast_markdown/prompt-budget.md";
+  await storage.putObject({ objectKey: markdownObjectKey, mimeType: "text/markdown", bytes: markdownBytes });
+
+  let captured: CreativePlanningDraft | undefined;
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan(input) {
+      captured = input.draft;
+      return undefined;
+    },
+  }, new DeterministicPlanningModel(), new DeterministicStoryboardCompiler(), new BoundedDocumentContextReader(storage), undefined, profile.audioOwner,
+  resolvePlanningDurationPolicy(profile), profile, profile.providerPromptMaxUtf8Bytes);
+
+  await executor.execute({
+    brief: {
+      ...brief,
+      id: "cbr_01J4N8QZ8PCW2N2G6D2XJXPROMPT",
+      sourceText: "团队在黎明前完成客户交付。",
+      targetDurationSeconds: 15,
+      documentContexts: [{
+        documentId: "doc_prompt_budget",
+        conversionId: "dcv_prompt_budget",
+        sourceAssetId: "ast_prompt_budget_source",
+        markdownAssetId: "ast_prompt_budget_markdown",
+        markdownSha256: createHash("sha256").update(markdownBytes).digest("hex"),
+        markdownObjectKey,
+        sequence: 1,
+        maxContentCharacters: 5_000,
+      }],
+    },
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXPROMPT",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXPROMPT",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXPROMPT",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXPROMPT",
+    },
+  });
+
+  assert.ok(captured);
+  if (!captured) return;
+  assert.equal(captured.promptPackages?.length, 1);
+  const promptPackage = captured.promptPackages?.[0];
+  assert.ok(promptPackage);
+  if (!promptPackage) return;
+  const sourcePrompt = promptPackage.capabilitySnapshot.source_prompt;
+  const generatedPromptParts = promptPackage.capabilitySnapshot.generated_prompt_parts;
+  assert.equal(typeof sourcePrompt, "string");
+  assert.ok(Array.isArray(generatedPromptParts));
+  if (typeof sourcePrompt !== "string" || !Array.isArray(generatedPromptParts)
+    || !generatedPromptParts.every((part): part is string => typeof part === "string")) return;
+  assert.ok(new TextEncoder().encode(promptPackage.prompt).byteLength <= 4_096);
+  assert.equal(promptPackage.prompt, [sourcePrompt, ...generatedPromptParts].join(" "));
+  const productionInput = {
+    prompt: promptPackage.prompt,
+    sourcePrompt,
+    generatedPromptParts,
+    duration: captured.shotSpecs[0]!.durationSeconds,
+    resolution: "720p",
+    ratio: "16:9",
+    referenceAssetIds: [],
+    visualInput: { mode: "TEXT" as const, references: [] },
+    generationSegmentSequence: captured.shotSpecs[0]!.sequence,
+    narrativeBeatSequences: captured.shotSpecs[0]!.narrativeBeatSequences,
+  };
+  const snapshot = createProductionTaskRunInputSnapshotFactory("sub2api")(productionInput);
+  assert.ok(new TextEncoder().encode(snapshot.prompt).byteLength <= 4_096);
+  assert.equal(snapshot.prompt, promptPackage.prompt);
+});
+
+test("CreativePlanningExecutor keeps the authored sidecar when runtime source-clause compaction changes the prompt", async () => {
+  const profile = resolveVideoProviderRuntimeProfile("sub2api");
+  const durationPolicy = resolvePlanningDurationPolicy(profile);
+  const baseCompiler = new DeterministicStoryboardCompiler();
+  const sourcePrompt = `风格：${"冗余风格事实".repeat(1_700)}\n## 人物与场景\n人物站在入口，保留 @anchor 与原始顺序。`;
+  const generatedPromptParts = ["Motion timeline: one continuous approach."];
+  let captured: CreativePlanningDraft | undefined;
+  const compiler: StoryboardCompilerPort = {
+    async compile(input) {
+      const compiled = await baseCompiler.compile(input);
+      return {
+        ...compiled,
+        prompt: [sourcePrompt, ...generatedPromptParts].join(" "),
+        capabilitySnapshot: {
+          ...compiled.capabilitySnapshot,
+          source_prompt: sourcePrompt,
+          generated_prompt_parts: generatedPromptParts,
+        },
+      };
+    },
+  };
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan(input) {
+      captured = input.draft;
+      return undefined;
+    },
+  }, new DeterministicPlanningModel(), compiler, undefined, undefined, profile.audioOwner,
+  durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
+
+  await executor.execute({
+    brief: { ...brief, sourceText: "入口处的人物。", targetDurationSeconds: 15 },
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXSCOMP",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXSCOMP",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXSCOMP",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXSCOMP",
+    },
+  });
+
+  assert.ok(captured?.promptPackages?.[0]);
+  const promptPackage = captured?.promptPackages?.[0];
+  if (!promptPackage) return;
+  assert.equal(promptPackage.prompt, [sourcePrompt, ...generatedPromptParts].join(" "));
+  assert.equal(
+    [promptPackage.capabilitySnapshot.source_prompt, ...(promptPackage.capabilitySnapshot.generated_prompt_parts ?? [])].join(" "),
+    promptPackage.prompt,
+  );
+  const snapshot = createProductionTaskRunInputSnapshotFactory("sub2api")({
+    prompt: promptPackage.prompt,
+    sourcePrompt: String(promptPackage.capabilitySnapshot.source_prompt),
+    generatedPromptParts: promptPackage.capabilitySnapshot.generated_prompt_parts as string[],
+    duration: 5,
+    resolution: "720p",
+    ratio: "16:9",
+    referenceAssetIds: [],
+    visualInput: { mode: "TEXT" as const, references: [] },
+    generationSegmentSequence: 1,
+    narrativeBeatSequences: [1],
+  });
+  assert.ok(new TextEncoder().encode(snapshot.prompt).byteLength <= 4_096);
+  assert.ok(snapshot.prompt.includes("## 人物与场景"));
+  assert.equal(snapshot.prompt.includes("冗余风格事实"), false);
+});
+
 test("CreativePlanningExecutor scopes frozen facts to the matching generation segment", async () => {
   let captured: CreativePlanningDraft | undefined;
   const executor = new CreativePlanningExecutor({
@@ -464,27 +886,28 @@ test("CreativePlanningExecutor scopes frozen facts to the matching generation se
   assert.deepEqual(second.referenceMap.fact_refs, ["dft_brand_seg", "dft_spa_seg"]);
 });
 
-test("CreativePlanningExecutor replans once after a sub2api prompt budget preflight failure", async () => {
+test("CreativePlanningExecutor keeps semantically replanning after a sub2api prompt budget preflight failure", async () => {
   const profile = resolveVideoProviderRuntimeProfile("sub2api");
   const durationPolicy = resolvePlanningDurationPolicy(profile);
   const baseCompiler = new DeterministicStoryboardCompiler();
   let plannerCalls = 0;
+  const requestedMinimums: Array<number | undefined> = [];
   let completeCalls = 0;
   let captured: CreativePlanningDraft | undefined;
   const planner = {
     async plan(input: Parameters<DeterministicPlanningModel["plan"]>[0]) {
       plannerCalls += 1;
+      requestedMinimums.push(input.minimumGenerationSegmentCount);
       return new DeterministicPlanningModel().plan(input);
     },
   };
   const compiler: StoryboardCompilerPort = {
     async compile(input) {
       const compiled = await baseCompiler.compile(input);
-      // The fixture models a genuinely combined semantic segment: only when
-      // both authored visual paragraphs are still together does the source
-      // exceed the budget. Splitting the source paragraphs, rather than merely
-      // changing a count flag, is what makes the second plan fit.
-      if (!input.narrativeGoal.includes("第一视觉段") || !input.narrativeGoal.includes("第二视觉段")) return compiled;
+      // The fixture models a source-first budget failure for the first three
+      // semantic plans. Only the existing planner's fifth-segment split makes
+      // every authored source unit small enough; no characters are cut here.
+      if ((input.generationSegmentCount ?? 1) >= 5) return compiled;
       const sourcePrompt = `${compiled.capabilitySnapshot.source_prompt as string}${"不可删除源事实。".repeat(700)}`;
       return {
         ...compiled,
@@ -505,9 +928,9 @@ test("CreativePlanningExecutor replans once after a sub2api prompt budget prefli
     },
   }, planner, compiler, undefined, undefined, profile.audioOwner, durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
 
-  const authoredSource = "口播文案：”\n第一段台词。\n第二段台词。”\n\n视频生成意图描述\n第一视觉段：人物走近【@入口】。\n第二视觉段：她停下看向【@屏幕】。";
+  const authoredSource = "口播文案：”\n第一段台词。\n第二段台词。”\n\n视频生成意图描述\n第一视觉段：人物走近【@入口】。第二视觉段：她停下看向【@屏幕】。第三视觉段：她抬手点击【@按钮】。第四视觉段：界面展开数据。第五视觉段：她微笑点头。";
   await executor.execute({
-    brief: { ...brief, sourceText: authoredSource, targetDurationSeconds: 15, sourceAssetIds: ["ast_entry", "ast_screen"] },
+    brief: { ...brief, sourceText: authoredSource, targetDurationSeconds: 30, sourceAssetIds: ["ast_entry", "ast_screen", "ast_button", "ast_ui"] },
     event: {
       eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXJXREPLAN",
       messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXJXREPLAN",
@@ -516,23 +939,22 @@ test("CreativePlanningExecutor replans once after a sub2api prompt budget prefli
     },
   });
 
-  assert.equal(plannerCalls, 2);
+  assert.equal(plannerCalls, 4);
+  assert.deepEqual(requestedMinimums, [undefined, 3, 4, 5]);
   assert.equal(completeCalls, 1);
-  assert.equal(captured?.generationSegmentCount, 2);
-  assert.deepEqual(captured?.shotSpecs.map((shot) => shot.durationSeconds), [10, 5]);
-  assert.deepEqual(captured?.shotSpecs.flatMap((shot) => shot.narrativeBeatSequences), [1, 2]);
+  assert.equal(captured?.generationSegmentCount, 5);
+  assert.deepEqual(captured?.shotSpecs.map((shot) => shot.durationSeconds), [10, 5, 5, 5, 5]);
   const sourcePrompts = captured?.promptPackages?.map((promptPackage) => String(promptPackage.capabilitySnapshot.source_prompt ?? "")) ?? [];
   assert.equal(sourcePrompts.filter((sourcePrompt) => sourcePrompt.includes("第一段台词。")).length, 1);
   assert.equal(sourcePrompts.filter((sourcePrompt) => sourcePrompt.includes("第二段台词。")).length, 1);
   assert.equal(sourcePrompts.join("").includes("第一段台词。\n第二段台词。"), true);
   assert.ok(sourcePrompts.some((sourcePrompt) => sourcePrompt.includes("第一视觉段") && sourcePrompt.includes("@入口")));
   assert.ok(sourcePrompts.some((sourcePrompt) => sourcePrompt.includes("第二视觉段") && sourcePrompt.includes("@屏幕")));
-  assert.deepEqual(captured?.promptPackages?.map((promptPackage) => promptPackage.referenceMap.reference_policy), ["REFERENCE_SET", "HANDOFF_FIRST_FRAME"]);
+  assert.deepEqual(captured?.promptPackages?.map((promptPackage) => promptPackage.referenceMap.reference_policy), ["REFERENCE_SET", "HANDOFF_FIRST_FRAME", "HANDOFF_FIRST_FRAME", "HANDOFF_FIRST_FRAME", "HANDOFF_FIRST_FRAME"]);
   assert.ok(captured?.shotSpecs.every((shot) => shot.durationSeconds >= 1 && shot.durationSeconds <= 15));
   assert.ok(captured?.shotSpecs[0]?.narrativeGoal.includes("第一视觉段"));
-  assert.ok(captured?.shotSpecs[1]?.narrativeGoal.includes("第二视觉段"));
-  assert.ok(!captured?.shotSpecs[0]?.narrativeGoal.includes("第二视觉段"));
-  assert.ok(!captured?.shotSpecs[1]?.narrativeGoal.includes("第一视觉段"));
+  assert.ok(captured?.shotSpecs.some((shot) => shot.narrativeGoal.includes("第五视觉段")));
+  assert.ok(captured?.promptPackages?.every((promptPackage) => new TextEncoder().encode(promptPackage.prompt).byteLength <= 4_096));
   assert.ok(captured?.promptPackages?.every((promptPackage) => {
     const sourcePrompt = promptPackage.capabilitySnapshot.source_prompt;
     const generatedPromptParts = promptPackage.capabilitySnapshot.generated_prompt_parts;
@@ -543,7 +965,7 @@ test("CreativePlanningExecutor replans once after a sub2api prompt budget prefli
   }));
 });
 
-test("CreativePlanningExecutor does not persist when the single allowed replan remains over budget", async () => {
+test("CreativePlanningExecutor stops at the target/min-duration segment bound when source remains over budget", async () => {
   const profile = resolveVideoProviderRuntimeProfile("sub2api");
   const durationPolicy = resolvePlanningDurationPolicy(profile);
   const baseCompiler = new DeterministicStoryboardCompiler();
@@ -574,12 +996,98 @@ test("CreativePlanningExecutor does not persist when the single allowed replan r
   }, planner, compiler, undefined, undefined, profile.audioOwner, durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
 
   await assert.rejects(() => executor.execute({
-    brief: { ...brief, sourceText: "一个不可再分的超长源单元。", targetDurationSeconds: 15 },
+    brief: { ...brief, sourceText: "一个不可再分的超长源单元。", targetDurationSeconds: 2 },
     event: {
       eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXJXFAIL",
       messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXJXFAIL",
       traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXJXFAIL",
       correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXJXFAIL",
+    },
+  }), (error: unknown) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET");
+  assert.equal(plannerCalls, 2);
+  assert.equal(completeCalls, 0);
+});
+
+test("CreativePlanningExecutor fails closed without a duration policy instead of looping", async () => {
+  const profile = resolveVideoProviderRuntimeProfile("sub2api");
+  let plannerCalls = 0;
+  let completeCalls = 0;
+  const planner = {
+    async plan(input: Parameters<DeterministicPlanningModel["plan"]>[0]) {
+      plannerCalls += 1;
+      return new DeterministicPlanningModel().plan(input);
+    },
+  };
+  const compiler: StoryboardCompilerPort = {
+    async compile(input) {
+      const compiled = await new DeterministicStoryboardCompiler().compile(input);
+      const sourcePrompt = `${compiled.capabilitySnapshot.source_prompt as string}${"不可删除源事实。".repeat(700)}`;
+      return {
+        ...compiled,
+        prompt: sourcePrompt,
+        capabilitySnapshot: { ...compiled.capabilitySnapshot, source_prompt: sourcePrompt, generated_prompt_parts: [] },
+      };
+    },
+  };
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan() {
+      completeCalls += 1;
+      return undefined;
+    },
+  }, planner, compiler, undefined, undefined, profile.audioOwner, undefined, profile, profile.providerPromptMaxUtf8Bytes);
+
+  await assert.rejects(() => executor.execute({
+    brief: { ...brief, sourceText: "不可再分的源事实。", targetDurationSeconds: 30 },
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXNODUR",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXNODUR",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXNODUR",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXNODUR",
+    },
+  }), (error: unknown) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET");
+  assert.equal(plannerCalls, 1);
+  assert.equal(completeCalls, 0);
+});
+
+test("CreativePlanningExecutor stops when the planner makes no segment-count progress", async () => {
+  const profile = resolveVideoProviderRuntimeProfile("sub2api");
+  const durationPolicy = resolvePlanningDurationPolicy(profile);
+  const deterministicPlanner = new DeterministicPlanningModel();
+  let plannerCalls = 0;
+  let completeCalls = 0;
+  let firstPlan: Awaited<ReturnType<DeterministicPlanningModel["plan"]>> | undefined;
+  const planner = {
+    async plan(input: Parameters<DeterministicPlanningModel["plan"]>[0]) {
+      plannerCalls += 1;
+      firstPlan ??= await deterministicPlanner.plan(input);
+      return firstPlan;
+    },
+  };
+  const compiler: StoryboardCompilerPort = {
+    async compile(input) {
+      const compiled = await new DeterministicStoryboardCompiler().compile(input);
+      const sourcePrompt = `${compiled.capabilitySnapshot.source_prompt as string}${"不可删除源事实。".repeat(700)}`;
+      return {
+        ...compiled,
+        prompt: sourcePrompt,
+        capabilitySnapshot: { ...compiled.capabilitySnapshot, source_prompt: sourcePrompt, generated_prompt_parts: [] },
+      };
+    },
+  };
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan() {
+      completeCalls += 1;
+      return undefined;
+    },
+  }, planner, compiler, undefined, undefined, profile.audioOwner, durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
+
+  await assert.rejects(() => executor.execute({
+    brief: { ...brief, sourceText: "规划器无法增加段数的源事实。", targetDurationSeconds: 30 },
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXNOPROG",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJNOPROG",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJNOPROG",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJNOPROG",
     },
   }), (error: unknown) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET");
   assert.equal(plannerCalls, 2);
@@ -657,7 +1165,7 @@ test("CreativePlanningExecutor does not replan ordinary compiler errors", async 
   assert.equal(completeCalls, 0);
 });
 
-test("CreativePlanningExecutor keeps a missing sidecar fail-closed across the single retry", async () => {
+test("CreativePlanningExecutor keeps a missing sidecar fail-closed at the segment bound", async () => {
   const profile = resolveVideoProviderRuntimeProfile("sub2api");
   const durationPolicy = resolvePlanningDurationPolicy(profile);
   const baseCompiler = new DeterministicStoryboardCompiler();
@@ -687,7 +1195,7 @@ test("CreativePlanningExecutor keeps a missing sidecar fail-closed across the si
   }, planner, compiler, undefined, undefined, profile.audioOwner, durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
 
   await assert.rejects(() => executor.execute({
-    brief: { ...brief, sourceText: "单一不可截断源事实。", targetDurationSeconds: 15 },
+    brief: { ...brief, sourceText: "单一不可截断源事实。", targetDurationSeconds: 2 },
     event: {
       eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXMISS",
       messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXMISS",
@@ -699,7 +1207,7 @@ test("CreativePlanningExecutor keeps a missing sidecar fail-closed across the si
   assert.equal(completeCalls, 0);
 });
 
-test("CreativePlanningExecutor keeps a mismatched sidecar fail-closed across the single retry", async () => {
+test("CreativePlanningExecutor keeps a mismatched sidecar fail-closed at the segment bound", async () => {
   const profile = resolveVideoProviderRuntimeProfile("sub2api");
   const durationPolicy = resolvePlanningDurationPolicy(profile);
   const baseCompiler = new DeterministicStoryboardCompiler();
@@ -734,7 +1242,7 @@ test("CreativePlanningExecutor keeps a mismatched sidecar fail-closed across the
   }, planner, compiler, undefined, undefined, profile.audioOwner, durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
 
   await assert.rejects(() => executor.execute({
-    brief: { ...brief, sourceText: "单一不可重排源事实。", targetDurationSeconds: 15 },
+    brief: { ...brief, sourceText: "单一不可重排源事实。", targetDurationSeconds: 2 },
     event: {
       eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXMISM",
       messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXMISM",

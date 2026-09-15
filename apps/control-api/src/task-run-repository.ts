@@ -333,7 +333,7 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     });
   }
 
-  async ensureGeneratedAsset(input: { workspaceId: string; taskRunId: string; assetId: string; objectKey: string; now: Date }): Promise<GeneratedAssetDraft | undefined> {
+  async ensureGeneratedAsset(input: { workspaceId: string; taskRunId: string; assetId: string; objectKey: string; provider: string; now: Date }): Promise<GeneratedAssetDraft | undefined> {
     const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
     if (!current) return undefined;
     const existing = this.generatedAssets.get(input.assetId);
@@ -342,7 +342,7 @@ export class InMemoryTaskRunStore implements TaskRunStore {
       return { id: existing.id, objectKey: existing.objectKey, taskRunId: input.taskRunId };
     }
     const now = input.now.toISOString();
-    this.generatedAssets.set(input.assetId, { id: input.assetId, workspaceId: input.workspaceId, projectId: current.projectId, kind: "VIDEO", origin: "GENERATED", status: "PENDING_UPLOAD", objectKey: input.objectKey, sha256: null, mimeType: null, byteSize: null, width: null, height: null, durationMs: null, metadata: { task_run_id: input.taskRunId, generated_by: "mock" }, createdAt: now, updatedAt: now });
+    this.generatedAssets.set(input.assetId, { id: input.assetId, workspaceId: input.workspaceId, projectId: current.projectId, kind: "VIDEO", origin: "GENERATED", status: "PENDING_UPLOAD", objectKey: input.objectKey, sha256: null, mimeType: null, byteSize: null, width: null, height: null, durationMs: null, metadata: { task_run_id: input.taskRunId, generated_by: input.provider }, createdAt: now, updatedAt: now });
     return { id: input.assetId, objectKey: input.objectKey, taskRunId: input.taskRunId };
   }
 

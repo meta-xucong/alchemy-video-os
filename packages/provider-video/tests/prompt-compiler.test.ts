@@ -10,6 +10,7 @@ import {
 } from "../src/index.js";
 
 const profile = resolveVideoProviderRuntimeProfile("sub2api");
+const captionSuppressionDirective = "全程无字幕；no subtitles, no captions。字幕只在后期统一添加。";
 const legacyNarrationProfile = { ...profile, audioOwner: undefined };
 
 test("the compiler preserves the saved creative description and uses the real-profile defaults", () => {
@@ -21,7 +22,8 @@ test("the compiler preserves the saved creative description and uses the real-pr
   });
 
   assert.deepEqual(compiled.settings, { duration: 5, resolution: "720p", ratio: "16:9" });
-  assert.equal(compiled.prompt, sourcePrompt.trim());
+  assert.ok(compiled.prompt.startsWith(sourcePrompt.trim()));
+  assert.equal((compiled.prompt.match(new RegExp(captionSuppressionDirective, "gu")) ?? []).length, 1);
 });
 
 test("the compiler uses explicit saved video settings instead of extracting values from the description", () => {
@@ -34,7 +36,8 @@ test("the compiler uses explicit saved video settings instead of extracting valu
   });
 
   assert.deepEqual(compiled.settings, { duration: 8, resolution: "480p", ratio: "16:9" });
-  assert.equal(compiled.prompt, "A fast demonstration video, 15S, rendered in 480P.");
+  assert.ok(compiled.prompt.startsWith("A fast demonstration video, 15S, rendered in 480P."));
+  assert.equal((compiled.prompt.match(new RegExp(captionSuppressionDirective, "gu")) ?? []).length, 1);
 });
 
 test("the compiler makes scene and subject reference semantics explicit to the provider", () => {
@@ -103,8 +106,23 @@ test("the native provider owner emits the source dialogue syntax for native audi
     profile,
   });
   assert.ok(compiled.prompt.includes(`One speaker per clip. Character says: "${script}"`));
+  assert.equal((compiled.prompt.match(new RegExp(captionSuppressionDirective, "gu")) ?? []).length, 1);
   assert.doesNotMatch(compiled.prompt, /platform narration supplies the final audible speech/);
   assert.doesNotMatch(compiled.prompt, /provider must not generate or carry audible dialogue/);
+});
+
+test("the sub2api compiler suppresses captions once for native dialogue and no-dialogue prompts", () => {
+  const sources = [
+    `人物面对镜头说：“原始台词仍需完整保留。”`,
+    "产品在安静的桌面上被展示，画面保持稳定。",
+  ];
+  for (const sourcePrompt of sources) {
+    const compiled = compileVideoPrompt({ sourcePrompt, generationSettings: {}, profile });
+    assert.equal((compiled.prompt.match(new RegExp(captionSuppressionDirective, "gu")) ?? []).length, 1);
+    assert.ok(compiled.prompt.includes(sourcePrompt));
+  }
+  const dialogue = compileVideoPrompt({ sourcePrompt: sources[0]!, generationSettings: {}, profile });
+  assert.ok(dialogue.prompt.includes("原始台词仍需完整保留。"));
 });
 
 test("the native compiler keeps multiline source dialogue complete in its provider contract", () => {
@@ -119,10 +137,22 @@ test("the native compiler keeps multiline source dialogue complete in its provid
 });
 
 test("the native compiler does not duplicate an already compiled exact dialogue contract or filler quotes", () => {
-  const source = "AUDIO PRIORITY: spoken dialogue is mandatory. Character says: \"第一句。第二句。\". EXACT SPOKEN AUDIO SCRIPT: speak every character of the quoted script above exactly once. Do not insert filler words such as “嗯、啊”. SPOKEN CONTENT BOUNDARY: no extra words.";
+  const source = `${captionSuppressionDirective} AUDIO PRIORITY: spoken dialogue is mandatory. Character says: \"第一句。第二句。\". EXACT SPOKEN AUDIO SCRIPT: speak every character of the quoted script above exactly once. Do not insert filler words such as “嗯、啊”. SPOKEN CONTENT BOUNDARY: no extra words.`;
   const compiled = compileVideoPrompt({ sourcePrompt: source, generationSettings: {}, profile });
   assert.equal((compiled.prompt.match(/第一句。第二句。/gu) ?? []).length, 1);
   assert.equal((compiled.prompt.match(/Character says:/gu) ?? []).length, 1);
+  assert.equal((compiled.prompt.match(new RegExp(captionSuppressionDirective, "gu")) ?? []).length, 1);
+  assert.equal(compiled.generatedPromptParts.includes(captionSuppressionDirective), false);
+});
+
+test("the Mock compiler does not add the provider caption directive", () => {
+  const compiled = compileVideoPrompt({
+    sourcePrompt: "A product film with authored scene text.",
+    generationSettings: {},
+    profile: resolveVideoProviderRuntimeProfile("mock"),
+  });
+  assert.doesNotMatch(compiled.prompt, /no subtitles, no captions/u);
+  assert.doesNotMatch(compiled.prompt, /字幕只在后期统一添加/u);
 });
 
 test("the compiler rejects malformed saved settings and source text that cannot fit the provider ceiling", () => {
@@ -156,6 +186,16 @@ test("the compiler keeps the authored source and omits only generated directives
   assert.equal(compiled.prompt.startsWith(sourcePrompt), true);
   assert.ok(utf8ByteLength(compiled.prompt) <= 4_096);
   assert.ok(compiled.prompt.length >= sourcePrompt.length);
+  assert.equal(compiled.generatedPromptParts[0], captionSuppressionDirective);
+});
+
+test("the compiler fails closed when a near-ceiling source cannot retain caption suppression", () => {
+  const sourcePrompt = "x".repeat(4_040);
+  assert.equal(utf8ByteLength(sourcePrompt), 4_040);
+  assert.throws(
+    () => compileVideoPrompt({ sourcePrompt, generationSettings: {}, profile }),
+    (error) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET",
+  );
 });
 
 test("the compiler can use the bounded second source pass without generated directives", () => {
@@ -164,6 +204,7 @@ test("the compiler can use the bounded second source pass without generated dire
     "核心事实：人物在街道边与橘白猫互动，先停步、蹲下等待，小猫靠近后轻抚，最后起身离开。",
     "**声音：**玻璃门回弹声、脚步声和环境底噪。",
     "- 不添加手机提示音、背景音乐、字幕、品牌标识或平台水印。",
+    captionSuppressionDirective,
     "补充事实：" + "湿润街道与橘白猫保持可辨识关系。".repeat(80),
   ].join(" ");
   const compiled = compileVideoPrompt({
@@ -175,6 +216,7 @@ test("the compiler can use the bounded second source pass without generated dire
   assert.ok(utf8ByteLength(sourcePrompt) > 4_096);
   assert.ok(utf8ByteLength(compiled.prompt) <= 4_096);
   assert.match(compiled.prompt, /核心事实/);
+  assert.match(compiled.prompt, /no subtitles, no captions/u);
   assert.doesNotMatch(compiled.prompt, /\*\*声音：\*\*/u);
   assert.deepEqual(compiled.generatedPromptParts, []);
 });

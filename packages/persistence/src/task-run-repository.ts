@@ -131,7 +131,7 @@ export interface TaskRunStore extends OutboxRelayStore {
   recordProviderProcessing(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; now: Date }): Promise<ControlTaskRun | undefined>;
   beginDownload(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; now: Date }): Promise<ControlTaskRun | undefined>;
   recordDownloadRetryableFailure(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; code: string; now: Date }): Promise<void>;
-  ensureGeneratedAsset(input: { workspaceId: string; taskRunId: string; assetId: string; objectKey: string; now: Date }): Promise<GeneratedAssetDraft | undefined>;
+  ensureGeneratedAsset(input: { workspaceId: string; taskRunId: string; assetId: string; objectKey: string; provider: string; now: Date }): Promise<GeneratedAssetDraft | undefined>;
   completeGeneratedTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; assetId: string; sha256: string; byteSize: number; width: number; height: number; durationMs: number; now: Date }): Promise<ControlTaskRun | undefined>;
   markBillingSucceeded(input: { workspaceId: string; taskRunId: string; usageRecordId: string; now: Date }): Promise<void>;
   markBillingFailed(input: { workspaceId: string; taskRunId: string; code: string; safeMessage: string; now: Date }): Promise<void>;
@@ -701,7 +701,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
     });
   }
 
-  async ensureGeneratedAsset(input: { workspaceId: string; taskRunId: string; assetId: string; objectKey: string; now: Date }) {
+  async ensureGeneratedAsset(input: { workspaceId: string; taskRunId: string; assetId: string; objectKey: string; provider: string; now: Date }) {
     return this.db.transaction(async (transaction) => {
       await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
       const [taskRun] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
@@ -715,7 +715,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
         if (existing.kind !== "VIDEO" || existing.origin !== "GENERATED" || existing.metadata.task_run_id !== input.taskRunId) return undefined;
         return { id: existing.id, objectKey: existing.objectKey, taskRunId: input.taskRunId };
       }
-      const [created] = await transaction.insert(assets).values({ id: input.assetId, workspaceId: input.workspaceId, projectId: taskRun.projectId, kind: "VIDEO", origin: "GENERATED", status: "PENDING_UPLOAD", objectKey: input.objectKey, metadata: { task_run_id: input.taskRunId, generated_by: "mock" }, createdAt: input.now.toISOString(), updatedAt: input.now.toISOString() }).returning({ id: assets.id, objectKey: assets.objectKey });
+      const [created] = await transaction.insert(assets).values({ id: input.assetId, workspaceId: input.workspaceId, projectId: taskRun.projectId, kind: "VIDEO", origin: "GENERATED", status: "PENDING_UPLOAD", objectKey: input.objectKey, metadata: { task_run_id: input.taskRunId, generated_by: input.provider }, createdAt: input.now.toISOString(), updatedAt: input.now.toISOString() }).returning({ id: assets.id, objectKey: assets.objectKey });
       return created ? { id: created.id, objectKey: created.objectKey, taskRunId: input.taskRunId } : undefined;
     });
   }

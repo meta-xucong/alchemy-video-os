@@ -20,7 +20,7 @@ const post = (app: ReturnType<typeof createApp>, path: string, idempotencyKey: s
     body: JSON.stringify(body),
   });
 
-const createScenario = async (mode: "AUTO" | "MANUAL" | "OFF", input: { withPixabay: boolean; seedMusic: boolean }) => {
+const createScenario = async (mode: "AUTO" | "MANUAL" | "OFF", input: { withPixabay: boolean; seedMusic: boolean; seedMusicDurationSeconds?: number }) => {
   const store = createInMemoryControlPlaneStore();
   const assetStore = createInMemoryAssetWorkspaceStore(store);
   const taskStore = createInMemoryTaskRunStore(assetStore);
@@ -182,7 +182,7 @@ const createScenario = async (mode: "AUTO" | "MANUAL" | "OFF", input: { withPixa
         sha256: createHash("sha256").update(bytes).digest("hex"),
         mimeType: "audio/mpeg",
         byteSize: bytes.byteLength,
-        durationMs: 42_000,
+        durationMs: Math.round((input.seedMusicDurationSeconds ?? 42) * 1_000),
         verifyUpload: async () => true,
       });
     }
@@ -223,6 +223,15 @@ test("AUTO uses an existing usable MUSIC asset without invoking Pixabay", async 
   assert.equal(scenario.first.status, 202);
   assert.equal(scenario.calls, 0);
   assert.equal((await scenario.assetStore.listWorkspaceMusicAssets("ws_dev_default")).length, 1);
+});
+
+test("AUTO treats a short local MUSIC asset as unsuitable and fills from Pixabay", async () => {
+  const scenario = await createScenario("AUTO", { withPixabay: true, seedMusic: true, seedMusicDurationSeconds: 10 });
+  assert.equal(scenario.first.status, 202);
+  assert.equal(scenario.calls, 1);
+  const assets = await scenario.assetStore.listWorkspaceMusicAssets("ws_dev_default");
+  assert.equal(assets.length, 2);
+  assert.equal(assets.some((asset) => asset.metadata.audio_provider === "pixabay_music"), true);
 });
 
 test("MANUAL and OFF never invoke the automatic Pixabay fallback", async () => {

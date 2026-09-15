@@ -177,11 +177,19 @@ type ScopedAssetMetadata = {
   durationMs?: unknown;
 };
 
-const hasScopedAssetMetadata = (asset: ScopedAssetMetadata, input: { workspaceId: string; projectId: string; kind: "VIDEO" | "AUDIO"; requireDuration: boolean; expectedDurationMs?: number }) => {
+const hasScopedAssetMetadata = (asset: ScopedAssetMetadata, input: {
+  workspaceId: string;
+  projectId: string;
+  kind: "VIDEO" | "AUDIO";
+  requireDuration: boolean;
+  expectedDurationMs?: number;
+  minimumDurationMs?: number;
+}) => {
   if (typeof asset.id !== "string" || asset.id.length === 0) return false;
   const prefix = `${input.workspaceId}/${input.projectId}/${asset.id}/`;
-  const durationValid = input.requireDuration
+  const durationValid = input.requireDuration || input.minimumDurationMs !== undefined
     ? typeof asset.durationMs === "number" && Number.isInteger(asset.durationMs) && asset.durationMs > 0
+      && (input.minimumDurationMs === undefined || asset.durationMs >= input.minimumDurationMs)
     : asset.durationMs === null || asset.durationMs === undefined
       || (typeof asset.durationMs === "number" && Number.isInteger(asset.durationMs) && asset.durationMs > 0);
   return asset.workspaceId === input.workspaceId
@@ -222,7 +230,7 @@ export const isUsableMusicAsset = (asset: ScopedAssetMetadata & {
   kind?: unknown;
   status?: unknown;
   metadata?: Record<string, unknown> | null;
-}) => {
+}, input: { minimumDurationMs?: number } = {}) => {
   if (asset.kind !== "AUDIO" || asset.status !== "READY" || asset.metadata?.audio_role !== "MUSIC") return false;
   if (typeof asset.workspaceId !== "string" || typeof asset.projectId !== "string") return false;
   return hasScopedAssetMetadata(asset, {
@@ -230,6 +238,7 @@ export const isUsableMusicAsset = (asset: ScopedAssetMetadata & {
     projectId: asset.projectId,
     kind: "AUDIO",
     requireDuration: false,
+    ...input,
   }) && isLikelyMusicAsset(asset);
 };
 
@@ -2164,6 +2173,8 @@ export class DrizzleProductionRepository implements ProductionStore {
       bridgeDurations.push(repair.durationMs);
     }
     const musicPlan = MusicPlanSchema.parse((run.budgetGuard as Record<string, unknown> | undefined)?.music_plan ?? {});
+    const targetDurationMs = approvedNarration?.effectiveDurationMs
+      ?? assembled.reduce((total, segment) => total + segment.sourceAsset.durationMs, 0);
     const musicCandidates = musicPlan.mode === "OFF" ? [] : await this.db.select().from(assets).where(and(
       eq(assets.workspaceId, run.workspaceId),
       eq(assets.kind, "AUDIO"),
@@ -2174,7 +2185,7 @@ export class DrizzleProductionRepository implements ProductionStore {
     // candidate against its own server-owned key scope before selecting it.
     // A row that merely passed the workspace query must not be allowed to
     // direct Worker to another object's key or malformed audio bytes.
-    const filteredMusicCandidates = musicCandidates.filter(isUsableMusicAsset);
+    const filteredMusicCandidates = musicCandidates.filter((asset) => isUsableMusicAsset(asset));
     // Once an approved C12.7B snapshot exists, its canonical provider text is
     // authoritative; never reintroduce an older brief transcript into the
     // composition input or final-review comparison.
@@ -2252,8 +2263,6 @@ export class DrizzleProductionRepository implements ProductionStore {
         ].sort((left, right) => left.start_ms - right.start_ms || left.track_id.localeCompare(right.track_id)),
       }
       : undefined;
-    const targetDurationMs = approvedNarration?.effectiveDurationMs
-      ?? assembled.reduce((total, segment) => total + segment.sourceAsset.durationMs, 0);
     const briefText = `${brief?.sourceText ?? ""} ${brief?.stylePreferences ?? ""} ${musicPlan.style_hint}`.toLowerCase();
     const scoreMusic = (asset: typeof assets.$inferSelect) => {
       const metadata = asset.metadata ?? {};
@@ -2262,9 +2271,12 @@ export class DrizzleProductionRepository implements ProductionStore {
       const durationFit = asset.durationMs && asset.durationMs >= targetDurationMs ? 2 : 0;
       return tagMatches * 10 + durationFit;
     };
+    const autoMusicCandidates = musicPlan.mode === "AUTO"
+      ? filteredMusicCandidates.filter((asset) => isUsableMusicAsset(asset, { minimumDurationMs: targetDurationMs }))
+      : [];
     const [musicAsset] = musicPlan.mode === "MANUAL"
       ? filteredMusicCandidates.filter((asset) => asset.id === musicPlan.asset_id)
-      : filteredMusicCandidates.sort((left, right) => scoreMusic(right) - scoreMusic(left) || right.createdAt.localeCompare(left.createdAt)).slice(0, 1);
+      : autoMusicCandidates.sort((left, right) => scoreMusic(right) - scoreMusic(left) || right.createdAt.localeCompare(left.createdAt)).slice(0, 1);
     if (musicPlan.mode === "MANUAL" && !musicAsset) {
       unavailable("the explicitly selected music asset is not available or failed scope validation");
     }

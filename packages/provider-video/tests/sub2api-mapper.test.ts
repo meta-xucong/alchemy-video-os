@@ -19,6 +19,8 @@ const input = {
   visualInput: { mode: "TEXT" },
 } as const;
 
+const captionSuppressionDirective = "全程无字幕；no subtitles, no captions。字幕只在后期统一添加。";
+
 const fixtureRoot = new URL("../../../fixtures/providers/sub2api/grok-imagine-video-1.5/", import.meta.url);
 const readFixture = async (name: string) => JSON.parse(await readFile(new URL(name, fixtureRoot), "utf8"));
 
@@ -57,4 +59,24 @@ test("the mapper rejects empty, non-HTTPS, or oversized resolved reference input
     () => mapSub2ApiGenerationRequest({ ...input, visualInput: { mode: "REFERENCE_SET", urls: Array.from({ length: 8 }, () => "https://example.invalid/reference.png") } }),
     VideoProviderProtocolError,
   );
+});
+
+test("the mapper requires caption suppression when a real snapshot has an audio owner", () => {
+  const realInput = {
+    ...input,
+    inputSnapshot: { ...input.inputSnapshot, audio_owner: "NATIVE_PROVIDER" as const },
+  };
+  assert.throws(
+    () => mapSub2ApiGenerationRequest(realInput),
+    (error) => error instanceof VideoProviderProtocolError && /caption-suppression directive/u.test(error.message),
+  );
+
+  const request = mapSub2ApiGenerationRequest({
+    ...realInput,
+    inputSnapshot: {
+      ...realInput.inputSnapshot,
+      prompt: `${realInput.inputSnapshot.prompt} ${captionSuppressionDirective}`,
+    },
+  });
+  assert.match(request.prompt, /no subtitles, no captions/u);
 });

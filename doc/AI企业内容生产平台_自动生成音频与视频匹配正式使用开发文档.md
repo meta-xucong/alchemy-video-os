@@ -121,13 +121,19 @@ approved script + voice_performance/delivery_cues
 | R01.4 final QC | 现有 ffprobe/transcriber/subtitle/`_full_mix` | 产物事实、字幕事实、尾静音/短尾覆盖可复核；不宣称人工质量 |
 | R01.5 双版本真实对照 | 现有 Aiself Grok/Sub2API 与显式 Doubao route | 茅山项目同画面同文案 native/Doubao 两版均有审计产物；客观检查和人工听看分别记录；不改变默认 Mock |
 
-R01.2/R01.3 若发现公共命令或持久化字段不足，先在 `doc/AI企业内容生产平台_开发决策记录.md` 写 ADR，再改契约、schema、实现和测试。没有安全来源对应的完整 section windows、自动选最敏感 section、registry/rank、连续非 cut 转场、字幕人工事实或中文口音，保持 `DEFERRED/BLOCKED`，不以结构性绿测替代。
+R01.2/R01.3 若发现公共命令或持久化字段不足，先在 `doc/AI企业内容生产平台_开发决策记录.md` 写 ADR，再改契约、schema、实现和测试。没有安全来源对应的完整 section windows、自动选最敏感 section、连续非 cut 转场、字幕人工事实或中文口音，保持 `DEFERRED/BLOCKED`，不以结构性绿测替代。统一跨 Provider registry/rank 不属于当前要求；实际启用的 profile 逐个按来源核对，auto/unknown 继续 fail-closed。
 
 ## 6. 茅山温泉真实对照验收
 
 真实测试使用网页历史项目“茅山温泉・桃李春风 松弛的生活”的已保存脚本、镜头、参考资产和同一目标（30 秒、480p）。在本机实际使用模式中，以显式 `VIDEO_PROVIDER=sub2api` 生成并保存 native 版本；人工/客观检查需要替换时，再用同一画面/脚本显式选择 Doubao（`seed-tts-2.0`、`zh_female_meilinvyou_uranus_bigtts`）生成第二版。不得另造保险或无关文案作为对照；不把用户上传音频加入测试前置。
 
 每版至少记录：输出文件、分辨率、总时长、视频/音频 codec、音频 MIME、采样率/声道、SHA-256、音频实测时长、尾部静音检查、字幕/QC 结果、Provider request 是否只提交一次。人工验收单独记录：普通话口音、断句、语速、情绪、画面语义、是否出现与文案无关的画面或额外台词。技术检查通过不等于人工验收通过；任一硬门缺失，R01 只能 `IMPLEMENTED_PENDING_AUDIT`/`BLOCKED`。
+
+## 2026-09-15 当前用户范围覆盖（现行）
+
+人工口音、断句、停顿、语速、情绪、音画听感、样音人工审批和最终成片质量由用户明确移出本轮自动验收；单一 full-track 跨 section 偏移、non-cut 连续旁白、任意复杂 xfade、自动变速/补静音/重新切片及来源未定义的通用音频算法不实现，保持 `OUT_OF_SCOPE/DEFERRED` 与 fail-closed。
+
+本轮技术验收聚焦自动生成的正式 asset/version、独立 section 的绝对时间窗、既有 ALCHMED8 轨道字段和 CUT/BLEND/BRIDGE 窄语义。最新 persistence `88/88`、composition `14/14`、production-worker `72/72`、workflow-worker `38/38`、Media Runtime `147/147` 与 typecheck 证据支持该窄片提交独立 `READY_FOR_AUDIT`；不据此改变 E12/R01 或总体状态，也不把样音审批重新作为当前输入前提。
 
 ## 7. 规则复核清单（每一步必答）
 

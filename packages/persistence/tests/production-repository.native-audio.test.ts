@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { InternalEventEnvelopeSchema, type VideoAudioOwner } from "@alchemy-video/contracts";
 import type { PlatformDatabase } from "../src/db.js";
-import { DrizzleProductionRepository } from "../src/production-repository.js";
+import { DrizzleProductionRepository, isUsableMusicAsset } from "../src/production-repository.js";
 
 const drizzleName = Symbol.for("drizzle:Name");
 const timestamp = "2026-09-01T00:00:00.000Z";
@@ -282,6 +282,56 @@ test("accepted native-owner composition preserves the source audio boundary with
   // no TTS input can be assembled from this fixture.
 });
 
+test("AUTO composition consumes only a MUSIC asset whose measured duration covers the target", async () => {
+  const musicAsset = {
+    ...sourceAsset(),
+    id: "ast_native_music_fixture",
+    kind: "AUDIO" as const,
+    objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_music_fixture/music.mp3`,
+    mimeType: "audio/mpeg",
+    durationMs: 42_000,
+    metadata: { audio_role: "MUSIC", source_title: "Fixture background music" },
+  };
+  const repository = new DrizzleProductionRepository(fakeDatabase({
+    ...baseRows("NATIVE_PROVIDER", {
+      run: { budgetGuard: { music_plan: { mode: "AUTO" } } },
+      assets: [sourceAsset(), musicAsset],
+    }),
+  }, { assets: [[sourceAsset()], [musicAsset]] }));
+
+  const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
+
+  assert.ok(result);
+  assert.equal(result.musicAsset?.id, musicAsset.id);
+  assert.equal(result.compositionPlan?.music_mix.enabled, true);
+  assert.deepEqual(result.compositionPlan?.music_segments_ms, [{ start_ms: 0, end_ms: 1_000 }]);
+  assert.equal(isUsableMusicAsset({ ...musicAsset }, { minimumDurationMs: 1_000 }), true);
+  assert.equal(isUsableMusicAsset({ ...musicAsset, durationMs: 500 }, { minimumDurationMs: 1_000 }), false);
+});
+
+test("AUTO composition fails closed instead of padding a short MUSIC asset with silence", async () => {
+  const shortMusicAsset = {
+    ...sourceAsset(),
+    id: "ast_native_short_music_fixture",
+    kind: "AUDIO" as const,
+    objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_short_music_fixture/music.mp3`,
+    mimeType: "audio/mpeg",
+    durationMs: 500,
+    metadata: { audio_role: "MUSIC", source_title: "Fixture short background music" },
+  };
+  const repository = new DrizzleProductionRepository(fakeDatabase({
+    ...baseRows("NATIVE_PROVIDER", {
+      run: { budgetGuard: { music_plan: { mode: "AUTO" } } },
+      assets: [sourceAsset(), shortMusicAsset],
+    }),
+  }, { assets: [[sourceAsset()], [shortMusicAsset]] }));
+
+  await assert.rejects(
+    repository.findProductionCompositionInput({ event: compositionEvent() }),
+    /AUTO music selection requires a READY AUDIO asset with audio_role=MUSIC/,
+  );
+});
+
 test("native-owner composition rejects an approved platform narration timeline before assembly", async () => {
   const approved = approvedNarrationRows();
   const repository = new DrizzleProductionRepository(fakeDatabase({
@@ -344,6 +394,66 @@ test("TTS-owner composition emits a platform narration cue and keeps provider di
   assert.equal(providerDialogueTrack?.asset_id, ids.sourceAssetId);
   assert.equal(providerDialogueTrack?.duck_under_narration, true);
   assert.equal(result.narrationAsset, undefined);
+});
+
+test("TTS-owner composition consumes an approved independent section asset at its TimelinePlan window", async () => {
+  const approved = approvedNarrationRows();
+  const timeline = approved.timeline_plans[0] as Record<string, unknown>;
+  timeline.narrationAssetVersionId = null;
+  timeline.narrationSections = [{
+    section_id: "sec_1",
+    start_ms: 0,
+    end_ms: 1_000,
+    visual_role: "PRIMARY",
+    narration_asset_version_id: ids.narrationAssetVersionId,
+  }];
+  const formalAsset = {
+    id: ids.narrationAssetId,
+    workspaceId: ids.workspaceId,
+    projectId: ids.projectId,
+    status: "READY",
+    kind: "AUDIO",
+    objectKey: narrationObjectKey,
+    sha256,
+    byteSize: 512,
+    mimeType: "audio/wav",
+    durationMs: 1_000,
+    metadata: { audio_gain_db: "-1.5", audio_fade_in_ms: 20, audio_fade_out_ms: 30 },
+  };
+  const repository = new DrizzleProductionRepository(fakeDatabase({
+    ...baseRows("TTS", {
+      run: { deliveryPlanRevisionId: ids.deliveryPlanRevisionId },
+      assets: [sourceAsset(), formalAsset],
+    }),
+    ...approved,
+  }, {
+    assets: [[formalAsset], [sourceAsset()], [formalAsset, sourceAsset()]],
+  }));
+
+  const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
+
+  assert.ok(result);
+  assert.equal(result.narrationAsset, undefined);
+  assert.equal(result.narrationAssets?.length, 1);
+  assert.equal(result.narrationAssets?.[0]?.assetVersionId, ids.narrationAssetVersionId);
+  assert.equal(result.narrationAssets?.[0]?.id, ids.narrationAssetId);
+  const narrationTrack = (result.compositionPlan?.audio_plan?.tracks ?? [])
+    .find((track) => track.ownership === "PLATFORM_NARRATION");
+  assert.equal(narrationTrack?.asset_id, ids.narrationAssetId);
+  assert.equal(narrationTrack?.start_ms, 0);
+  assert.equal(narrationTrack?.end_ms, 1_000);
+  assert.equal(narrationTrack?.gain_db, "-1.5");
+  assert.equal(narrationTrack?.fade_in_ms, 20);
+  assert.equal(narrationTrack?.fade_out_ms, 30);
+  assert.deepEqual(result.narrationSegments, [{
+    text: "批准旁白",
+    startMs: 0,
+    pronunciationGuides: [],
+    pauseBeforeMs: 0,
+    pauseAfterMs: 0,
+    pace: "NATURAL",
+    energy: "NEUTRAL",
+  }]);
 });
 
 test("reference audio and narration samples are not promoted to a final TTS output", async () => {

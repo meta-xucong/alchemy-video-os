@@ -235,7 +235,7 @@ class InMemoryBillingAttemptStore implements BillingAttemptStore {
   }
 }
 
-const prepareTask = async (withBilling = false) => {
+const prepareTask = async (withBilling = false, model = "mock-video-v1") => {
   const control = new InMemoryControlPlaneStore();
   const workspaceId = createPrefixedId("ws");
   const userId = createPrefixedId("usr");
@@ -244,7 +244,7 @@ const prepareTask = async (withBilling = false) => {
   await control.ensureDevIdentity({ user: { id: userId, displayName: "C06 Worker" }, workspace: { id: workspaceId, name: "C06 Worker" } });
   await control.createProject({ scope: "c06:project", idempotencyKey: "project", requestHash: "a".repeat(64), workspaceId, projectId, name: "C06 project" });
   const assets = new InMemoryAssetWorkspaceStore(control);
-  await assets.createShot({ scope: "c06:shot", idempotencyKey: "shot", requestHash: "b".repeat(64), workspaceId, projectId, shotId, position: 0, prompt: "Generate an offline mock video.", model: "mock-video-v1", generationSettings: {}, referenceBindings: [] });
+  await assets.createShot({ scope: "c06:shot", idempotencyKey: "shot", requestHash: "b".repeat(64), workspaceId, projectId, shotId, position: 0, prompt: "Generate an offline mock video.", model, generationSettings: {}, referenceBindings: [] });
   await assets.setShotGenerationState({ workspaceId, shotId, status: "READY" });
   const store = new InMemoryTaskRunStore(assets);
   const taskRunId = createPrefixedId("tsk");
@@ -257,7 +257,7 @@ const prepareTask = async (withBilling = false) => {
     shotId,
     kind: "VIDEO_GENERATION",
     inputSnapshot: {
-      model: "mock-video-v1",
+      model,
       prompt: "Generate an offline mock video.",
       duration: 1,
       resolution: "160x90",
@@ -269,8 +269,8 @@ const prepareTask = async (withBilling = false) => {
               external_user_id: 20260909,
               billing_rule: {
                 creditProvider: "veyra_sub2api" as const,
-                billingRuleKey: "media:usage-surcharge-v1:mock-video-v1",
-                usagePricing: { model: "mock-video-v1", multiplier: "0.20", fixedFee: "1" },
+                billingRuleKey: `media:usage-surcharge-v1:${model}`,
+                usagePricing: { model, multiplier: "0.20", fixedFee: "1" },
                 source: "media:aiself-actual-cost-plus-service-fee",
               },
             },
@@ -406,6 +406,17 @@ test("C06 executor produces one immutable playable video asset and does not resu
   assert.equal(provider.submitCount, 1);
 });
 
+test("C06 generated asset provenance follows the persisted provider attempt", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask();
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const result = await new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), { providerName: "sub2api" })
+    .execute({ workspaceId, taskRunId });
+  assert.equal(result?.status, "SUCCEEDED");
+  assert.ok(result?.resultAssetId);
+  const asset = await store.findTaskRunResultAsset(workspaceId, result!.resultAssetId!);
+  assert.equal(asset?.metadata.generated_by, "sub2api");
+});
+
 test("C06 executor persists the configured Mock provider failure without an asset", async () => {
   const { store, workspaceId, taskRunId } = await prepareTask();
   const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture(), outcome: "failed" });
@@ -441,6 +452,48 @@ test("invalid video output never enters billing even when a service-fee rule is 
     new NoopBillingAttemptStore(),
   );
   const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), { billingExecutor });
+
+  const result = await executor.execute({ workspaceId, taskRunId });
+
+  assert.equal(result?.status, "FAILED");
+  assert.equal(result?.error?.code, "DOWNLOAD_INVALID");
+  assert.equal(result?.resultAssetId, null);
+});
+
+test("the documented KIE preview usage model alias completes billing without rewriting the usage fact", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask(true, "grok-imagine-video-1.5");
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const credit = new SuccessfulCreditPort();
+  const billingExecutor = new VideoBillingExecutor(credit, new InMemoryBillingAttemptStore(store), {
+    createUsageRecordId: () => createPrefixedId("use"),
+  });
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    billingExecutor,
+    videoUsage: {
+      async getUsage(input) {
+        return { providerRequestId: input.providerRequestId, model: "grok-imagine-video-1-5-preview", actualCost: "0.12" };
+      },
+    },
+  });
+
+  const result = await executor.execute({ workspaceId, taskRunId });
+
+  assert.equal(result?.status, "SUCCEEDED");
+  assert.equal(credit.debitCalls, 1);
+});
+
+test("an undocumented provider usage model alias remains a fail-closed download failure", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask(true, "grok-imagine-video-1.5");
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const billingExecutor = new VideoBillingExecutor(new MustNotDebitCreditPort(), new NoopBillingAttemptStore());
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    billingExecutor,
+    videoUsage: {
+      async getUsage(input) {
+        return { providerRequestId: input.providerRequestId, model: "grok-imagine-video-1-5-preview-other", actualCost: "0.12" };
+      },
+    },
+  });
 
   const result = await executor.execute({ workspaceId, taskRunId });
 
@@ -596,7 +649,7 @@ test("C06 executor resumes an uploaded draft without a second submission or repl
   await provider.getStatus({ providerRequestId: submission.providerRequestId });
   await store.beginDownload({ workspaceId, taskRunId, providerAttemptId: attempt!.id, now: new Date() });
   const assetId = createPrefixedId("ast");
-  const draft = await store.ensureGeneratedAsset({ workspaceId, taskRunId, assetId, objectKey: `${workspaceId}/resume/${assetId}/generated.mp4`, now: new Date() });
+  const draft = await store.ensureGeneratedAsset({ workspaceId, taskRunId, assetId, objectKey: `${workspaceId}/resume/${assetId}/generated.mp4`, provider: "mock", now: new Date() });
   assert.ok(draft);
   await storage.putObject({ objectKey: draft!.objectKey, mimeType: "video/mp4", bytes: fixture, ifNoneMatch: "*" });
 

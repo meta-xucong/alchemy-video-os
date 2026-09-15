@@ -25,6 +25,7 @@ const requestHash = (value: string) => value.padEnd(64, "0").slice(0, 64);
 const createStore = (eventSink?: (event: InternalEventEnvelope) => void) => {
   let sampleCanonicalScriptHash: string | undefined;
   let sampleReady = true;
+  let persistedAssetDurationMs = 2_000;
   const deliveryStore = {
     async findDeliveryPlanRevision(scopeWorkspaceId: string, id: string) {
       return scopeWorkspaceId === workspaceId && id === deliveryPlanRevisionId
@@ -40,7 +41,7 @@ const createStore = (eventSink?: (event: InternalEventEnvelope) => void) => {
         kind: "AUDIO",
         status: sampleReady ? "READY" : "PENDING_UPLOAD",
         origin: "GENERATED",
-        durationMs: 2_000,
+        durationMs: persistedAssetDurationMs,
         metadata: {
           narration_generation: {
             generation_kind: "SAMPLE",
@@ -57,12 +58,13 @@ const createStore = (eventSink?: (event: InternalEventEnvelope) => void) => {
     store,
     setSampleCanonicalScriptHash: (value: string) => { sampleCanonicalScriptHash = value; },
     setSampleReady: (value: boolean) => { sampleReady = value; },
+    setAssetDuration: (value: number) => { persistedAssetDurationMs = value; },
   };
 };
 
 test("C12.7B persists canonical transcript quality as unavailable or checked private facts", async () => {
   const sinkEvents: InternalEventEnvelope[] = [];
-  const { store, setSampleCanonicalScriptHash } = createStore((event) => sinkEvents.push(event));
+  const { store, setSampleCanonicalScriptHash, setAssetDuration } = createStore((event) => sinkEvents.push(event));
   const created = await store.createNarrationScriptRevision({
     scope: "test:create",
     idempotencyKey: "create",
@@ -163,7 +165,23 @@ test("C12.7B persists canonical transcript quality as unavailable or checked pri
     event: event("timeline-sample-reused"),
   });
   assert.deepEqual(reusedSample, { kind: "INVALID_TIMELINE" });
-  storedAssets.set(formalVersion.id, { ...formalVersion, asset_id: formalAssetId });
+  storedAssets.set(formalVersion.id, { ...formalVersion, asset_id: formalAssetId, duration_ms: 2_200 });
+  const tooLongSection = await store.createTimelinePlan({
+    scope: "test:timeline-section-overflow",
+    idempotencyKey: "timeline-section-overflow",
+    requestHash: requestHash("timeline-section-overflow"),
+    workspaceId,
+    narrationScriptRevisionId: created.value.id,
+    command: {
+      section_durations_ms: [{ section_id: "intro", duration_ms: 2_000, narration_asset_version_id: formalAssetVersionId }],
+      target_duration_ms: 30_000,
+      flexible_percent: 20,
+      max_provider_duration_seconds: 15,
+    },
+    event: event("timeline-section-overflow"),
+  });
+  assert.deepEqual(tooLongSection, { kind: "INVALID_TIMELINE" });
+  storedAssets.set(formalVersion.id, { ...formalVersion, asset_id: formalAssetId, duration_ms: 2_000 });
   const timeline = await store.createTimelinePlan({
     scope: "test:timeline-formal",
     idempotencyKey: "timeline-formal",
@@ -181,6 +199,32 @@ test("C12.7B persists canonical transcript quality as unavailable or checked pri
   });
   assert.equal(timeline.kind, "NEW");
   assert.equal(await store.hasReadyTimelinePlan(workspaceId, projectId, deliveryPlanRevisionId), true);
+  const storedTimelines = (store as unknown as { timelines: Map<string, {
+    id: string;
+    narration_asset_version_id: string | null;
+    narration_sections: Array<{
+      section_id: string;
+      start_ms: number;
+      end_ms: number;
+      visual_role: string;
+      narration_asset_version_id?: string;
+    }>;
+  }> }).timelines;
+  const storedTimeline = storedTimelines.values().next().value;
+  assert.ok(storedTimeline);
+  storedTimelines.set(storedTimeline.id, {
+    ...storedTimeline,
+    narration_asset_version_id: null,
+    narration_sections: storedTimeline.narration_sections.map((section) => section.visual_role === "PRIMARY"
+      ? { ...section, narration_asset_version_id: formalAssetVersionId }
+      : section),
+  });
+  assert.equal(await store.hasReadyTimelinePlan(workspaceId, projectId, deliveryPlanRevisionId), true);
+  setAssetDuration(2_200);
+  assert.equal(await store.hasReadyTimelinePlan(workspaceId, projectId, deliveryPlanRevisionId), false);
+  setAssetDuration(2_000);
+  storedAssets.set(formalVersion.id, { ...formalVersion, asset_id: formalAssetId, duration_ms: 2_200 });
+  assert.equal(await store.hasReadyTimelinePlan(workspaceId, projectId, deliveryPlanRevisionId), false);
   assert.deepEqual(store.listEvents(workspaceId).map((value) => value.event_type).sort(), [
     "narration_script.approved",
     "narration_script.normalized",

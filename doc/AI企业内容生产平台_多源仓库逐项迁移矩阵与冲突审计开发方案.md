@@ -26,7 +26,7 @@
 
 S01-S09 编号继续保留，改为实施和验收批次。参考仓库能力的唯一事实表是本文规定的“多源迁移矩阵”；正式章节状态仍以《AI企业内容生产平台_正式开发总控文档.md》为准。
 
-本文不得覆盖 `AGENTS.md`、领域/API 契约、本地 MVP 范围或用户最新明确要求。当前 C12.4/C12.5 仍为 `IMPLEMENTED_PENDING_AUDIT`，S01/E02、E03/HB-STORYBOARD-TIMING 8–15 秒、E04/Piper pace、E05/OpenMontage `_full_mix` + ALCHMED8、E06 approved full narration 窗口/cue-only、E07 transition/xfade 有效时长、E08 segmented/HyperFrames timed-audio、E09 转写/字幕/FFmpeg fallback、E10 approval/formal asset/TimelinePlan 和 E11/S08 measured-duration feedback 的来源可表达窄切片已为 `ACCEPTED`；E12/R01 当前为 `BLOCKED`，已有 native/Doubao source route/Runtime smoke 仅是用户授权的产物/连通性证据且不构成当前验收，完整中文口音/native owner/registry/rank 仍 `BLOCKED`；E07 混合 transition、continuous narration 非 cut 及其它未表达形态仍 `BLOCKED/DEFERRED`；S04 的历史 `IN_PROGRESS/verifying` 记录已移出活动态；付费 Kling/本地 Wav2Lip 口型同步按用户决定 `DEFERRED`，不作为当前范围阻断；本文本身不升级总体状态。
+本文不得覆盖 `AGENTS.md`、领域/API 契约、本地 MVP 范围或用户最新明确要求。当前 C12.4/C12.5 仍为 `IMPLEMENTED_PENDING_AUDIT`，S01/E02、E03/HB-STORYBOARD-TIMING 8–15 秒、E04/Piper pace、E05/OpenMontage `_full_mix` + ALCHMED8、E06 approved full narration 窗口/cue-only、E07 transition/xfade 有效时长、E08 segmented/HyperFrames timed-audio、E09 转写/字幕/FFmpeg fallback、E10 approval/formal asset/TimelinePlan 和 E11/S08 measured-duration feedback 的来源可表达窄切片已为 `ACCEPTED`；E12/R01 当前为 `BLOCKED`，已有 native/Doubao source route/Runtime smoke 仅是用户授权的产物/连通性证据且不构成当前验收，已选 profile 的能力事实仍按各自来源核对；统一 registry/rank 已按 2026-09-15 范围决策标为 `DEFERRED`；E07 混合 transition、continuous narration 非 cut 及其它未表达形态仍 `BLOCKED/DEFERRED`；S04 的历史 `IN_PROGRESS/verifying` 记录已移出活动态；付费 Kling/本地 Wav2Lip 口型同步按用户决定 `DEFERRED`，不作为当前范围阻断；本文本身不升级总体状态。
 
 语音专项覆盖规则（2026-09-01）：矩阵中旧的“Piper/`PLATFORM_NARRATION` 默认 owner”描述只作为历史快照；当前冲突裁定见《AI企业内容生产平台_原仓库语音路线与旁白质量迁移修复开发文档.md》。矩阵单行状态仍按本文与正式总控记录，不能因专项文档而提前 `READY_FOR_AUDIT` 或 `ACCEPTED`。
 
@@ -168,7 +168,7 @@ NOT_STARTED -> IMPLEMENTED -> READY_FOR_AUDIT -> ACCEPTED
 | `OM-NATIVE-AUDIO` | `upstream/openmontage/tools/video/grok_video.py::GrokVideo` | provider-specific video adapter / Worker audio preservation | `PARTIAL/NOT_MAPPED`；native 音频保留已作为现有 owner 边界适配，来源 profile/capability 完整认证仍缺；其中 `lip_sync` 按用户决定 `DEFERRED`，不得追加 Piper 替换 |
 | `HB-NATIVE-AUDIO` | `upstream/huobao-drama/backend/src/services/adapters/volcengine-video.ts`、`services/generation.ts` | 对应 provider-specific adapter（仅在 profile 固定后） | `PARTIAL/PROFILE_REQUIRED`；`generate_audio` 与 `reference_audio` 的来源差异已登记，不能扩散到通用 Sub2API DTO |
 | `OM-TTS-SELECTOR` | `upstream/openmontage/tools/audio/tts_selector.py::TTSSelector` | `services/media-runtime/adapters/openmontage_audio/selector.py` | `PARTIAL`；auto/unknown 无 registry fail-closed，显式 provider 走 availability gate；完整 registry discovery/rank 仍未迁移 |
-| `OM-TTS-PROFILES` | `upstream/openmontage/tools/audio/piper_tts.py`、`doubao_tts.py` 及其他 TTS adapters | S02/S09 Runtime profile | E04/S02=`ACCEPTED`（Piper 窄切片）；E12/R01 Doubao 显式 route=`VERIFYING`（历史，已回收为 `BLOCKED`），profile smoke 已完成且仅为历史证据；中文口音/完整 owner/registry 仍 `BLOCKED` |
+| `OM-TTS-PROFILES` | `upstream/openmontage/tools/audio/piper_tts.py`、`doubao_tts.py` 及其他 TTS adapters | S02/S09 Runtime profile | E04/S02=`ACCEPTED`（Piper 窄切片）；E12/R01 Doubao 显式 route=`VERIFYING`（历史，已回收为 `BLOCKED`），profile smoke 已完成且仅为历史证据；中文口音/已选 profile 的完整 owner 仍 `BLOCKED`，统一 registry/rank `DEFERRED` |
 | `OM-PIXABAY` | `upstream/openmontage/tools/audio/pixabay_music.py`、音乐选择流程 | S01 音乐源 adapter | `ACCEPTED`（仅 S01 切片） |
 
 矩阵补全时必须继续增加“明确排除”行，而不是只增加已实现行。
@@ -418,5 +418,18 @@ E01 裁定（历史状态对账）：总体 C12.4/C12.5 仍 `IMPLEMENTED_PENDING
 
 ### 当前状态回收（2026-09-01；现行口径）
 
-- E12/R01=`BLOCKED`；完整 owner、source registry/rank、正式 narration asset/TimelinePlan、approved section windows 和人工中文口音硬门未闭合。Doubao adapter 仍隔离保留且默认不启用。
+- E12/R01=`BLOCKED`；已选 profile 的 owner/能力事实、正式 narration asset/TimelinePlan、approved section windows 和人工中文口音硬门未闭合。统一 source registry/rank 按范围决策为 `DEFERRED`，不作为继续条件。Doubao adapter 仍隔离保留且默认不启用。
 - `apps/production-worker/src/index.ts` 已移除 `MEDIA_RUNTIME_NARRATION_PROVIDER` 全局启动注入；C12.4/C12.5 维持 `IMPLEMENTED_PENDING_AUDIT`。
+
+### 2026-09-15 统一 source registry/profile 范围决策
+
+- 不建立跨 Provider 的统一 source registry、排序表或通用 profile certification。固定来源没有对应的统一实现，新增该层会违反“原仓库优先、薄壳适配”规则，因此矩阵将该项标记为 `DEFERRED`，不再作为 E12/R01 的活动硬门。
+- 实际启用的 Provider/profile 仍按各自固定来源、adapter 和能力快照逐个映射；明确选择且来源语义可证明时才开放。`auto`、空值和 unknown 继续 `UNAVAILABLE/BLOCKED`，不添加隐式排序或 fallback。
+- 本节只更新矩阵范围和审计口径，不修改代码、契约、状态机、Provider 协议或总体状态。历史行中的 registry/rank `BLOCKED` 描述保留为历史证据，现行状态以本节、正式总控和 `.codex-longrun/state.json` 为准。
+
+### 2026-09-15 用户验收范围与独立 section 技术矩阵对账
+
+- `NarrationAssetVersion`、独立 `PRIMARY` section window、AUDIO identity、OpenMontage/ALCHMED8 `AudioPlan` 轨道字段与 CUT/BLEND/BRIDGE 维持 `MAPPED/IMPLEMENTED` 的窄适配候选；InMemory/Drizzle、scheduler→factory→Runtime→Compose 的不丢失及负向边界已有行为证据。
+- full-track 跨多个 section 自动偏移、non-cut 连续旁白、任意复杂 xfade、自动变速/补静音/重新切片和来源没有定义的通用音频算法登记为 `OUT_OF_SCOPE/DEFERRED`，不创建新的矩阵能力族或协议。
+- 最新证据：persistence 隔离 DB `88/88`、独立 composition `14/14`、production-worker `72/72`、workflow-worker `38/38`、Media Runtime `147/147`、workspace typecheck；该窄片可提交 `READY_FOR_AUDIT`，总体 E12/R01 与 C12.4/C12.5 状态不自动升级。
+- 证据边界：这些是各层局部行为组合，尚无单条真实正式 asset/version 从 PostgreSQL 经 scheduler、factory、Runtime 跑到实际 Compose 的端到端测试；版本 ID 只在 Runtime 前校验，不能宣称进入 ALCHMED8 wire。

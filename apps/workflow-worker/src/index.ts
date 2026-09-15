@@ -1,4 +1,4 @@
-import { DeterministicPlanningModel, DeterministicStoryboardCompiler } from "@alchemy-video/creative-planning";
+import { DeterministicStoryboardCompiler } from "@alchemy-video/creative-planning";
 import { resolveEffectiveVideoPromptMaxUtf8Bytes, resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import { DrizzleCreativePlanningRepository, createDatabase } from "@alchemy-video/persistence";
 import { BullMqCreativePlanningQueue, createBullMqCreativePlanningWorker } from "@alchemy-video/task-queue";
@@ -7,6 +7,7 @@ import { createS3StoragePort } from "@alchemy-video/storage-client";
 import { BoundedDocumentContextReader } from "./document-context-reader.js";
 import { CreativePlanningExecutor, resolvePlanningDurationPolicy } from "./execution-service.js";
 import { CreativePlanningEventConsumer, CreativePlanningOutboxRelay } from "./service.js";
+import { createPlanningModelFromEnv } from "./semantic-planning-client.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const redisUrl = process.env.REDIS_URL;
@@ -34,7 +35,7 @@ const durationPolicy = resolvePlanningDurationPolicy(runtimeProfile);
 const providerPromptMaxUtf8Bytes = resolveEffectiveVideoPromptMaxUtf8Bytes(runtimeProfile, process.env.VIDEO_PROMPT_MAX_UTF8_BYTES);
 const executor = new CreativePlanningExecutor(
   planningStore,
-  new DeterministicPlanningModel(),
+  createPlanningModelFromEnv({ runtimeProfile, maxPromptUtf8Bytes: providerPromptMaxUtf8Bytes }),
   new DeterministicStoryboardCompiler(),
   new BoundedDocumentContextReader(storage),
   undefined,

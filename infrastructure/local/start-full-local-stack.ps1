@@ -190,9 +190,12 @@ function Start-CloudflareTunnel([string] $TargetUrl) {
   $stderr = Join-Path $LogRoot "$safeName.err.log"
   $log = Join-Path $LogRoot "$safeName.cloudflared.log"
   Remove-Item -LiteralPath $stdout, $stderr, $log -Force -ErrorAction SilentlyContinue
+  # The local machine can lose UDP reachability while a Provider is pulling
+  # several reference images. Use the cloudflared HTTP/2 transport so the
+  # relay does not depend on QUIC surviving that network transition.
   $process = Start-Process `
     -FilePath $binary `
-    -ArgumentList @("tunnel", "--no-autoupdate", "--loglevel", "info", "--logfile", $log, "--url", $TargetUrl) `
+    -ArgumentList @("tunnel", "--no-autoupdate", "--protocol", "http2", "--loglevel", "info", "--logfile", $log, "--url", $TargetUrl) `
     -WorkingDirectory $RuntimeRoot `
     -WindowStyle Hidden `
     -RedirectStandardOutput $stdout `
@@ -284,9 +287,23 @@ $previousSub2ApiVideoApiKey = [Environment]::GetEnvironmentVariable("SUB2API_VID
 $referenceVisionBaseUrl = Get-SecretConfigValue -DotEnv $dotenv -Name "REFERENCE_VISION_BASE_URL"
 $referenceVisionApiKey = Get-SecretConfigValue -DotEnv $dotenv -Name "REFERENCE_VISION_API_KEY"
 $referenceVisionModel = Get-SecretConfigValue -DotEnv $dotenv -Name "REFERENCE_VISION_MODEL"
+$semanticPlannerEnabled = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_PLANNER_ENABLED"
+$semanticPlannerBaseUrl = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_PLANNER_BASE_URL"
+$semanticPlannerApiKey = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_PLANNER_API_KEY"
+$semanticPlannerModel = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_PLANNER_MODEL"
+$semanticPlannerTimeoutMs = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_PLANNER_TIMEOUT_MS"
+$semanticPlannerMaxTokens = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_PLANNER_MAX_TOKENS"
 $configuredReferenceDeliveryOrigin = Get-SecretConfigValue -DotEnv $dotenv -Name "REFERENCE_DELIVERY_ORIGIN"
 if (($referenceVisionBaseUrl -or $referenceVisionApiKey -or $referenceVisionModel) -and (-not $referenceVisionBaseUrl -or -not $referenceVisionApiKey -or -not $referenceVisionModel)) {
   throw "Reference vision analysis requires REFERENCE_VISION_BASE_URL, REFERENCE_VISION_API_KEY, and REFERENCE_VISION_MODEL together."
+}
+if ($semanticPlannerEnabled.Trim().ToLowerInvariant() -eq "true") {
+  if (-not $semanticPlannerBaseUrl) { $semanticPlannerBaseUrl = $referenceVisionBaseUrl }
+  if (-not $semanticPlannerApiKey) { $semanticPlannerApiKey = $referenceVisionApiKey }
+  if (-not $semanticPlannerModel) { $semanticPlannerModel = $referenceVisionModel }
+  if (-not $semanticPlannerBaseUrl -or -not $semanticPlannerApiKey -or -not $semanticPlannerModel) {
+    throw "SEMANTIC_PLANNER_ENABLED=true requires SEMANTIC_PLANNER_BASE_URL, SEMANTIC_PLANNER_API_KEY, and SEMANTIC_PLANNER_MODEL, or a complete REFERENCE_VISION_* set."
+  }
 }
 if ($VideoProvider -eq "sub2api") {
   $sub2ApiVideoBaseUrl = Get-SecretConfigValue -DotEnv $dotenv -Name "SUB2API_VIDEO_BASE_URL"
@@ -471,7 +488,35 @@ try {
 }
 
 $services += Start-LocalService -Name "Document Worker" -FilePath $NodeExe -Arguments @("--import", "tsx", "src/index.ts") -WorkingDirectory (Join-Path $WorkspaceRoot "apps\document-worker")
-$services += Start-LocalService -Name "Workflow Worker" -FilePath $NodeExe -Arguments @("--import", "tsx", "src/index.ts") -WorkingDirectory (Join-Path $WorkspaceRoot "apps\workflow-worker")
+$previousSemanticPlannerValues = [ordered]@{
+  SEMANTIC_PLANNER_ENABLED = [Environment]::GetEnvironmentVariable("SEMANTIC_PLANNER_ENABLED", "Process")
+  SEMANTIC_PLANNER_BASE_URL = [Environment]::GetEnvironmentVariable("SEMANTIC_PLANNER_BASE_URL", "Process")
+  SEMANTIC_PLANNER_API_KEY = [Environment]::GetEnvironmentVariable("SEMANTIC_PLANNER_API_KEY", "Process")
+  SEMANTIC_PLANNER_MODEL = [Environment]::GetEnvironmentVariable("SEMANTIC_PLANNER_MODEL", "Process")
+  SEMANTIC_PLANNER_TIMEOUT_MS = [Environment]::GetEnvironmentVariable("SEMANTIC_PLANNER_TIMEOUT_MS", "Process")
+  SEMANTIC_PLANNER_MAX_TOKENS = [Environment]::GetEnvironmentVariable("SEMANTIC_PLANNER_MAX_TOKENS", "Process")
+}
+try {
+  if ($semanticPlannerEnabled.Trim().ToLowerInvariant() -eq "true") {
+    [Environment]::SetEnvironmentVariable("SEMANTIC_PLANNER_ENABLED", "true", "Process")
+    [Environment]::SetEnvironmentVariable("SEMANTIC_PLANNER_BASE_URL", $semanticPlannerBaseUrl, "Process")
+    [Environment]::SetEnvironmentVariable("SEMANTIC_PLANNER_API_KEY", $semanticPlannerApiKey, "Process")
+    [Environment]::SetEnvironmentVariable("SEMANTIC_PLANNER_MODEL", $semanticPlannerModel, "Process")
+    if ($semanticPlannerTimeoutMs) { [Environment]::SetEnvironmentVariable("SEMANTIC_PLANNER_TIMEOUT_MS", $semanticPlannerTimeoutMs, "Process") }
+    if ($semanticPlannerMaxTokens) { [Environment]::SetEnvironmentVariable("SEMANTIC_PLANNER_MAX_TOKENS", $semanticPlannerMaxTokens, "Process") }
+  } else {
+    [Environment]::SetEnvironmentVariable("SEMANTIC_PLANNER_ENABLED", "false", "Process")
+  }
+  $services += Start-LocalService -Name "Workflow Worker" -FilePath $NodeExe -Arguments @("--import", "tsx", "src/index.ts") -WorkingDirectory (Join-Path $WorkspaceRoot "apps\workflow-worker")
+} finally {
+  foreach ($entry in $previousSemanticPlannerValues.GetEnumerator()) {
+    if ($null -eq $entry.Value) {
+      [Environment]::SetEnvironmentVariable($entry.Key, $null, "Process")
+    } else {
+      [Environment]::SetEnvironmentVariable($entry.Key, [string] $entry.Value, "Process")
+    }
+  }
+}
 try {
   if ($VideoProvider -eq "sub2api") {
     [Environment]::SetEnvironmentVariable("REFERENCE_DELIVERY_SIGNING_KEY", $referenceDeliverySigningKey, "Process")

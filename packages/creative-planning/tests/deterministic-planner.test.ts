@@ -10,6 +10,8 @@ import {
 import { checkOpenMontageSceneVariation, scoreOpenMontageSlideshowRisk } from "../src/openmontage-variation-audit.js";
 import { GenerationSegmentMotionPlanSchema } from "@alchemy-video/contracts";
 
+const captionSuppressionDirective = "全程无字幕；no subtitles, no captions。字幕只在后期统一添加。";
+
 test("C11 deterministic planning groups narrative events into an ordered, capability-valid plan", async () => {
   const planner = new DeterministicPlanningModel();
   const plan = await planner.plan({
@@ -62,6 +64,8 @@ test("30-second planning follows upstream 8-15s storyboard paragraphs and preser
     stylePreferences: "商业宣传片",
   })));
   for (const [index, compiledPrompt] of compiled.entries()) {
+    assert.equal((compiledPrompt.prompt.match(new RegExp(captionSuppressionDirective, "gu")) ?? []).length, 1);
+    assert.equal(compiledPrompt.capabilitySnapshot.generated_prompt_parts?.[0], captionSuppressionDirective);
     if (plan.shotSpecs[index]!.dialogueLines.length > 0) {
       assert.match(compiledPrompt.prompt, /PLATFORM NARRATION TIMING CONTRACT/);
       assert.match(compiledPrompt.prompt, /post-production/);
@@ -112,6 +116,8 @@ test("native provider owner keeps dialogue audible and does not emit platform na
   assert.match(compiled.prompt, /Character says: "欢迎来到茅山温泉。"/);
   assert.match(compiled.prompt, /keep that speaker visible throughout the spoken performance/);
   assert.match(compiled.prompt, /SPOKEN CONTENT BOUNDARY/);
+  assert.equal((compiled.prompt.match(new RegExp(captionSuppressionDirective, "gu")) ?? []).length, 1);
+  assert.equal(compiled.capabilitySnapshot.generated_prompt_parts?.[0], captionSuppressionDirective);
   assert.doesNotMatch(compiled.prompt, /声明的 narration window|SILENCE\/AMBIENT-ONLY|must remain silent/u);
   assert.doesNotMatch(compiled.prompt, /PLATFORM NARRATION TIMING CONTRACT/);
   assert.doesNotMatch(compiled.prompt, /do not generate or carry audible dialogue/);
@@ -149,6 +155,40 @@ test("native provider prompt keeps authored multiline dialogue boundaries", asyn
     audioOwner: "NATIVE_PROVIDER",
   });
   assert.match(compiled.prompt, /第一句口播。\n\n第二句继续说明。/);
+  assert.equal(compiled.capabilitySnapshot.generated_prompt_parts?.[0], captionSuppressionDirective);
+});
+
+test("creative prompt compilation suppresses captions for ordinary no-dialogue segments", async () => {
+  const plan = await new DeterministicPlanningModel().plan({
+    sourceText: "产品在安静的桌面上被展示，最后停在清晰的正面构图。",
+    targetDurationSeconds: 15,
+    stylePreferences: "纪实",
+    sourceAssetIds: [],
+  });
+  const compiled = await new DeterministicStoryboardCompiler().compile({
+    ...plan.shotSpecs[0]!,
+    stylePreferences: "纪实",
+  });
+  assert.equal((compiled.prompt.match(new RegExp(captionSuppressionDirective, "gu")) ?? []).length, 1);
+  assert.equal(compiled.capabilitySnapshot.generated_prompt_parts?.[0], captionSuppressionDirective);
+  assert.deepEqual(plan.shotSpecs[0]!.dialogueLines, []);
+});
+
+test("creative prompt compilation does not duplicate a complete source caption directive", async () => {
+  const directive = captionSuppressionDirective;
+  const plan = await new DeterministicPlanningModel().plan({
+    sourceText: "产品在安静的桌面上被展示。",
+    targetDurationSeconds: 15,
+    stylePreferences: "纪实",
+    sourceAssetIds: [],
+  });
+  const compiled = await new DeterministicStoryboardCompiler().compile({
+    ...plan.shotSpecs[0]!,
+    narrativeGoal: `${plan.shotSpecs[0]!.narrativeGoal} ${directive}`,
+    stylePreferences: "纪实",
+  });
+  assert.equal((compiled.prompt.match(new RegExp(directive, "gu")) ?? []).length, 1);
+  assert.equal(compiled.capabilitySnapshot.generated_prompt_parts?.includes(directive), false);
 });
 
 test("planner adds a dry-land lock for a waterside hot-spring scene unless entering water is explicit", async () => {
@@ -1001,9 +1041,43 @@ test("insurance AI source dialogue stays complete while the generated prompt use
       assert.equal((packageValue.prompt.match(/Character says:/gu) ?? []).length, 1);
       assert.ok(packageValue.prompt.includes(script));
     }
+    assert.equal((packageValue.prompt.match(new RegExp(captionSuppressionDirective, "gu")) ?? []).length, 1);
+    assert.equal(packageValue.capabilitySnapshot.generated_prompt_parts?.[0], captionSuppressionDirective);
     assert.ok(Buffer.byteLength(packageValue.prompt, "utf8") < 4_096, `segment ${index + 1} prompt should be compact`);
     assert.doesNotMatch(packageValue.prompt, /Object state timeline:|Prohibited changes:/u);
   }
+});
+
+test("Maoshan multi-segment compilation keeps visual and dialogue source local", async () => {
+  const sourceText = `AI创意视频呈现方向
+女子静坐庭院泡茶，倚靠廊下远眺山景，品茶，慢镜头光影流转，翻开书本，没有都市喧嚣，尽显不慌不忙、自在松弛的山居日常。
+AI创意视频口播文案：
+“城市生活步履匆匆，身心紧绷。来茅山温泉・桃李春风，院中煮茶、廊下观山、闲时读书。远离喧嚣内卷，慢下来消解焦虑，找回内心的松弛与平静。”`;
+  const plan = await new DeterministicPlanningModel().plan({
+    sourceText,
+    targetDurationSeconds: 30,
+    stylePreferences: "",
+    sourceAssetIds: ["ast_scene", "ast_subject"],
+  });
+  assert.equal(plan.shotSpecs.length, 2);
+  const compiled = await Promise.all(plan.shotSpecs.map((shot) => new DeterministicStoryboardCompiler().compile({
+    ...shot,
+    generationSegmentSequence: shot.sequence,
+    generationSegmentCount: plan.generationSegmentCount,
+    stylePreferences: "",
+    audioOwner: "NATIVE_PROVIDER",
+  })));
+  const firstScript = plan.shotSpecs[0]!.dialogueLines.join("");
+  const secondScript = plan.shotSpecs[1]!.dialogueLines.join("");
+  const firstSource = String(compiled[0]!.capabilitySnapshot.source_prompt);
+  const secondSource = String(compiled[1]!.capabilitySnapshot.source_prompt);
+  assert.ok(firstSource.includes(firstScript));
+  assert.ok(secondSource.includes(secondScript));
+  assert.equal(firstSource.includes(secondScript), false);
+  assert.equal(secondSource.includes(firstScript), false);
+  assert.equal(firstSource.includes("找回内心的松弛与平静"), false);
+  assert.equal(secondSource.includes("女子静坐庭院泡茶"), false);
+  assert.ok(compiled.every((item) => Buffer.byteLength(item.prompt, "utf8") <= 4_096));
 });
 
 test("compact motion text keeps one action/camera/end per beat while structured locks remain intact", async () => {

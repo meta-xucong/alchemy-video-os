@@ -6,6 +6,7 @@ import {
   calculateUsageCharge,
   calculateVideoUsageCharge,
   createBillingDebitPlan,
+  isVideoUsageModelCompatible,
   parseVideoBillingFixedFee,
   parseVideoBillingModelRates,
   parseVideoBillingSurchargeMultiplier,
@@ -33,6 +34,15 @@ test("media usage billing adds the Video OS surcharge and fixed service fee", ()
     usage: { providerRequestId: "req_chatgpt_001", model: "chatgpt-image", actualCost: "0.125" },
     pricing: { model: "chatgpt-image", multiplier: "0.20", fixedFee: "1" },
   }), "1.025");
+});
+
+test("documented KIE usage alias is compatible without rewriting the raw usage fact", () => {
+  assert.equal(isVideoUsageModelCompatible("grok-imagine-video-1.5", "grok-imagine-video-1-5-preview"), true);
+  assert.equal(calculateUsageCharge({
+    usage: { providerRequestId: "req_kie_001", model: "grok-imagine-video-1-5-preview", actualCost: "0.12" },
+    pricing: { model: "grok-imagine-video-1.5", multiplier: "0.20", fixedFee: "1" },
+  }), "1.024");
+  assert.equal(isVideoUsageModelCompatible("grok-imagine-video-1.5", "grok-imagine-video-1-5-preview-other"), false);
 });
 
 test("usage billing rejects missing or mismatched usage instead of estimating", () => {

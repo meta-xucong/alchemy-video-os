@@ -272,7 +272,9 @@ def _piper_runtime() -> tuple[list[str], str, str]:
     On Windows a venv-launched Uvicorn process can re-exec its listener with
     the base interpreter.  Prefer an explicitly configured interpreter and
     fall back to the repository's known local runtime so narration cannot
-    silently depend on whichever Python happens to own port 3433.
+    silently depend on whichever Python happens to own port 3433.  When an
+    interpreter is explicitly bound, its module capability is authoritative;
+    a sibling executable must not bypass that check.
     """
     workspace_root = Path(__file__).resolve().parents[2]
     configured_python = os.environ.get("PIPER_PYTHON_PATH", "").strip()
@@ -288,6 +290,24 @@ def _piper_runtime() -> tuple[list[str], str, str]:
         raise MediaRuntimeError("MEDIA_RUNTIME_UNAVAILABLE", "The configured local Piper narration runtime is unavailable.", retryable=True)
     for candidate in python_candidates:
         if candidate and Path(candidate).is_file():
+            if configured_python:
+                # An explicit interpreter is a capability boundary.  Probe
+                # its module before selecting the source-compatible launcher;
+                # do not fall back to a sibling piper.exe on probe failure.
+                try:
+                    probe = subprocess.run(
+                        [candidate, "-c", "import piper"],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        check=False,
+                        timeout=15,
+                        text=True,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    continue
+                if probe.returncode == 0:
+                    return [candidate, "-m", "piper"], model_value, config_value
+                continue
             piper_entrypoints = (Path(candidate).parent / "piper.exe", Path(candidate).parent / "piper")
             for entry in piper_entrypoints:
                 if entry.is_file():

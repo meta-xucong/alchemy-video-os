@@ -6,7 +6,7 @@
 | --- | --- |
 | 文档性质 | 开发基线、阶段门禁和审计总控文档 |
 | 当前版本 | `0.4.0-real-local-r01-auto-audio` |
-| 当前阶段 | C11.2 保持本地范围 `ACCEPTED`；C12.4/C12.5 总体仍为 `IMPLEMENTED_PENDING_AUDIT`；既有 E01–E11/E08 窄切片按历史审计状态保留；E12/R01 当前仍为 `BLOCKED`。本机实际操作模式已获用户授权并切换为 Aiself Grok 原生音频优先、明确选择时使用 Doubao；这不等于章节验收。source registry/rank、profile capability 认证、自动生成样音→审批→正式 NarrationAsset/TimelinePlan、approved section windows、完整 AudioPlan、Studio/字幕/长旁白和人工中文口音等硬门仍 `DEFERRED/BLOCKED`。付费 Kling/本地 Wav2Lip 口型同步按用户决定延期，不作为当前范围阻断。 |
+| 当前阶段 | C11.2 保持本地范围 `ACCEPTED`；C12.4/C12.5 总体仍为 `IMPLEMENTED_PENDING_AUDIT`；既有 E01–E11/E08 窄切片按历史审计状态保留；E12/R01 当前仍为 `BLOCKED`。本机实际操作模式已获用户授权并切换为 Aiself Grok 原生音频优先、明确选择时使用 Doubao；这不等于章节验收。统一 source registry/rank 不属于当前要求，实际启用的 provider/profile 仍按各自来源逐个核对；自动生成样音→审批→正式 NarrationAsset/TimelinePlan、approved section windows、完整 AudioPlan、Studio/字幕/长旁白和人工中文口音等硬门仍 `DEFERRED/BLOCKED`。付费 Kling/本地 Wav2Lip 口型同步按用户决定延期，不作为当前范围阻断。 |
 | 当前允许范围 | 按最新《自动生成音频与视频匹配正式使用开发文档》执行：自动视频不要求用户上传旁白/样音；本机真实模式使用 `VIDEO_PROVIDER=sub2api` 的 Aiself Grok，优先保留 native 音频，操作者明确选择替换时使用 Doubao `seed-tts-2.0`/`zh_female_meilinvyou_uranus_bigtts`；继续做固定来源薄适配、定向测试和茅山历史项目同脚本对照。Doubao 不自动选择、不静默 fallback、不新增协议/算法/阈值 |
 | 当前禁止范围 | E12/R01 完整 Exit Gate 为 `BLOCKED`，不得进入 R02；Veyra、共享积分以及未获单独用户授权的 Provider/TTS、网络、VPS、SSH、DNS、TLS、生产部署、Git 写入仍禁止；旧“VPS/部署/Git 禁止”表述属于部署前/历史默认，2026-09-10 用户授权的 route-guard 运行证据例外见下方，不构成一般部署授权或章节验收；不得把 canary/ASR 结果冒充中文口音验收，也不得擅自改写公共契约或旧 prompt owner 语义 |
 | 当前执行方案 | `AI企业内容生产平台_自动生成音频与视频匹配正式使用开发文档.md`（覆盖语音专项旧口径）与 `AI企业内容生产平台_多源仓库逐项迁移矩阵与冲突审计开发方案.md`；以固定来源文件/符号为主键，先做多源冲突对账，再按授权切片薄适配和验收 |
@@ -18,7 +18,7 @@
 
 本文件把“系统要做什么”转化为“先做什么、做到什么算完成、凭什么允许进入下一章”。每次开发只能处于一个 `IN_PROGRESS` 章节；前一章节没有达到 Exit Gate，不得把后一章节标记为完成。
 
-语音路线对账补充（2026-09-01）：凡旧 C12.4/C12.5 文档中把 Piper/`PLATFORM_NARRATION` 写成所有新任务的默认 spoken owner、或无条件静音 Provider dialogue 的内容，均由《AI企业内容生产平台_自动生成音频与视频匹配正式使用开发文档.md》覆盖；该覆盖只改变专项语义，不改变本文件状态账本、章节顺序、公共契约或本地 MVP 默认值。实际 owner 必须有固定来源和已认证 profile；证据不足继续 `BLOCKED`。用户上传旁白/样音不是当前自动生成流程前提，通用图片、资料、Logo、MUSIC 上传仍按既有契约保留。
+语音路线对账补充（2026-09-01）：凡旧 C12.4/C12.5 文档中把 Piper/`PLATFORM_NARRATION` 写成所有新任务的默认 spoken owner、或无条件静音 Provider dialogue 的内容，均由《AI企业内容生产平台_自动生成音频与视频匹配正式使用开发文档.md》覆盖；该覆盖只改变专项语义，不改变本文件状态账本、章节顺序、公共契约或本地 MVP 默认值。实际 owner 必须有固定来源和已认证 profile；这里的认证针对实际启用的 profile，不要求跨 Provider 统一 registry/rank；证据不足继续 `BLOCKED`，auto/unknown 仍 fail-closed。用户上传旁白/样音不是当前自动生成流程前提，通用图片、资料、Logo、MUSIC 上传仍按既有契约保留。
 
 现有 `DeliveryPlan.voice_mode: "PLATFORM_GENERIC"` 只作为历史兼容字段保留，不能当作平台旁白 owner、默认 Piper 或上传音频前置条件。owner 以已认证 Provider profile snapshot 为准：`NATIVE_PROVIDER` 保留 Grok 原生音轨，操作者明确选择时才使用 `DOUBAO_TTS`；缺少 profile/能力事实继续 `UNAVAILABLE`/`BLOCKED`。该对账不新增字段、协议、路由或状态。
 
@@ -33,10 +33,10 @@
 | 章节/范围 | 当前状态 | 本轮含义 |
 | --- | --- | --- |
 | C11.2 | `ACCEPTED` | 仅表示已审计的本地资料理解/事实包范围；不开放真实外部系统 |
-| C12.4/C12.5 | `IMPLEMENTED_PENDING_AUDIT` | S01/E02、E03/HB-STORYBOARD-TIMING 8–15 秒、E04/OpenMontage Piper、E05/OpenMontage `_full_mix` + ALCHMED8、E06 approved full narration 窗口与 cue-only 边界、E07 transition/xfade 与有效时长、E09 source-expressed checked transcript/subtitle/FFmpeg fallback、E10 approval/formal asset/TimelinePlan identity-window、E11/S08 measured-duration feedback、E08 segmented/HyperFrames timed-audio 均为来源可表达窄切片 `ACCEPTED`；E12/R01 的 native/Doubao canary 仅是已授权产物/连通性证据，仍不足以关闭 source registry/rank、profile certification、自动生成样音审批、正式旁白/TimelinePlan、section windows、中文口音和 Studio 硬门。用户上传旁白/样音不属于当前自动流程前提；完整 AudioPlan、混合转场、continuous narration 非 cut、REQUIRED 字幕、完整 E11 自动重规划及其它未映射能力继续 fail-closed；总体不得扩展第二套协议或平行逻辑 |
+| C12.4/C12.5 | `IMPLEMENTED_PENDING_AUDIT` | S01/E02、E03/HB-STORYBOARD-TIMING 8–15 秒、E04/OpenMontage Piper、E05/OpenMontage `_full_mix` + ALCHMED8、E06 approved full narration 窗口与 cue-only 边界、E07 transition/xfade 与有效时长、E09 source-expressed checked transcript/subtitle/FFmpeg fallback、E10 approval/formal asset/TimelinePlan identity-window、E11/S08 measured-duration feedback、E08 segmented/HyperFrames timed-audio 均为来源可表达窄切片 `ACCEPTED`；E12/R01 的 native/Doubao canary 仅是已授权产物/连通性证据，仍不足以关闭已选 profile 的能力证据、自动生成样音审批、正式旁白/TimelinePlan、section windows、中文口音和 Studio 硬门。统一 source registry/rank 明确 `DEFERRED`，不作为总体关闭条件。用户上传旁白/样音不属于当前自动流程前提；完整 AudioPlan、混合转场、continuous narration 非 cut、REQUIRED 字幕、完整 E11 自动重规划及其它未映射能力继续 fail-closed；总体不得扩展第二套协议或平行逻辑 |
 | E08 / OM-SEGMENTED-MUSIC + OM-HYPERFRAMES-AUDIO | `ACCEPTED`（窄切片） | 固定 OpenMontage segmented `[start,end]` 音乐窗口/fade 与 HyperFrames 独立音频 `data-start/data-duration` 已完成最小适配、fixture/受控媒体证据、纠察复核和独立验收；完整 renderer/其它硬门不随之关闭 |
 | E12 / OM-TTS-PROFILES external certification | `BLOCKED`（native/Doubao canary 仅产物/连通性证据） | `seed-tts-2.0` / `zh_female_meilinvyou_uranus_bigtts` 的已授权真实 MP3 smoke 与 Grok native MP4 音轨证据不等于人工中文口音、正式 NarrationAsset/TimelinePlan 或完整 section-window 验收；仅按最新开发文档在茅山对照中复核，不自动升级 |
-| R01 / 原仓库语音 owner 边界迁移 | `BLOCKED`（显式 Doubao 窄切片仅历史实现证据） | selector auto/unknown 的 fail-closed 与显式入口保留；native_audio owner、来源 registry/rank 正向映射、正式旁白时间线和旧 prompt owner 冲突仍未闭合，不进入 R02 |
+| R01 / 原仓库语音 owner 边界迁移 | `BLOCKED`（显式 Doubao 窄切片仅历史实现证据） | selector auto/unknown 的 fail-closed 与显式入口保留；已选 profile 的 owner/能力事实、正式旁白时间线和旧 prompt owner 冲突仍未闭合，不进入 R02；统一 registry/rank 为 `DEFERRED` |
 | C11.3/C12.2/C12.3/C12.6/C12.7B | `NOT_ACTIVE_IN_THIS_SCOPE` | 既有文字保留为历史记录；本轮不得继续实施或将历史状态解释为当前授权 |
 | 真实视频 Provider | `AUTHORIZED_LOCAL_OPERATIONAL` | 用户已授权本机 Aiself Grok/Sub2API 实际使用和茅山对照；产物仍需技术与人工复核，不据此宣称中文口音或完整旁白验收；默认 CI/Mock 不变 |
 | Doubao TTS | `AUTHORIZED_LOCAL_OPERATIONAL` | 用户已授权本机显式 Doubao 实际使用/对照；profile 为 `seed-tts-2.0` + `zh_female_meilinvyou_uranus_bigtts`，只在操作者选择时调用，密钥仅来自未入库环境，不自动 fallback、不写入默认配置 |
@@ -971,11 +971,11 @@ Exit Gate（历史快照）：脚本规范化、术语歧义、样音审批、�
 - 平台边界只复用既有校验：输入字节上限、实际 MIME/SHA/size、ffprobe duration、临时目录和 secret/signed URL 脱敏；源响应缺失 Content-Type 不被额外拒绝，输出 MIME 由源 `format` 映射。Worker 外层 timeout 跟随显式源 `timeout_seconds`，不截断源允许的窗口。
 - 最新行为证据（fixture/mock，无额外网络）：Media Runtime Python `151/151`，Doubao/selector adapters `24/24`，Production Worker Runtime Client `23/23`，Worker typecheck PASS；新增 handler 断言显式 source fields、MIME、auto/unknown fail-closed。`py_compile` 与 `git diff --check` 通过。
 - 用户授权真实 Runtime smoke：显式 `doubao` + `seed-tts-2.0` + `zh_female_vv_uranus_bigtts` 走现有 Runtime helper 完成 submit→poll→download，返回 `audio/mpeg`、`37212` bytes、bundled `ffprobe` 实测 `1850ms`。该结果只证明凭据/profile、链路和产物格式可用，不证明人工中文口音、正式 NarrationAsset/TimelinePlan、approved section windows 或 native provider owner。
-- 历史状态（已回收）：E12/R01 显式 Doubao 窄切片曾为 `VERIFYING`，总体 C12.4/C12.5 仍 `IMPLEMENTED_PENDING_AUDIT`；当前 E12/R01=`BLOCKED`。完整 source registry/rank、native audio owner、正式旁白时间线、Studio 审批、REQUIRED 字幕、中文口音和长旁白 consumer 硬门原样保留，不进入 R02；本段 route/smoke 仅为历史证据，不构成当前验收或新的外部调用授权。此前 MAPPER_ONLY/“平台 route disabled”段落均为授权前历史快照，不得作为当前代码事实。
+- 历史状态（已回收）：E12/R01 显式 Doubao 窄切片曾为 `VERIFYING`，总体 C12.4/C12.5 仍 `IMPLEMENTED_PENDING_AUDIT`；当前 E12/R01=`BLOCKED`。实际启用 profile 的 native audio owner、正式旁白时间线、Studio 审批、REQUIRED 字幕、中文口音和长旁白 consumer 硬门原样保留，不进入 R02；统一 source registry/rank 已由 2026-09-15 范围决策标为 `DEFERRED`。本段 route/smoke 仅为历史证据，不构成当前验收或新的外部调用授权。此前 MAPPER_ONLY/“平台 route disabled”段落均为授权前历史快照，不得作为当前代码事实。
 
 ## 当前状态回收（2026-09-01；现行口径）
 
-- E12/R01 当前统一为 `BLOCKED`：完整 source registry/rank、native/TTS owner、正式 narration asset/TimelinePlan、approved section windows 和人工中文口音硬门仍未闭合。上文 `VERIFYING`、显式 route 和真实 smoke 仅保留为历史实现/产物证据，不构成当前验收、状态升级或新的外部调用授权。
+- E12/R01 当前统一为 `BLOCKED`：实际启用 profile 的 native/TTS owner、正式 narration asset/TimelinePlan、approved section windows 和人工中文口音硬门仍未闭合。统一 source registry/rank 按范围决策为 `DEFERRED`；上文 `VERIFYING`、显式 route 和真实 smoke 仅保留为历史实现/产物证据，不构成当前验收、状态升级或新的外部调用授权。
 - C12.4/C12.5 当前维持 `IMPLEMENTED_PENDING_AUDIT`；不恢复或伪造 E02/S01 状态，不进入 R02。Doubao adapter 继续隔离保留，默认不启用。
 - `apps/production-worker/src/index.ts` 已移除 `MEDIA_RUNTIME_NARRATION_PROVIDER` 的全局启动注入；显式受控入口和测试保留，不能据此推导默认 provider。
 
@@ -983,4 +983,12 @@ Exit Gate（历史快照）：脚本规范化、术语歧义、样音审批、�
 
 - Provider-video `45/45`、Production Worker `59/59`、Media Runtime/OpenMontage `151/151` 均通过，`0 failed / 0 skipped`；Production Worker typecheck exit `0`。
 - 本地栈已恢复 `VIDEO_PROVIDER=mock`、`LOCAL_AUTH_MODE=dev`、`VEYRA_AUTH_ENABLED=false`；Control API health=`status=ok`、`database=ok`。`validate_state.py=OK`，`git diff --check` 无 whitespace error（仅既有换行警告）。
-- 证据仅完成工程侧回归，不关闭 R01/E12 的 source registry/rank、native profile capability、正式 NarrationAsset/TimelinePlan/approved section windows、Studio 审批、完整 AudioPlan/字幕、人工中文听感及长旁白 consumer 硬门。状态继续 E12/R01=`BLOCKED`、C12.4/C12.5=`IMPLEMENTED_PENDING_AUDIT`，不得进入 R02。
+- 证据仅完成工程侧回归，不关闭 R01/E12 的实际启用 profile capability、正式 NarrationAsset/TimelinePlan/approved section windows、Studio 审批、完整 AudioPlan/字幕、人工中文听感及长旁白 consumer 硬门；统一 source registry/rank 不属于当前要求。状态继续 E12/R01=`BLOCKED`、C12.4/C12.5=`IMPLEMENTED_PENDING_AUDIT`，不得进入 R02。
+
+### 2026-09-15 用户范围覆盖后的技术收口
+
+- 用户明确排除人工口音/断句/停顿/语速/情绪/音画听感、样音人工审批，以及单一 full-track 跨 section 自动偏移、non-cut 连续旁白、任意复杂 xfade、自动变速/补静音/重新切片和来源未定义通用音频算法；这些统一 `OUT_OF_SCOPE/DEFERRED`，不再作为当前活动阻断。
+- 可执行的独立 section 技术窄片已完成：正式资产身份、实测时长、PRIMARY 时间窗和底层 AUDIO identity 在 loader、InMemory、Drizzle 三处一致；TTS-owner composition fixture `14/14`；隔离 PostgreSQL `88/88`；production-worker `72/72`；workflow-worker `38/38`；Media Runtime `147/147`；workspace typecheck 通过。
+- ALCHMED8 的既有 identity/start/gain/fade 与 CUT/BLEND/BRIDGE 窄转场继续按来源消费；不支持的 full-track 跨 section/non-cut/复杂 xfade 保持 fail-closed。
+- Worker 在 Runtime 前核对 `narration_asset_version_id` 与 section/asset 关系；ALCHMED8 wire 只传 source-defined section/asset/window/track 字段。各层局部测试通过，但尚无单条正式资产从 PostgreSQL→scheduler→factory→Runtime→Compose 的端到端行为测试。
+- 本条只允许该技术窄片提交 `READY_FOR_AUDIT`，不自动升级 E12/R01 或 C12.4/C12.5；需章节审计记录与独立复核完成账本对账。
