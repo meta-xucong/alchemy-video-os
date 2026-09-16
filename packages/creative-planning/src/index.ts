@@ -1210,12 +1210,15 @@ const repairDialogueBoundaryQuotes = (value: string) => {
 };
 
   const spokenQuoteCue = /(?:口播文案|口播|旁白文案|配音文案|对白文案|对白|台词|说|说道|说着|问|问道|问到|回答|喊道|唱道|开口)\s*(?:为)?\s*[:：]?\s*$/u;
+const quotedDialoguePattern = /“([\s\S]*?)”|”([\s\S]*?)”|「([\s\S]*?)」|『([\s\S]*?)』|"([\s\S]*?)"/gu;
+const isSpokenQuoteAt = (value: string, start: number) =>
+  spokenQuoteCue.test(value.slice(Math.max(0, start - 80), start));
 
-const quotedDialogueLines = (value: string, requireSpokenCue = false) => [...value.matchAll(/“([\s\S]*?)”|”([\s\S]*?)”|「([\s\S]*?)」|『([\s\S]*?)』|"([\s\S]*?)"/gu)]
+const quotedDialogueLines = (value: string, requireSpokenCue = false) => [...value.matchAll(quotedDialoguePattern)]
     .filter((match) => {
       if (!requireSpokenCue) return true;
       const start = match.index ?? 0;
-      return spokenQuoteCue.test(value.slice(Math.max(0, start - 80), start));
+      return isSpokenQuoteAt(value, start);
   })
     .flatMap((match) => splitAuthoredDialogueSections(match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5] ?? ""))
     .filter((line) => !/\.(?:png|jpe?g|webp|gif|bmp|mp4|mov|pdf|pptx?|docx?)$/iu.test(line))
@@ -1321,14 +1324,29 @@ const buildLlmFreeformPlanningContext = (
 // Keep spoken copy in the private dialogue contract only. If the same quoted
 // text remains in the visual narrative goal, a video model can treat both
 // occurrences as separate lines and repeat the boundary sentence.
-const stripSpokenDialogue = (value: string) => normalize(value
+// Preserve source line boundaries so the narrative parser can honor explicit
+// global-context and executable-section headings after dialogue removal.
+const normalizeSourceLayout = (value: string) => value
+  .replace(/\r\n?/gu, "\n")
+  .split("\n")
+  .map((line) => line.replace(/[^\S\n]+/gu, " ").trim())
+  .join("\n")
+  .trim();
+
+const stripSpokenDialogue = (value: string) => normalizeSourceLayout(value
   .replace(/(?:^|\n)\s*(?:口播文案|旁白文案|配音文案|对白文案)\s*(?:为)?\s*[:：]?\s*[\s\S]*?(?=\n\s*(?:视频生成意图描述|视频生成意图|画面描述|镜头描述|视觉描述|备注|说明)(?:\s*[:：][^\n]*)?(?:\n|$)|$)/u, " ")
-  .replace(/“[\s\S]{0,1600}?”|「[\s\S]{0,1600}?」|『[\s\S]{0,1600}?』|"[\s\S]{0,1600}?"/gu, " ")
-  // Narrative sentence extraction can split a quote at an internal full
-  // stop, so also remove unmatched quote fragments from either side.
-  .replace(/“[\s\S]*$|「[\s\S]*$|『[\s\S]*$|"[\s\S]*$/gu, " ")
-  .replace(/^[^“”]*”|^[^「」]*」|^[^『』]*』|^[^"]*"/gu, " ")
-  .replace(/(?:口播文案|口播|对白|台词|旁白|配音)\s*为?\s*[:：]?/gu, " "));
+  // Only a quote with the same authored speech cue used by dialogue
+  // extraction is removed. Unlabelled visual copy, sound effects, and
+  // reference filenames remain source facts in the narrative projection.
+  .replace(quotedDialoguePattern, (match, _curly, _right, _corner, _doubleCorner, _ascii, offset, source) =>
+    isSpokenQuoteAt(source, offset) ? " " : match)
+  // Require the existing label punctuation.  Without that boundary, the
+  // sound policy phrase `无旁白` loses its authored `旁白` fact while speech
+  // labels such as `AI创意视频口播文案：` still strip normally.
+  // Keep the existing no-punctuation form (`口播文案为“...”`) aligned with
+  // dialogue extraction, but only when a quote immediately follows.  This
+  // avoids stripping ordinary source prose such as `无旁白`.
+  .replace(/(?:口播文案|口播|对白|台词|旁白|配音)\s*(?:为\s*)?(?:[:：]\s*|(?=[“「『"]))/gu, " "));
 
 // Keep quoted speech at the source-story level. Splitting narrative events
 // first can otherwise strand half of one quoted line in an unrelated segment.

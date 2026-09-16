@@ -2697,9 +2697,48 @@ Exit Gate：`ACCEPTED`（仅本窄范围）。Compose 拓扑、固定内部 URL 
 ## 2026-09-15 用户验收范围覆盖与正式 section 资产技术收口
 
 - 用户明确将中文口音、断句/停顿/语速/情绪、音画听感、样音人工审批和最终成片质量列为人工范围；单一 full-track 跨 section 自动偏移、non-cut 连续旁白、任意复杂 xfade、自动变速/补静音/重新切片及来源未定义通用音频算法列为 `OUT_OF_SCOPE/DEFERRED`。这些项目不再作为本轮代码验收门，现有不支持形式仍保持 `UNAVAILABLE/BLOCKED`，不得静默降级。
-- 本轮可自动复核的窄片已完成对账：`approved-narration-timeline.ts`、`narration-quality-repository.ts` 的 InMemory/Drizzle 路径统一拒绝 section 窗口溢出、READY 资产实测时长漂移和不同 section 版本复用同一底层 AUDIO identity；PostgreSQL 隔离全套 `88/88 pass / 0 fail / 0 skip`，独立 C11/Composition 定向 `14/14`，production-worker `72/72`，workflow-worker `38/38`，Media Runtime `147/147`，全工作区 typecheck 通过。
+- 本轮可自动复核的窄片已完成对账：`approved-narration-timeline.ts`、`narration-quality-repository.ts` 的 InMemory/Drizzle 路径统一拒绝 section 窗口溢出、READY 资产实测时长漂移和不同 section 版本复用同一底层 AUDIO identity；历史 PostgreSQL 隔离计数为 `88/88 pass / 0 fail / 0 skip`，独立 C11/Composition 定向 `14/14`，production-worker `72/72`，workflow-worker `38/38`，Media Runtime `147/147`，全工作区 typecheck 通过。当前计数以本记录后续最新对账为准。
 - 正向证据包含 TTS-owner 独立正式 section asset/version 在 `0..1000ms` PRIMARY 窗口内被写入 `compositionPlan.audio_plan.tracks`，并保留 canonical narration cue；拒绝证据覆盖窗口/元数据/底层对象身份不一致。数据库到 scheduler、Worker factory、Runtime 的现有 sidecar 路径在隔离回归中保持不丢失。
 - 版本身份的边界必须如实记录：Control/Worker 在进入 Runtime 前核对 `narration_asset_version_id` 与 section/asset 关系；ALCHMED8 二进制 wire 继续传 source 已定义的 `section_id`、`asset_id`、absolute window 和 track 字段，不把版本 ID 伪称为 Runtime wire 字段。
 - 证据边界仍需保留：当前是 persistence/Worker/Runtime 的局部行为证据组合，尚没有一条独立行为测试把真实正式 asset/version 从 PostgreSQL 经 scheduler、factory、Runtime 一路跑到实际 Compose；因此只能提交技术窄片 `READY_FOR_AUDIT` 候选，不能写成完整端到端 `ACCEPTED`。
 - 来源边界保持不变：仅消费固定 OpenMontage/ALCHMED8 已有 identity、absolute start、gain/fade 与 CUT/BLEND/BRIDGE 窄语义；不新增第二 AudioPlan、时长算法或复杂转场实现。旧的并行 Worker 测试竞争导致的一次失败已通过隔离条件复跑排除，不能改写为生产缺陷。
 - 审计结论：独立 section 资产/TimelinePlan/AudioPlan 技术窄片可提交 `READY_FOR_AUDIT`；用户明确排除项记 `OUT_OF_SCOPE/DEFERRED`；T11 真实账本等未授权/外部系统证据仍按原值保留。正式 `E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT` 不自动升级，等待独立审计确认四账本一致。
+
+## 2026-09-16 原仓库语义分段与全局约束窄片复核
+
+- 本轮改动范围仅为 `packages/domain/src/narrative-events.ts`、`packages/domain/tests/narrative-events.test.ts`、`packages/creative-planning/src/index.ts` 及其两组定向测试；移除规划器无来源的负向约束统一排序和对白剥离固定 1600 字上限，保留既有事件/约束/分段契约，不改公共 API、Provider、音频、字幕、计费或部署。
+- 固定来源复核：Huobao `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 的 `description/atmosphere` 与顺序规则；Seedance `ebc68d3c19a62fba0f9ba9d2805af1f711a82aa7` 的 `Global/Throughout/look/locks/timestamp phases` 形状；OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 section/时间窗 ownership 仅作来源边界，不伪造完整语义 planner。
+- 行为证据（上一轮基线）：domain `69/69`、creative-planning `92/92`、workflow-worker `38/38`、provider-video `70/70`；本地 PostgreSQL 隔离运行既有 `production-repository.integration.test.ts` `4/4`、persistence 全量 `91/91`，验证已有 PromptPackage sidecar 经 JSONB、调度到生产快照工厂的传递。根回归 `712 pass / 20 skip / 0 fail`；skip 为既有 DB/MinIO/BullMQ 门控。
+- 负向/边界：CRLF 只做既有 LF 归一化；中文多行、ASCII 引号、`@anchor`、长引号后的视觉尾部、全局上下文不占 executable beat、结构化 schema 超限 fail-closed 均有夹具；没有字符截断、复制、重排、静默回退或新阈值。上述测试均未调用真实 Provider/TTS/Veyra/网络/VPS/Git。
+- 独立纠察结论：来源和范围符合，技术窄片可提交 `READY_FOR_AUDIT`，不判 `ACCEPTED`。OpenMontage `script_section_id/start/end` 完整 ownership、raw semantic planner global role、逐字段 byte-level source 保真，以及正式 NarrationAsset/TimelinePlan/AudioPlan、复杂转场和人工/真实 Provider 质量继续 `DEFERRED/BLOCKED`。正式 `E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT` 保持不变。
+
+## 2026-09-16 语义分段兼容回归与验收范围对账
+
+- 本轮仅做来源已有标签语法的兼容修正：带既有旁白/对白 cue 的引号继续归入 dialogue，未标注的视觉文字、音效和文件名引号保留在 source；无冒号形式 `口播文案为“...”` 只在引号紧随其后时剥离标签，避免把 `无旁白` 等普通事实误删。全局块遇到现有 `视觉描述`、`备注`、`说明` heading 时结束，后续动作继续进入 `ACTION`，未改变公开契约或分类词表的其它语义。
+- 定向证据：domain `70/70`、creative-planning `95/95`、两包 typecheck 通过，`git diff --check` 通过；新增夹具覆盖无 cue 引号保真、cue 引号分离、无冒号口播标签和全局 heading 边界。未调用真实 Provider/TTS/Veyra/网络/VPS/Git。
+- 当前根回归和 persistence/workflow/provider/production/task 的既有计数仍以 `.codex-longrun/test-log.md` 最新条目为准；旧计数只保留历史上下文，不得与最新计数并列称为“当前”。
+- 最新根回归计数为 `718 pass / 20 skip / 0 fail`；20 个 skip 仍是既有 DB/MinIO/BullMQ 环境门控，不计作行为通过。
+- 用户已明确将人工口音/听感等质量和外部真实账本/发布作为本轮不考核项；它们记 `OUT_OF_SCOPE/DEFERRED`，不伪造实现。正式独立审计仍是流程门，不能因排除人工/外部内容而自动写成 `ACCEPTED`。
+- 来源边界：中文标签属于现有平台输入语法兼容，不宣称为 Huobao/Seedance/OpenMontage 的逐字实现；固定来源未定义的 universal registry、复杂音频算法、full-track 跨 section 偏移仍保持 `DEFERRED/BLOCKED`。正式 `E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT` 不变。
+
+## 2026-09-16 语义分段切片发布范围裁定（待独立审计）
+
+- 本次仅整理语义分段切片的发布范围：`packages/domain/src/narrative-events.ts`、其测试、`packages/creative-planning/src/index.ts`、`deterministic-planner.test.ts` 与 `semantic-planner.test.ts`，以及本切片的审计文字。task-worker、计费、C13、基础设施和未跟踪文件均排除，不随本切片提交。
+- 中文全局/说明标签是现有平台输入兼容拼写，不是三个固定上游的逐字能力；本条将其从“原仓库迁移验收”中排除并保留 `DEFERRED/UNREFERENCED`，代码不再扩展这类词表或推断。其余行为按固定来源的顺序、全局上下文与对白归属边界复核。
+- 同版本定向证据：domain `70/70`、creative-planning `95/95`、两包 typecheck、`git diff --check` 均通过；根回归最新为 `718 pass / 20 skip / 0 fail`。所有测试为本地 fixture/mock，无真实 Provider/TTS/Veyra/网络/VPS/Git。
+- 本条只申请该切片的独立 `ACCEPTED` 审计，不改变正式 `E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT`，也不授权发布其它工作区改动。
+
+## 2026-09-16 对白引用保真窄片发布范围（待独立审计）
+
+- 本条将可发布范围进一步收窄为 `packages/creative-planning/src/index.ts` 中的对白引用处理 hunk，以及 `packages/creative-planning/tests/semantic-planner.test.ts` 中对应的四个回归夹具。它只修复带既有 spoken cue 的引号归属、无 cue 视觉引号保留、长引号后的视觉源尾部保真和无冒号口播标签边界。
+- `packages/domain/src/narrative-events.ts`、其测试、`deterministic-planner.test.ts` 以及 `index.ts` 的全局上下文/分段规划 hunk 明确排除；那些改动继续留在工作区，不能随本条提交或被本条验收覆盖。中文全局标签仍为既有平台兼容语法，保持 `DEFERRED/UNREFERENCED`，不宣称为三个固定上游的逐字实现。
+- 来源仅声明 Huobao `storyboard-breaker/SKILL.md` 与 `prompt-generator/video-prompt/SKILL.md` 对 description/dialogue 分离、按源顺序保留和不新增/不遗漏对白的薄适配；不声明 Huobao、Seedance、OpenMontage 提供了本地解析器或压缩算法。
+- 早期工作区定向计数 `95/95` 已由后续 clean cache-only replay `89/89 pass / 0 fail / 0 skip` supersede；两包 typecheck 与 `git diff --check` 仍通过。测试为本地 fixture/mock，无真实 Provider/TTS/Veyra/网络/VPS；提交前以缓存区中的上述两文件 hunk 为唯一窄片证据。
+- 本条仅申请对白窄片独立 `ACCEPTED` 审计；不改变正式 `E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT`，不授权发布其它工作区、全局 parser 或部署改动。
+
+## 2026-09-16 对白引用保真窄片独立验收（ACCEPTED）
+
+- 独立纠察已复核缓存区范围，仅包含对白引用代码、四个对应回归测试和窄片审计文档；global parser、domain、deterministic、task/billing、基础设施及未跟踪文件均未进入缓存区。
+- clean cache-only replay 在临时干净工作树中得到 creative-planning `89/89 pass / 0 fail / 0 skip`；contracts/domain 预构建、`git diff --cached --check` 均通过。该证据不使用脏工作区 `718/20` 或全量 `95/95` 计数替代。
+- 来源边界为 Huobao 固定 commit 的 storyboard-breaker / prompt-generator 对对白与可见 description 分离、源顺序保留和不新增/遗漏对白的薄适配；不宣称三个上游提供本地 parser 或通用压缩算法。
+- 本条只将上述对白窄片标记为 `ACCEPTED`。正式 `E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT` 保持不变，其余工作区改动继续等待各自独立审计。

@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   DeterministicPlanningModel,
+  buildSemanticSourceEvidence,
   type LlmFreeformPlanningContext,
   LlmFreeformPromptPlanningModel,
   LlmSemanticPlanningError,
@@ -272,6 +273,51 @@ test("semantic planner preserves every authored multiline dialogue line by sourc
     () => new LlmSemanticPlanningModel(() => changed).plan(dialogueInput),
     (error: unknown) => error instanceof LlmSemanticPlanningError && error.code === "LLM_SOURCE_COVERAGE_INVALID",
   );
+});
+
+test("long quoted dialogue does not swallow the following visual source", () => {
+  const authoredLine = "甲乙丙丁戊己庚辛壬癸".repeat(180);
+  const visualTail = "画面描述：顾问打开风险分析面板并停在清晰的正面构图。";
+  const evidence = buildSemanticSourceEvidence({
+    sourceText: `林岚开口说：“${authoredLine}”\n${visualTail}`,
+  });
+
+  assert.equal(evidence.dialogueLines[0]?.text, authoredLine);
+  assert.ok(evidence.sourceUnits.some((unit) => unit.text === visualTail));
+  assert.equal(evidence.sourceUnits.some((unit) => unit.text.includes(authoredLine)), false);
+});
+
+test("unlabelled visual copy, sound effects, and reference filenames keep their quoted source facts", () => {
+  const sourceText = "画面文字显示“焕新配方”，音效“叮”响起。读取文件名\"hero.mp4\"作为参考图，画面出现\"CTA\"。";
+  const evidence = buildSemanticSourceEvidence({ sourceText });
+
+  assert.ok(evidence.sourceUnits.some((unit) => unit.text.includes("画面文字显示“焕新配方”，音效“叮”响起")));
+  assert.ok(evidence.sourceUnits.some((unit) => unit.text.includes("文件名\"hero.mp4\"")));
+  assert.ok(evidence.sourceUnits.some((unit) => unit.text.includes("画面出现\"CTA\"")));
+  assert.deepEqual(evidence.dialogueLines, []);
+});
+
+test("spoken-cue quotes leave the visual source while remaining in the dialogue evidence", () => {
+  const sourceText = "林岚开口说：“这句只属于对白。”\n口播：“另一句也只属于口播。”\n画面描述：她抬手展示产品。";
+  const evidence = buildSemanticSourceEvidence({ sourceText });
+
+  assert.deepEqual(evidence.dialogueLines, [
+    { sequence: 1, text: "这句只属于对白。" },
+    { sequence: 2, text: "另一句也只属于口播。" },
+  ]);
+  assert.ok(evidence.sourceUnits.some((unit) => unit.text.includes("她抬手展示产品")));
+  assert.equal(evidence.sourceUnits.some((unit) => unit.text.includes("这句只属于对白")), false);
+  assert.equal(evidence.sourceUnits.some((unit) => unit.text.includes("另一句也只属于口播")), false);
+});
+
+test("punctuation-free narration labels do not leak into visual source", () => {
+  const sourceText = "口播文案为“只属于旁白的一句。”\n视觉描述：顾问抬手展示产品。";
+  const evidence = buildSemanticSourceEvidence({ sourceText });
+
+  assert.deepEqual(evidence.dialogueLines, [{ sequence: 1, text: "只属于旁白的一句。" }]);
+  assert.ok(evidence.sourceUnits.some((unit) => unit.text.includes("顾问抬手展示产品")));
+  assert.equal(evidence.sourceUnits.some((unit) => unit.text.includes("只属于旁白的一句")), false);
+  assert.equal(evidence.sourceUnits.some((unit) => unit.text.includes("口播文案为")), false);
 });
 
 test("labelled narration keeps repeated authored lines in source order and delivery cues", async () => {
