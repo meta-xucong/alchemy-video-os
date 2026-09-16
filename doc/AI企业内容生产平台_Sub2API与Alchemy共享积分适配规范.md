@@ -1,6 +1,6 @@
 # AI企业内容生产平台：Sub2API 与 Alchemy 共享积分适配规范
 
-> **2026-09-09 计费口径更新**：本文件的账户、原子 debit、receipt 和幂等边界继续有效；视频及未来图片的 Video OS 服务费按《AI企业内容生产平台_轻量视频倍率计费方案.md》计算：`actual_cost × 0.20 + 1`。Sub2API 的 `actual_cost` 保持 1 倍原生费用，Video OS 只 debit 额外服务费。旧的固定 `video:<profile>` 金额只作为兼容历史快照，不得被当作真实 AISelf 用量。
+> **2026-09-16 计费口径更新**：本文件的账户、原子 debit、receipt 和幂等边界继续有效。固定档位模式以《AI企业内容生产平台_固定档位计费与管理员设置控制台开发文档.md》为当前方案：Video OS 按管理员设置的模型/分辨率/时长精确档位，在成功产物后 debit 固定 `chargeAmount`；Sub2API 原生余额和用量仍由其自身维护，不改写、不重复读取作为固定档位价格。`actual_cost × 0.20 + 1` 仅作为历史 `USAGE_PLUS_SERVICE_FEE` 兼容模式，旧固定 `video:<profile>` 金额只作为历史快照。
 
 > **2026-09-01 当前口径**：本轮只授权本机 Aiself Grok/Doubao 产物对照，不启用本文的 Veyra/共享积分路径。自动旁白不要求用户上传音频/样音；默认/CI 仍为 Mock，真实凭据不写入仓库。
 

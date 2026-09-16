@@ -1,5 +1,7 @@
 # 轻量媒体服务费计费方案
 
+> **2026-09-16 计费模式说明**：本文件原定的 `USAGE_PLUS_SERVICE_FEE`（`actual_cost × 0.20 + 1`）保留为历史兼容模式。当前固定档位方案以《AI企业内容生产平台_固定档位计费与管理员设置控制台开发文档.md》为准：显式设置 `VIDEO_BILLING_MODE=fixed_tiers` 后，管理员在 `/settings/billing` 维护模型、分辨率、时长和固定积分，任务只精确匹配一个档位并在成功产物后扣费；没有匹配档位时在 Provider 提交前阻断。Sub2API 原生余额/用量接口不修改，固定档位是 Video OS 自己的客户扣费规则。
+
 ## 目标
 
 视频（以及未来接入同一计费端口的图片）任务只有在产物成功生成、下载并通过媒体校验后，才读取 AISelf/Sub2API 为该 Provider request 记录的真实 `actual_cost`。Sub2API 的真实费用保持 1 倍；Video OS 只增加一笔产品服务费：
@@ -42,7 +44,7 @@ VIDEO_BILLING_FIXED_FEE=1
 VIDEO_BILLING_MODEL_RATES_JSON=
 ```
 
-Studio 的“计费配置”页面和 `GET /api/v1/me/billing-policy` 只读展示上述服务端环境的有效值；它们不提供浏览器写入能力。启用真实扣费时必须同时开启 `VEYRA_CREDIT_ENABLED=true`、注入 Veyra bridge/Token，并重启 Control API 与 Worker；任务创建时冻结规则，不能在运行中被配置变化改写。
+在历史 `USAGE_PLUS_SERVICE_FEE` 模式下，Studio 的“计费配置”页面和 `GET /api/v1/me/billing-policy` 只读展示服务端环境的有效值；该模式不提供浏览器写入能力。当前 `FIXED_TIERS` 模式的管理员写入口和精确档位规则以《AI企业内容生产平台_固定档位计费与管理员设置控制台开发文档.md》为准。启用真实扣费时必须同时开启 `VEYRA_CREDIT_ENABLED=true`、注入 Veyra bridge/Token，并重启 Control API 与 Worker；任务创建时冻结规则，不能在运行中被配置变化改写。
 
 任务快照中的 `usagePricing.multiplier` 表示额外倍率，`usagePricing.fixedFee` 表示额外固定费。旧的 `VIDEO_BILLING_CHARGE_AMOUNT` 固定金额路径保持兼容，但不能与新的 usage 规则同时启用。
 只要服务端配置了任一真实计费规则而 Veyra bridge 或已验证 AISelf 身份缺失，Control API 必须以 `CREDIT_UNAVAILABLE`/`AUTH_UNAVAILABLE` 阻断新任务；不能生成后再静默跳过 Video OS 服务费。全局倍率优先于模型映射，未配置规则时才保持本地无计费模式。

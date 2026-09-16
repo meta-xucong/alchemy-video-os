@@ -1090,6 +1090,7 @@ test("OpenAPI declares the C03 control-plane surface before later route implemen
   const openApi = createContractDocuments().openApi as { paths: Record<string, unknown> };
 
   assert.deepEqual(Object.keys(openApi.paths).sort(), [
+    "/api/v1/admin/billing-settings",
     "/api/v1/assets/{asset_id}",
     "/api/v1/assets/{asset_id}/confirm-upload",
     "/api/v1/assets/{asset_id}/download-url",

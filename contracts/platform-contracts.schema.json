@@ -6927,6 +6927,7 @@
           "enum": [
             "DISABLED",
             "FIXED_AMOUNT",
+            "FIXED_TIERS",
             "USAGE_PLUS_SERVICE_FEE"
           ]
         },
@@ -6975,8 +6976,57 @@
           "type": "string",
           "enum": [
             "SERVER_ENVIRONMENT",
+            "SERVER_SETTINGS",
             "DISABLED"
           ]
+        },
+        "fixed_tiers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "resolution": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32
+              },
+              "duration_seconds": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              "charge_amount": {
+                "$ref": "#/definitions/BillingPolicySummary/properties/charge_amount/anyOf/0"
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "model",
+              "resolution",
+              "duration_seconds",
+              "charge_amount",
+              "enabled"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [
@@ -7004,6 +7054,7 @@
               "enum": [
                 "DISABLED",
                 "FIXED_AMOUNT",
+                "FIXED_TIERS",
                 "USAGE_PLUS_SERVICE_FEE"
               ]
             },
@@ -7052,8 +7103,57 @@
               "type": "string",
               "enum": [
                 "SERVER_ENVIRONMENT",
+                "SERVER_SETTINGS",
                 "DISABLED"
               ]
+            },
+            "fixed_tiers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "model": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "resolution": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  },
+                  "duration_seconds": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  },
+                  "charge_amount": {
+                    "$ref": "#/definitions/BillingPolicySummarySuccess/properties/data/properties/charge_amount/anyOf/0"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "key",
+                  "label",
+                  "model",
+                  "resolution",
+                  "duration_seconds",
+                  "charge_amount",
+                  "enabled"
+                ],
+                "additionalProperties": false
+              }
             }
           },
           "required": [
@@ -7075,6 +7175,252 @@
       "required": [
         "data",
         "request_id"
+      ],
+      "additionalProperties": false
+    },
+    "FixedVideoBillingTier": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "resolution": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "duration_seconds": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "charge_amount": {
+          "type": "string",
+          "pattern": "^(?:0|[1-9]\\d*)(?:\\.\\d{1,8})?$"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "model",
+        "resolution",
+        "duration_seconds",
+        "charge_amount",
+        "enabled"
+      ],
+      "additionalProperties": false
+    },
+    "FixedVideoBillingSettings": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "tiers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "resolution": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32
+              },
+              "duration_seconds": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              "charge_amount": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9]\\d*)(?:\\.\\d{1,8})?$"
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "model",
+              "resolution",
+              "duration_seconds",
+              "charge_amount",
+              "enabled"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "tiers"
+      ],
+      "additionalProperties": false
+    },
+    "FixedVideoBillingSettingsSuccess": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "tiers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "model": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "resolution": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  },
+                  "duration_seconds": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  },
+                  "charge_amount": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9]\\d*)(?:\\.\\d{1,8})?$"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "key",
+                  "label",
+                  "model",
+                  "resolution",
+                  "duration_seconds",
+                  "charge_amount",
+                  "enabled"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "enabled",
+            "tiers"
+          ],
+          "additionalProperties": false
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^req_[0-9A-HJKMNP-TV-Z]{26}$"
+        }
+      },
+      "required": [
+        "data",
+        "request_id"
+      ],
+      "additionalProperties": false
+    },
+    "FixedVideoBillingSettingsUpdate": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "tiers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "resolution": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32
+              },
+              "duration_seconds": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              "charge_amount": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9]\\d*)(?:\\.\\d{1,8})?$"
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "model",
+              "resolution",
+              "duration_seconds",
+              "charge_amount",
+              "enabled"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "enabled",
+        "tiers"
       ],
       "additionalProperties": false
     },

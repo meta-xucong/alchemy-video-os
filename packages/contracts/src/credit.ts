@@ -50,8 +50,58 @@ export const PublicCreditAccountSchema = CreditAccountSchema
  * policy is loaded from the server environment; no credential or account
  * identifier is exposed and the browser cannot mutate it.
  */
-export const BillingPolicySourceSchema = z.enum(["SERVER_ENVIRONMENT", "DISABLED"]);
-export const BillingPolicyModeSchema = z.enum(["DISABLED", "FIXED_AMOUNT", "USAGE_PLUS_SERVICE_FEE"]);
+export const BillingPolicySourceSchema = z.enum(["SERVER_ENVIRONMENT", "SERVER_SETTINGS", "DISABLED"]);
+export const BillingPolicyModeSchema = z.enum(["DISABLED", "FIXED_AMOUNT", "FIXED_TIERS", "USAGE_PLUS_SERVICE_FEE"]);
+
+/**
+ * A server-owned fixed price row.  The generation request must match all
+ * three provider dimensions exactly; no range or nearest-tier semantics are
+ * implied by this shape.
+ */
+export const FixedVideoBillingTierSchema = z.object({
+  key: z.string().trim().min(1).max(128),
+  label: z.string().trim().min(1).max(200),
+  model: z.string().trim().min(1).max(128),
+  resolution: z.string().trim().min(1).max(32),
+  duration_seconds: z.number().int().positive(),
+  charge_amount: PositiveCreditAmountSchema,
+  enabled: z.boolean(),
+}).strict();
+
+const validateFixedTierIdentity = (value: { tiers: readonly z.infer<typeof FixedVideoBillingTierSchema>[] }, context: z.RefinementCtx) => {
+  const tiers = value.tiers;
+  const keys = new Set<string>();
+  const identities = new Set<string>();
+  tiers.forEach((tier, index) => {
+    if (keys.has(tier.key)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["tiers", index, "key"], message: "Fixed billing tier keys must be unique." });
+    }
+    keys.add(tier.key);
+    if (!tier.enabled) return;
+    const identity = `${tier.model}\u0000${tier.resolution}\u0000${tier.duration_seconds}`;
+    if (identities.has(identity)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["tiers", index], message: "Enabled fixed billing tiers must not share the same model, resolution, and duration." });
+    }
+    identities.add(identity);
+  });
+};
+
+const fixedVideoBillingSettingsShape = {
+  enabled: z.boolean(),
+  tiers: z.array(FixedVideoBillingTierSchema),
+} as const;
+
+export const FixedVideoBillingSettingsSchema = z.object(fixedVideoBillingSettingsShape).strict().superRefine(validateFixedTierIdentity);
+
+export const FixedVideoBillingSettingsUpdateSchema = FixedVideoBillingSettingsSchema;
+
+/** Private immutable copy carried by a ProductionRun budget guard. */
+export const FixedVideoBillingPolicySnapshotSchema = z.object({
+  ...fixedVideoBillingSettingsShape,
+  provider_model: z.string().trim().min(1).max(128),
+  external_user_id: z.number().int().positive(),
+}).strict().superRefine(validateFixedTierIdentity);
+
 export const BillingPolicySummarySchema = z.object({
   enabled: z.boolean(),
   mode: BillingPolicyModeSchema,
@@ -60,6 +110,7 @@ export const BillingPolicySummarySchema = z.object({
   charge_amount: PositiveCreditAmountSchema.nullable(),
   model_multipliers: z.record(z.string().min(1).max(128), PositiveCreditAmountSchema),
   source: BillingPolicySourceSchema,
+  fixed_tiers: z.array(FixedVideoBillingTierSchema).optional(),
 }).strict();
 export type BillingPolicySummary = z.infer<typeof BillingPolicySummarySchema>;
 
@@ -129,6 +180,10 @@ export type CreditDebitResult = z.infer<typeof CreditDebitResultSchema>;
 export type BillingUsagePricing = z.infer<typeof BillingUsagePricingSchema>;
 export type BillingRuleSnapshot = z.infer<typeof BillingRuleSnapshotSchema>;
 export type BillingChargeRequest = z.infer<typeof BillingChargeRequestSchema>;
+export type FixedVideoBillingTier = z.infer<typeof FixedVideoBillingTierSchema>;
+export type FixedVideoBillingSettings = z.infer<typeof FixedVideoBillingSettingsSchema>;
+export type FixedVideoBillingSettingsUpdate = z.infer<typeof FixedVideoBillingSettingsUpdateSchema>;
+export type FixedVideoBillingPolicySnapshot = z.infer<typeof FixedVideoBillingPolicySnapshotSchema>;
 
 export const decimalToScaledUnits = (value: string): bigint => {
   const parsed = CreditDecimalSchema.parse(value);

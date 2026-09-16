@@ -11,6 +11,7 @@ import { createApp } from "./app.js";
 import { HttpPixabayMusicClient } from "./pixabay-music.js";
 import { VideoSessionCodec, VideoSessionIdentityAdapter } from "./veyra-session.js";
 import { createControlProductionTaskRunInputSnapshotFactory } from "./production-video-input-snapshot.js";
+import { createFixedVideoBillingSettingsStore } from "./fixed-billing-settings.js";
 
 const port = Number(process.env.CONTROL_API_PORT ?? 3032);
 const databaseUrl = process.env.DATABASE_URL;
@@ -51,6 +52,12 @@ const referenceDeliverySigningKey = process.env.REFERENCE_DELIVERY_SIGNING_KEY;
 const referenceVisionAnalyzer = createReferenceVisionAnalyzerFromEnv();
 const veyraAuthEnabled = process.env.VEYRA_AUTH_ENABLED === "true";
 const veyraCreditEnabled = process.env.VEYRA_CREDIT_ENABLED === "true";
+type VideoBillingMode = "fixed_tiers" | "usage_plus_service_fee" | "legacy_fixed_amount";
+const configuredVideoBillingMode = process.env.VIDEO_BILLING_MODE?.trim().toLowerCase();
+if (configuredVideoBillingMode && !["fixed_tiers", "usage_plus_service_fee", "legacy_fixed_amount"].includes(configuredVideoBillingMode)) {
+  throw new Error("VIDEO_BILLING_MODE must be fixed_tiers, usage_plus_service_fee, or legacy_fixed_amount.");
+}
+const videoBillingMode = configuredVideoBillingMode as VideoBillingMode | undefined;
 let veyraBridge: VideoVeyraBridgeAdapter | undefined;
 let videoSessionCodec: VideoSessionCodec | undefined;
 let identity: VideoSessionIdentityAdapter | undefined;
@@ -67,22 +74,29 @@ if (veyraAuthEnabled) {
   const creditAdapter = new VeyraSub2ApiCreditAdapter({ transport, internalToken });
   veyraBridge = new VideoVeyraBridgeAdapter(identityAdapter, creditAdapter);
   if (veyraCreditEnabled) {
-    const billingChargeAmount = process.env.VIDEO_BILLING_CHARGE_AMOUNT;
-    const billingModelRates = parseVideoBillingModelRates(process.env.VIDEO_BILLING_MODEL_RATES_JSON);
-    const surchargeMultiplier = parseVideoBillingSurchargeMultiplier(process.env.VIDEO_BILLING_SURCHARGE_MULTIPLIER);
-    const fixedFee = parseVideoBillingFixedFee(process.env.VIDEO_BILLING_FIXED_FEE);
-    const usagePricingConfigured = Object.keys(billingModelRates).length > 0 || surchargeMultiplier !== undefined;
-    if (usagePricingConfigured && fixedFee === undefined) {
-      throw new Error("VIDEO_BILLING_SURCHARGE_MULTIPLIER or VIDEO_BILLING_MODEL_RATES_JSON requires VIDEO_BILLING_FIXED_FEE.");
-    }
-    if (fixedFee !== undefined && !usagePricingConfigured) {
-      throw new Error("VIDEO_BILLING_FIXED_FEE requires VIDEO_BILLING_SURCHARGE_MULTIPLIER or VIDEO_BILLING_MODEL_RATES_JSON.");
-    }
-    if ((!billingChargeAmount || billingChargeAmount === "0") && !usagePricingConfigured) {
-      throw new Error("VIDEO_BILLING_CHARGE_AMOUNT, VIDEO_BILLING_SURCHARGE_MULTIPLIER, or VIDEO_BILLING_MODEL_RATES_JSON is required when VEYRA_CREDIT_ENABLED=true.");
-    }
-    if (billingChargeAmount && billingChargeAmount !== "0" && usagePricingConfigured) {
-      throw new Error("VIDEO_BILLING_CHARGE_AMOUNT cannot be combined with usage-based Video OS service fees.");
+    const billingMode = process.env.VIDEO_BILLING_MODE?.trim().toLowerCase();
+    if (billingMode === "fixed_tiers") {
+      // The administrator console may be used to enter the first table after
+      // startup, so an absent/disabled file is handled by the Control API
+      // preflight rather than preventing the process from booting.
+    } else {
+      const billingChargeAmount = process.env.VIDEO_BILLING_CHARGE_AMOUNT;
+      const billingModelRates = parseVideoBillingModelRates(process.env.VIDEO_BILLING_MODEL_RATES_JSON);
+      const surchargeMultiplier = parseVideoBillingSurchargeMultiplier(process.env.VIDEO_BILLING_SURCHARGE_MULTIPLIER);
+      const fixedFee = parseVideoBillingFixedFee(process.env.VIDEO_BILLING_FIXED_FEE);
+      const usagePricingConfigured = Object.keys(billingModelRates).length > 0 || surchargeMultiplier !== undefined;
+      if (usagePricingConfigured && fixedFee === undefined) {
+        throw new Error("VIDEO_BILLING_SURCHARGE_MULTIPLIER or VIDEO_BILLING_MODEL_RATES_JSON requires VIDEO_BILLING_FIXED_FEE.");
+      }
+      if (fixedFee !== undefined && !usagePricingConfigured) {
+        throw new Error("VIDEO_BILLING_FIXED_FEE requires VIDEO_BILLING_SURCHARGE_MULTIPLIER or VIDEO_BILLING_MODEL_RATES_JSON.");
+      }
+      if ((!billingChargeAmount || billingChargeAmount === "0") && !usagePricingConfigured) {
+        throw new Error("VIDEO_BILLING_CHARGE_AMOUNT, VIDEO_BILLING_SURCHARGE_MULTIPLIER, or VIDEO_BILLING_MODEL_RATES_JSON is required when VEYRA_CREDIT_ENABLED=true.");
+      }
+      if (billingChargeAmount && billingChargeAmount !== "0" && usagePricingConfigured) {
+        throw new Error("VIDEO_BILLING_CHARGE_AMOUNT cannot be combined with usage-based Video OS service fees.");
+      }
     }
   }
   videoSessionCodec = new VideoSessionCodec(sessionSecret);
@@ -122,6 +136,8 @@ const app = createApp({
   ...(veyraCreditEnabled && process.env.VIDEO_BILLING_FIXED_FEE
     ? { videoBillingFixedFee: parseVideoBillingFixedFee(process.env.VIDEO_BILLING_FIXED_FEE) }
     : {}),
+  ...(videoBillingMode ? { videoBillingMode } : {}),
+  fixedVideoBillingSettings: createFixedVideoBillingSettingsStore(process.env.VIDEO_BILLING_SETTINGS_PATH),
   ...(referenceDeliverySigningKey ? { referenceDeliveryTokenCodec: new ReferenceDeliveryTokenCodec(referenceDeliverySigningKey) } : {}),
   ...(referenceVisionAnalyzer ? { referenceVisionAnalyzer } : {}),
   pixabayMusic,

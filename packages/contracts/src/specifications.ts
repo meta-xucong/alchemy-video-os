@@ -2,7 +2,7 @@ import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
 import { ApiErrorSchema, ApiFailureEnvelopeSchema, successEnvelope } from "./errors.js";
-import { BillingPolicySummarySchema, PublicCreditAccountSchema } from "./credit.js";
+import { BillingPolicySummarySchema, FixedVideoBillingSettingsSchema, FixedVideoBillingSettingsUpdateSchema, FixedVideoBillingTierSchema, PublicCreditAccountSchema } from "./credit.js";
 import { AudioCapabilitiesSchema, PixabayMusicImportCommandSchema, PixabayMusicImportSchema, PixabayMusicImportSuccessSchema } from "./audio.js";
 import { InternalCreativePlanningQueueMessageSchema, InternalDocumentConversionQueueMessageSchema, InternalDocumentKnowledgeQueueMessageSchema, InternalEventEnvelopeSchema, InternalTaskRunQueueMessageSchema, PublicWorkspaceEventEnvelopeSchema } from "./events.js";
 import { ApproveDeliveryPlanRevisionCommandSchema, CreateDeliveryPlanRevisionCommandSchema, DeliveryPlanRevisionSchema } from "./delivery-preflight.js";
@@ -118,6 +118,10 @@ export const publicContractSchemas = {
   CreditAccountSummarySuccess: successEnvelope(PublicCreditAccountSchema),
   BillingPolicySummary: BillingPolicySummarySchema,
   BillingPolicySummarySuccess: successEnvelope(BillingPolicySummarySchema),
+  FixedVideoBillingTier: FixedVideoBillingTierSchema,
+  FixedVideoBillingSettings: FixedVideoBillingSettingsSchema,
+  FixedVideoBillingSettingsSuccess: successEnvelope(FixedVideoBillingSettingsSchema),
+  FixedVideoBillingSettingsUpdate: FixedVideoBillingSettingsUpdateSchema,
   HealthSuccess: successEnvelope(HealthSchema),
   Shot: ShotSchema,
   ShotSuccess: successEnvelope(ShotSchema),
@@ -234,6 +238,33 @@ export const createOpenApiDocument = (): JsonSchema => ({
           "200": response("BillingPolicySummarySuccess", "Effective server-side billing policy"),
           "403": response("ApiFailure", "Workspace access denied"),
           "503": response("ApiFailure", "Billing policy unavailable"),
+        },
+      },
+    },
+    "/api/v1/admin/billing-settings": {
+      get: {
+        operationId: "getAdminBillingSettings",
+        responses: {
+          "200": response("FixedVideoBillingSettingsSuccess", "Fixed tier billing settings"),
+          "403": response("ApiFailure", "Administrator access required"),
+          "503": response("ApiFailure", "Identity or credit authority unavailable"),
+        },
+      },
+      put: {
+        operationId: "updateAdminBillingSettings",
+        parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/FixedVideoBillingSettingsUpdate" } },
+          },
+        },
+        responses: {
+          "200": response("FixedVideoBillingSettingsSuccess", "Fixed tier billing settings updated"),
+          "400": response("ApiFailure", "Validation failed"),
+          "403": response("ApiFailure", "Administrator access required"),
+          "409": response("ApiFailure", "Idempotency conflict"),
+          "503": response("ApiFailure", "Identity or credit authority unavailable"),
         },
       },
     },

@@ -112,14 +112,26 @@ export type CreditAccountSummary = {
 export type CreditAccountSummaryResponse = { data: CreditAccountSummary; request_id: string };
 export type BillingPolicySummary = {
   enabled: boolean;
-  mode: "DISABLED" | "FIXED_AMOUNT" | "USAGE_PLUS_SERVICE_FEE";
+  mode: "DISABLED" | "FIXED_AMOUNT" | "FIXED_TIERS" | "USAGE_PLUS_SERVICE_FEE";
   surcharge_multiplier: string | null;
   fixed_fee: string | null;
   charge_amount: string | null;
   model_multipliers: Record<string, string>;
-  source: "SERVER_ENVIRONMENT" | "DISABLED";
+  source: "SERVER_ENVIRONMENT" | "SERVER_SETTINGS" | "DISABLED";
+  fixed_tiers?: FixedVideoBillingTier[];
 };
 export type BillingPolicySummaryResponse = { data: BillingPolicySummary; request_id: string };
+export type FixedVideoBillingTier = {
+  key: string;
+  label: string;
+  model: string;
+  resolution: string;
+  duration_seconds: number;
+  charge_amount: string;
+  enabled: boolean;
+};
+export type FixedVideoBillingSettings = { enabled: boolean; tiers: FixedVideoBillingTier[] };
+export type FixedVideoBillingSettingsResponse = { data: FixedVideoBillingSettings; request_id: string };
 export type ProjectDetailResponse = {
   data: {
     project: Project;
@@ -383,6 +395,13 @@ export function useControlApi() {
   const history = () => $fetch<ProjectHistoryResponse>("/api/v1/me/history");
   const credits = () => $fetch<CreditAccountSummaryResponse>("/api/v1/me/credits");
   const billingPolicy = () => $fetch<BillingPolicySummaryResponse>("/api/v1/me/billing-policy");
+  const adminBillingSettings = () => $fetch<FixedVideoBillingSettingsResponse>("/api/v1/admin/billing-settings");
+  const updateAdminBillingSettings = (input: FixedVideoBillingSettings, idempotencyKey: string) =>
+    $fetch<FixedVideoBillingSettingsResponse>("/api/v1/admin/billing-settings", {
+      method: "PUT",
+      headers: commandHeaders(idempotencyKey),
+      body: input,
+    });
   const project = (projectId: string, signal?: AbortSignal) => $fetch<ProjectDetailResponse>(`/api/v1/projects/${projectId}`, { signal });
   const audioCapabilities = (projectId: string) => $fetch<AudioCapabilitiesResponse>(`/api/v1/projects/${projectId}/audio-capabilities`);
   const importPixabayMusic = (projectId: string, input: { query: string; min_duration?: number; max_duration?: number }, idempotencyKey: string) =>
@@ -565,6 +584,8 @@ export function useControlApi() {
     history,
     credits,
     billingPolicy,
+    adminBillingSettings,
+    updateAdminBillingSettings,
     project,
     audioCapabilities,
     importPixabayMusic,

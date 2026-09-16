@@ -30,14 +30,18 @@ test("account bar and project history use public, provider-neutral state", () =>
   assert.doesNotMatch(source, /provider_request_id|object_key|localStorage|Veyra/i);
 });
 
-test("billing settings is a read-only public policy view", () => {
+test("billing settings keeps a public summary and an admin-only fixed-tier editor", () => {
   const page = read("app/pages/settings/billing.vue");
   const api = read("app/composables/useControlApi.ts");
   assert.match(page, /计费配置/);
   assert.match(page, /服务端环境变量/);
-  assert.match(page, /需要重启 Control API 和 Worker/);
+  assert.match(page, /固定档位/);
+  assert.match(page, /管理员可编辑/);
+  assert.match(page, /保存固定档位/);
   assert.match(page, /fetchBillingPolicy/);
   assert.match(api, /billingPolicy[\s\S]*\/api\/v1\/me\/billing-policy/);
-  assert.doesNotMatch(page, /method:\s*["'](?:POST|PATCH|PUT|DELETE)/i);
+  assert.match(api, /adminBillingSettings[\s\S]*\/api\/v1\/admin\/billing-settings/);
+  assert.match(api, /updateAdminBillingSettings[\s\S]*method:\s*"PUT"/i);
+  assert.match(page, /isAdmin/);
   assert.doesNotMatch(page, /localStorage|Veyra|token|internal/i);
 });

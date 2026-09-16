@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   ApplicationErrorCodeSchema,
   BillingChargeRequestSchema,
+  FixedVideoBillingSettingsSchema,
   CreditDebitInputSchema,
   CreditProviderSchema,
   VeyraExternalIdentitySchema,
@@ -105,6 +106,30 @@ test("usage pricing can freeze a Video OS surcharge and fixed service fee togeth
       usagePricing: { model: "grok-imagine-video-1.5", multiplier: "0.20", fixedFee: "-1" },
       source: "media:invalid-fixed-fee",
     },
+  }));
+});
+
+test("fixed-tier settings require positive prices and unambiguous exact dimensions", () => {
+  const settings = FixedVideoBillingSettingsSchema.parse({
+    enabled: true,
+    tiers: [{
+      key: "video:grok:480p:5",
+      label: "Grok 480p 5 秒",
+      model: "grok-imagine-video-1.5",
+      resolution: "480p",
+      duration_seconds: 5,
+      charge_amount: "1.2",
+      enabled: true,
+    }],
+  });
+  assert.equal(settings.tiers[0]?.charge_amount, "1.2");
+  assert.throws(() => FixedVideoBillingSettingsSchema.parse({
+    enabled: true,
+    tiers: [settings.tiers[0], { ...settings.tiers[0], key: "video:grok:480p:5-copy" }],
+  }));
+  assert.throws(() => FixedVideoBillingSettingsSchema.parse({
+    enabled: true,
+    tiers: [{ ...settings.tiers[0], charge_amount: "0" }],
   }));
 });
 

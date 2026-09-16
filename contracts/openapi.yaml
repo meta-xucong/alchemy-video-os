@@ -102,6 +102,69 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApiFailure"
+  /api/v1/admin/billing-settings:
+    get:
+      operationId: getAdminBillingSettings
+      responses:
+        "200":
+          description: Fixed tier billing settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FixedVideoBillingSettingsSuccess"
+        "403":
+          description: Administrator access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiFailure"
+        "503":
+          description: Identity or credit authority unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiFailure"
+    put:
+      operationId: updateAdminBillingSettings
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FixedVideoBillingSettingsUpdate"
+      responses:
+        "200":
+          description: Fixed tier billing settings updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FixedVideoBillingSettingsSuccess"
+        "400":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiFailure"
+        "403":
+          description: Administrator access required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiFailure"
+        "409":
+          description: Idempotency conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiFailure"
+        "503":
+          description: Identity or credit authority unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiFailure"
   /api/v1/workspaces:
     get:
       operationId: listWorkspaces
@@ -6590,6 +6653,7 @@ components:
           enum:
             - DISABLED
             - FIXED_AMOUNT
+            - FIXED_TIERS
             - USAGE_PLUS_SERVICE_FEE
         surcharge_multiplier:
           type: string
@@ -6611,7 +6675,46 @@ components:
           type: string
           enum:
             - SERVER_ENVIRONMENT
+            - SERVER_SETTINGS
             - DISABLED
+        fixed_tiers:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                minLength: 1
+                maxLength: 128
+              label:
+                type: string
+                minLength: 1
+                maxLength: 200
+              model:
+                type: string
+                minLength: 1
+                maxLength: 128
+              resolution:
+                type: string
+                minLength: 1
+                maxLength: 32
+              duration_seconds:
+                type: integer
+                exclusiveMinimum: true
+                minimum: 0
+              charge_amount:
+                $ref: "#/definitions/BillingPolicySummary/properties/charge_amount"
+              enabled:
+                type: boolean
+            required:
+              - key
+              - label
+              - model
+              - resolution
+              - duration_seconds
+              - charge_amount
+              - enabled
+            additionalProperties: false
       required:
         - enabled
         - mode
@@ -6634,6 +6737,7 @@ components:
               enum:
                 - DISABLED
                 - FIXED_AMOUNT
+                - FIXED_TIERS
                 - USAGE_PLUS_SERVICE_FEE
             surcharge_multiplier:
               type: string
@@ -6658,7 +6762,47 @@ components:
               type: string
               enum:
                 - SERVER_ENVIRONMENT
+                - SERVER_SETTINGS
                 - DISABLED
+            fixed_tiers:
+              type: array
+              items:
+                type: object
+                properties:
+                  key:
+                    type: string
+                    minLength: 1
+                    maxLength: 128
+                  label:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+                  model:
+                    type: string
+                    minLength: 1
+                    maxLength: 128
+                  resolution:
+                    type: string
+                    minLength: 1
+                    maxLength: 32
+                  duration_seconds:
+                    type: integer
+                    exclusiveMinimum: true
+                    minimum: 0
+                  charge_amount:
+                    $ref: "#/definitions/BillingPolicySummarySuccess/properties/data/properties/cha\
+                      rge_amount"
+                  enabled:
+                    type: boolean
+                required:
+                  - key
+                  - label
+                  - model
+                  - resolution
+                  - duration_seconds
+                  - charge_amount
+                  - enabled
+                additionalProperties: false
           required:
             - enabled
             - mode
@@ -6674,6 +6818,197 @@ components:
       required:
         - data
         - request_id
+      additionalProperties: false
+    FixedVideoBillingTier:
+      type: object
+      properties:
+        key:
+          type: string
+          minLength: 1
+          maxLength: 128
+        label:
+          type: string
+          minLength: 1
+          maxLength: 200
+        model:
+          type: string
+          minLength: 1
+          maxLength: 128
+        resolution:
+          type: string
+          minLength: 1
+          maxLength: 32
+        duration_seconds:
+          type: integer
+          exclusiveMinimum: true
+          minimum: 0
+        charge_amount:
+          type: string
+          pattern: ^(?:0|[1-9]\d*)(?:\.\d{1,8})?$
+        enabled:
+          type: boolean
+      required:
+        - key
+        - label
+        - model
+        - resolution
+        - duration_seconds
+        - charge_amount
+        - enabled
+      additionalProperties: false
+    FixedVideoBillingSettings:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        tiers:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                minLength: 1
+                maxLength: 128
+              label:
+                type: string
+                minLength: 1
+                maxLength: 200
+              model:
+                type: string
+                minLength: 1
+                maxLength: 128
+              resolution:
+                type: string
+                minLength: 1
+                maxLength: 32
+              duration_seconds:
+                type: integer
+                exclusiveMinimum: true
+                minimum: 0
+              charge_amount:
+                type: string
+                pattern: ^(?:0|[1-9]\d*)(?:\.\d{1,8})?$
+              enabled:
+                type: boolean
+            required:
+              - key
+              - label
+              - model
+              - resolution
+              - duration_seconds
+              - charge_amount
+              - enabled
+            additionalProperties: false
+      required:
+        - enabled
+        - tiers
+      additionalProperties: false
+    FixedVideoBillingSettingsSuccess:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            tiers:
+              type: array
+              items:
+                type: object
+                properties:
+                  key:
+                    type: string
+                    minLength: 1
+                    maxLength: 128
+                  label:
+                    type: string
+                    minLength: 1
+                    maxLength: 200
+                  model:
+                    type: string
+                    minLength: 1
+                    maxLength: 128
+                  resolution:
+                    type: string
+                    minLength: 1
+                    maxLength: 32
+                  duration_seconds:
+                    type: integer
+                    exclusiveMinimum: true
+                    minimum: 0
+                  charge_amount:
+                    type: string
+                    pattern: ^(?:0|[1-9]\d*)(?:\.\d{1,8})?$
+                  enabled:
+                    type: boolean
+                required:
+                  - key
+                  - label
+                  - model
+                  - resolution
+                  - duration_seconds
+                  - charge_amount
+                  - enabled
+                additionalProperties: false
+          required:
+            - enabled
+            - tiers
+          additionalProperties: false
+        request_id:
+          type: string
+          pattern: ^req_[0-9A-HJKMNP-TV-Z]{26}$
+      required:
+        - data
+        - request_id
+      additionalProperties: false
+    FixedVideoBillingSettingsUpdate:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        tiers:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                minLength: 1
+                maxLength: 128
+              label:
+                type: string
+                minLength: 1
+                maxLength: 200
+              model:
+                type: string
+                minLength: 1
+                maxLength: 128
+              resolution:
+                type: string
+                minLength: 1
+                maxLength: 32
+              duration_seconds:
+                type: integer
+                exclusiveMinimum: true
+                minimum: 0
+              charge_amount:
+                type: string
+                pattern: ^(?:0|[1-9]\d*)(?:\.\d{1,8})?$
+              enabled:
+                type: boolean
+            required:
+              - key
+              - label
+              - model
+              - resolution
+              - duration_seconds
+              - charge_amount
+              - enabled
+            additionalProperties: false
+      required:
+        - enabled
+        - tiers
       additionalProperties: false
     HealthSuccess:
       type: object

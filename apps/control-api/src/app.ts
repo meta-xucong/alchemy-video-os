@@ -46,6 +46,9 @@ import {
   type VisualReferenceRole,
   AudioCapabilitiesSchema,
   PixabayMusicImportCommandSchema,
+  FixedVideoBillingSettingsUpdateSchema,
+  type FixedVideoBillingPolicySnapshot,
+  type FixedVideoBillingSettings,
   PRODUCTION_RUN_STATUSES,
   TASK_RUN_TERMINAL_STATUSES,
   type PixabayMusicImportCommand,
@@ -81,6 +84,7 @@ import { createInMemoryAssetWorkspaceStore } from "./asset-repository.js";
 import { createInMemoryTaskRunStore } from "./task-run-repository.js";
 import { serializeAsset, serializeCreativeBriefRevision, serializeDeliveryPlanRevision, serializeDocumentConversion, serializeDocumentKnowledgeDetail, serializeDocumentKnowledgeRevision, serializeProductionRun, serializeProductionRunProgress, serializeProject, serializeProjectDetail, serializeShot, serializeStoryboardRevision, serializeTaskRun, serializeTaskRunAttempt, serializeUser, serializeVideoVersion, serializeWorkspace } from "./serializers.js";
 import { PixabayMusicError, type PixabayMusicDownload, type PixabayMusicPort } from "./pixabay-music.js";
+import { createFixedVideoBillingSettingsStore, FixedBillingSettingsError, resolveFixedVideoBillingTier, type FixedVideoBillingSettingsStore } from "./fixed-billing-settings.js";
 
 type CreateAppOptions = {
   identity?: IdentityPort;
@@ -106,6 +110,9 @@ type CreateAppOptions = {
   videoBillingModelRates?: Readonly<Record<string, string>>;
   videoBillingSurchargeMultiplier?: string;
   videoBillingFixedFee?: string;
+  /** Explicitly select the server-owned fixed-tier billing mode. */
+  videoBillingMode?: "fixed_tiers" | "usage_plus_service_fee" | "legacy_fixed_amount";
+  fixedVideoBillingSettings?: FixedVideoBillingSettingsStore;
   audioFreeOnly?: boolean;
   /** Inject the protected Media Runtime client; omit or pass null to disable. */
   pixabayMusic?: PixabayMusicPort | null;
@@ -663,6 +670,10 @@ export function createApp(options: CreateAppOptions = {}) {
   // because deployment secrets happen to contain the fee policy. Tests and
   // embedded callers may still inject an explicit option.
   const environmentBillingEnabled = process.env.VEYRA_CREDIT_ENABLED === "true";
+  const requestedVideoBillingMode = options.videoBillingMode
+    ?? (environmentBillingEnabled ? process.env.VIDEO_BILLING_MODE?.trim().toLowerCase() : undefined);
+  const fixedTierMode = requestedVideoBillingMode === "fixed_tiers";
+  const fixedVideoBillingSettings = options.fixedVideoBillingSettings ?? createFixedVideoBillingSettingsStore();
   const videoBillingChargeAmount = options.videoBillingChargeAmount
     ?? (environmentBillingEnabled ? process.env.VIDEO_BILLING_CHARGE_AMOUNT : undefined)
     ?? "0";
@@ -677,6 +688,24 @@ export function createApp(options: CreateAppOptions = {}) {
       ?? (environmentBillingEnabled ? process.env.VIDEO_BILLING_FIXED_FEE : undefined),
   );
   const resolveVideoBillingConfig = () => {
+    if (fixedTierMode) {
+      let settings: FixedVideoBillingSettings;
+      try {
+        settings = fixedVideoBillingSettings.get();
+      } catch (error) {
+        if (error instanceof FixedBillingSettingsError) {
+          throw new ControlApiError(503, "CREDIT_UNAVAILABLE", error.message, false);
+        }
+        throw error;
+      }
+      return {
+        mode: "FIXED_TIERS" as const,
+        fixedSettings: settings,
+        usageMultiplier: undefined,
+        usagePricingConfigured: false,
+        billingConfigured: settings.enabled,
+      };
+    }
     const usageMultiplier = videoBillingSurchargeMultiplier ?? videoBillingModelRates[videoProfile.model];
     const usagePricingConfigured = usageMultiplier !== undefined;
     const legacyChargeConfigured = videoBillingChargeAmount !== "0";
@@ -690,14 +719,14 @@ export function createApp(options: CreateAppOptions = {}) {
       throw new ControlApiError(503, "CREDIT_UNAVAILABLE", "Video billing usage pricing cannot be combined with the legacy fixed charge.", false);
     }
     return {
+      mode: usagePricingConfigured ? "USAGE_PLUS_SERVICE_FEE" as const : "FIXED_AMOUNT" as const,
+      fixedSettings: undefined,
       usageMultiplier,
       usagePricingConfigured,
       billingConfigured: legacyChargeConfigured || usagePricingConfigured,
     };
   };
-  const createFrozenVideoBilling = async (identity: CurrentIdentity): Promise<VideoGenerationInputSnapshot["billing"]> => {
-    const { usageMultiplier, usagePricingConfigured, billingConfigured } = resolveVideoBillingConfig();
-    if (!billingConfigured) return undefined;
+  const requireActiveVideoAccount = async (identity: CurrentIdentity) => {
     if (!options.videoVeyraBridge) {
       throw new ControlApiError(503, "CREDIT_UNAVAILABLE", "Shared credit billing is configured but its server bridge is unavailable.", true);
     }
@@ -708,8 +737,39 @@ export function createApp(options: CreateAppOptions = {}) {
     if (account.status.toLowerCase() !== "active") {
       throw new ControlApiError(403, "AUTH_FORBIDDEN", "The shared credit account is not active.");
     }
+    return account;
+  };
+  const createFrozenVideoBilling = async (
+    identity: CurrentIdentity,
+    input?: { model: string; resolution: string; duration: number },
+  ): Promise<VideoGenerationInputSnapshot["billing"]> => {
+    const config = resolveVideoBillingConfig();
+    if (!config.billingConfigured) {
+      if (fixedTierMode && environmentBillingEnabled) {
+        throw new ControlApiError(503, "CREDIT_UNAVAILABLE", "Fixed-tier billing is not enabled or has no configured price rows.", false);
+      }
+      return undefined;
+    }
+    await requireActiveVideoAccount(identity);
+    if (config.mode === "FIXED_TIERS") {
+      if (!input) throw new ControlApiError(503, "CREDIT_UNAVAILABLE", "A fixed billing tier requires concrete video settings.", false);
+      const tier = resolveFixedVideoBillingTier(config.fixedSettings, input);
+      if (!tier) {
+        throw new ControlApiError(503, "CREDIT_UNAVAILABLE", "No fixed billing tier matches this model, resolution, and duration.", false);
+      }
+      return {
+        external_user_id: identity.externalUserId!,
+        billing_rule: {
+          creditProvider: "veyra_sub2api" as const,
+          billingRuleKey: tier.key,
+          chargeAmount: tier.charge_amount,
+          source: "video:fixed-tier-v1",
+        },
+      };
+    }
+    const { usageMultiplier, usagePricingConfigured } = config;
     return {
-      external_user_id: identity.externalUserId,
+      external_user_id: identity.externalUserId!,
       billing_rule: {
         creditProvider: "veyra_sub2api" as const,
         billingRuleKey: usagePricingConfigured ? `video:usage-surcharge-v1:${videoProfile.model}` : "video:sub2api-v1",
@@ -724,6 +784,23 @@ export function createApp(options: CreateAppOptions = {}) {
           : { chargeAmount: videoBillingChargeAmount }),
         source: usagePricingConfigured ? "video:aiself-actual-cost-plus-service-fee" : "video:sub2api-v1",
       },
+    };
+  };
+  const createFixedProductionBillingPolicy = async (identity: CurrentIdentity): Promise<FixedVideoBillingPolicySnapshot | undefined> => {
+    const config = resolveVideoBillingConfig();
+    if (config.mode !== "FIXED_TIERS") return undefined;
+    if (!config.billingConfigured) {
+      if (environmentBillingEnabled) {
+        throw new ControlApiError(503, "CREDIT_UNAVAILABLE", "Fixed-tier billing is not enabled or has no configured price rows.", false);
+      }
+      return undefined;
+    }
+    await requireActiveVideoAccount(identity);
+    return {
+      enabled: config.fixedSettings.enabled,
+      tiers: config.fixedSettings.tiers,
+      provider_model: videoProfile.model,
+      external_user_id: identity.externalUserId!,
     };
   };
   const audioFreeOnly = options.audioFreeOnly ?? process.env.AUDIO_FREE_ONLY !== "false";
@@ -1417,22 +1494,72 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/api/v1/me/billing-policy", async (context) => {
     await resolveWorkspaceAccess(context, identityPort, store);
-    const { usagePricingConfigured: hasUsagePricing, billingConfigured: hasConfiguredBilling } = resolveVideoBillingConfig();
+    const config = resolveVideoBillingConfig();
+    const { usagePricingConfigured: hasUsagePricing, billingConfigured: hasConfiguredBilling } = config;
     const hasFixedAmount = videoBillingChargeAmount !== "0";
     const enabled = Boolean(options.videoVeyraBridge && hasConfiguredBilling);
     return response(context, {
       enabled,
-      mode: !enabled
-        ? "DISABLED" as const
-        : hasUsagePricing
-          ? "USAGE_PLUS_SERVICE_FEE" as const
-          : "FIXED_AMOUNT" as const,
+      mode: fixedTierMode
+        ? "FIXED_TIERS" as const
+        : !enabled
+          ? "DISABLED" as const
+          : hasUsagePricing
+            ? "USAGE_PLUS_SERVICE_FEE" as const
+            : "FIXED_AMOUNT" as const,
       surcharge_multiplier: videoBillingSurchargeMultiplier ?? null,
       fixed_fee: videoBillingFixedFee ?? null,
       charge_amount: hasFixedAmount ? videoBillingChargeAmount : null,
       model_multipliers: videoBillingModelRates,
-      source: enabled ? "SERVER_ENVIRONMENT" as const : "DISABLED" as const,
+      source: fixedTierMode
+        ? "SERVER_SETTINGS" as const
+        : enabled
+          ? "SERVER_ENVIRONMENT" as const
+          : "DISABLED" as const,
+      ...(config.mode === "FIXED_TIERS" ? { fixed_tiers: config.fixedSettings.tiers } : {}),
     });
+  });
+
+  app.get("/api/v1/admin/billing-settings", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    if (!(await resolveVerifiedAdminAccess(identity, options.videoVeyraBridge))) {
+      throw new ControlApiError(403, "AUTH_FORBIDDEN", "Administrator access is required to manage billing settings.");
+    }
+    try {
+      return response(context, fixedVideoBillingSettings.get());
+    } catch (error) {
+      if (error instanceof FixedBillingSettingsError) {
+        throw new ControlApiError(503, "CREDIT_UNAVAILABLE", error.message, false);
+      }
+      throw error;
+    }
+  });
+
+  app.put("/api/v1/admin/billing-settings", async (context) => {
+    const identity = await resolveWorkspaceAccess(context, identityPort, store);
+    if (!(await resolveVerifiedAdminAccess(identity, options.videoVeyraBridge))) {
+      throw new ControlApiError(403, "AUTH_FORBIDDEN", "Administrator access is required to manage billing settings.");
+    }
+    const command = await parseBody(context, FixedVideoBillingSettingsUpdateSchema);
+    const idempotencyKey = readIdempotencyKey(context);
+    const scope = `${identity.userId}:PUT:/api/v1/admin/billing-settings`;
+    const requestHash = fingerprintRequest(command);
+    let execution: ReturnType<FixedVideoBillingSettingsStore["updateIdempotent"]>;
+    try {
+      execution = fixedVideoBillingSettings.updateIdempotent({
+        scope,
+        idempotencyKey,
+        requestHash,
+        settings: command,
+      });
+    } catch (error) {
+      if (error instanceof FixedBillingSettingsError) {
+        throw new ControlApiError(503, "CREDIT_UNAVAILABLE", error.message, false);
+      }
+      throw error;
+    }
+    if (execution.kind === "CONFLICT") throw idempotencyConflict();
+    return response(context, execution.settings);
   });
 
   app.delete("/api/v1/assets/:asset_id", async (context) => {
@@ -2016,7 +2143,8 @@ export function createApp(options: CreateAppOptions = {}) {
     // Freeze the same account/rule fact used by direct shot generation before
     // the production run is persisted.  The existing worker settles it only
     // after each validated artifact; this is a preflight, never a debit.
-    const billing = await createFrozenVideoBilling(identity);
+    const fixedBillingPolicy = await createFixedProductionBillingPolicy(identity);
+    const billing = fixedBillingPolicy ? undefined : await createFrozenVideoBilling(identity);
 
     // AUTO is local-first.  Only when the same source-aligned candidate
     // predicate finds no usable workspace MUSIC asset do we perform one
@@ -2084,6 +2212,7 @@ export function createApp(options: CreateAppOptions = {}) {
       deliveryPlanRevisionId: command.delivery_plan_revision_id,
       musicPlan: command.music_plan,
       ...(billing ? { billing } : {}),
+      ...(fixedBillingPolicy ? { fixedBillingPolicy } : {}),
       event: {
         eventId: createPrefixedId("evt"),
         messageId: createPrefixedId("msg"),
@@ -2265,7 +2394,11 @@ export function createApp(options: CreateAppOptions = {}) {
       // A global surcharge is the product policy for every provider. The
       // legacy model map remains a fallback for older snapshots or an
       // explicitly model-specific override when no global value is set.
-      const billing = await createFrozenVideoBilling(identity);
+      const billing = await createFrozenVideoBilling(identity, {
+        model: inputSnapshot.model,
+        resolution: inputSnapshot.resolution,
+        duration: inputSnapshot.duration,
+      });
       if (billing) {
         inputSnapshot = {
           ...inputSnapshot,

@@ -7,6 +7,7 @@ import {
   InternalProductionQueueMessageSchema,
   GenerationSegmentMotionPlanSchema,
   BillingRuleSnapshotSchema,
+  FixedVideoBillingPolicySnapshotSchema,
   VideoGenerationInputSnapshotSchema,
   type InternalEventEnvelope,
   type InternalMediaRuntimeQueueMessage,
@@ -14,6 +15,7 @@ import {
   type MotionBeat,
   type VideoAudioOwner,
   type VideoGenerationInputSnapshot,
+  type FixedVideoBillingPolicySnapshot,
   type VisualInputSnapshot,
   type VisualReferenceRole,
   type ProductionRunStatus,
@@ -572,6 +574,52 @@ const readProductionBilling = (budgetGuard: unknown): ProductionTaskRunInput["bi
   const billingRule = BillingRuleSnapshotSchema.safeParse((candidate as Record<string, unknown>).billing_rule);
   if (!Number.isInteger(externalUserId) || Number(externalUserId) <= 0 || !billingRule.success) return undefined;
   return { external_user_id: externalUserId as number, billing_rule: billingRule.data };
+};
+const readFixedProductionBillingPolicy = (budgetGuard: unknown): FixedVideoBillingPolicySnapshot | undefined => {
+  if (!budgetGuard || typeof budgetGuard !== "object") return undefined;
+  const candidate = (budgetGuard as Record<string, unknown>).fixed_billing_policy;
+  const parsed = FixedVideoBillingPolicySnapshotSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : undefined;
+};
+
+type ProductionBillingResolution =
+  | { kind: "NONE"; billing?: undefined }
+  | { kind: "BILLING"; billing: ProductionTaskRunInput["billing"] }
+  | { kind: "BLOCKED"; safeSummary: string };
+
+export const resolveProductionBilling = (
+  budgetGuard: unknown,
+  input: { model: string; resolution: string; duration: number },
+): ProductionBillingResolution => {
+  if (budgetGuard && typeof budgetGuard === "object" && "fixed_billing_policy" in budgetGuard) {
+    const rawPolicy = (budgetGuard as Record<string, unknown>).fixed_billing_policy;
+    const parsedPolicy = FixedVideoBillingPolicySnapshotSchema.safeParse(rawPolicy);
+    if (!parsedPolicy.success) return { kind: "BLOCKED", safeSummary: "固定档位计费配置无效，未提交本段。" };
+  }
+  const fixedPolicy = readFixedProductionBillingPolicy(budgetGuard);
+  if (fixedPolicy) {
+    if (!fixedPolicy.enabled) return { kind: "BLOCKED", safeSummary: "固定档位计费尚未启用，无法提交本段。" };
+    const matches = fixedPolicy.tiers.filter((tier) => tier.enabled
+      && tier.model === input.model
+      && tier.resolution === input.resolution
+      && tier.duration_seconds === input.duration);
+    if (matches.length !== 1) return { kind: "BLOCKED", safeSummary: "没有匹配本段模型、分辨率和时长的固定计费档位，未提交本段。" };
+    const tier = matches[0]!;
+    return {
+      kind: "BILLING",
+      billing: {
+        external_user_id: fixedPolicy.external_user_id,
+        billing_rule: {
+          creditProvider: "veyra_sub2api",
+          billingRuleKey: tier.key,
+          chargeAmount: tier.charge_amount,
+          source: "video:fixed-tier-v1",
+        },
+      },
+    };
+  }
+  const billing = readProductionBilling(budgetGuard);
+  return billing ? { kind: "BILLING", billing } : { kind: "NONE" };
 };
 const retryCommandScope = (scope: string, idempotencyKey: string) =>
   and(eq(commandDeduplications.scope, scope), eq(commandDeduplications.idempotencyKey, idempotencyKey));
@@ -3301,7 +3349,27 @@ export class DrizzleProductionRepository implements ProductionStore {
         .where(and(eq(shots.workspaceId, segment.workspaceId), eq(shots.projectId, segment.projectId)));
       const shotId = createPrefixedId("sht");
       const taskRunId = createPrefixedId("tsk");
-      const productionBilling = readProductionBilling(input.productionRun.budgetGuard);
+      const billingResolution = resolveProductionBilling(input.productionRun.budgetGuard, {
+        model: readFixedProductionBillingPolicy(input.productionRun.budgetGuard)?.provider_model ?? "",
+        resolution: brief.targetResolution,
+        duration: spec.durationSeconds,
+      });
+      if (billingResolution.kind === "BLOCKED") {
+        assertProductionSegmentTransition(segment.status, "FAILED");
+        await transaction.update(productionSegments).set({
+          status: "FAILED",
+          retryable: false,
+          safeSummary: billingResolution.safeSummary,
+          updatedAt: timestamp(input.now),
+        }).where(and(
+          eq(productionSegments.workspaceId, segment.workspaceId),
+          eq(productionSegments.id, segment.id),
+          inArray(productionSegments.status, ["PENDING", "WAITING"]),
+        ));
+        firstBlockedSegment ??= { sequence: segment.sequence, reasonCode: "SEGMENT_NEEDS_ATTENTION", retryable: false };
+        continue;
+      }
+      const productionBilling = billingResolution.kind === "BILLING" ? billingResolution.billing : undefined;
       let snapshot: VideoGenerationInputSnapshot;
       try {
         snapshot = this.createTaskRunInputSnapshot({

@@ -81,6 +81,8 @@ services:
       VIDEO_BILLING_SURCHARGE_MULTIPLIER: ${VIDEO_BILLING_SURCHARGE_MULTIPLIER:-}
       VIDEO_BILLING_FIXED_FEE: ${VIDEO_BILLING_FIXED_FEE:-}
       VIDEO_BILLING_MODEL_RATES_JSON: ${VIDEO_BILLING_MODEL_RATES_JSON:-}
+      VIDEO_BILLING_MODE: ${VIDEO_BILLING_MODE:-}
+      VIDEO_BILLING_SETTINGS_PATH: ${VIDEO_BILLING_SETTINGS_PATH:-/app/data/video-billing-settings.json}
       VIDEO_PROVIDER: ${VIDEO_PROVIDER:-mock}
       MEDIA_RUNTIME_URL: http://control-media-runtime:3433/
       MEDIA_RUNTIME_TOKEN: ${MEDIA_RUNTIME_TOKEN:?set MEDIA_RUNTIME_TOKEN in the private deployment environment file}
@@ -99,6 +101,8 @@ services:
         condition: service_healthy
     expose:
       - "8032"
+    volumes:
+      - control-api-billing-data:/app/data
     restart: unless-stopped
 
   task-worker:
@@ -335,3 +339,4 @@ volumes:
   postgres-data:
   redis-data:
   minio-data:
+  control-api-billing-data:
