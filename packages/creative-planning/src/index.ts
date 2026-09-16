@@ -1474,24 +1474,37 @@ type NarrativePlanningInput = Readonly<{
 }>;
 
 const distinct = (values: string[]) => [...new Set(values.map((value) => normalize(value)).filter(Boolean))];
-const negativeVisualConstraint = /(?:不需要|无需|不用|并非|不是|没有必要|禁止|不得)/u;
 const authoringControlSentence = /^(?:录制?|制作|生成|输出|创作|拍摄).{0,140}(?:视频|短片|分镜)/u;
 
-const narrativePlanningInput = (sourceText: string): NarrativePlanningInput => {
+const narrativePlanningInput = (sourceText: string, allowDialogueOnlyFallback = false): NarrativePlanningInput => {
   const sentences = extractNarrativeSentences(sourceText);
-  const nonControl = sentences.filter((sentence) => sentence.kind !== "CONTROL" && !authoringControlSentence.test(sentence.text));
+  const nonControl = sentences.filter((sentence) =>
+    sentence.kind !== "CONTROL" && !authoringControlSentence.test(sentence.text));
   const actions = sentences
     .filter((sentence) => sentence.kind === "ACTION" && !authoringControlSentence.test(sentence.text))
     .map((sentence) => sentence.text);
+  if (actions.length === 0) {
+    // Only an explicit global label/block is a fail-closed source-coverage
+    // error. Unlabelled source keeps the established fallback used by the
+    // budget planner; dialogue-only source opts into that same compatibility
+    // path from the caller after dialogue ownership has been established.
+    const hasStateSource = sentences.some((sentence) => sentence.kind === "STATE");
+    if (hasStateSource || (sentences.length === 0 && !allowDialogueOnlyFallback)) {
+      throw new LlmSemanticPlanningError(
+        "LLM_SOURCE_COVERAGE_INVALID",
+        "Planning requires an authored executable visual source unit; global context cannot become an executable event.",
+      );
+    }
+  }
   const visualConstraints = distinct([
     ...extractVisualConstraints(sourceText),
     ...inferPhysicalSceneConstraints(sourceText),
-  ]).sort((left, right) =>
-    Number(negativeVisualConstraint.test(right)) - Number(negativeVisualConstraint.test(left)));
+  ]);
   const keyVisualObjects = extractKeyVisualObjectLocks(sourceText);
-  const fallback = nonControl[0]?.text ?? "建立与用户描述一致的开场画面。";
   return {
-    events: actions.length > 0 ? actions : [fallback],
+    events: actions.length > 0
+      ? actions
+      : [nonControl[0]?.text ?? "建立与用户描述一致的开场画面。"],
     // Static states and exposition guide the image without claiming an extra event.
     visualConstraints: distinct(visualConstraints).map((value) => concise(value, "")),
     keyVisualObjects,
@@ -1994,7 +2007,8 @@ export class DeterministicPlanningModel implements PlanningModelPort {
     // Preserve raw line boundaries until the labeled narration block has
     // been removed. Normalizing first makes a following visual-description
     // heading indistinguishable from narration and erases the scene plan.
-    const narrative = narrativePlanningInput(stripSpokenDialogue(rawSourceText));
+    const dialogueLines = extractDialogueLines(rawSourceText);
+    const narrative = narrativePlanningInput(stripSpokenDialogue(rawSourceText), dialogueLines.length > 0);
     const mergedObjects = new Map<string, KeyVisualObjectLock>();
     for (const object of input.visualObjectLocks ?? []) mergedObjects.set(object.name, object);
     for (const object of narrative.keyVisualObjects) {
@@ -2004,7 +2018,6 @@ export class DeterministicPlanningModel implements PlanningModelPort {
     const keyVisualObjects = [...mergedObjects.values()];
     const events = narrative.events;
     const hasExplicitSceneChange = hasExplicitSceneChangeSignal(sourceText);
-    const dialogueLines = extractDialogueLines(rawSourceText);
     // A Huobao paragraph is one 8-15s provider request and can carry several
     // visual sub-shots. Keep visual-only editorial beats inside that request;
     // only an authored scene-change signal (or a spoken boundary that the

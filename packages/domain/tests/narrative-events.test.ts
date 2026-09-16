@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { extractNarrativeSentences, extractVisualConstraints } from "../src/narrative-events.js";
+import { classifyNarrativeSentence, extractNarrativeSentences, extractVisualConstraints } from "../src/narrative-events.js";
 import { extractKeyVisualObjectLocks } from "../src/visual-object-locks.js";
 
 test("narrative extraction keeps actions while routing source guidance and exposition away from beats", () => {
@@ -14,6 +14,162 @@ test("narrative extraction keeps actions while routing source guidance and expos
   ].join("\n"));
 
   assert.deepEqual(sentences.map((sentence) => sentence.kind), ["ACTION", "STATE", "EXPOSITION", "EXPOSITION", "CONTROL"]);
+});
+
+test("explicit global labels become shared constraints instead of executable beats", () => {
+  const source = [
+    "标题/主题：30 秒高端护肤品商业广告、轻奢、祛痘、新加坡制造。",
+    "全局风格：明亮、纯净、真实摄影、珍珠白与银色、避免明显 CG。",
+    "全局声音/文字政策：无旁白、无字幕、纯音乐 BGM。",
+    "视觉动作：",
+    "精华液滴落。",
+    "肌肤微距。",
+    "产品 Hero Shot。",
+  ].join("\n");
+
+  const sentences = extractNarrativeSentences(source);
+  assert.deepEqual(sentences.map((sentence) => sentence.kind), ["STATE", "STATE", "STATE", "ACTION", "ACTION", "ACTION"]);
+  assert.deepEqual(sentences.slice(3).map((sentence) => sentence.text), ["精华液滴落。", "肌肤微距。", "产品 Hero Shot。"]);
+  assert.deepEqual(extractVisualConstraints(source), [
+    "标题/主题：30 秒高端护肤品商业广告、轻奢、祛痘、新加坡制造",
+    "全局风格：明亮、纯净、真实摄影、珍珠白与银色、避免明显 CG",
+    "全局声音/文字政策：无旁白、无字幕、纯音乐 BGM",
+  ]);
+});
+
+test("an inline global label stops at the next authored sentence boundary", () => {
+  const source = "全局风格：明亮。精华液滴落。";
+  const sentences = extractNarrativeSentences(source);
+  assert.deepEqual(sentences.map((sentence) => sentence.kind), ["STATE", "ACTION"]);
+  assert.deepEqual(sentences.map((sentence) => sentence.text), ["全局风格：明亮。", "精华液滴落。"]);
+  assert.deepEqual(extractVisualConstraints(source), ["全局风格：明亮"]);
+});
+
+test("an inline global label stops at an authored semicolon before an action", () => {
+  const source = "全局风格：明亮；精华液滴落。";
+  const sentences = extractNarrativeSentences(source);
+  assert.deepEqual(sentences.map((sentence) => sentence.kind), ["STATE", "ACTION"]);
+  assert.deepEqual(sentences.map((sentence) => sentence.text), ["全局风格：明亮；", "精华液滴落。"]);
+  assert.deepEqual(extractVisualConstraints(source), ["全局风格：明亮；"]);
+});
+
+test("explicit global blocks end at the next executable heading without a blank line", () => {
+  const source = [
+    "全局风格",
+    "明亮、纯净、真实摄影。",
+    "视觉动作：",
+    "精华液滴落。",
+    "肌肤微距。",
+  ].join("\n");
+
+  const sentences = extractNarrativeSentences(source);
+  assert.deepEqual(sentences.map((sentence) => sentence.kind), ["STATE", "ACTION", "ACTION"]);
+  assert.deepEqual(sentences.map((sentence) => sentence.text), ["明亮、纯净、真实摄影。", "精华液滴落。", "肌肤微距。"]);
+});
+
+test("existing visual-description, notes, and explanation headings end a global block", () => {
+  for (const heading of ["视觉描述：", "备注：", "说明："]) {
+    const source = [
+      "全局风格",
+      "明亮、纯净、真实摄影。",
+      heading,
+      "精华液滴落。",
+    ].join("\n");
+    const sentences = extractNarrativeSentences(source);
+    assert.deepEqual(sentences.map((sentence) => sentence.kind), ["STATE", "ACTION"]);
+    assert.deepEqual(sentences.map((sentence) => sentence.text), ["明亮、纯净、真实摄影。", "精华液滴落。"]);
+  }
+});
+
+test("the existing video-intent heading remains a control boundary", () => {
+  const source = [
+    "视频生成意图描述",
+    "精华液滴落。",
+    "肌肤微距。",
+  ].join("\n");
+  assert.equal(classifyNarrativeSentence("视频生成意图描述"), "CONTROL");
+  assert.deepEqual(extractNarrativeSentences(source), [
+    { text: "精华液滴落。", kind: "ACTION" },
+    { text: "肌肤微距。", kind: "ACTION" },
+  ]);
+});
+
+test("OpenMontage section headings end a global block and keep the section source ordered", () => {
+  const source = [
+    "Global",
+    "bright, clean, photographic look.",
+    "Section 1:",
+    "Serum droplet falls.",
+    "Skin close-up.",
+  ].join("\n");
+  const sentences = extractNarrativeSentences(source);
+  assert.deepEqual(sentences.map((sentence) => sentence.kind), ["STATE", "ACTION", "ACTION"]);
+  assert.deepEqual(sentences.map((sentence) => sentence.text), [
+    "bright, clean, photographic look.",
+    "Serum droplet falls.",
+    "Skin close-up.",
+  ]);
+});
+
+test("Seedance global and throughout labels stay outside timestamp actions", () => {
+  const source = [
+    "Global: bright, clean, photographic look.",
+    "look: preserve the photographic material treatment.",
+    "locks: preserve the declared product identity.",
+    "Throughout: preserve the declared product identity.",
+    "0-5s: serum droplet falls.",
+  ].join("\n");
+  const sentences = extractNarrativeSentences(source);
+  assert.deepEqual(sentences.map((sentence) => sentence.kind), ["STATE", "STATE", "STATE", "STATE", "ACTION"]);
+  assert.deepEqual(extractVisualConstraints(source), [
+    "Global: bright, clean, photographic look.",
+    "look: preserve the photographic material treatment.",
+    "locks: preserve the declared product identity.",
+    "Throughout: preserve the declared product identity.",
+  ]);
+});
+
+test("Huobao atmosphere and Seedance global blocks preserve CRLF order and anchors", () => {
+  const source = [
+    "Global: @anchor:global-look bright, clean photographic look.",
+    "Throughout: @anchor:continuity keep the same product identity.",
+    "atmosphere: @anchor:atmosphere quiet room tone and soft daylight.",
+    "timestamp script:",
+    "0-3s: @anchor:opening consultant walks toward the panel.",
+    "3-6s: @anchor:close-up the panel opens and holds.",
+  ].join("\r\n");
+
+  const sentences = extractNarrativeSentences(source);
+  assert.deepEqual(sentences.map((sentence) => sentence.kind), ["STATE", "STATE", "STATE", "ACTION", "ACTION"]);
+  assert.deepEqual(sentences.map((sentence) => sentence.text), [
+    "Global: @anchor:global-look bright, clean photographic look.",
+    "Throughout: @anchor:continuity keep the same product identity.",
+    "atmosphere: @anchor:atmosphere quiet room tone and soft daylight.",
+    "0-3s: @anchor:opening consultant walks toward the panel.",
+    "3-6s: @anchor:close-up the panel opens and holds.",
+  ]);
+  assert.deepEqual(extractVisualConstraints(source), [
+    "Global: @anchor:global-look bright, clean photographic look.",
+    "Throughout: @anchor:continuity keep the same product identity.",
+    "atmosphere: @anchor:atmosphere quiet room tone and soft daylight.",
+  ]);
+});
+
+test("unlabeled aliases remain source facts instead of becoming global by guess", () => {
+  const source = [
+    "标题：仅供参考的产品标题。",
+    "风格：明亮纯净。",
+    "Global style: polished material.",
+    "声音：纯音乐。",
+  ].join("\n");
+  assert.deepEqual(extractNarrativeSentences(source).map((sentence) => sentence.kind), ["ACTION", "ACTION", "ACTION", "ACTION"]);
+});
+
+test("unlabeled style-like prose remains an executable source unit", () => {
+  const source = "明亮、纯净、真实摄影。精华液滴落。";
+  const sentences = extractNarrativeSentences(source);
+  assert.deepEqual(sentences.map((sentence) => sentence.kind), ["ACTION", "ACTION"]);
+  assert.equal(sentences[0]?.text, "明亮、纯净、真实摄影。");
 });
 
 test("mixed action clauses keep the action and expose state and prohibitions as visual constraints", () => {

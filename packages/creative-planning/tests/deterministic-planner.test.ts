@@ -6,6 +6,7 @@ import {
   DeterministicPlanningModel,
   DeterministicStoryboardCompiler,
   auditCameraCoverage,
+  LlmSemanticPlanningError,
 } from "../src/index.js";
 import { checkOpenMontageSceneVariation, scoreOpenMontageSlideshowRisk } from "../src/openmontage-variation-audit.js";
 import { GenerationSegmentMotionPlanSchema } from "@alchemy-video/contracts";
@@ -678,6 +679,128 @@ test("planner preserves the complete long visual source instead of silently trun
 
   assert.equal(plan.shotSpecs[0]!.narrativeGoal, visual);
   assert.ok(plan.shotSpecs[0]!.narrativeGoal.endsWith("尾部保留标记"));
+});
+
+test("product global context stays shared while nine visual actions remain ordered across two fifteen-second segments", async () => {
+  const actions = [
+    "精华液滴落。",
+    "肌肤微距。",
+    "吸收与舒缓。",
+    "城市。",
+    "实验室研发与灌装。",
+    "瓶身棚拍。",
+    "女性使用。",
+    "水润肌肤。",
+    "产品 Hero Shot。",
+  ];
+  const sourceText = [
+    "标题/主题：30 秒高端护肤品商业广告、轻奢、祛痘、新加坡制造。",
+    "全局风格：明亮、纯净、真实摄影、珍珠白与银色、避免明显 CG。",
+    ...actions,
+    "全局声音/文字政策：无旁白、无字幕、纯音乐 BGM。",
+  ].join("\n");
+  const plan = await new DeterministicPlanningModel().plan({
+    sourceText,
+    targetDurationSeconds: 30,
+    stylePreferences: "",
+    sourceAssetIds: [],
+  });
+
+  assert.equal(plan.generationSegmentCount, 2);
+  assert.deepEqual(plan.shotSpecs.map((shot) => shot.durationSeconds), [15, 15]);
+  assert.deepEqual(plan.beats.map((beat) => beat.summary), actions);
+  const assignedBeatSequences = plan.shotSpecs.flatMap((shot) => shot.narrativeBeatSequences);
+  assert.deepEqual([...assignedBeatSequences].sort((left, right) => left - right), actions.map((_, index) => index + 1));
+  assert.equal(new Set(assignedBeatSequences).size, actions.length);
+
+  const projectedActions = plan.shotSpecs.flatMap((shot) => actions.filter((action) => shot.narrativeGoal.includes(action)));
+  assert.deepEqual(projectedActions, actions);
+  assert.ok(plan.shotSpecs.every((shot) => !shot.narrativeGoal.includes("标题/主题：")));
+  assert.ok(plan.shotSpecs.every((shot) => !shot.narrativeGoal.includes("全局风格：")));
+  assert.ok(plan.shotSpecs.every((shot) => !shot.narrativeGoal.includes("全局声音/文字政策：")));
+  assert.ok(plan.shotSpecs.every((shot) => shot.motionPlan.character_locks.some((lock) => lock.includes("全局风格："))));
+  assert.ok(plan.shotSpecs.every((shot) => shot.motionPlan.character_locks.some((lock) => lock.includes("全局声音/文字政策：无旁白"))));
+});
+
+test("planner keeps source-labeled global context out of beats and preserves anchored action order", async () => {
+  const sourceText = [
+    "Global: @anchor:global-look bright, clean photographic look.",
+    "Throughout: @anchor:continuity keep the same product identity.",
+    "atmosphere: @anchor:atmosphere quiet room tone and soft daylight.",
+    "视觉动作：",
+    "【镜头1】@anchor:opening consultant walks toward the panel.",
+    "【镜头2】@anchor:close-up the panel opens and holds.",
+  ].join("\r\n");
+  const plan = await new DeterministicPlanningModel().plan({
+    sourceText,
+    targetDurationSeconds: 15,
+    stylePreferences: "",
+    sourceAssetIds: [],
+  });
+
+  assert.deepEqual(plan.beats.map((beat) => beat.summary), [
+    "【镜头1】@anchor:opening consultant walks toward the panel.",
+    "【镜头2】@anchor:close-up the panel opens and holds.",
+  ]);
+  assert.equal(plan.shotSpecs.length, 1);
+  const narrativeGoal = plan.shotSpecs[0]!.narrativeGoal;
+  assert.ok(narrativeGoal.indexOf("@anchor:opening") < narrativeGoal.indexOf("@anchor:close-up"));
+  assert.ok(!narrativeGoal.includes("@anchor:global-look"));
+  const locks = plan.shotSpecs[0]!.motionPlan.character_locks.join("|");
+  assert.ok(locks.indexOf("@anchor:global-look") < locks.indexOf("@anchor:continuity"));
+  assert.ok(locks.indexOf("@anchor:continuity") < locks.indexOf("@anchor:atmosphere"));
+  assert.ok(!plan.beats.some((beat) => /Global:|Throughout:|atmosphere:/u.test(beat.summary)));
+});
+
+test("inline global context does not consume the following executable action", async () => {
+  const plan = await new DeterministicPlanningModel().plan({
+    sourceText: "全局风格：明亮。精华液滴落。",
+    targetDurationSeconds: 15,
+    stylePreferences: "",
+    sourceAssetIds: [],
+  });
+
+  assert.deepEqual(plan.beats.map((beat) => beat.summary), ["精华液滴落。"]);
+  assert.deepEqual(plan.shotSpecs[0]!.narrativeBeatSequences, [1]);
+  assert.equal(plan.shotSpecs[0]!.narrativeGoal, "精华液滴落。");
+  assert.ok(plan.shotSpecs[0]!.motionPlan.character_locks.some((lock) => lock.includes("全局风格：明亮")));
+});
+
+test("semicolon-separated inline global context leaves the following action executable", async () => {
+  const plan = await new DeterministicPlanningModel().plan({
+    sourceText: "全局风格：明亮；精华液滴落。",
+    targetDurationSeconds: 15,
+    stylePreferences: "",
+    sourceAssetIds: [],
+  });
+
+  assert.deepEqual(plan.beats.map((beat) => beat.summary), ["精华液滴落。"]);
+  assert.deepEqual(plan.shotSpecs[0]!.narrativeBeatSequences, [1]);
+  assert.equal(plan.shotSpecs[0]!.narrativeGoal, "精华液滴落。");
+  assert.ok(plan.shotSpecs[0]!.motionPlan.character_locks.some((lock) => lock.includes("全局风格：明亮")));
+});
+
+test("deterministic planning fails closed when source has only global context", async () => {
+  await assert.rejects(() => new DeterministicPlanningModel().plan({
+    sourceText: "全局风格：明亮、纯净、真实摄影。全局声音/文字政策：无旁白、无字幕、纯音乐 BGM。",
+    targetDurationSeconds: 15,
+    stylePreferences: "",
+    sourceAssetIds: [],
+  }), (error: unknown) => error instanceof LlmSemanticPlanningError
+    && error.code === "LLM_SOURCE_COVERAGE_INVALID");
+});
+
+test("unlabelled exposition retains the existing planner fallback", async () => {
+  const source = "一个不可再分的超长源单元。";
+  const plan = await new DeterministicPlanningModel().plan({
+    sourceText: source,
+    targetDurationSeconds: 15,
+    stylePreferences: "",
+    sourceAssetIds: [],
+  });
+
+  assert.deepEqual(plan.beats.map((beat) => beat.summary), [source]);
+  assert.equal(plan.shotSpecs[0]!.narrativeGoal, source);
 });
 
 test("planner fails closed when structured visual locks exceed the existing motion-plan contract", async () => {

@@ -2742,3 +2742,11 @@ Exit Gate：`ACCEPTED`（仅本窄范围）。Compose 拓扑、固定内部 URL 
 - clean cache-only replay 在临时干净工作树中得到 creative-planning `89/89 pass / 0 fail / 0 skip`；contracts/domain 预构建、`git diff --cached --check` 均通过。该证据不使用脏工作区 `718/20` 或全量 `95/95` 计数替代。
 - 来源边界为 Huobao 固定 commit 的 storyboard-breaker / prompt-generator 对对白与可见 description 分离、源顺序保留和不新增/遗漏对白的薄适配；不宣称三个上游提供本地 parser 或通用压缩算法。
 - 本条只将上述对白窄片标记为 `ACCEPTED`。正式 `E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT` 保持不变，其余工作区改动继续等待各自独立审计。
+
+## 2026-09-16 原仓库语义分段与全局约束窄片独立验收（ACCEPTED）
+
+- 独立纠察复核的发布范围仅包含 `packages/domain/src/narrative-events.ts`、`packages/domain/tests/narrative-events.test.ts`、`packages/creative-planning/src/index.ts`、`packages/creative-planning/tests/deterministic-planner.test.ts` 及本专项开发文档；任务计费、基础设施、Provider 外部调用和其它未跟踪文件均排除。
+- 固定来源为 Huobao `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 的 `description/atmosphere` 与顺序规则、Seedance `ebc68d3c19a62fba0f9ba9d2805af1f711a82aa7` 的 `Global/Throughout/look/locks/timestamp phases` 形状、OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 section/时间窗边界语义。中文兼容标签仅视为既有平台输入语法，不宣称为上游逐字实现。
+- 最新窄片证据：domain `70/70`、creative-planning `95/95`、workflow-worker `38/38`、provider-video `70/70`，以及本地 PostgreSQL persistence integration `4/4`、persistence 全量 `91/91`；根回归 `718 pass / 20 skip / 0 fail`。测试为本地 fixture/mock，20 个 skip 保留既有 DB/MinIO/BullMQ 环境门控说明；未调用真实 Provider/TTS/Veyra/网络。
+- 行为范围：显式 global/throughout/atmosphere/既有中文标签进入共享约束，不占 executable beat；视觉源顺序与唯一 owner 保留；商品测试1 的九项动作不重复、不遗漏；既有 15 秒段数策略不变；无密度评分、比例均衡、字符截断、静默回退、公开契约或新协议。
+- 独立审计结论：上述窄片 `ACCEPTED`，允许在用户授权下提交和部署；不改变正式 `E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT`。OpenMontage 完整 `script_section_id/start/end` ownership、无标签文本的 global 角色、逐字段 byte-level source 保真、NarrationAsset/TimelinePlan/AudioPlan、复杂转场、真实 Provider 与人工质量继续 `DEFERRED/BLOCKED/OUT_OF_SCOPE`。
