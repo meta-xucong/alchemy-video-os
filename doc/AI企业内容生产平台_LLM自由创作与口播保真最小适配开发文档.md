@@ -4,6 +4,8 @@
 >
 > 本文是对《AI企业内容生产平台_LLM语义Prompt规划与结构化校验重构开发文档.md》的受控修订：它只改变 LLM 的创作输出边界，不改变现有 Provider、计费、任务状态、公开 API、数据库表、事件或部署语义。旧文档中要求 LLM 返回完整 `draft/sourceCoverage/motionPlan` 的部分自本文件生效后标记为历史方案；预算 fail-closed、口播保真、参考图顺序、sidecar 和重启/幂等要求继续有效。
 
+> 本文的生产 LLM 实现授权“仅补 `visual_prompt`、不得决定 source ownership”已由《AI企业内容生产平台_原仓库导演式语义分段与全局上下文移植开发文档.md》superseded。本文的 source-first、口播逐字保真、引用顺序和预算规则继续保留；当前生产 LLM 必须遵循新文档的私有 ownership envelope。
+
 ## 1. 用户要求与问题定义
 
 用户要求原文：

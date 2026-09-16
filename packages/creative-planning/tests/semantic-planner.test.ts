@@ -101,6 +101,40 @@ const buildFixture = async (fixtureInput: PlanningInput = input): Promise<RawSem
   return toRawFixture(draft);
 };
 
+const toDirectorFixture = (
+  context: LlmFreeformPlanningContext,
+  globalSequences: readonly number[] = [],
+) => {
+  const globalSet = new Set(globalSequences);
+  const visualUnits = context.sourceEvidence.sourceUnits.filter((unit) => !globalSet.has(unit.sequence));
+  const segmentCount = context.segments.length;
+  const visualSegmentForIndex = (index: number) => Math.min(
+    segmentCount,
+    Math.floor((index * segmentCount) / Math.max(1, visualUnits.length)) + 1,
+  );
+  return {
+    source_ownership: context.sourceEvidence.sourceUnits.map((unit) => {
+      if (globalSet.has(unit.sequence)) {
+        return { source_unit_sequence: unit.sequence, role: "GLOBAL" as const };
+      }
+      const visualIndex = visualUnits.findIndex((candidate) => candidate.sequence === unit.sequence);
+      return {
+        source_unit_sequence: unit.sequence,
+        role: "VISUAL" as const,
+        source_spans: [{
+          start: 0,
+          end: unit.text.length,
+          segment_sequence: visualSegmentForIndex(visualIndex),
+        }],
+      };
+    }),
+    segments: context.segments.map((segment) => ({
+      sequence: segment.sequence,
+      visual_prompt: `镜头 ${segment.sequence} 的克制构图与自然动作补充。`,
+    })),
+  };
+};
+
 test("LLM semantic fixture preserves ordered source coverage and returns the existing draft", async () => {
   const fixture = await buildFixture();
   let received: PlanningInput | undefined;
@@ -450,23 +484,149 @@ test("semantic planner checks the supplied UTF-8 budget on each compiled segment
 });
 
 test("freeform planner adds only ordered visual prompts to the deterministic skeleton", async () => {
-  let context: { segmentCount: number; segments: readonly { sequence: number; targetDurationSeconds: number; sourceNarrativeProjection: string; dialogueLines: readonly string[]; referencePolicy: string; referenceAnchors: readonly string[] }[] } | undefined;
+  let context: LlmFreeformPlanningContext | undefined;
   const planner = new LlmFreeformPromptPlanningModel(async (received) => {
     context = received;
-    return {
-      segments: received.segments.map((segment) => ({
-        sequence: segment.sequence,
-        visual_prompt: `自由画面 ${segment.sequence}`,
-      })),
-    };
+    return toDirectorFixture(received);
   });
   const plan = await planner.plan(input);
 
   assert.equal(context?.segmentCount, plan.shotSpecs.length);
   assert.deepEqual(context?.segments.map((segment) => segment.sequence), plan.shotSpecs.map((shot) => shot.sequence));
   assert.deepEqual(context?.segments.map((segment) => segment.targetDurationSeconds), plan.shotSpecs.map((shot) => shot.durationSeconds));
-  assert.deepEqual(plan.shotSpecs.map((shot) => shot.visualPrompt), plan.shotSpecs.map((_shot, index) => `自由画面 ${index + 1}`));
-  assert.deepEqual(context?.segments.map((segment) => segment.dialogueLines), plan.shotSpecs.map((shot) => shot.dialogueLines));
+  assert.deepEqual(plan.shotSpecs.map((shot) => shot.visualPrompt), plan.shotSpecs.map((_shot, index) => `镜头 ${index + 1} 的克制构图与自然动作补充。`));
+  assert.deepEqual(context?.sourceEvidence.sourceUnits.map((unit) => unit.sequence), [1, 2]);
+  assert.deepEqual(plan.beats.map((beat) => beat.generationSegmentSequence), [1, 2]);
+  assert.ok(plan.shotSpecs.every((shot) => shot.narrativeBeatSequences.length > 0));
+});
+
+test("director ownership keeps the unlabelled product story global facts out of nine visual actions", async () => {
+  const actions = [
+    "精华液滴落",
+    "肌肤微距😀",
+    "吸收与舒缓",
+    "城市掠影",
+    "实验室研发与灌装",
+    "瓶身棚拍",
+    "女性使用",
+    "水润肌肤",
+    "产品 Hero Shot",
+  ];
+  const globalFacts = [
+    "30 秒高端护肤品商业广告，整体轻奢，强调祛痘与新加坡制造。",
+    "明亮、纯净、真实摄影，珍珠白与银色，避免明显 CG。",
+    "无旁白、无字幕、纯音乐 BGM。",
+  ];
+  const productInput: PlanningInput = {
+    sourceText: [...globalFacts, `${actions.join("→")}。`].join("\n"),
+    targetDurationSeconds: 30,
+    stylePreferences: "",
+    sourceAssetIds: [],
+  };
+  let received: LlmFreeformPlanningContext | undefined;
+  const planner = new LlmFreeformPromptPlanningModel(async (context) => {
+    received = context;
+    const globalSequences = context.sourceEvidence.sourceUnits
+      .filter((unit) => globalFacts.includes(unit.text))
+      .map((unit) => unit.sequence);
+    const fixture = toDirectorFixture(context, globalSequences);
+    const actionUnit = context.sourceEvidence.sourceUnits.find((unit) => !globalFacts.includes(unit.text));
+    const visualEntry = fixture.source_ownership.find((entry) => entry.role === "VISUAL");
+    if (!actionUnit || !visualEntry || visualEntry.role !== "VISUAL") {
+      throw new Error("The product fixture must expose one visual source unit.");
+    }
+    let cursor = 0;
+    visualEntry.source_spans = actions.map((action, index) => {
+      const start = actionUnit.text.indexOf(action, cursor);
+      const end = index + 1 < actions.length
+        ? actionUnit.text.indexOf(actions[index + 1]!, start + action.length)
+        : actionUnit.text.length;
+      if (start < 0 || end <= start) throw new Error("The product fixture action spans must be ordered.");
+      cursor = end;
+      return {
+        start,
+        end,
+        segment_sequence: Math.min(
+          context.segments.length,
+          Math.floor((index * context.segments.length) / actions.length) + 1,
+        ),
+      };
+    });
+    assert.equal(visualEntry.source_spans[0]!.start, 0);
+    assert.equal(visualEntry.source_spans.at(-1)!.end, actionUnit.text.length);
+    assert.equal(
+      visualEntry.source_spans.map((span) => actionUnit.text.slice(span.start, span.end)).join(""),
+      actionUnit.text,
+    );
+    return fixture;
+  });
+  const plan = await planner.plan(productInput);
+
+  assert.equal(plan.generationSegmentCount, 2);
+  assert.deepEqual(plan.shotSpecs.map((shot) => shot.durationSeconds), [15, 15]);
+  const visualUnits = received?.sourceEvidence.sourceUnits
+    .filter((unit) => !globalFacts.includes(unit.text)) ?? [];
+  assert.equal(visualUnits.length, 1);
+  assert.equal(plan.beats.length, actions.length);
+  assert.deepEqual(
+    plan.beats.map((beat) => actions.find((action) => beat.summary.includes(action))),
+    actions,
+  );
+  for (const action of actions) {
+    assert.equal(plan.beats.filter((beat) => beat.summary.includes(action)).length, 1);
+    assert.equal(plan.shotSpecs.flatMap((shot) => shot.motionPlan.motion_beats)
+      .filter((beat) => beat.source_description.includes(action)).length, 1);
+  }
+  assert.ok(plan.shotSpecs.every((shot) => shot.narrativeBeatSequences.length > 0));
+  const sharedLocks = plan.shotSpecs.map((shot) => shot.motionPlan.character_locks.join("|"));
+  for (const globalFact of globalFacts) {
+    assert.ok(sharedLocks.every((locks) => locks.includes(globalFact)));
+  }
+  assert.ok(plan.beats.every((beat) => !globalFacts.some((fact) => beat.summary.includes(fact))));
+  assert.ok(plan.shotSpecs.every((shot) => !shot.motionPlan.motion_beats.some((beat) =>
+    globalFacts.some((fact) => beat.source_description.includes(fact)))));
+  assert.ok(plan.shotSpecs.every((shot) => shot.visualPrompt && !shot.visualPrompt.includes(productInput.sourceText)));
+});
+
+test("director ownership maps Huobao shot and atmosphere, Seedance phases, and OpenMontage sections", async () => {
+  const sourceText = [
+    "Global: @anchor:global-look bright, clean photographic look.",
+    "Throughout: @anchor:continuity keep the same product identity.",
+    "atmosphere: @anchor:atmosphere quiet room tone and soft daylight.",
+    "timestamp script:",
+    "0-3s: @anchor:opening consultant walks toward the panel.",
+    "3-6s: @anchor:close-up the panel opens and holds.",
+    "Section 1:",
+    "【镜头1】@anchor:section consultant checks the panel.",
+    "【镜头2】@anchor:section-close product holds in frame.",
+  ].join("\r\n");
+  let received: LlmFreeformPlanningContext | undefined;
+  const plan = await new LlmFreeformPromptPlanningModel(async (context) => {
+    received = context;
+    const globalSequences = context.sourceEvidence.sourceUnits
+      .filter((unit) => /^(?:Global|Throughout|atmosphere):/u.test(unit.text))
+      .map((unit) => unit.sequence);
+    return toDirectorFixture(context, globalSequences);
+  }).plan({
+    sourceText,
+    targetDurationSeconds: 15,
+    stylePreferences: "",
+    sourceAssetIds: [],
+  });
+
+  const globalTexts = received?.sourceEvidence.sourceUnits
+    .filter((unit) => /^(?:Global|Throughout|atmosphere):/u.test(unit.text))
+    .map((unit) => unit.text) ?? [];
+  const visualTexts = received?.sourceEvidence.sourceUnits
+    .filter((unit) => !globalTexts.includes(unit.text))
+    .map((unit) => unit.text) ?? [];
+  assert.ok(globalTexts.length >= 3);
+  assert.deepEqual(plan.beats.map((beat) => beat.summary), visualTexts);
+  assert.ok(plan.beats.every((beat) => !globalTexts.some((text) => beat.summary.includes(text))));
+  assert.ok(plan.beats.some((beat) => beat.summary.includes("@anchor:opening")));
+  assert.ok(plan.beats.some((beat) => beat.summary.includes("@anchor:section-close")));
+  const locks = plan.shotSpecs[0]!.motionPlan.character_locks.join("|");
+  assert.ok(globalTexts.every((text) => locks.includes(text)));
 });
 
 test("freeform planner preserves reference policy and anchor order from the deterministic skeleton", async () => {
@@ -481,12 +641,7 @@ test("freeform planner preserves reference policy and anchor order from the dete
   let received: LlmFreeformPlanningContext | undefined;
   const plan = await new LlmFreeformPromptPlanningModel(async (context) => {
     received = context;
-    return {
-      segments: context.segments.map((segment) => ({
-        sequence: segment.sequence,
-        visual_prompt: `自由画面 ${segment.sequence}`,
-      })),
-    };
+    return toDirectorFixture(context);
   }).plan(referenceInput);
 
   assert.deepEqual(
@@ -503,19 +658,207 @@ test("freeform planner preserves reference policy and anchor order from the dete
   );
 });
 
-test("freeform planner rejects malformed segment envelopes without deterministic fallback", async () => {
-  const draft = await new DeterministicPlanningModel().plan(input);
-  const cases: unknown[] = [
-    { segments: draft.shotSpecs.slice(0, -1).map((shot) => ({ sequence: shot.sequence, visual_prompt: "画面" })) },
-    { segments: draft.shotSpecs.map((shot) => ({ sequence: shot.sequence + 1, visual_prompt: "画面" })) },
-    { segments: [...draft.shotSpecs].reverse().map((shot) => ({ sequence: shot.sequence, visual_prompt: "画面" })) },
-    { segments: draft.shotSpecs.map((shot) => ({ sequence: shot.sequence, visual_prompt: "   " })) },
-    { segments: draft.shotSpecs.map((shot) => ({ sequence: shot.sequence, visual_prompt: "画面", extra: true })) },
+test("freeform planner fails closed instead of fabricating source ownership for a duration-only trailing segment", async () => {
+  await assert.rejects(
+    () => new LlmFreeformPromptPlanningModel((context) => toDirectorFixture(context)).plan({
+      sourceText: "人物完成一个连续动作并在结尾停稳。",
+      targetDurationSeconds: 30,
+      stylePreferences: "纪实",
+      sourceAssetIds: [],
+    }),
+    (error: unknown) => error instanceof LlmSemanticPlanningError
+      && error.code === "LLM_SOURCE_COVERAGE_INVALID"
+      && error.message.includes("empty motion source sequence"),
+  );
+});
+
+test("freeform planner preserves Chinese source spans and rejects a split surrogate pair", async () => {
+  const unicodeInput: PlanningInput = {
+    sourceText: "中文😀动作继续。",
+    targetDurationSeconds: 8,
+    stylePreferences: "自然",
+    sourceAssetIds: [],
+  };
+  const validPlan = await new LlmFreeformPromptPlanningModel((context) => toDirectorFixture(context)).plan(unicodeInput);
+  assert.equal(validPlan.beats[0]?.summary, unicodeInput.sourceText);
+
+  await assert.rejects(
+    () => new LlmFreeformPromptPlanningModel((context) => {
+      const fixture = toDirectorFixture(context);
+      const entry = fixture.source_ownership.find((candidate) => candidate.role === "VISUAL");
+      if (!entry || entry.role !== "VISUAL") throw new Error("The unicode fixture must have a visual owner.");
+      const emojiStart = context.sourceEvidence.sourceUnits[0]!.text.indexOf("😀");
+      entry.source_spans = [
+        { start: 0, end: emojiStart + 1, segment_sequence: 1 },
+        { start: emojiStart + 1, end: context.sourceEvidence.sourceUnits[0]!.text.length, segment_sequence: 1 },
+      ];
+      return fixture;
+    }).plan(unicodeInput),
+    (error: unknown) => error instanceof LlmSemanticPlanningError
+      && error.code === "LLM_SOURCE_COVERAGE_INVALID",
+  );
+});
+
+test("freeform planner rejects malformed ownership envelopes without deterministic fallback", async () => {
+  type DirectorFixture = ReturnType<typeof toDirectorFixture>;
+  const cases: Array<{ name: string; mutate: (fixture: DirectorFixture) => unknown; code: string }> = [
+    {
+      name: "missing source ownership",
+      mutate: (fixture) => ({ segments: fixture.segments }),
+      code: "LLM_PLANNER_MALFORMED",
+    },
+    {
+      name: "unknown role",
+      mutate: (fixture) => {
+        (fixture.source_ownership[0] as Record<string, unknown>).role = "UNKNOWN";
+        return fixture;
+      },
+      code: "LLM_PLANNER_MALFORMED",
+    },
+    {
+      name: "missing source unit",
+      mutate: (fixture) => ({ ...fixture, source_ownership: fixture.source_ownership.slice(1) }),
+      code: "LLM_SOURCE_COVERAGE_INVALID",
+    },
+    {
+      name: "duplicate source unit",
+      mutate: (fixture) => ({ ...fixture, source_ownership: [...fixture.source_ownership, fixture.source_ownership[0]] }),
+      code: "LLM_SOURCE_COVERAGE_INVALID",
+    },
+    {
+      name: "reordered source units",
+      mutate: (fixture) => ({ ...fixture, source_ownership: [...fixture.source_ownership].reverse() }),
+      code: "LLM_SOURCE_COVERAGE_INVALID",
+    },
+    {
+      name: "fabricated source unit",
+      mutate: (fixture) => ({
+        ...fixture,
+        source_ownership: fixture.source_ownership.map((entry, index) => index === 0
+          ? { ...entry, source_unit_sequence: 99 }
+          : entry),
+      }),
+      code: "LLM_SOURCE_COVERAGE_INVALID",
+    },
+    {
+      name: "global with a segment owner",
+      mutate: (fixture) => ({
+        ...fixture,
+        source_ownership: fixture.source_ownership.map((entry, index) => index === 0
+          ? { source_unit_sequence: entry.source_unit_sequence, role: "GLOBAL", segment_sequence: 1 }
+          : entry),
+      }),
+      code: "LLM_PLANNER_MALFORMED",
+    },
+    {
+      name: "pure global source",
+      mutate: (fixture) => ({
+        ...fixture,
+        source_ownership: fixture.source_ownership.map((entry) => ({
+          source_unit_sequence: entry.source_unit_sequence,
+          role: "GLOBAL" as const,
+        })),
+      }),
+      code: "LLM_SOURCE_COVERAGE_INVALID",
+    },
+    {
+      name: "leading empty segment",
+      mutate: (fixture) => ({
+        ...fixture,
+        source_ownership: fixture.source_ownership.map((entry) => ({
+          ...entry,
+          ...(entry.role === "VISUAL"
+            ? { source_spans: entry.source_spans.map((span) => ({ ...span, segment_sequence: 2 })) }
+            : {}),
+        })),
+      }),
+      code: "LLM_SOURCE_COVERAGE_INVALID",
+    },
+    {
+      name: "missing source span",
+      mutate: (fixture) => ({
+        ...fixture,
+        source_ownership: fixture.source_ownership.map((entry, index) => index === 0 && entry.role === "VISUAL"
+          ? { ...entry, source_spans: [] }
+          : entry),
+      }),
+      code: "LLM_SOURCE_COVERAGE_INVALID",
+    },
+    {
+      name: "source span gap",
+      mutate: (fixture) => ({
+        ...fixture,
+        source_ownership: fixture.source_ownership.map((entry, index) => index === 0 && entry.role === "VISUAL"
+          ? { ...entry, source_spans: [{ start: 1, end: entry.source_spans[0]!.end, segment_sequence: 1 }] }
+          : entry),
+      }),
+      code: "LLM_SOURCE_COVERAGE_INVALID",
+    },
+    {
+      name: "overlapping source spans",
+      mutate: (fixture) => ({
+        ...fixture,
+        source_ownership: fixture.source_ownership.map((entry, index) => {
+          if (index !== 0 || entry.role !== "VISUAL" || entry.source_spans[0]!.end < 2) return entry;
+          const midpoint = entry.source_spans[0]!.end - 1;
+          return {
+            ...entry,
+            source_spans: [
+              { start: 0, end: midpoint, segment_sequence: 1 },
+              { start: midpoint - 1, end: entry.source_spans[0]!.end, segment_sequence: 1 },
+            ],
+          };
+        }),
+      }),
+      code: "LLM_SOURCE_COVERAGE_INVALID",
+    },
+    {
+      name: "unknown nested source span key",
+      mutate: (fixture) => ({
+        ...fixture,
+        source_ownership: fixture.source_ownership.map((entry, index) => index === 0 && entry.role === "VISUAL"
+          ? {
+            ...entry,
+            source_spans: entry.source_spans.map((span) => ({ ...span, text: "fabricated" })),
+          }
+          : entry),
+      }),
+      code: "LLM_PLANNER_MALFORMED",
+    },
+    {
+      name: "missing segment",
+      mutate: (fixture) => ({ ...fixture, segments: fixture.segments.slice(0, -1) }),
+      code: "LLM_PLANNER_MALFORMED",
+    },
+    {
+      name: "reordered segments",
+      mutate: (fixture) => ({ ...fixture, segments: [...fixture.segments].reverse() }),
+      code: "LLM_PLANNER_MALFORMED",
+    },
+    {
+      name: "blank prompt",
+      mutate: (fixture) => ({
+        ...fixture,
+        segments: fixture.segments.map((segment, index) => index === 0 ? { ...segment, visual_prompt: "   " } : segment),
+      }),
+      code: "LLM_PLANNER_MALFORMED",
+    },
+    {
+      name: "extra segment key",
+      mutate: (fixture) => ({
+        ...fixture,
+        segments: fixture.segments.map((segment, index) => index === 0 ? { ...segment, extra: true } : segment),
+      }),
+      code: "LLM_PLANNER_MALFORMED",
+    },
   ];
-  for (const result of cases) {
+  for (const current of cases) {
     await assert.rejects(
-      () => new LlmFreeformPromptPlanningModel(() => result).plan(input),
-      (error: unknown) => error instanceof LlmSemanticPlanningError && error.code === "LLM_PLANNER_MALFORMED",
+      () => new LlmFreeformPromptPlanningModel((context) => {
+        const fixture = structuredClone(toDirectorFixture(context)) as ReturnType<typeof toDirectorFixture>;
+        return current.mutate(fixture);
+      }).plan(input),
+      (error: unknown) => error instanceof LlmSemanticPlanningError && error.code === current.code,
     );
   }
   await assert.rejects(
@@ -534,37 +877,35 @@ test("freeform planner blocks a visual prompt that repeats authored dialogue", a
   const authoredLine = skeleton.shotSpecs.flatMap((shot) => shot.dialogueLines)[0];
   assert.ok(authoredLine);
   await assert.rejects(
-    () => new LlmFreeformPromptPlanningModel(() => ({
-      segments: skeleton.shotSpecs.map((shot, index) => ({
-        sequence: shot.sequence,
-        visual_prompt: index === 0 ? `人物说：${authoredLine}` : "只写画面动作",
-      })),
-    })).plan(dialogueInput),
+    () => new LlmFreeformPromptPlanningModel((context) => {
+      const fixture = toDirectorFixture(context);
+      fixture.segments[0]!.visual_prompt = `人物说：${authoredLine}`;
+      return fixture;
+    }).plan(dialogueInput),
     (error: unknown) => error instanceof LlmSemanticPlanningError && error.code === "LLM_PLANNER_MALFORMED",
   );
 });
 
 test("freeform planner blocks source-wide or foreign-segment prose in a visual supplement", async () => {
   const sourceWide = await assert.rejects(
-    () => new LlmFreeformPromptPlanningModel(async (context) => ({
-      segments: context.segments.map((segment) => ({
-        sequence: segment.sequence,
-        visual_prompt: `${segment.sequence === 1 ? "本段补充" : "继续"}：${context.sourceText}`,
-      })),
-    })).plan(input),
+    () => new LlmFreeformPromptPlanningModel(async (context) => {
+      const fixture = toDirectorFixture(context);
+      fixture.segments[0]!.visual_prompt = `本段补充：${context.sourceText}`;
+      return fixture;
+    }).plan(input),
     (error: unknown) => error instanceof LlmSemanticPlanningError && error.code === "LLM_PLANNER_MALFORMED",
   );
   assert.equal(sourceWide, undefined);
 
   const foreignProjection = await assert.rejects(
-    () => new LlmFreeformPromptPlanningModel(async (context) => ({
-      segments: context.segments.map((segment, index) => ({
-        sequence: segment.sequence,
-        visual_prompt: index === 0 && context.segments[1]
-          ? `本段画面补充：${context.segments[1].sourceNarrativeProjection}`
-          : "只描述本段的画面动作。",
-      })),
-    })).plan(input),
+    () => new LlmFreeformPromptPlanningModel(async (context) => {
+      const fixture = toDirectorFixture(context);
+      const foreignUnit = context.sourceEvidence.sourceUnits.find((unit) => unit.sequence !== 1);
+      fixture.segments[0]!.visual_prompt = foreignUnit
+        ? `本段画面补充：${foreignUnit.text}`
+        : "只描述本段的画面动作。";
+      return fixture;
+    }).plan(input),
     (error: unknown) => error instanceof LlmSemanticPlanningError && error.code === "LLM_PLANNER_MALFORMED",
   );
   assert.equal(foreignProjection, undefined);

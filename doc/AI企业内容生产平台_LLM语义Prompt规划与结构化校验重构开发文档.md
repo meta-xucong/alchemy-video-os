@@ -2,6 +2,8 @@
 
 > **历史方案（`SUPERSEDED_BY_LLM_FREEFORM_PROMPT`）**：自《AI企业内容生产平台_LLM自由创作与口播保真最小适配开发文档.md》发布后，本文件中“LLM 必须返回完整 `draft/sourceCoverage/motionPlan/camera` raw shape”的创作输出方案不再作为当前实现授权。source-first、口播逐字保留、参考顺序、UTF-8 budget、sidecar、fail-closed、状态/幂等和外部调用边界仍有效；当前实现和验收以新文档为准。
 
+> `HISTORICAL_SUPERSEDED（2026-09-17）`：当前导演式 source ownership、source span 校验和分段 visual_prompt 流程以《AI企业内容生产平台_原仓库导演式语义分段与全局上下文移植开发文档.md》为准；本文只保留历史方案、计数和证据。
+
 > 文档状态：`HISTORICAL_SUPERSEDED`（原 D1/D2 内部离线 seam 的实现和证据保留作历史；当前 LLM 创作输出以《AI企业内容生产平台_LLM自由创作与口播保真最小适配开发文档.md》为准，D3/D4/D5 仍不得被视为通过）
 >
 > 本文同时记录本轮已落地的 `packages/creative-planning` 内部实现和审计证据；不代表生产 Workflow、Provider、VPS、计费或正式阶段状态已修改。未闭合硬门不得进入 `READY_FOR_AUDIT` 或 `ACCEPTED`。

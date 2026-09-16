@@ -221,6 +221,18 @@ test("CreativePlanningExecutor injects freeform visual prompts while preserving 
   const planner = new LlmFreeformPromptPlanningModel(async (context) => {
     receivedSegmentContext = context;
     return {
+      source_ownership: context.sourceEvidence.sourceUnits.map((unit, index) => ({
+        source_unit_sequence: unit.sequence,
+        role: "VISUAL" as const,
+        source_spans: [{
+          start: 0,
+          end: unit.text.length,
+          segment_sequence: Math.min(
+            context.segments.length,
+            Math.floor((index * context.segments.length) / Math.max(1, context.sourceEvidence.sourceUnits.length)) + 1,
+          ),
+        }],
+      })),
       segments: context.segments.map((segment) => ({
         sequence: segment.sequence,
         visual_prompt: `自由视觉 ${segment.sequence}\n保留原文格式`,

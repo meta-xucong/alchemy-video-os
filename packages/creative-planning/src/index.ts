@@ -186,10 +186,10 @@ export type SemanticPlanningClient = {
 } | ((input: PlanningInput) => Promise<unknown>);
 
 /**
- * Private request context for the freeform visual prompt client. The
- * deterministic planner owns segment boundaries, durations, source/dialogue
- * ownership, and reference policy; the LLM only supplies one visual prompt
- * for each already-existing segment.
+ * Private request context for the semantic director client. Segment count,
+ * duration windows, dialogue, references, and source evidence are platform
+ * facts; the LLM only assigns source units to GLOBAL/VISUAL owners and adds
+ * one visual prompt for each already-existing segment.
  */
 export type LlmFreeformPlanningContext = Readonly<{
   sourceText: string;
@@ -200,8 +200,6 @@ export type LlmFreeformPlanningContext = Readonly<{
   segments: readonly {
     sequence: number;
     targetDurationSeconds: number;
-    sourceNarrativeProjection: string;
-    dialogueLines: readonly string[];
     referencePolicy: ReferencePolicy;
     referenceAnchors: readonly string[];
   }[];
@@ -214,6 +212,14 @@ export type LlmFreeformPlanningClient = {
 } | ((input: LlmFreeformPlanningContext) => Promise<unknown>);
 
 type LlmFreeformPromptResult = Readonly<{
+  sourceOwnership: readonly (
+    | { sourceUnitSequence: number; role: "GLOBAL" }
+    | {
+      sourceUnitSequence: number;
+      role: "VISUAL";
+      sourceSpans: readonly { start: number; end: number; segmentSequence: number }[];
+    }
+  )[];
   segments: readonly {
     sequence: number;
     visualPrompt: string;
@@ -426,19 +432,67 @@ const malformed = (message: string, cause?: unknown): never => {
 };
 
 const readLlmFreeformPromptResult = (value: unknown): LlmFreeformPromptResult => {
-  if (!isRecord(value) || !exactKeys(value, ["segments"]) || !Array.isArray(value.segments)) {
-    return malformed("The freeform semantic planner must return only a segments array.");
+  if (!isRecord(value) || !exactKeys(value, ["source_ownership", "segments"])
+    || !Array.isArray(value.source_ownership) || !Array.isArray(value.segments)) {
+    return malformed("The semantic director must return exact source_ownership and segments arrays.");
+  }
+  const sourceOwnership: Array<
+    | { sourceUnitSequence: number; role: "GLOBAL" }
+    | {
+      sourceUnitSequence: number;
+      role: "VISUAL";
+      sourceSpans: Array<{ start: number; end: number; segmentSequence: number }>;
+    }
+  > = [];
+  for (const ownership of value.source_ownership) {
+    if (!isRecord(ownership) || !Number.isSafeInteger(ownership.source_unit_sequence)
+      || (ownership.role !== "GLOBAL" && ownership.role !== "VISUAL")) {
+      return malformed("Each source ownership entry must use a known role and integer source_unit_sequence.");
+    }
+    if (ownership.role === "GLOBAL") {
+      if (!exactKeys(ownership, ["source_unit_sequence", "role"])) {
+        return malformed("A GLOBAL source ownership entry must not contain a segment sequence.");
+      }
+      sourceOwnership.push({
+        sourceUnitSequence: ownership.source_unit_sequence as number,
+        role: "GLOBAL",
+      });
+      continue;
+    }
+    if (!exactKeys(ownership, ["source_unit_sequence", "role", "source_spans"])
+      || !Array.isArray(ownership.source_spans)) {
+      return malformed("A VISUAL source ownership entry must contain only source_spans.");
+    }
+    const sourceSpans: Array<{ start: number; end: number; segmentSequence: number }> = [];
+    for (const span of ownership.source_spans) {
+      if (!isRecord(span) || !exactKeys(span, ["start", "end", "segment_sequence"])
+        || !Number.isSafeInteger(span.start)
+        || !Number.isSafeInteger(span.end)
+        || !Number.isSafeInteger(span.segment_sequence)) {
+        return malformed("Each VISUAL source span must contain only integer start, end, and segment_sequence fields.");
+      }
+      sourceSpans.push({
+        start: span.start as number,
+        end: span.end as number,
+        segmentSequence: span.segment_sequence as number,
+      });
+    }
+    sourceOwnership.push({
+      sourceUnitSequence: ownership.source_unit_sequence as number,
+      role: "VISUAL",
+      sourceSpans,
+    });
   }
   const segments: Array<{ sequence: number; visualPrompt: string }> = [];
   for (const segment of value.segments) {
     if (!isRecord(segment) || !exactKeys(segment, ["sequence", "visual_prompt"])
       || !Number.isSafeInteger(segment.sequence)
       || !isNonEmptyString(segment.visual_prompt)) {
-      return malformed("Each freeform semantic segment must contain only an integer sequence and a non-empty visual_prompt.");
+      return malformed("Each semantic director segment must contain only an integer sequence and a non-empty visual_prompt.");
     }
     segments.push({ sequence: segment.sequence as number, visualPrompt: segment.visual_prompt as string });
   }
-  return { segments };
+  return { sourceOwnership, segments };
 };
 
 const readRawSemanticPlanningResult = (value: unknown): RawSemanticPlanningResult => {
@@ -1009,27 +1063,21 @@ const containsAuthoredDialogue = (visualPrompt: string, dialogueLines: readonly 
 };
 
 /**
- * The deterministic compiler already emits the source-owned narrative
- * projection for each segment.  A freeform visual supplement must not copy
- * that projection (or the whole frozen source) back into every segment: the
- * duplicate is redundant provider input and can push an otherwise valid
- * segment over its byte budget.  Keep this check exact/source-first; do not
- * rewrite or slice an LLM response when its ownership cannot be proved.
+ * The semantic director's visual supplement must not copy global source
+ * facts, another segment's source projection, or the whole frozen source
+ * back into a segment. Keep this check exact/source-first; do not rewrite or
+ * slice an LLM response when its ownership cannot be proved.
  */
-const containsRepeatedSourceProjection = (
+const containsForeignSemanticSource = (
   visualPrompt: string,
-  input: PlanningInput,
-  draft: StoryboardPlanDraft,
+  forbiddenSource: readonly string[],
 ) => {
   const normalizedPrompt = normalize(visualPrompt);
   if (!normalizedPrompt) return false;
-  const sourceCandidates = [
-    normalize(input.sourceText),
-    normalize(stripSpokenDialogue(input.sourceText)),
-    ...draft.beats.map((beat) => normalize(beat.narrativeGoal)),
-    ...draft.shotSpecs.map((shot) => normalize(shot.narrativeGoal)),
-  ].filter(Boolean);
-  return sourceCandidates.some((candidate) => normalizedPrompt.includes(candidate));
+  return forbiddenSource
+    .map((source) => normalize(source))
+    .filter(Boolean)
+    .some((source) => normalizedPrompt.includes(source));
 };
 
 const invokeLlmFreeformPlanningClient = async (
@@ -1051,10 +1099,321 @@ const invokeLlmFreeformPlanningClient = async (
   });
 };
 
+type SemanticDirectorSourceSpan = Readonly<{
+  sourceUnitSequence: number;
+  start: number;
+  end: number;
+  segmentSequence: number;
+  text: string;
+}>;
+
+type SemanticDirectorOwnership = Readonly<
+  | { sourceUnitSequence: number; role: "GLOBAL" }
+  | {
+    sourceUnitSequence: number;
+    role: "VISUAL";
+    sourceSpans: readonly { start: number; end: number; segmentSequence: number }[];
+  }
+>;
+
+type SemanticDirectorSourceAssignment = Readonly<{
+  sourceUnits: readonly { sequence: number; text: string }[];
+  globalSourceUnits: readonly { sequence: number; text: string }[];
+  visualSourceSpansBySegment: ReadonlyMap<number, readonly SemanticDirectorSourceSpan[]>;
+  visualBeatSequenceBySourceSpan: ReadonlyMap<string, number>;
+}>;
+
+const semanticDirectorSourceSpanKey = (span: Pick<SemanticDirectorSourceSpan, "sourceUnitSequence" | "start" | "end">) =>
+  `${span.sourceUnitSequence}:${span.start}:${span.end}`;
+
+const isUnicodeCodePointBoundary = (value: string, offset: number) => {
+  if (offset <= 0 || offset >= value.length) return true;
+  const previous = value.charCodeAt(offset - 1);
+  const current = value.charCodeAt(offset);
+  return !(previous >= 0xd800 && previous <= 0xdbff && current >= 0xdc00 && current <= 0xdfff);
+};
+
+const assertSemanticDirectorSourceEvidence = (
+  input: PlanningInput,
+  evidence: SemanticPlanningSourceEvidence,
+  manifest: SemanticPlanningSourceManifest,
+) => {
+  if (manifest.sourceTextHash !== hashSourceUnit(input.sourceText)
+    || !sameSequence(manifest.sourceAssetIds, input.sourceAssetIds)
+    || manifest.sourceUnits.length !== evidence.sourceUnits.length
+    || manifest.dialogueLines.length !== evidence.dialogueLines.length
+    || evidence.sourceUnits.some((unit, index) => unit.sequence !== index + 1
+      || manifest.sourceUnits[index]?.sequence !== unit.sequence
+      || manifest.sourceUnits[index]?.textHash !== hashSourceUnit(unit.text))
+    || evidence.dialogueLines.some((line, index) => line.sequence !== index + 1
+      || manifest.dialogueLines[index]?.sequence !== line.sequence
+      || manifest.dialogueLines[index]?.textHash !== hashSourceUnit(normalizeDialogueText(line.text)))) {
+    throw new LlmSemanticPlanningError(
+      "LLM_SOURCE_COVERAGE_INVALID",
+      "The semantic director source evidence is not bound to the frozen source manifest.",
+    );
+  }
+};
+
+const assignSemanticDirectorSources = (
+  input: PlanningInput,
+  deterministicDraft: StoryboardPlanDraft,
+  ownership: readonly SemanticDirectorOwnership[],
+): SemanticDirectorSourceAssignment => {
+  const evidence = buildSemanticSourceEvidence(input);
+  const manifest = buildSemanticSourceManifest(input);
+  assertSemanticDirectorSourceEvidence(input, evidence, manifest);
+  if (evidence.sourceUnits.length === 0) {
+    throw new LlmSemanticPlanningError(
+      "LLM_SOURCE_COVERAGE_INVALID",
+      "The semantic director requires at least one authored source unit.",
+    );
+  }
+  const expectedSourceSequences = expectedSequence(evidence.sourceUnits.length);
+  if (!sameSequence(ownership.map((entry) => entry.sourceUnitSequence), expectedSourceSequences)) {
+    throw new LlmSemanticPlanningError(
+      "LLM_SOURCE_COVERAGE_INVALID",
+      "Source ownership must cover each source unit exactly once in source order.",
+    );
+  }
+  const ownershipBySourceUnit = new Map<number, SemanticDirectorOwnership>();
+  let previousVisualSegment = 0;
+  for (const entry of ownership) {
+    if (ownershipBySourceUnit.has(entry.sourceUnitSequence)) {
+      throw new LlmSemanticPlanningError("LLM_SOURCE_COVERAGE_INVALID", "Source ownership contains a duplicate source unit.");
+    }
+    if (entry.sourceUnitSequence < 1 || entry.sourceUnitSequence > evidence.sourceUnits.length) {
+      throw new LlmSemanticPlanningError("LLM_SOURCE_COVERAGE_INVALID", "Source ownership points outside the frozen source evidence.");
+    }
+    if (entry.role === "GLOBAL") {
+      ownershipBySourceUnit.set(entry.sourceUnitSequence, entry);
+      continue;
+    }
+    const sourceUnit = evidence.sourceUnits[entry.sourceUnitSequence - 1];
+    if (!sourceUnit || entry.sourceSpans.length === 0) {
+      throw new LlmSemanticPlanningError("LLM_SOURCE_COVERAGE_INVALID", "A VISUAL source unit must provide authored source spans.");
+    }
+    let previousEnd = 0;
+    for (const span of entry.sourceSpans) {
+      if (span.start !== previousEnd
+        || span.start < 0
+        || span.end <= span.start
+        || span.end > sourceUnit.text.length
+        || !isUnicodeCodePointBoundary(sourceUnit.text, span.start)
+        || !isUnicodeCodePointBoundary(sourceUnit.text, span.end)
+        || !Number.isSafeInteger(span.segmentSequence)
+        || span.segmentSequence < 1
+        || span.segmentSequence > deterministicDraft.shotSpecs.length
+        || span.segmentSequence < previousVisualSegment) {
+        throw new LlmSemanticPlanningError("LLM_SOURCE_COVERAGE_INVALID", "VISUAL source spans must cover each source unit contiguously in source order.");
+      }
+      previousEnd = span.end;
+      previousVisualSegment = span.segmentSequence;
+    }
+    if (previousEnd !== sourceUnit.text.length) {
+      throw new LlmSemanticPlanningError("LLM_SOURCE_COVERAGE_INVALID", "VISUAL source spans must cover the complete source unit without gaps.");
+    }
+    ownershipBySourceUnit.set(entry.sourceUnitSequence, entry);
+  }
+
+  const globalSourceUnits = evidence.sourceUnits.filter((unit) => ownershipBySourceUnit.get(unit.sequence)?.role === "GLOBAL");
+  const visualSourceSpansBySegment = new Map<number, SemanticDirectorSourceSpan[]>();
+  const visualBeatSequenceBySourceSpan = new Map<string, number>();
+  let visualBeatSequence = 0;
+  for (const unit of evidence.sourceUnits) {
+    const entry = ownershipBySourceUnit.get(unit.sequence)!;
+    if (entry.role !== "VISUAL") continue;
+    for (const span of entry.sourceSpans) {
+      visualBeatSequence += 1;
+      const ownedSpan: SemanticDirectorSourceSpan = {
+        sourceUnitSequence: unit.sequence,
+        start: span.start,
+        end: span.end,
+        segmentSequence: span.segmentSequence,
+        text: unit.text.slice(span.start, span.end),
+      };
+      visualBeatSequenceBySourceSpan.set(semanticDirectorSourceSpanKey(ownedSpan), visualBeatSequence);
+      const segmentSpans = visualSourceSpansBySegment.get(span.segmentSequence) ?? [];
+      segmentSpans.push(ownedSpan);
+      visualSourceSpansBySegment.set(span.segmentSequence, segmentSpans);
+    }
+  }
+  if (visualBeatSequence === 0) {
+    throw new LlmSemanticPlanningError(
+      "LLM_SOURCE_COVERAGE_INVALID",
+      "The semantic director must assign at least one source unit to a visual segment.",
+    );
+  }
+
+  const lastSegmentSequence = deterministicDraft.shotSpecs.length;
+  for (let segmentSequence = 1; segmentSequence <= lastSegmentSequence; segmentSequence += 1) {
+    const segmentSpans = visualSourceSpansBySegment.get(segmentSequence) ?? [];
+    if (segmentSpans.length > 0) continue;
+    const isExistingDurationOnlyTrailingWindow = segmentSequence === lastSegmentSequence
+      && (deterministicDraft.shotSpecs[segmentSequence - 1]?.narrativeBeatSequences.length ?? 0) === 0;
+    if (!isExistingDurationOnlyTrailingWindow) {
+      throw new LlmSemanticPlanningError(
+        "LLM_SOURCE_COVERAGE_INVALID",
+        "Every non-trailing semantic segment must have visual source ownership.",
+      );
+    }
+  }
+  return {
+    sourceUnits: evidence.sourceUnits,
+    globalSourceUnits,
+    visualSourceSpansBySegment,
+    visualBeatSequenceBySourceSpan,
+  };
+};
+
+const buildSemanticDirectorDraft = (
+  input: PlanningInput,
+  deterministicDraft: StoryboardPlanDraft,
+  result: LlmFreeformPromptResult,
+): StoryboardPlanDraft => {
+  const segmentSequences = deterministicDraft.shotSpecs.map((shot) => shot.sequence);
+  if (result.segments.length !== deterministicDraft.shotSpecs.length
+    || !sameSequence(result.segments.map((segment) => segment.sequence), segmentSequences)) {
+    throw new LlmSemanticPlanningError(
+      "LLM_PLANNER_MALFORMED",
+      "The semantic director must return one ordered visual prompt for every planned segment.",
+    );
+  }
+  const assignment = assignSemanticDirectorSources(input, deterministicDraft, result.sourceOwnership);
+  const globalSourceTexts = assignment.globalSourceUnits.map((unit) => unit.text);
+  const globalContextText = globalSourceTexts.join(" ");
+  const sharedVisualConstraints = distinct([
+    ...extractVisualConstraints(globalContextText),
+    ...inferPhysicalSceneConstraints(globalContextText),
+    ...globalSourceTexts,
+  ]);
+  const keyVisualObjects = (() => {
+    const merged = new Map<string, KeyVisualObjectLock>();
+    for (const object of input.visualObjectLocks ?? []) merged.set(object.name, object);
+    for (const object of extractKeyVisualObjectLocks(stripSpokenDialogue(input.sourceText))) {
+      const previous = merged.get(object.name);
+      merged.set(object.name, previous ? { ...previous, ...object } : object);
+    }
+    return [...merged.values()];
+  })();
+  const visualSourceSpans = [...assignment.visualSourceSpansBySegment.values()].flat();
+  const authoredDialogueLines = buildSemanticSourceEvidence(input).dialogueLines.map((line) => line.text);
+  const forbiddenWholeSource = [normalize(input.sourceText), ...globalSourceTexts];
+  const shotSpecs = deterministicDraft.shotSpecs.map((baseShot, index) => {
+    const sequence = baseShot.sequence;
+    const sourceSpans = assignment.visualSourceSpansBySegment.get(sequence) ?? [];
+    const visualBeatSequences = sourceSpans
+      .map((span) => assignment.visualBeatSequenceBySourceSpan.get(semanticDirectorSourceSpanKey(span)))
+      .filter((value): value is number => value !== undefined);
+    const sourceTexts = sourceSpans.map((span) => span.text);
+    const ownedSpanKeys = new Set(sourceSpans.map((span) => semanticDirectorSourceSpanKey(span)));
+    const foreignVisualSourceTexts = visualSourceSpans
+      .filter((span) => !ownedSpanKeys.has(semanticDirectorSourceSpanKey(span)))
+      .map((span) => span.text);
+    const visualPrompt = result.segments[index]!.visualPrompt;
+    if (containsAuthoredDialogue(visualPrompt, authoredDialogueLines)) {
+      throw new LlmSemanticPlanningError("LLM_PLANNER_MALFORMED", `Semantic visual_prompt for segment ${sequence} repeats authored dialogue.`);
+    }
+    if (containsForeignSemanticSource(visualPrompt, [
+      ...forbiddenWholeSource,
+      ...foreignVisualSourceTexts,
+      normalize(foreignVisualSourceTexts.join(" ")),
+    ])) {
+      throw new LlmSemanticPlanningError("LLM_PLANNER_MALFORMED", `Semantic visual_prompt for segment ${sequence} repeats foreign source content.`);
+    }
+    const primaryEvent = sourceTexts.length > 0
+      ? concise(sourceTexts[0]!, "故事推进")
+      : `承接第 ${index} 段的结束状态`;
+    const summary = sourceTexts.length > 0
+      ? concise(sourceTexts.join(" "), primaryEvent)
+      : primaryEvent;
+    const startState = baseShot.startState;
+    const endState = baseShot.endState;
+    const transitionSummary = baseShot.transitionSummary;
+    const cameraShot = cameraShotFor({
+      sequence,
+      count: deterministicDraft.shotSpecs.length,
+      durationSeconds: baseShot.durationSeconds,
+      narrativeIntent: summary,
+      openingState: startState,
+      closingState: endState,
+    });
+    if (sourceSpans.length === 0) {
+      throw new LlmSemanticPlanningError(
+        "LLM_SOURCE_COVERAGE_INVALID",
+        "The existing duration-only trailing segment cannot be represented with an empty motion source sequence.",
+      );
+    }
+    const motion = createMotionPlan({
+      sequence,
+      durationSeconds: baseShot.durationSeconds,
+      events: sourceTexts.length > 0 ? sourceTexts.map(stripSpokenDialogue).filter(Boolean) : [startState],
+      narrativeBeatSequences: visualBeatSequences,
+      startState,
+      endState,
+      transitionSummary,
+      referencePolicy: baseShot.referencePolicy,
+      visualConstraints: sharedVisualConstraints,
+      keyVisualObjects,
+      cameraShot,
+      dialogueLines: baseShot.dialogueLines,
+      referenceAnchors: baseShot.referenceAnchors,
+      voicePerformance: baseShot.voicePerformance,
+    });
+    return {
+      sequence,
+      title: `生成片段 ${sequence}：${primaryEvent}`,
+      durationSeconds: baseShot.durationSeconds,
+      narrativeGoal: summary,
+      startState,
+      endState,
+      transitionSummary,
+      referencePolicy: baseShot.referencePolicy,
+      dependsOnSequences: [...baseShot.dependsOnSequences],
+      continuityNote: baseShot.continuityNote,
+      narrativeBeatSequences: visualBeatSequences,
+      motionPlan: motion.motionPlan,
+      motionPlanHash: motion.motionPlanHash,
+      cameraShot,
+      dialogueLines: [...baseShot.dialogueLines],
+      ...(baseShot.voicePerformance ? { voicePerformance: baseShot.voicePerformance } : {}),
+      ...(baseShot.sceneId ? { sceneId: baseShot.sceneId } : {}),
+      ...(baseShot.characterIds?.length ? { characterIds: [...baseShot.characterIds] } : {}),
+      ...(baseShot.propIds?.length ? { propIds: [...baseShot.propIds] } : {}),
+      ...(baseShot.referenceAnchors?.length ? { referenceAnchors: [...baseShot.referenceAnchors] } : {}),
+      visualPrompt,
+    };
+  });
+  const beats: PlannedScriptBeat[] = visualSourceSpans.map((span, index) => {
+    return {
+      sequence: index + 1,
+      title: `叙事点 ${index + 1}：${span.text}`,
+      summary: span.text,
+      narrativeGoal: span.text,
+      visibleFacts: [span.text],
+      generationSegmentSequence: span.segmentSequence,
+    };
+  });
+  return {
+    plannerVersion: deterministicDraft.plannerVersion,
+    beats,
+    title: `故事计划：${concise(visualSourceSpans[0]?.text ?? "", "故事计划")}`,
+    summary: `共 ${beats.length} 个可执行视觉节拍，按 ${shotSpecs.length} 个生成片段编排，总时长 ${input.targetDurationSeconds} 秒。`,
+    totalDurationSeconds: deterministicDraft.totalDurationSeconds,
+    continuityLevel: deterministicDraft.continuityLevel,
+    continuityNote: deterministicDraft.continuityNote,
+    shotSpecs,
+    narrativeBeatCount: beats.length,
+    generationSegmentCount: deterministicDraft.generationSegmentCount,
+    cameraPlanMode: deterministicDraft.cameraPlanMode,
+  };
+};
+
 /**
- * Freeform LLM adapter. The deterministic planner remains the sole owner of
- * the executable storyboard skeleton; this client can only add a visual
- * supplement to each already-planned segment.
+ * Semantic director LLM adapter. The deterministic planner supplies only
+ * the existing duration/dialogue/segment skeleton; source ownership is
+ * selected once by the private director envelope, then local prompts are
+ * compiled from the resulting segment-local source units.
  */
 export class LlmFreeformPromptPlanningModel implements PlanningModelPort {
   constructor(
@@ -1078,25 +1437,7 @@ export class LlmFreeformPromptPlanningModel implements PlanningModelPort {
       throw new LlmSemanticPlanningError("LLM_PLANNER_UNAVAILABLE", "The freeform semantic planner client is unavailable.", error);
     }
     const result = readLlmFreeformPromptResult(rawResult);
-    const expectedSequences = deterministicDraft.shotSpecs.map((shot) => shot.sequence);
-    if (result.segments.length !== deterministicDraft.shotSpecs.length
-      || !sameSequence(result.segments.map((segment) => segment.sequence), expectedSequences)) {
-      throw new LlmSemanticPlanningError("LLM_PLANNER_MALFORMED", "The freeform semantic planner must return one ordered segment for every planned segment.");
-    }
-
-    const authoredDialogueLines = deterministicDraft.shotSpecs.flatMap((shot) => shot.dialogueLines);
-    const shotSpecs = deterministicDraft.shotSpecs.map((shot, index) => {
-      const visualPrompt = result.segments[index]!.visualPrompt;
-      if (containsAuthoredDialogue(visualPrompt, authoredDialogueLines)) {
-        throw new LlmSemanticPlanningError("LLM_PLANNER_MALFORMED", `Freeform visual_prompt for segment ${shot.sequence} repeats authored dialogue.`);
-      }
-      if (containsRepeatedSourceProjection(visualPrompt, input, deterministicDraft)) {
-        throw new LlmSemanticPlanningError("LLM_PLANNER_MALFORMED", `Freeform visual_prompt for segment ${shot.sequence} repeats source-owned content.`);
-      }
-      return { ...shot, visualPrompt };
-    });
-    const draft = { ...deterministicDraft, shotSpecs };
-    return draft;
+    return buildSemanticDirectorDraft(input, deterministicDraft, result);
   }
 }
 
@@ -1312,8 +1653,6 @@ const buildLlmFreeformPlanningContext = (
   segments: draft.shotSpecs.map((shot) => ({
     sequence: shot.sequence,
     targetDurationSeconds: shot.durationSeconds,
-    sourceNarrativeProjection: shot.narrativeGoal,
-    dialogueLines: [...shot.dialogueLines],
     referencePolicy: shot.referencePolicy,
     referenceAnchors: [...(shot.referenceAnchors ?? [])],
   })),

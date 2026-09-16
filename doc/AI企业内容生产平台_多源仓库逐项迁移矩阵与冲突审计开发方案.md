@@ -433,3 +433,11 @@ E01 裁定（历史状态对账）：总体 C12.4/C12.5 仍 `IMPLEMENTED_PENDING
 - full-track 跨多个 section 自动偏移、non-cut 连续旁白、任意复杂 xfade、自动变速/补静音/重新切片和来源没有定义的通用音频算法登记为 `OUT_OF_SCOPE/DEFERRED`，不创建新的矩阵能力族或协议。
 - 最新证据：persistence 隔离 DB `88/88`、独立 composition `14/14`、production-worker `72/72`、workflow-worker `38/38`、Media Runtime `147/147`、workspace typecheck；该窄片可提交 `READY_FOR_AUDIT`，总体 E12/R01 与 C12.4/C12.5 状态不自动升级。
 - 证据边界：这些是各层局部行为组合，尚无单条真实正式 asset/version 从 PostgreSQL 经 scheduler、factory、Runtime 跑到实际 Compose 的端到端测试；版本 ID 只在 Runtime 前校验，不能宣称进入 ALCHMED8 wire。
+
+## 2026-09-17 导演式语义分段 source ownership 审计补记（ACCEPTED；仅本窄章节；不升级全平台状态）
+
+- 本轮固定来源仍为 Huobao `f04d705603bd0257bcec6b8f44fd04ea3ea9b795`（`backend/workspace/skills/storyboard-breaker/SKILL.md`、`backend/workspace/skills/prompt-generator/video-prompt/SKILL.md`、`backend/src/agents/index.ts`）、OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930`（`skills/pipelines/explainer/script-director.md`、`skills/pipelines/explainer/scene-director.md`、`lib/shot_prompt_builder.py`）和 Seedance-2.5 `ebc68d3c19a62fba0f9ba9d2805af1f711a82aa7`（`skill/seedance-25/references/long-video.md`、`skill/seedance-25/references/prompting.md`、`skill/seedance-25/references/references.md`）。来源只对账 director、description/atmosphere、section/scene ownership、global/progression/locks/引用顺序；不定义本地 envelope 或压缩算法。
+- 当前私有 envelope 只存在 semantic planning transport/seam：`source_ownership` 每个冻结 source unit 恰好一次；`GLOBAL` 无 span，`VISUAL` 带一个或多个 `source_spans[{start,end,segment_sequence}]`。span 是对应 evidence text 的 UTF-16 `[start,end)` 区间，由 LLM 给出作者化边界；平台只按冻结原文切片并校验原序、连续完整覆盖、非重叠、segment 非递减和 evidence/hash 绑定，不用本地 arrow/timestamp/关键词/比例启发式拆分。
+- 本轮审计修正：既有 duration-only trailing segment 没有 visual span 时，因现有 motion schema 要求非空 source sequence 而沿既有 `LlmSemanticPlanningError` fail-closed，不把前一段 beat 伪造注入；span 起止必须是 Unicode code-point 边界，保持 UTF-16 offset 契约并拒绝切入 surrogate pair。商品 `😀`/中文多 span 回归覆盖上述边界。
+- 本地定向证据：creative-planning `99/99 pass / 0 fail / 0 skip`；workflow-worker `38/38 pass / 0 fail / 0 skip`；两包 typecheck 通过；`git diff --check` 通过（仅既有 LF→CRLF 提示）。未调用真实 Provider/TTS/Veyra、网络、VPS 或 Git。
+- 本补记不改变公开 contracts/domain/persistence/provider/runtime、任务状态/事件、4096、音频/字幕/BGM，也不升级 `E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT` 或其它 C12.4/C12.5 章节状态；完整 transition/section 时间窗仍 `DEFERRED/BLOCKED`。

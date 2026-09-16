@@ -82,7 +82,7 @@ test("legacy semantic client posts the frozen input to the OpenAI-compatible JSO
   assert.ok(body.messages[1]?.content.includes("\"sourceUnits\""));
 });
 
-test("semantic client sends a minimal freeform segment context without the historical raw schema", async () => {
+test("semantic client sends source evidence and the private director envelope without the historical raw schema", async () => {
   const context: LlmFreeformPlanningContext = {
     sourceText: "夜幕下，团队完成交付。",
     targetDurationSeconds: 8,
@@ -92,8 +92,6 @@ test("semantic client sends a minimal freeform segment context without the histo
     segments: [{
       sequence: 1,
       targetDurationSeconds: 8,
-      sourceNarrativeProjection: "夜幕下，团队完成交付。",
-      dialogueLines: [],
       referencePolicy: "REFERENCE_SET",
       referenceAnchors: ["scene-anchor"],
     }],
@@ -115,19 +113,28 @@ test("semantic client sends a minimal freeform segment context without the histo
     model: "planner-test",
     fetcher: (async (_url, init) => {
       requestInit = init;
-      return jsonResponse({ choices: [{ message: { content: JSON.stringify({ segments: [{ sequence: 1, visual_prompt: "夜色中的交付现场，克制的电影构图。" }] }) } }] });
+      return jsonResponse({ choices: [{ message: { content: JSON.stringify({
+        source_ownership: [{ source_unit_sequence: 1, role: "VISUAL", source_spans: [{ start: 0, end: "夜幕下，团队完成交付。".length, segment_sequence: 1 }] }],
+        segments: [{ sequence: 1, visual_prompt: "夜色中的交付现场，克制的电影构图。" }],
+      }) } }] });
     }) as typeof fetch,
   });
 
-  assert.deepEqual(await client.plan(context), { segments: [{ sequence: 1, visual_prompt: "夜色中的交付现场，克制的电影构图。" }] });
+  assert.deepEqual(await client.plan(context), {
+    source_ownership: [{ source_unit_sequence: 1, role: "VISUAL", source_spans: [{ start: 0, end: "夜幕下，团队完成交付。".length, segment_sequence: 1 }] }],
+    segments: [{ sequence: 1, visual_prompt: "夜色中的交付现场，克制的电影构图。" }],
+  });
   const body = JSON.parse(String(requestInit?.body)) as { messages: Array<{ role: string; content: string }> };
   assert.ok(body.messages[0]?.content.includes("visual_prompt"));
+  assert.ok(body.messages[0]?.content.includes("source_ownership"));
+  assert.ok(body.messages[0]?.content.includes("GLOBAL"));
   assert.ok(body.messages[0]?.content.includes("segment"));
   assert.ok(!body.messages[0]?.content.includes("sourceCoverage"));
   assert.ok(!body.messages[0]?.content.includes("motionPlan"));
   assert.ok(!body.messages[0]?.content.includes("cameraShot"));
   assert.ok(body.messages[1]?.content.includes("segmentCount"));
-  assert.ok(body.messages[1]?.content.includes("sourceNarrativeProjection"));
+  assert.ok(body.messages[1]?.content.includes("sourceEvidence"));
+  assert.ok(!body.messages[1]?.content.includes("sourceNarrativeProjection"));
   assert.ok(body.messages[1]?.content.includes("referenceAnchors"));
   assert.ok(body.messages[1]?.content.includes("夜幕下，团队完成交付。"));
 });
