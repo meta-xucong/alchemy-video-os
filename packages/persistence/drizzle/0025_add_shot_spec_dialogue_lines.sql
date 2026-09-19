@@ -1,0 +1,1 @@
+ALTER TABLE "storyboard_shot_specs" ADD COLUMN "dialogue_lines" jsonb DEFAULT '[]'::jsonb NOT NULL;

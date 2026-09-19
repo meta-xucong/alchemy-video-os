@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+
+COPY services/media-runtime/pyproject.toml ./pyproject.toml
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir "fastapi>=0.115,<1.0" "uvicorn>=0.30,<1.0"
+COPY services/media-runtime/main.py services/media-runtime/runtime.py ./
+COPY services/media-runtime/adapters ./adapters
+# Keep the runtime image cache-sensitive to the composition/QC implementation.
+COPY services/media-runtime/runtime.py ./runtime.py

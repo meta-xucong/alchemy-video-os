@@ -1,0 +1,343 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-video}
+      POSTGRES_USER: ${POSTGRES_USER:-video}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the private deployment environment file}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-video}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in the private deployment environment file}
+      MINIO_API_CORS_ALLOW_ORIGIN: ${S3_BROWSER_ORIGINS:?set S3_BROWSER_ORIGINS to the Studio HTTPS origin}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile
+    command: ["node", "packages/persistence/dist/migrate.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-video}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the private deployment environment file}@postgres:5432/${POSTGRES_DB:-video}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  control-api:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile
+    command: ["node", "apps/control-api/dist/index.js"]
+    environment:
+      CONTROL_API_PORT: 8032
+      DATABASE_URL: postgresql://${POSTGRES_USER:-video}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the private deployment environment file}@postgres:5432/${POSTGRES_DB:-video}
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:?set S3_PUBLIC_ENDPOINT to the assets HTTPS origin}
+      S3_BROWSER_ORIGINS: ${S3_BROWSER_ORIGINS:?set S3_BROWSER_ORIGINS to the Studio HTTPS origin}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-video-assets}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-video}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in the private deployment environment file}
+      LOCAL_AUTH_MODE: dev
+      AUDIO_FREE_ONLY: ${AUDIO_FREE_ONLY:-true}
+      VEYRA_AUTH_ENABLED: ${VEYRA_AUTH_ENABLED:-false}
+      VEYRA_CREDIT_ENABLED: ${VEYRA_CREDIT_ENABLED:-false}
+      VIDEO_VEYRA_INTERNAL_BASE_URL: ${VIDEO_VEYRA_INTERNAL_BASE_URL:-https://aiself.vip}
+      VIDEO_VEYRA_INTERNAL_TOKEN: ${VIDEO_VEYRA_INTERNAL_TOKEN:-}
+      VIDEO_SESSION_SECRET: ${VIDEO_SESSION_SECRET:-}
+      VIDEO_VEYRA_PORTAL_BASE_URL: ${VIDEO_VEYRA_PORTAL_BASE_URL:-https://aiself.vip}
+      VIDEO_BILLING_CHARGE_AMOUNT: ${VIDEO_BILLING_CHARGE_AMOUNT:-0}
+      VIDEO_BILLING_SURCHARGE_MULTIPLIER: ${VIDEO_BILLING_SURCHARGE_MULTIPLIER:-}
+      VIDEO_BILLING_FIXED_FEE: ${VIDEO_BILLING_FIXED_FEE:-}
+      VIDEO_BILLING_MODEL_RATES_JSON: ${VIDEO_BILLING_MODEL_RATES_JSON:-}
+      VIDEO_BILLING_MODE: ${VIDEO_BILLING_MODE:-}
+      VIDEO_BILLING_SETTINGS_PATH: ${VIDEO_BILLING_SETTINGS_PATH:-/app/data/video-billing-settings.json}
+      VIDEO_PROVIDER: ${VIDEO_PROVIDER:-mock}
+      MEDIA_RUNTIME_URL: http://control-media-runtime:3433/
+      MEDIA_RUNTIME_TOKEN: ${MEDIA_RUNTIME_TOKEN:?set MEDIA_RUNTIME_TOKEN in the private deployment environment file}
+      REFERENCE_DELIVERY_SIGNING_KEY: ${REFERENCE_DELIVERY_SIGNING_KEY:?set REFERENCE_DELIVERY_SIGNING_KEY in the private deployment environment file}
+      REFERENCE_VISION_BASE_URL: ${REFERENCE_VISION_BASE_URL:-}
+      REFERENCE_VISION_API_KEY: ${REFERENCE_VISION_API_KEY:-}
+      REFERENCE_VISION_MODEL: ${REFERENCE_VISION_MODEL:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      control-media-runtime:
+        condition: service_healthy
+    expose:
+      - "8032"
+    volumes:
+      - control-api-billing-data:/app/data
+    restart: unless-stopped
+
+  task-worker:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile
+    command: ["node", "apps/task-worker/dist/index.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-video}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the private deployment environment file}@postgres:5432/${POSTGRES_DB:-video}
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-video-assets}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-video}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in the private deployment environment file}
+      VIDEO_PROVIDER: ${VIDEO_PROVIDER:-mock}
+      SUB2API_VIDEO_BASE_URL: ${SUB2API_VIDEO_BASE_URL:-}
+      SUB2API_VIDEO_API_KEY: ${SUB2API_VIDEO_API_KEY:-}
+      SUB2API_VIDEO_USAGE_USER_ID: ${SUB2API_VIDEO_USAGE_USER_ID:-}
+      VEYRA_AUTH_ENABLED: ${VEYRA_AUTH_ENABLED:-false}
+      VEYRA_CREDIT_ENABLED: ${VEYRA_CREDIT_ENABLED:-false}
+      VIDEO_VEYRA_INTERNAL_BASE_URL: ${VIDEO_VEYRA_INTERNAL_BASE_URL:-https://aiself.vip}
+      VIDEO_VEYRA_INTERNAL_TOKEN: ${VIDEO_VEYRA_INTERNAL_TOKEN:-}
+      VIDEO_BILLING_SURCHARGE_MULTIPLIER: ${VIDEO_BILLING_SURCHARGE_MULTIPLIER:-}
+      VIDEO_BILLING_FIXED_FEE: ${VIDEO_BILLING_FIXED_FEE:-}
+      VIDEO_BILLING_MODEL_RATES_JSON: ${VIDEO_BILLING_MODEL_RATES_JSON:-}
+      REFERENCE_DELIVERY_ORIGIN: ${REFERENCE_DELIVERY_ORIGIN:-https://video.aiself.vip}
+      REFERENCE_DELIVERY_SIGNING_KEY: ${REFERENCE_DELIVERY_SIGNING_KEY:?set REFERENCE_DELIVERY_SIGNING_KEY in the private deployment environment file}
+      REFERENCE_DELIVERY_PREFLIGHT_ENABLED: ${REFERENCE_DELIVERY_PREFLIGHT_ENABLED:-true}
+      REFERENCE_DELIVERY_PREFLIGHT_TIMEOUT_MS: ${REFERENCE_DELIVERY_PREFLIGHT_TIMEOUT_MS:-5000}
+      REFERENCE_DELIVERY_PREFLIGHT_RETRIES: ${REFERENCE_DELIVERY_PREFLIGHT_RETRIES:-2}
+      REFERENCE_DELIVERY_TTL_MS: ${REFERENCE_DELIVERY_TTL_MS:-900000}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  document-worker:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile
+    command: ["node", "apps/document-worker/dist/index.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-video}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the private deployment environment file}@postgres:5432/${POSTGRES_DB:-video}
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-video-assets}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-video}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in the private deployment environment file}
+      DOCUMENT_RUNTIME_URL: http://127.0.0.1:3434/
+      DOCUMENT_RUNTIME_TOKEN: ${DOCUMENT_RUNTIME_TOKEN:?set DOCUMENT_RUNTIME_TOKEN in the private deployment environment file}
+      DOCUMENT_CONVERSION_QUEUE_NAME: ${DOCUMENT_CONVERSION_QUEUE_NAME:-alchemy-video-document-conversions}
+      DOCUMENT_CONVERSION_DEAD_LETTER_QUEUE_NAME: ${DOCUMENT_CONVERSION_DEAD_LETTER_QUEUE_NAME:-alchemy-video-document-conversions-dead-letter}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  document-runtime:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile.document-runtime
+    command: ["uvicorn", "main:app", "--host", "127.0.0.1", "--port", "3434"]
+    environment:
+      DOCUMENT_RUNTIME_TOKEN: ${DOCUMENT_RUNTIME_TOKEN:?set DOCUMENT_RUNTIME_TOKEN in the private deployment environment file}
+    network_mode: "service:document-worker"
+    depends_on:
+      document-worker:
+        condition: service_started
+    restart: unless-stopped
+
+  workflow-worker:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile
+    command: ["node", "apps/workflow-worker/dist/index.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-video}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the private deployment environment file}@postgres:5432/${POSTGRES_DB:-video}
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-video-assets}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-video}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in the private deployment environment file}
+      VIDEO_PROVIDER: ${VIDEO_PROVIDER:-mock}
+      SEMANTIC_PLANNER_ENABLED: ${SEMANTIC_PLANNER_ENABLED:-false}
+      SEMANTIC_PLANNER_BASE_URL: ${SEMANTIC_PLANNER_BASE_URL:-}
+      SEMANTIC_PLANNER_API_KEY: ${SEMANTIC_PLANNER_API_KEY:-}
+      SEMANTIC_PLANNER_MODEL: ${SEMANTIC_PLANNER_MODEL:-}
+      SEMANTIC_PLANNER_TIMEOUT_MS: ${SEMANTIC_PLANNER_TIMEOUT_MS:-45000}
+      SEMANTIC_PLANNER_MAX_TOKENS: ${SEMANTIC_PLANNER_MAX_TOKENS:-4096}
+      REFERENCE_VISION_BASE_URL: ${REFERENCE_VISION_BASE_URL:-}
+      REFERENCE_VISION_API_KEY: ${REFERENCE_VISION_API_KEY:-}
+      REFERENCE_VISION_MODEL: ${REFERENCE_VISION_MODEL:-}
+      CREATIVE_PLANNING_QUEUE_NAME: ${CREATIVE_PLANNING_QUEUE_NAME:-alchemy-video-creative-planning}
+      CREATIVE_PLANNING_DEAD_LETTER_QUEUE_NAME: ${CREATIVE_PLANNING_DEAD_LETTER_QUEUE_NAME:-alchemy-video-creative-planning-dead-letter}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  production-worker:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile
+    command: ["node", "apps/production-worker/dist/index.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-video}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the private deployment environment file}@postgres:5432/${POSTGRES_DB:-video}
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-video-assets}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-video}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in the private deployment environment file}
+      VIDEO_PROVIDER: ${VIDEO_PROVIDER:-mock}
+      VEYRA_AUTH_ENABLED: ${VEYRA_AUTH_ENABLED:-false}
+      VEYRA_CREDIT_ENABLED: ${VEYRA_CREDIT_ENABLED:-false}
+      VIDEO_VEYRA_INTERNAL_BASE_URL: ${VIDEO_VEYRA_INTERNAL_BASE_URL:-https://aiself.vip}
+      VIDEO_VEYRA_INTERNAL_TOKEN: ${VIDEO_VEYRA_INTERNAL_TOKEN:-}
+      VIDEO_PROMPT_MAX_UTF8_BYTES: ${VIDEO_PROMPT_MAX_UTF8_BYTES:-20000}
+      MEDIA_RUNTIME_URL: http://media-runtime:3433/
+      MEDIA_RUNTIME_TOKEN: ${MEDIA_RUNTIME_TOKEN:?set MEDIA_RUNTIME_TOKEN in the private deployment environment file}
+      PRODUCTION_QUEUE_NAME: ${PRODUCTION_QUEUE_NAME:-alchemy-video-production}
+      PRODUCTION_DEAD_LETTER_QUEUE_NAME: ${PRODUCTION_DEAD_LETTER_QUEUE_NAME:-alchemy-video-production-dead-letter}
+      MEDIA_RUNTIME_QUEUE_NAME: ${MEDIA_RUNTIME_QUEUE_NAME:-alchemy-video-media-runtime}
+      MEDIA_RUNTIME_DEAD_LETTER_QUEUE_NAME: ${MEDIA_RUNTIME_DEAD_LETTER_QUEUE_NAME:-alchemy-video-media-runtime-dead-letter}
+      SUB2API_VIDEO_BASE_URL: ${SUB2API_VIDEO_BASE_URL:-}
+      SUB2API_VIDEO_API_KEY: ${SUB2API_VIDEO_API_KEY:-}
+      REFERENCE_DELIVERY_ORIGIN: ${REFERENCE_DELIVERY_ORIGIN:-https://video.aiself.vip}
+      REFERENCE_DELIVERY_SIGNING_KEY: ${REFERENCE_DELIVERY_SIGNING_KEY:?set REFERENCE_DELIVERY_SIGNING_KEY in the private deployment environment file}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      media-runtime:
+        condition: service_healthy
+    restart: unless-stopped
+
+  media-runtime:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile.media-runtime
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3433"]
+    environment:
+      MEDIA_RUNTIME_TOKEN: ${MEDIA_RUNTIME_TOKEN:?set MEDIA_RUNTIME_TOKEN in the private deployment environment file}
+      MEDIA_RUNTIME_FFMPEG_PATH: /usr/bin/ffmpeg
+      MEDIA_RUNTIME_FFPROBE_PATH: /usr/bin/ffprobe
+    expose:
+      - "3433"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3433/internal/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  # Control API's Runtime is a separate internal service. Compose DNS keeps
+  # this boundary private without coupling process/network namespaces.
+  control-media-runtime:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile.media-runtime
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3433"]
+    environment:
+      MEDIA_RUNTIME_TOKEN: ${MEDIA_RUNTIME_TOKEN:?set MEDIA_RUNTIME_TOKEN in the private deployment environment file}
+      MEDIA_RUNTIME_FFMPEG_PATH: /usr/bin/ffmpeg
+      MEDIA_RUNTIME_FFPROBE_PATH: /usr/bin/ffprobe
+    expose:
+      - "3433"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3433/internal/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  studio-web:
+    build:
+      context: ../..
+      dockerfile: infrastructure/deploy/Dockerfile
+    command: ["node", "apps/studio-web/.output/server/index.mjs"]
+    environment:
+      CONTROL_API_ORIGIN: http://control-api:8032
+      REFERENCE_DELIVERY_ORIGIN: ${REFERENCE_DELIVERY_ORIGIN:-https://video.aiself.vip}
+      HOST: 0.0.0.0
+      PORT: 3031
+    depends_on:
+      control-api:
+        condition: service_started
+    expose:
+      - "3031"
+    restart: unless-stopped
+
+  edge:
+    image: nginx:1.27-alpine
+    profiles: ["edge"]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ${EDGE_NGINX_CONFIG:-./nginx/video.bootstrap.conf}:/etc/nginx/conf.d/video.conf:ro
+      - ${VIDEO_EDGE_HTPASSWD_FILE:?set VIDEO_EDGE_HTPASSWD_FILE to an absolute private htpasswd file}:/etc/nginx/secrets/video-users:ro
+      - ./certbot/www:/var/www/certbot:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+    depends_on:
+      studio-web:
+        condition: service_started
+      control-api:
+        condition: service_started
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  control-api-billing-data:

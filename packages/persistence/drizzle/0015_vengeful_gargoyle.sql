@@ -1,0 +1,2 @@
+DROP INDEX "production_runs_one_active_project_key";--> statement-breakpoint
+CREATE UNIQUE INDEX "production_runs_one_active_project_key" ON "production_runs" USING btree ("project_id") WHERE "production_runs"."status" not in ('SUCCEEDED', 'FAILED', 'BLOCKED');

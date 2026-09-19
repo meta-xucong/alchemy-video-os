@@ -1,0 +1,71 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.crt
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+dist/
+build/
+.nuxt/
+.output/
+coverage/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Local infrastructure and runtime output
+infrastructure/compose/volumes/
+data/
+tmp/
+temp/
+*.log
+*.pid
+
+# Upstream source snapshots are local-only provenance inputs.
+upstream/
+
+# Test and certification reports
+tools/**/reports/*
+!tools/**/reports/.gitkeep
+# C08 live-certifier recovery state. Raw provider request IDs must never enter Git.
+tools/sub2api-video-certifier/recovery/*
+!tools/sub2api-video-certifier/recovery/.gitkeep
+# C08 capability evidence is local-only; promotion remains an audited code change.
+tools/sub2api-video-certifier/capability-snapshots/*
+!tools/sub2api-video-certifier/capability-snapshots/.gitkeep
+test-results/
+playwright-report/
+
+# Local long-running task state.
+.codex-longrun/
+
+# Local media
+*.mp4
+*.mov
+*.webm
+*.wav
+*.png
+*.jpg
+*.jpeg
+
+# Video VPS certificate state and private deployment environment.
+infrastructure/deploy/certbot/
+infrastructure/deploy/.env.video
+infrastructure/deploy/.env.video.tmp-*
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
