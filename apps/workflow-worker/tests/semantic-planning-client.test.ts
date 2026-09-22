@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -11,7 +10,6 @@ import {
 import { resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 
 import {
-  LegacyOpenAiCompatibleSemanticPlanningClient,
   OpenAiCompatibleSemanticPlanningClient,
   createPlanningModelFromEnv,
   createSemanticPlanningClientFromEnv,
@@ -25,118 +23,77 @@ const planningInput: PlanningInput = {
   sourceAssetIds: ["ast_scene", "ast_subject"],
 };
 
+const freeformContext: LlmFreeformPlanningContext = {
+  sourceText: "夜幕下，团队完成交付。林岚说：\"保障要逐字写清。\"",
+  targetDurationSeconds: 30,
+  durationBounds: { minDurationSeconds: 8, maxDurationSeconds: 15 },
+  minimumSegments: 2,
+  dialogueLines: ["保障要逐字写清。"],
+  stylePreferences: "克制的纪实感",
+  sourceAssetIds: ["ast_scene"],
+};
+
 const jsonResponse = (value: unknown, status = 200) => new Response(JSON.stringify(value), {
   status,
   headers: { "content-type": "application/json" },
 });
 
-test("legacy semantic client posts the frozen input to the OpenAI-compatible JSON endpoint", async () => {
-  let requestUrl = "";
-  let requestInit: RequestInit | undefined;
-  const client = new LegacyOpenAiCompatibleSemanticPlanningClient({
-    baseUrl: "https://llm.example.test/v1",
-    apiKey: "test-key",
-    model: "planner-test",
-    fetcher: (async (url, init) => {
-      requestUrl = String(url);
-      requestInit = init;
-      return jsonResponse({ choices: [{ message: { content: JSON.stringify({ ok: true }) } }] });
-    }) as typeof fetch,
-  });
-
-  assert.deepEqual(await client.plan(planningInput), { ok: true });
-  assert.equal(requestUrl, "https://llm.example.test/v1/chat/completions");
-  assert.equal((requestInit?.headers as Record<string, string>).Authorization, "Bearer test-key");
-  const body = JSON.parse(String(requestInit?.body)) as {
-    model: string;
-    temperature: number;
-    max_tokens: number;
-    response_format: { type: string };
-    messages: Array<{ role: string; content: string }>;
-  };
-  assert.equal(body.model, "planner-test");
-  assert.equal(body.temperature, 0);
-  assert.equal(body.max_tokens, 4096);
-  assert.deepEqual(body.response_format, { type: "json_object" });
-  assert.equal(body.messages[0]?.role, "system");
-  assert.equal(body.messages[1]?.role, "user");
-  assert.ok(body.messages[0]?.content.includes("exact {draft,sourceCoverage}"));
-  assert.ok(body.messages[0]?.content.includes("合法 JSON"));
-  assert.ok(body.messages[0]?.content.includes("plannerVersion"));
-  assert.ok(body.messages[0]?.content.includes("省略 version"));
-  assert.ok(body.messages[0]?.content.includes("continuityNote"));
-  assert.ok(body.messages[0]?.content.includes("sourceCoverage"));
-  assert.ok(body.messages[0]?.content.includes("一一对应"));
-  assert.ok(body.messages[0]?.content.includes("[1,2]"));
-  assert.ok(body.messages[0]?.content.includes("提交 JSON 前先自检"));
-  assert.ok(body.messages[0]?.content.includes("motion_beats"));
-  assert.ok(body.messages[0]?.content.includes("character_locks、prop_locks"));
-  assert.ok(body.messages[0]?.content.includes("返回 {}"));
-  assert.ok(body.messages[1]?.content.includes(planningInput.sourceText));
-  assert.ok(body.messages[1]?.content.includes("ast_scene"));
-  assert.ok(body.messages[1]?.content.includes("sourceManifest"));
-  assert.ok(body.messages[1]?.content.includes("sourceEvidence"));
-  assert.ok(body.messages[1]?.content.includes("one coverage segment for each shot"));
-  assert.ok(body.messages[1]?.content.includes("夜幕下，团队完成交付。"));
-  assert.ok(body.messages[1]?.content.includes(createHash("sha256").update(planningInput.sourceText, "utf8").digest("hex")));
-  assert.ok(body.messages[1]?.content.includes("\"sourceUnits\""));
+const streamingClient = (
+  respond: (init: RequestInit) => Response | Promise<Response>,
+  options: Partial<ConstructorParameters<typeof OpenAiCompatibleSemanticPlanningClient>[0]> = {},
+) => new OpenAiCompatibleSemanticPlanningClient({
+  baseUrl: "https://llm.example.test/v1",
+  apiKey: "test-key",
+  model: "planner-test",
+  ...options,
+  fetcher: (async (_url, init) => respond(init!)) as typeof fetch,
 });
 
-test("semantic client sends source evidence and the private director envelope without the historical raw schema", async () => {
-  const context: LlmFreeformPlanningContext = {
-    sourceText: "夜幕下，团队完成交付。",
-    targetDurationSeconds: 8,
-    stylePreferences: "克制的纪实感",
-    sourceAssetIds: ["ast_scene"],
-    segmentCount: 1,
-    segments: [{
-      sequence: 1,
-      targetDurationSeconds: 8,
-      referencePolicy: "REFERENCE_SET",
-      referenceAnchors: ["scene-anchor"],
-    }],
-    sourceManifest: {
-      sourceTextHash: createHash("sha256").update("夜幕下，团队完成交付。", "utf8").digest("hex"),
-      sourceAssetIds: ["ast_scene"],
-      sourceUnits: [{ sequence: 1, textHash: "source-hash" }],
-      dialogueLines: [],
-    },
-    sourceEvidence: {
-      sourceUnits: [{ sequence: 1, text: "夜幕下，团队完成交付。" }],
-      dialogueLines: [],
-    },
-  };
+test("semantic client posts the complete LLM segment-decision contract", async () => {
   let requestInit: RequestInit | undefined;
+  const response = [
+    { duration_seconds: 15, visual_prompt: "第一段自然语言画面。", dialogue_line_sequences: [1] },
+    { duration_seconds: 15, visual_prompt: "第二段自然语言画面。", dialogue_line_sequences: [] },
+  ];
   const client = new OpenAiCompatibleSemanticPlanningClient({
     baseUrl: "https://llm.example.test/v1",
     apiKey: "test-key",
     model: "planner-test",
     fetcher: (async (_url, init) => {
       requestInit = init;
-      return jsonResponse({ choices: [{ message: { content: JSON.stringify({
-        source_ownership: [{ source_unit_sequence: 1, role: "VISUAL", source_spans: [{ start: 0, end: "夜幕下，团队完成交付。".length, segment_sequence: 1 }] }],
-        segments: [{ sequence: 1, visual_prompt: "夜色中的交付现场，克制的电影构图。" }],
-      }) } }] });
+      return jsonResponse({ choices: [{ message: { content: JSON.stringify(response) } }] });
     }) as typeof fetch,
   });
 
-  assert.deepEqual(await client.plan(context), {
-    source_ownership: [{ source_unit_sequence: 1, role: "VISUAL", source_spans: [{ start: 0, end: "夜幕下，团队完成交付。".length, segment_sequence: 1 }] }],
-    segments: [{ sequence: 1, visual_prompt: "夜色中的交付现场，克制的电影构图。" }],
-  });
-  const body = JSON.parse(String(requestInit?.body)) as { messages: Array<{ role: string; content: string }> };
-  assert.ok(body.messages[0]?.content.includes("visual_prompt"));
-  assert.ok(body.messages[0]?.content.includes("source_ownership"));
-  assert.ok(body.messages[0]?.content.includes("GLOBAL"));
-  assert.ok(body.messages[0]?.content.includes("segment"));
-  assert.ok(!body.messages[0]?.content.includes("sourceCoverage"));
-  assert.ok(!body.messages[0]?.content.includes("motionPlan"));
-  assert.ok(!body.messages[0]?.content.includes("cameraShot"));
-  assert.ok(body.messages[1]?.content.includes("segmentCount"));
-  assert.ok(body.messages[1]?.content.includes("sourceEvidence"));
-  assert.ok(!body.messages[1]?.content.includes("sourceNarrativeProjection"));
-  assert.ok(body.messages[1]?.content.includes("referenceAnchors"));
-  assert.ok(body.messages[1]?.content.includes("夜幕下，团队完成交付。"));
+  assert.deepEqual(await client.plan(freeformContext), response);
+  const body = JSON.parse(String(requestInit?.body)) as {
+    model: string;
+    temperature: number;
+    max_tokens: number;
+    response_format?: { type: string };
+    messages: Array<{ role: string; content: string }>;
+  };
+  assert.equal(body.model, "planner-test");
+  assert.equal(body.temperature, 0);
+  assert.equal(body.max_tokens, 4096);
+  assert.equal(body.response_format, undefined);
+  const system = body.messages[0]?.content ?? "";
+  assert.ok(system.includes("顶层 JSON 数组"));
+  assert.ok(system.includes("duration_seconds"));
+  assert.ok(system.includes("dialogue_line_sequences"));
+  assert.ok(system.includes("由你决定片段数量"));
+  assert.ok(system.includes("编号从 1 开始"));
+  assert.ok(system.includes("总和必须正好等于"));
+  assert.ok(system.includes("不改变输入顺序"));
+  assert.ok(system.includes("镜头、运动、主体、光线、风格"));
+  assert.ok(system.includes("不输出 Camera:/Movement:/Subject:/Lighting:/Style"));
+  assert.ok(!system.includes("source_ownership"));
+  assert.ok(!system.includes("source_spans"));
+  const user = body.messages[1]?.content ?? "";
+  assert.ok(user.includes("夜幕下，团队完成交付。"));
+  assert.ok(user.includes("durationBounds"));
+  assert.ok(user.includes("minimumSegments"));
+  assert.ok(user.includes("保障要逐字写清。"));
 });
 
 test("semantic client rejects unsafe URL forms and malformed provider responses", async () => {
@@ -150,56 +107,37 @@ test("semantic client rejects unsafe URL forms and malformed provider responses"
       /userinfo, query, or hash/,
     );
   }
-
-  const cases: Array<{ value: unknown; message: RegExp }> = [
+  for (const current of [
     { value: { choices: [] }, message: /did not contain message content/ },
     { value: { choices: [{ message: { content: "not json" } }] }, message: /invalid JSON/ },
-    { value: { choices: [{ message: { content: "```json\n{\"segments\":[]}\n```" } }] }, message: /invalid JSON/ },
-  ];
-  for (const current of cases) {
-    const client = new LegacyOpenAiCompatibleSemanticPlanningClient({
-      baseUrl: "https://llm.example.test/v1",
-      apiKey: "key",
-      model: "model",
-      fetcher: (async () => jsonResponse(current.value)) as typeof fetch,
-    });
-    await assert.rejects(() => client.plan(planningInput), current.message);
+  ]) {
+    await assert.rejects(() => streamingClient(() => jsonResponse(current.value)).plan(freeformContext), current.message);
   }
-
-  const rejected = new LegacyOpenAiCompatibleSemanticPlanningClient({
-    baseUrl: "https://llm.example.test/v1",
-    apiKey: "key",
-    model: "model",
-    fetcher: (async () => jsonResponse({ error: "rejected" }, 503)) as typeof fetch,
-  });
-  await assert.rejects(() => rejected.plan(planningInput), /status 503/);
+  await assert.rejects(() => streamingClient(() => jsonResponse({ error: "rejected" }, 503)).plan(freeformContext), /status 503/);
 });
 
 test("semantic client aborts a request at the configured timeout", async () => {
   let aborted = false;
-  const client = new LegacyOpenAiCompatibleSemanticPlanningClient({
+  const observing = new OpenAiCompatibleSemanticPlanningClient({
     baseUrl: "https://llm.example.test/v1",
     apiKey: "key",
     model: "model",
     timeoutMs: 5,
-    fetcher: (async (_url, init) => new Promise<never>((_resolve, reject) => {
-      init?.signal?.addEventListener("abort", () => {
-        aborted = true;
-        reject(new Error("aborted"));
-      }, { once: true });
-    })) as typeof fetch,
+    fetcher: (async (_url, init) => {
+      init?.signal?.addEventListener("abort", () => { aborted = true; }, { once: true });
+      return new Promise<never>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+    }) as typeof fetch,
   });
-  await assert.rejects(() => client.plan(planningInput), /aborted/);
+  await assert.rejects(() => observing.plan(freeformContext), /aborted/);
   assert.equal(aborted, true);
 });
 
-test("semantic planner requires explicit opt-in and never falls back in real mode", async () => {
+test("semantic planner requires explicit opt-in and mock mode remains deterministic", async () => {
   assert.equal(createSemanticPlanningClientFromEnv({
     REFERENCE_VISION_BASE_URL: "https://llm.example.test/v1",
     REFERENCE_VISION_API_KEY: "key",
     REFERENCE_VISION_MODEL: "model",
   }), undefined);
-
   const configured = createSemanticPlanningClientFromEnv({
     SEMANTIC_PLANNER_ENABLED: "true",
     REFERENCE_VISION_BASE_URL: "https://llm.example.test/v1",
@@ -207,7 +145,6 @@ test("semantic planner requires explicit opt-in and never falls back in real mod
     REFERENCE_VISION_MODEL: "model",
   });
   assert.ok(configured instanceof OpenAiCompatibleSemanticPlanningClient);
-
   const configuredModel = createPlanningModelFromEnv({
     runtimeProfile: resolveVideoProviderRuntimeProfile("sub2api"),
     env: {
@@ -218,24 +155,9 @@ test("semantic planner requires explicit opt-in and never falls back in real mod
     },
   });
   assert.ok(configuredModel instanceof LlmFreeformPromptPlanningModel);
-
-  const unavailable = createPlanningModelFromEnv({
-    runtimeProfile: resolveVideoProviderRuntimeProfile("sub2api"),
-    env: {},
-  });
-  await assert.rejects(
-    () => unavailable.plan(planningInput),
-    (error: unknown) => (error as { code?: string }).code === "LLM_PLANNER_UNAVAILABLE",
-  );
-
   const mock = createPlanningModelFromEnv({
     runtimeProfile: resolveVideoProviderRuntimeProfile("mock"),
-    env: {
-      SEMANTIC_PLANNER_ENABLED: "true",
-      SEMANTIC_PLANNER_BASE_URL: "https://llm.example.test/v1",
-      SEMANTIC_PLANNER_API_KEY: "key",
-      SEMANTIC_PLANNER_MODEL: "model",
-    },
+    env: { SEMANTIC_PLANNER_ENABLED: "true", SEMANTIC_PLANNER_BASE_URL: "https://llm.example.test/v1", SEMANTIC_PLANNER_API_KEY: "key", SEMANTIC_PLANNER_MODEL: "model" },
   });
   assert.ok(mock instanceof DeterministicPlanningModel);
   const draft = await mock.plan(planningInput);

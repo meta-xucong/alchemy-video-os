@@ -6,7 +6,7 @@ import {
   DeterministicPlanningModel,
   DeterministicStoryboardCompiler,
   LlmFreeformPromptPlanningModel,
-  LlmSemanticPlanningModel,
+  type LlmFreeformPlanningContext,
   type StoryboardCompilerPort,
 } from "@alchemy-video/creative-planning";
 import type { ControlCreativeBriefRevision, CreativePlanningDraft } from "@alchemy-video/persistence";
@@ -32,45 +32,17 @@ const brief: ControlCreativeBriefRevision = {
   updatedAt: "2026-08-16T00:00:00.000Z",
 };
 
-const toRawSemanticFixture = (draft: Awaited<ReturnType<DeterministicPlanningModel["plan"]>>) => {
+const toLlmDecisionFixture = (draft: Awaited<ReturnType<DeterministicPlanningModel["plan"]>>) => {
   let dialogueSequence = 0;
-  return {
-    draft: {
-      title: draft.title,
-      summary: draft.summary,
-      continuityNote: draft.continuityNote,
-      beats: draft.beats.map(({ generationSegmentSequence: _generationSegmentSequence, ...beat }) => beat),
-      shotSpecs: draft.shotSpecs.map((shot) => {
-        const {
-          motionPlan,
-          motionPlanHash: _motionPlanHash,
-          dialogueLines: _dialogueLines,
-          sceneId: _sceneId,
-          characterIds: _characterIds,
-          propIds: _propIds,
-          referenceAnchors: _referenceAnchors,
-          ...semanticShot
-        } = shot;
-        const { version: _version, ...rawMotionPlan } = motionPlan;
-        return {
-          ...semanticShot,
-          motionPlan: rawMotionPlan,
-          ...(shot.voicePerformance ? { voicePerformance: shot.voicePerformance } : {}),
-        };
-      }),
-    },
-    sourceCoverage: {
-      segments: draft.shotSpecs.map((shot) => {
-        const dialogueLineSequences = shot.dialogueLines.map((_line, index) => dialogueSequence + index + 1);
-        dialogueSequence += shot.dialogueLines.length;
-        return {
-          segmentSequence: shot.sequence,
-          sourceBeatSequences: [...shot.narrativeBeatSequences],
-          dialogueLineSequences,
-        };
-      }),
-    },
-  };
+  return draft.shotSpecs.map((shot) => {
+    const dialogueLineSequences = shot.dialogueLines.map((_line, index) => dialogueSequence + index + 1);
+    dialogueSequence += shot.dialogueLines.length;
+    return {
+      duration_seconds: shot.durationSeconds,
+      visual_prompt: shot.visualPrompt ?? shot.narrativeGoal,
+      dialogue_line_sequences: dialogueLineSequences,
+    };
+  });
 };
 
 test("runtime profile mapper only enables Grok's one-second minimum", () => {
@@ -217,27 +189,13 @@ test("CreativePlanningExecutor injects freeform visual prompts while preserving 
     sourceText: "雨夜抵达工厂。林岚说：“必须逐字保留。”团队在黎明前完成交付。",
   };
   let captured: CreativePlanningDraft | undefined;
-  let receivedSegmentContext: { segmentCount: number; segments: readonly { sequence: number }[] } | undefined;
+  let receivedSegmentContext: LlmFreeformPlanningContext | undefined;
   const planner = new LlmFreeformPromptPlanningModel(async (context) => {
     receivedSegmentContext = context;
-    return {
-      source_ownership: context.sourceEvidence.sourceUnits.map((unit, index) => ({
-        source_unit_sequence: unit.sequence,
-        role: "VISUAL" as const,
-        source_spans: [{
-          start: 0,
-          end: unit.text.length,
-          segment_sequence: Math.min(
-            context.segments.length,
-            Math.floor((index * context.segments.length) / Math.max(1, context.sourceEvidence.sourceUnits.length)) + 1,
-          ),
-        }],
-      })),
-      segments: context.segments.map((segment) => ({
-        sequence: segment.sequence,
-        visual_prompt: `自由视觉 ${segment.sequence}\n保留原文格式`,
-      })),
-    };
+    return [
+      { duration_seconds: 15, visual_prompt: "自由视觉 1\n保留原文格式", dialogue_line_sequences: [1] },
+      { duration_seconds: 15, visual_prompt: "自由视觉 2\n保持交付现场收束", dialogue_line_sequences: [] },
+    ];
   });
   const executor = new CreativePlanningExecutor({
     async completeCreativePlan(input) {
@@ -258,17 +216,22 @@ test("CreativePlanningExecutor injects freeform visual prompts while preserving 
 
   assert.ok(captured?.promptPackages);
   if (!captured?.promptPackages) return;
-  assert.equal(receivedSegmentContext?.segmentCount, captured.promptPackages.length);
-  assert.deepEqual(receivedSegmentContext?.segments.map((segment) => segment.sequence), captured.promptPackages.map((_package, index) => index + 1));
+  assert.equal(receivedSegmentContext?.targetDurationSeconds, 30);
   assert.ok(captured.shotSpecs.every((shot) => !("visualPrompt" in shot)));
   for (const [index, promptPackage] of captured.promptPackages.entries()) {
     const generatedPromptParts = promptPackage.capabilitySnapshot.generated_prompt_parts;
     assert.ok(Array.isArray(generatedPromptParts));
     assert.equal(generatedPromptParts[0], "全程无字幕；no subtitles, no captions。字幕只在后期统一添加。");
-    const freeformVisualPrompt = `自由视觉 ${index + 1}\n保留原文格式`;
-    const visualPromptIndex = generatedPromptParts.findIndex((part) =>
-      part === freeformVisualPrompt || part.replace(/\s+/gu, " ") === freeformVisualPrompt.replace(/\s+/gu, " "));
-    assert.ok(visualPromptIndex > 0);
+    const freeformVisualPrompt = index === 0
+      ? "自由视觉 1\n保留原文格式"
+      : "自由视觉 2\n保持交付现场收束";
+    if (index === 0) {
+      const visualPromptIndex = generatedPromptParts.findIndex((part) =>
+        part === freeformVisualPrompt || part.replace(/\s+/gu, " ") === freeformVisualPrompt.replace(/\n/gu, " "));
+      assert.ok(visualPromptIndex > 0);
+    } else {
+      assert.equal(promptPackage.capabilitySnapshot.source_prompt?.replace(/\s+/gu, " ").includes(freeformVisualPrompt.replace(/\n/gu, " ")), true);
+    }
     assert.equal(promptPackage.prompt.includes(freeformVisualPrompt.replace(/\n/gu, " ")), true);
   }
   const sourcePrompts = captured.promptPackages
@@ -285,14 +248,14 @@ test("CreativePlanningExecutor consumes a verified semantic planner fixture with
     sourceAssetIds: brief.sourceAssetIds,
   };
   const deterministicDraft = await new DeterministicPlanningModel().plan(planningInput);
-  const semanticFixture = toRawSemanticFixture(deterministicDraft);
+  const semanticFixture = toLlmDecisionFixture(deterministicDraft);
   let captured: CreativePlanningDraft | undefined;
   const executor = new CreativePlanningExecutor({
     async completeCreativePlan(input) {
       captured = input.draft;
       return undefined;
     },
-  }, new LlmSemanticPlanningModel(() => semanticFixture));
+  }, new LlmFreeformPromptPlanningModel(() => semanticFixture));
 
   await executor.execute({
     brief,
@@ -326,14 +289,14 @@ test("injected semantic planner keeps each JSON-sidecar source ordered through t
     sourceAssetIds: brief.sourceAssetIds,
   };
   const deterministicDraft = await new DeterministicPlanningModel().plan(planningInput);
-  const semanticFixture = toRawSemanticFixture(deterministicDraft);
+  const semanticFixture = toLlmDecisionFixture(deterministicDraft);
   let captured: CreativePlanningDraft | undefined;
   const executor = new CreativePlanningExecutor({
     async completeCreativePlan(input) {
       captured = input.draft;
       return undefined;
     },
-  }, new LlmSemanticPlanningModel(() => semanticFixture));
+  }, new LlmFreeformPromptPlanningModel(() => semanticFixture));
 
   await executor.execute({
     brief,
@@ -392,7 +355,7 @@ test("injected semantic planner keeps compacted segment sidecars ordered through
     sourceAssetIds: brief.sourceAssetIds,
   };
   const deterministicDraft = await new DeterministicPlanningModel().plan(planningInput);
-  const semanticFixture = toRawSemanticFixture(deterministicDraft);
+  const semanticFixture = toLlmDecisionFixture(deterministicDraft);
   const retainedPart = "Motion timeline: preserve the declared segment order.";
   const baseCompiler = new DeterministicStoryboardCompiler();
   const compiler: StoryboardCompilerPort = {
@@ -417,7 +380,7 @@ test("injected semantic planner keeps compacted segment sidecars ordered through
       captured = input.draft;
       return undefined;
     },
-  }, new LlmSemanticPlanningModel(() => semanticFixture), compiler, undefined, undefined, profile.audioOwner,
+  }, new LlmFreeformPromptPlanningModel(() => semanticFixture), compiler, undefined, undefined, profile.audioOwner,
   durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
 
   await executor.execute({
