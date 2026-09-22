@@ -300,6 +300,9 @@ const readLlmSegmentDecisions = (
     if (!isNonEmptyString(record.visual_prompt)) {
       return malformed(`Visual prompt ${index + 1} must be a non-empty natural-language string.`);
     }
+    if ((record.visual_prompt as string).includes("PLATFORM_OWNED_")) {
+      return malformed(`Visual prompt ${index + 1} must not contain platform-owned placeholders.`);
+    }
     if ((record.visual_prompt as string).length > 1_000) {
       return malformed(`Visual prompt ${index + 1} exceeds the existing storyboard narrative limit.`);
     }
@@ -443,6 +446,16 @@ export interface StoryboardCompilerPort {
 }
 
 const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
+
+// The LLM adapter keeps platform-owned sentinels in the private storyboard
+// shape because those fields remain required by the existing schemas. They
+// are not source facts and must never cross the final prompt boundary.
+const containsPlatformOwnedPlaceholder = (value: unknown): boolean => {
+  if (typeof value === "string") return value.includes("PLATFORM_OWNED_");
+  if (Array.isArray(value)) return value.some(containsPlatformOwnedPlaceholder);
+  if (value && typeof value === "object") return Object.values(value).some(containsPlatformOwnedPlaceholder);
+  return false;
+};
 
 // Dialogue is an authored provider-facing utterance.  Keep its line breaks
 // intact while normalizing only horizontal formatting whitespace; the
@@ -1643,12 +1656,24 @@ export class DeterministicStoryboardCompiler implements StoryboardCompilerPort {
     }
     const motionPlanHash = computedMotionPlanHash;
     const cameraMovements = motionPlan ? distinct(motionPlan.motion_beats.map((beat) => beat.camera_movement)) : [];
-    const cameraInstruction = input.cameraShot
+    const unsupportedInternalShape = containsPlatformOwnedPlaceholder({
+      cameraShot: input.cameraShot,
+      motionPlan,
+      startState: input.startState,
+      endState: input.endState,
+      transitionSummary: input.transitionSummary,
+      continuityNote: input.continuityNote,
+    });
+    const cameraInstruction = input.cameraShot && !containsPlatformOwnedPlaceholder(input.cameraShot)
       ? `Camera shot contract: shot=${input.cameraShot.shotSize}; angle=${input.cameraShot.cameraAngle}; primary movement=${input.cameraShot.primaryMovement}; direction=${input.cameraShot.movementDirection}; ${cameraMovements.length > 1 ? "execute the ordered camera changes in the motion timeline while keeping identity, wardrobe, scene, and direction continuous" : "keep one clear primary camera movement without adding an unrelated second movement"}; opening=${input.cameraShot.openingState}; closing=${input.cameraShot.closingState}.`
-      : "Camera shot contract: use one clear primary camera movement and preserve the opening and closing states.";
-    const motionInstruction = motionPlan
+      : input.cameraShot
+        ? ""
+        : "Camera shot contract: use one clear primary camera movement and preserve the opening and closing states.";
+    const motionInstruction = motionPlan && !containsPlatformOwnedPlaceholder(motionPlan)
       ? `${cameraInstruction} Motion timeline (execute in order; one observable action per interval): ${formatMotionTimeline(motionPlan, input.audioOwner)} Scene lock: ${motionPlan.scene_lock}. Opening state: ${motionPlan.opening_state}. Closing state: ${motionPlan.closing_state}.`
-      : "No structured motion timeline is available; preserve the declared start and end states and use one clear observable action at a time.";
+      : motionPlan
+        ? ""
+        : "No structured motion timeline is available; preserve the declared start and end states and use one clear observable action at a time.";
     const dialogueLines = normalizedDialogueLines(input.narrativeGoal, input.dialogueLines ?? []);
     // Dialogue is source-owned and is emitted by the audio directive. Keep it
     // out of the visual narrative prose when a direct caller supplied the same
@@ -1678,6 +1703,9 @@ export class DeterministicStoryboardCompiler implements StoryboardCompilerPort {
       visualNarrativeGoal ? normalize(visualNarrativeGoal) : "",
       dialogueSource,
     ].filter(Boolean).join(" ");
+    if (containsPlatformOwnedPlaceholder(sourcePrompt)) {
+      throw new Error("The source prompt contains a platform-owned placeholder.");
+    }
     const captionSuppressionDirective = hasProviderCaptionSuppressionDirective(sourcePrompt)
       ? ""
       : PROVIDER_CAPTION_SUPPRESSION_DIRECTIVE;
@@ -1705,6 +1733,7 @@ export class DeterministicStoryboardCompiler implements StoryboardCompilerPort {
       motionInstruction,
       "Keep character count and relative positions stable; maintain natural human anatomy with correctly connected head, neck, shoulders, torso, arms, hands, and legs.",
     ].map((part, index) => part && input.visualPrompt && index === 0 ? part : part ? normalize(part) : "")
+      .filter((part) => !containsPlatformOwnedPlaceholder(part))
       .filter(Boolean);
     // Keep the source-first portion separate from compiler directives. The
     // sidecar is persisted through the existing private capability snapshot;
@@ -1715,18 +1744,20 @@ export class DeterministicStoryboardCompiler implements StoryboardCompilerPort {
       compilerVersion: DETERMINISTIC_PROMPT_COMPILER_VERSION,
       prompt,
       visualConstraints: {
-        start_state: input.startState,
-        end_state: input.endState,
-        continuity_note: input.continuityNote,
+        ...(containsPlatformOwnedPlaceholder(input.startState) ? {} : { start_state: input.startState }),
+        ...(containsPlatformOwnedPlaceholder(input.endState) ? {} : { end_state: input.endState }),
+        ...(containsPlatformOwnedPlaceholder(input.continuityNote) ? {} : { continuity_note: input.continuityNote }),
         style_preferences: stylePreferences || undefined,
         identity_wardrobe_scene_lock: true,
         stable_character_count_and_positions: true,
         natural_human_anatomy: true,
         boundary_transition: input.referencePolicy === "TEXT_TRANSITION" ? "deliberate" : "handoff_or_reference_locked",
-        motion_plan_version: motionPlan?.version,
-        motion_plan_hash: motionPlanHash,
-        motion_timeline: motionPlan?.motion_beats,
-        camera_shot: input.cameraShot,
+        ...(unsupportedInternalShape ? {} : {
+          motion_plan_version: motionPlan?.version,
+          motion_plan_hash: motionPlanHash,
+          motion_timeline: motionPlan?.motion_beats,
+          camera_shot: input.cameraShot,
+        }),
       },
       referenceMap: {
         reference_policy: input.referencePolicy,
@@ -1749,7 +1780,7 @@ export class DeterministicStoryboardCompiler implements StoryboardCompilerPort {
         supports_handoff_plus_reference_set: true,
         handoff_plus_reference_set_order: "handoff_first_then_user_references",
         reference_set_and_handoff_are_mutually_exclusive: false,
-        camera_shot: input.cameraShot,
+        ...(containsPlatformOwnedPlaceholder(input.cameraShot) ? {} : { camera_shot: input.cameraShot }),
         source_prompt: sourcePrompt,
         generated_prompt_parts: generatedPromptParts,
         ...(input.audioOwner ? { audio_owner: input.audioOwner } : {}),

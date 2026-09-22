@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   DeterministicPlanningModel,
+  DeterministicStoryboardCompiler,
   LlmFreeformPromptPlanningModel,
   LlmSemanticPlanningError,
   type LlmFreeformPlanningContext,
@@ -112,6 +113,70 @@ test("LLM visual_prompt remains complete in its segment-local natural-language f
   assert.equal(shot.narrativeGoal, longVisualPrompt);
   assert.equal(shot.motionPlan.motion_beats[0]!.action, longVisualPrompt);
   assert.equal(shot.motionPlan.motion_beats[0]!.source_description, longVisualPrompt);
+});
+
+test("real LLM segments compile without platform-owned prompt placeholders", async () => {
+  const draft = await new LlmFreeformPromptPlanningModel(() => validDecisions).plan(input);
+  const compiler = new DeterministicStoryboardCompiler();
+  for (const [index, shot] of draft.shotSpecs.entries()) {
+    const compiled = await compiler.compile({
+      ...shot,
+      stylePreferences: input.stylePreferences,
+      generationSegmentSequence: index + 1,
+      generationSegmentCount: draft.generationSegmentCount,
+      motionPlan: shot.motionPlan,
+      motionPlanHash: shot.motionPlanHash,
+      cameraShot: shot.cameraShot,
+      dialogueLines: shot.dialogueLines,
+      visualPrompt: shot.visualPrompt,
+    });
+    const generatedPromptParts = compiled.capabilitySnapshot.generated_prompt_parts;
+    assert.doesNotMatch(compiled.prompt, /PLATFORM_OWNED_/u);
+    assert.doesNotMatch(JSON.stringify(compiled.capabilitySnapshot), /PLATFORM_OWNED_/u);
+    assert.doesNotMatch(JSON.stringify(compiled.visualConstraints), /PLATFORM_OWNED_/u);
+    assert.ok(Array.isArray(generatedPromptParts));
+    if (!Array.isArray(generatedPromptParts)) continue;
+    assert.ok(generatedPromptParts.every((part) => typeof part === "string"));
+    assert.ok(generatedPromptParts.every((part) => !part.includes("PLATFORM_OWNED_")));
+    assert.equal(
+      [compiled.capabilitySnapshot.source_prompt, ...generatedPromptParts].join(" "),
+      compiled.prompt,
+    );
+  }
+});
+
+test("LLM planner fails closed when a visual decision contains a platform placeholder", async () => {
+  const invalid = [{
+    duration_seconds: 15,
+    visual_prompt: "PLATFORM_OWNED_CAMERA_SIZE",
+    dialogue_line_sequences: [1],
+  }, validDecisions[1]];
+  assert.equal(
+    await errorCode(() => new LlmFreeformPromptPlanningModel(() => invalid).plan(input)),
+    "LLM_PLANNER_MALFORMED",
+  );
+});
+
+test("LLM dialogue extraction preserves labelled multiline boundaries and the following visual section", async () => {
+  const sources = [
+    `口播文案：”\n第一句口播。\n第二句继续说明。”\n\n视频生成意图描述\n镜头停在交付现场。`,
+    `口播文案："第一句口播。\n第二句继续说明。\n\n视频生成意图描述\n镜头停在交付现场。`,
+  ];
+  for (const sourceText of sources) {
+    let received: LlmFreeformPlanningContext | undefined;
+    await new LlmFreeformPromptPlanningModel(async (context) => {
+      received = context;
+      return [
+        { duration_seconds: 15, visual_prompt: "第一段视觉画面。", dialogue_line_sequences: [1] },
+        { duration_seconds: 15, visual_prompt: "第二段视觉画面。", dialogue_line_sequences: [2] },
+      ];
+    }).plan({ ...input, sourceText, sourceAssetIds: [] });
+    assert.deepEqual(
+      received?.dialogueLines.map((line) => line.replace(/^\n/u, "")),
+      ["第一句口播。", "第二句继续说明。"],
+    );
+    assert.ok(received?.dialogueLines.every((line) => !line.includes("视频生成意图描述")));
+  }
 });
 
 test("minimumSegments is passed to the director and enforced without mechanical fallback", async () => {

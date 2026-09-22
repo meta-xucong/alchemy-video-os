@@ -221,6 +221,10 @@ test("CreativePlanningExecutor injects freeform visual prompts while preserving 
   for (const [index, promptPackage] of captured.promptPackages.entries()) {
     const generatedPromptParts = promptPackage.capabilitySnapshot.generated_prompt_parts;
     assert.ok(Array.isArray(generatedPromptParts));
+    assert.doesNotMatch(promptPackage.prompt, /PLATFORM_OWNED_/u);
+    assert.ok(Array.isArray(generatedPromptParts)
+      && generatedPromptParts.every((part): part is string => typeof part === "string" && !part.includes("PLATFORM_OWNED_")));
+    if (!Array.isArray(generatedPromptParts)) continue;
     assert.equal(generatedPromptParts[0], "全程无字幕；no subtitles, no captions。字幕只在后期统一添加。");
     const freeformVisualPrompt = index === 0
       ? "自由视觉 1\n保留原文格式"
@@ -238,6 +242,30 @@ test("CreativePlanningExecutor injects freeform visual prompts while preserving 
     .map((promptPackage) => promptPackage.capabilitySnapshot.source_prompt)
     .filter((value): value is string => typeof value === "string");
   assert.equal(sourcePrompts.join(" ").includes("必须逐字保留。"), true);
+});
+
+test("CreativePlanningExecutor fails closed before completion when the LLM returns a platform placeholder", async () => {
+  let completeCalls = 0;
+  const executor = new CreativePlanningExecutor({
+    async completeCreativePlan() {
+      completeCalls += 1;
+      return undefined;
+    },
+  }, new LlmFreeformPromptPlanningModel(() => [
+    { duration_seconds: 15, visual_prompt: "PLATFORM_OWNED_CAMERA_SIZE", dialogue_line_sequences: [] },
+    { duration_seconds: 15, visual_prompt: "第二段自然语言画面。", dialogue_line_sequences: [] },
+  ]));
+
+  await assert.rejects(() => executor.execute({
+    brief: { ...brief, sourceText: "雨夜抵达工厂。团队在黎明前完成交付。" },
+    event: {
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXPLACE",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXPLACE",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXPLACE",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXPLACE",
+    },
+  }), /platform-owned placeholders/);
+  assert.equal(completeCalls, 0);
 });
 
 test("CreativePlanningExecutor consumes a verified semantic planner fixture without widening each segment source", async () => {
