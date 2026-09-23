@@ -1,0 +1,30 @@
+#!/bin/bash
+export DATABASE_URL=postgresql://video_local:video_local@127.0.0.1:15432/video_local
+export REDIS_URL=redis://127.0.0.1:6380
+export S3_ENDPOINT=http://127.0.0.1:9002
+export S3_REGION=us-east-1
+export S3_BUCKET=video-local
+export S3_ACCESS_KEY=video_local
+export S3_SECRET_KEY=video_local_secret
+export VIDEO_PROVIDER=sub2api
+export VEYRA_AUTH_ENABLED=false
+export VEYRA_CREDIT_ENABLED=false
+export VIDEO_BILLING_CHARGE_AMOUNT=0
+export VIDEO_BILLING_SURCHARGE_MULTIPLIER=0.20
+export VIDEO_BILLING_FIXED_FEE=1
+export AUDIO_FREE_ONLY=true
+export PIXABAY_MUSIC_ENABLED=true
+export CONTROL_API_PORT=3032
+export CONTROL_API_ORIGIN=http://127.0.0.1:3032
+export LOCAL_AUTH_MODE=dev
+export SUB2API_VIDEO_BASE_URL=https://aiself.vip/v1
+export SUB2API_VIDEO_API_KEY=sk-9e2fb7aed052df90a6f989932dfb424d12c090ea09c8a82925ab21465fc15a2d
+export REFERENCE_DELIVERY_ORIGIN=https://bus-perspectives-secretary-skirts.trycloudflare.com
+export REFERENCE_VISION_BASE_URL=https://aiself.vip/v1
+export REFERENCE_VISION_API_KEY=sk-f8936af4e1bc2cf1b01926ab5bb6891ededce2f686686a08afe9bf17ca5f47f5
+export REFERENCE_VISION_MODEL=doubao-seed-2-0-lite-260428
+export REFERENCE_DELIVERY_SIGNING_KEY=local-ref-74775e5370a19d923463a8ba38072529e899e0170a167893ffc298faf3deeca2
+export SEMANTIC_PLANNER_ENABLED=true
+export NODE_ENV=development
+
+pnpm dev

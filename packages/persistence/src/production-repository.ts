@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import {
@@ -242,6 +243,50 @@ export const isUsableMusicAsset = (asset: ScopedAssetMetadata & {
     requireDuration: false,
     ...input,
   }) && isLikelyMusicAsset(asset);
+};
+
+type MusicCandidate = {
+  id: string;
+  createdAt: string;
+  durationMs: number | null;
+  metadata?: Record<string, unknown> | null;
+};
+
+/**
+ * Keep the existing descriptive token match and duration fit unchanged.  The
+ * score is a platform-owned thin selector around OpenMontage's explicit
+ * music-mood intent; it is not an aesthetic recommendation model.
+ */
+export const scoreMusicAsset = (asset: MusicCandidate, briefText: string, targetDurationMs: number) => {
+  const metadata = asset.metadata ?? {};
+  const tags = [metadata.mood, metadata.style, metadata.genre, metadata.selection_hint, metadata.bpm, metadata.filename]
+    .filter(Boolean).join(" ").toLowerCase();
+  const normalizedBrief = briefText.toLowerCase();
+  const tagMatches = tags.split(/[^\p{L}\p{N}]+/u).filter((tag) => tag.length > 1 && normalizedBrief.includes(tag)).length;
+  const durationFit = asset.durationMs && asset.durationMs >= targetDurationMs ? 2 : 0;
+  return tagMatches * 10 + durationFit;
+};
+
+/**
+ * Select one whole-video MUSIC track. Equal-score candidates use a stable
+ * per-run hash so retries are idempotent while new production runs do not
+ * always fall back to the newest row. This is the only platform-owned
+ * variation rule; it never overrides an explicit score or changes track count.
+ */
+export const selectAutoMusicAsset = <T extends MusicCandidate>(input: {
+  candidates: readonly T[];
+  briefText: string;
+  targetDurationMs: number;
+  productionRunId: string;
+}): T | undefined => {
+  if (input.candidates.length === 0) return undefined;
+  const scored = input.candidates.map((asset) => ({ asset, score: scoreMusicAsset(asset, input.briefText, input.targetDurationMs) }));
+  const highestScore = Math.max(...scored.map((item) => item.score));
+  const top = scored.filter((item) => item.score === highestScore).map((item) => item.asset).sort((left, right) => left.id.localeCompare(right.id));
+  if (top.length <= 1) return top[0];
+  const digest = createHash("sha256").update(input.productionRunId).digest("hex");
+  const offset = Number.parseInt(digest.slice(0, 8), 16) % top.length;
+  return top[offset];
 };
 
 export type ProductionTaskRunInput = Readonly<{
@@ -1532,7 +1577,7 @@ export class DrizzleProductionRepository implements ProductionStore {
       .select()
       .from(productionRuns)
       .where(and(
-        eq(productionRuns.status, "GENERATING"),
+        inArray(productionRuns.status, ["CONFIRMED", "GENERATING"]),
         ...(input.workspaceId ? [eq(productionRuns.workspaceId, input.workspaceId)] : []),
       ))
       .orderBy(asc(productionRuns.createdAt));
@@ -1966,6 +2011,7 @@ export class DrizzleProductionRepository implements ProductionStore {
     const narrationSegments: NonNullable<ProductionCompositionInput["narrationSegments"]> = [];
     const sourceAudioTracks: NonNullable<MediaRuntimeCompositionPlan["audio_tracks"]> = [];
     const audioOwnerFacts: AudioOwnerFact[] = [];
+    const musicIntentHints: string[] = [];
   const approvedNarration = run.deliveryPlanRevisionId
       ? await findApprovedNarrationTimeline(this.db, run.workspaceId, run.projectId, run.deliveryPlanRevisionId)
       : undefined;
@@ -2035,6 +2081,10 @@ export class DrizzleProductionRepository implements ProductionStore {
         ))
         .orderBy(desc(promptPackages.createdAt))
         .limit(1);
+      const segmentBgmPrompt = promptPackage?.capabilitySnapshot?.bgm_prompt;
+      if (typeof segmentBgmPrompt === "string" && segmentBgmPrompt.trim()) {
+        musicIntentHints.push(segmentBgmPrompt.trim());
+      }
       const motionPlan = promptPackage?.capabilitySnapshot?.motion_plan;
       const voicePerformance = motionPlan && typeof motionPlan === "object"
         ? (motionPlan as { voice_performance?: unknown }).voice_performance
@@ -2311,20 +2361,21 @@ export class DrizzleProductionRepository implements ProductionStore {
         ].sort((left, right) => left.start_ms - right.start_ms || left.track_id.localeCompare(right.track_id)),
       }
       : undefined;
-    const briefText = `${brief?.sourceText ?? ""} ${brief?.stylePreferences ?? ""} ${musicPlan.style_hint}`.toLowerCase();
-    const scoreMusic = (asset: typeof assets.$inferSelect) => {
-      const metadata = asset.metadata ?? {};
-      const tags = [metadata.mood, metadata.style, metadata.genre, metadata.selection_hint, metadata.bpm, metadata.filename].filter(Boolean).join(" ").toLowerCase();
-      const tagMatches = tags.split(/[^\p{L}\p{N}]+/u).filter((tag) => tag.length > 1 && briefText.includes(tag)).length;
-      const durationFit = asset.durationMs && asset.durationMs >= targetDurationMs ? 2 : 0;
-      return tagMatches * 10 + durationFit;
-    };
+    const briefText = `${brief?.sourceText ?? ""} ${brief?.stylePreferences ?? ""} ${musicPlan.style_hint} ${musicIntentHints.join(" ")}`.toLowerCase();
     const autoMusicCandidates = musicPlan.mode === "AUTO"
       ? filteredMusicCandidates.filter((asset) => isUsableMusicAsset(asset, { minimumDurationMs: targetDurationMs }))
       : [];
     const [musicAsset] = musicPlan.mode === "MANUAL"
       ? filteredMusicCandidates.filter((asset) => asset.id === musicPlan.asset_id)
-      : autoMusicCandidates.sort((left, right) => scoreMusic(right) - scoreMusic(left) || right.createdAt.localeCompare(left.createdAt)).slice(0, 1);
+      : (() => {
+        const selected = selectAutoMusicAsset({
+          candidates: autoMusicCandidates,
+          briefText,
+          targetDurationMs,
+          productionRunId: run.id,
+        });
+        return selected ? [selected] : [];
+      })();
     if (musicPlan.mode === "MANUAL" && !musicAsset) {
       unavailable("the explicitly selected music asset is not available or failed scope validation");
     }

@@ -24,7 +24,7 @@ import type { BoundedDocumentContextReader } from "./document-context-reader.js"
 export const resolvePlanningDurationPolicy = (
   runtimeProfile: Pick<VideoProviderRuntimeProfile, "mode"> | undefined,
 ): StoryboardDurationPolicy | undefined => runtimeProfile?.mode === "sub2api"
-  ? { ...DEFAULT_STORYBOARD_DURATION_POLICY, minDurationSeconds: 1 }
+  ? { ...DEFAULT_STORYBOARD_DURATION_POLICY }
   : undefined;
 
 const isPromptBudgetError = (error: unknown): error is UnsupportedVideoGenerationInputError =>
@@ -173,6 +173,13 @@ export class CreativePlanningExecutor {
               prompt = compiled.prompt;
             }
           }
+        }
+        // Huobao's optional storyboard music intent is a private composition
+        // fact. Keep it out of the provider prompt and the public storyboard
+        // DTO while preserving it across the existing PromptPackage snapshot.
+        const bgmPrompt = planned.shotSpecs[index]!.bgmPrompt;
+        if (typeof bgmPrompt === "string" && bgmPrompt.trim()) {
+          capabilitySnapshot = { ...capabilitySnapshot, bgm_prompt: bgmPrompt.trim() };
         }
         return {
           id: createPrefixedId("ppk"),

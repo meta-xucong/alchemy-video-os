@@ -81,7 +81,14 @@ test("semantic client posts the complete LLM segment-decision contract", async (
   assert.ok(system.includes("顶层 JSON 数组"));
   assert.ok(system.includes("duration_seconds"));
   assert.ok(system.includes("dialogue_line_sequences"));
-  assert.ok(system.includes("由你决定片段数量"));
+  assert.ok(system.includes("bgm_prompt"));
+  assert.ok(system.includes("每一项对应一个完整 storyboard/provider 片段"));
+  assert.ok(system.includes("显式叙事节拍边界必须拆段"));
+  assert.ok(system.includes("同一节拍内的子镜头优先合并在同一项"));
+  assert.ok(system.includes("2-4 个各 2-6 秒"));
+  assert.ok(system.includes("duration_seconds 是该完整片段的总时长"));
+  assert.ok(system.includes("不得把段内子镜头各自变成独立的短片段"));
+  assert.ok(system.includes("返回空数组，不得输出短于下限的片段"));
   assert.ok(system.includes("编号从 1 开始"));
   assert.ok(system.includes("总和必须正好等于"));
   assert.ok(system.includes("不改变输入顺序"));
