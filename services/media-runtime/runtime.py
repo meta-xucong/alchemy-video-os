@@ -70,7 +70,6 @@ OPENMONTAGE_TRANSITION_MAX_SECONDS = 5.0
 OPENMONTAGE_DEFAULT_TRANSITION_SECONDS = 0.5
 BLACK_TRANSITION_MAX_SECONDS = 1.0
 OPERATION_ID_PATTERN = re.compile(r"^mop_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$")
-_VISUAL_MODEL_CACHE: tuple[object, object, object] | None = None
 
 
 class MediaRuntimeError(ValueError):
@@ -700,152 +699,20 @@ def burn_captions_video_bytes(*, body: bytes, expected_sha256: str | None, trans
 
 
 def compare_transcript_to_script(*, transcript: dict[str, object] | None, script_text: str | None) -> dict[str, object]:
-    result: dict[str, object] = {"status": "UNAVAILABLE", "transcript_matches_script": None, "word_accuracy": None, "issues": []}
-    if not script_text:
-        # Source-aligned sound intent: a visual-only story has no expected
-        # spoken text, so it is not a failed comparison and should not emit a
-        # misleading low-match warning.
-        result["status"] = "NOT_EXPECTED"
-        return result
-    if not transcript or transcript.get("status") != "CHECKED":
-        result["issues"] = ["transcript_comparison unavailable: no checked transcript."]
-        return result
-    def spoken_number(value: str) -> str:
-        digits = "零一二三四五六七八九"
-        if "." in value:
-            integer, fraction = value.split(".", 1)
-            return spoken_number(integer) + "点" + "".join(digits[int(character)] for character in fraction)
-        number = int(value)
-        if number == 0:
-            return digits[0]
-        units = (("千", 1000), ("百", 100), ("十", 10))
-        result = ""
-        pending_zero = False
-        for unit, divisor in units:
-            digit = number // divisor
-            number %= divisor
-            if digit:
-                if pending_zero:
-                    result += digits[0]
-                    pending_zero = False
-                if not (unit == "十" and digit == 1 and not result):
-                    result += digits[digit]
-                result += unit
-            elif result and number:
-                pending_zero = True
-        if number:
-            if pending_zero:
-                result += digits[0]
-            result += digits[number]
-        return result
-    def normalize_spoken_numbers(value: str) -> str:
-        return re.sub(r"\d+(?:\.\d+)?", lambda match: spoken_number(match.group()), value)
-    def tokens(value: str) -> list[str]:
-        # ASR returns CJK speech as individual characters while Latin speech is
-        # returned as words. Treating a whole CJK sentence as one token makes
-        # harmless homophone/traditional-character differences look like 0%.
-        normalized = value.casefold()
-        return [
-            item
-            for item in re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]|[a-z0-9]+(?:-[a-z0-9]+)?", normalized)
-            if item and item != "-"
-        ]
-    def normalize_spelled_initialisms(values: list[str]) -> list[str]:
-        # Whisper may emit an acronym such as "AI" as two letter tokens;
-        # compare it with the source token without treating that harmless
-        # segmentation difference as missing product copy.
-        normalized: list[str] = []
-        index = 0
-        while index < len(values):
-            if index + 1 < len(values) and len(values[index]) == 1 and len(values[index + 1]) == 1:
-                pair = f"{values[index]}{values[index + 1]}"
-                if pair in {"ai", "ui", "ml", "ar", "vr"}:
-                    normalized.append(pair)
-                    index += 2
-                    continue
-            normalized.append(values[index])
-            index += 1
-        return normalized
-    words = transcript.get("word_timestamps") or []
-    transcript_tokens = tokens(" ".join(str(item.get("word", "")) for item in words if isinstance(item, dict)))
-    script_tokens = tokens(normalize_spoken_numbers(script_text))
-    if not transcript_tokens or not script_tokens:
-        result["issues"] = ["transcript_comparison: empty token set."]
-        return result
-    script_set = set(script_tokens)
-    leaks = {word: transcript_tokens.count(word) for word in ("dot", "comma", "hyphen", "ellipsis") if word in transcript_tokens and word not in script_set}
-    transcript_set = set(transcript_tokens)
-    cjk = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
-    script_cjk = [token for token in script_tokens if cjk.fullmatch(token)]
-    script_latin = [token for token in script_tokens if not cjk.fullmatch(token)]
-    transcript_cjk = [token for token in transcript_tokens if cjk.fullmatch(token)]
-    if "ai" in script_latin:
-        normalized_cjk: list[str] = []
-        cursor = 0
-        while cursor < len(transcript_cjk):
-            # The Chinese Whisper model commonly writes a spoken A-I acronym
-            # as 艾艾. It is source-authorized only when the script itself
-            # contains AI; ordinary inserted characters remain detectable.
-            if transcript_cjk[cursor:cursor + 2] == ["艾", "艾"]:
-                cursor += 2
-                continue
-            normalized_cjk.append(transcript_cjk[cursor])
-            cursor += 1
-        transcript_cjk = normalized_cjk
-    transcript_latin = normalize_spelled_initialisms([token for token in transcript_tokens if not cjk.fullmatch(token)])
-    if script_cjk:
-        # CJK ASR commonly changes simplified/traditional glyphs and homophones.
-        # Use utterance coverage for that part, while retaining exact matching
-        # for any Latin words or identifiers in the same script.
-        cjk_coverage = len(transcript_cjk) / max(1, len(script_cjk))
-        # Coverage alone misses a short inserted filler word: a transcript can
-        # still contain every expected character while being longer than the
-        # requested script. Detect that case when the expected script remains
-        # an ordered subsequence of the ASR output.
-        inserted_tokens = 0
-        script_index = 0
-        for token in transcript_cjk:
-            if script_index < len(script_cjk) and token == script_cjk[script_index]:
-                script_index += 1
-            else:
-                inserted_tokens += 1
-        ordered_script = script_index == len(script_cjk)
-        inserted_cjk = ordered_script and inserted_tokens > 0
-        # Product acronyms are routinely rendered as Chinese homophones by
-        # the compact local ASR model (for example AI -> "艾艾").  The CJK
-        # coverage already evaluates the spoken surrounding phrase, so do
-        # not downgrade an otherwise complete Chinese narration for this
-        # ASR-only spelling ambiguity.
-        significant_latin = [
-            word for word in script_latin
-            if not word.isdigit() and not re.fullmatch(r"[a-z]{2,5}", word)
-        ]
-        latin_accuracy = (
-            sum(1 for word in significant_latin if word in set(transcript_latin)) / max(1, len(significant_latin))
-            if significant_latin
-            else 1.0
-        )
-        accuracy = min(1.0, cjk_coverage)
-        matches = 0.75 <= cjk_coverage <= 1.15 and latin_accuracy >= 0.9 and not leaks and not inserted_cjk
-        issues: list[str] = []
-        if cjk_coverage < 0.75 or cjk_coverage > 1.15:
-            issues.append(f"Low transcript-to-script coverage: {cjk_coverage:.0%}.")
-        if inserted_cjk:
-            issues.append(f"Unexpected inserted spoken characters detected: {inserted_tokens}.")
-        if latin_accuracy < 0.9:
-            issues.append(f"Low transcript-to-script match: {latin_accuracy:.0%}.")
-    else:
-        accuracy = sum(1 for word in script_tokens if word in transcript_set) / max(1, len(script_tokens))
-        matches = accuracy >= 0.9 and not leaks
-        issues = []
-        if leaks:
-            issues.append("TTS punctuation leak detected.")
-        if accuracy < 0.9:
-            issues.append(f"Low transcript-to-script match: {accuracy:.0%}.")
-    result.update({"status": "CHECKED", "transcript_matches_script": matches, "word_accuracy": round(accuracy, 3)})
-    result["issues"] = issues
-    return result
+    """Historical API compatibility; semantic speech matching is retired.
 
+    ASR token overlap, language-specific homophone rules, and hand-tuned
+    thresholds are not evidence that generated speech equals source dialogue.
+    A future certified comparer must be injected at a separate boundary.
+    """
+    if not script_text:
+        return {"status": "NOT_EXPECTED", "transcript_matches_script": None, "word_accuracy": None, "issues": []}
+    return {
+        "status": "UNAVAILABLE",
+        "transcript_matches_script": None,
+        "word_accuracy": None,
+        "issues": ["未提供经认证的多语言逐字/语义台词比对器。"],
+    }
 
 def check_narration_alignment(*, narration_cues: list[dict[str, object]] | None, visual_landmarks: list[dict[str, object]] | None, duration_seconds: float, tolerance_seconds: float = 0.5) -> dict[str, object]:
     """Source-aligned equivalent of OpenMontage assert_alignment.
@@ -880,55 +747,20 @@ def check_narration_alignment(*, narration_cues: list[dict[str, object]] | None,
 
 
 def visual_semantic_capability() -> dict[str, object]:
-    try:
-        import torch  # type: ignore  # noqa: F401
-        import transformers  # type: ignore  # noqa: F401
-    except ImportError:
-        return {"status": "UNAVAILABLE", "provider": "transformers", "model": "clip", "issues": ["transformers/torch is not installed."]}
-    return {"status": "AVAILABLE", "provider": "transformers", "model": os.environ.get("MEDIA_VISUAL_MODEL", "clip"), "issues": []}
-
-
-def _load_visual_model() -> tuple[object, object, object]:
-    global _VISUAL_MODEL_CACHE
-    if _VISUAL_MODEL_CACHE is not None:
-        return _VISUAL_MODEL_CACHE
-    from transformers import CLIPModel, CLIPProcessor  # type: ignore
-    import torch  # type: ignore
-    model_id = os.environ.get("MEDIA_VISUAL_MODEL_ID", "openai/clip-vit-base-patch32")
-    processor = CLIPProcessor.from_pretrained(model_id)
-    model = CLIPModel.from_pretrained(model_id).to("cpu")
-    model.eval()
-    _VISUAL_MODEL_CACHE = (model, processor, torch)
-    return _VISUAL_MODEL_CACHE
+    """Historical capability surface; fixed-category CLIP QC is retired."""
+    return {
+        "status": "UNAVAILABLE",
+        "provider": None,
+        "model": None,
+        "issues": ["未配置与源事实、参考图和分段决定对齐的多模态语义评估器。"],
+    }
 
 
 def visual_semantic_review(*, path: Path, duration_seconds: float) -> dict[str, object]:
+    """Historical API compatibility; never fabricates a semantic CHECKED result."""
+    _ = (path, duration_seconds)
     capability = visual_semantic_capability()
-    if capability["status"] != "AVAILABLE":
-        return {"status": "UNAVAILABLE", "issues": capability["issues"]}
-    categories = ("indoor", "outdoor", "landscape", "cityscape", "portrait", "action", "close-up", "aerial", "night", "nature", "urban", "abstract", "text-overlay")
-    try:
-        ffmpeg = configured_binary("MEDIA_RUNTIME_FFMPEG_PATH")
-        with TemporaryDirectory(prefix="alchemy-c12-visual-review-") as directory:
-            frame_paths: list[Path] = []
-            for index, timestamp in enumerate((0.0, duration_seconds * 0.33, duration_seconds * 0.66, max(0.0, duration_seconds - 0.1))):
-                output = Path(directory) / f"frame-{index:02d}.png"
-                _run(ffmpeg, ["-y", "-ss", f"{timestamp:.3f}", "-i", str(path), "-frames:v", "1", "-update", "1", "-f", "image2", str(output)], timeout_seconds=30)
-                frame_paths.append(output)
-            from PIL import Image  # type: ignore
-            model, processor, torch = _load_visual_model()
-            labels = [f"a {category} scene" for category in categories]
-            per_frame: list[str] = []
-            for frame_path in frame_paths:
-                image = Image.open(frame_path).convert("RGB")
-                inputs = processor(text=labels, images=image, return_tensors="pt", padding=True)
-                with torch.no_grad():
-                    logits = model(**inputs).logits_per_image.softmax(dim=1)[0]
-                per_frame.append(categories[int(logits.argmax().item())])
-            return {"status": "CHECKED", "issues": [], "frames_checked": len(per_frame), "scene_categories": per_frame}
-    except Exception as error:
-        return {"status": "UNAVAILABLE", "issues": [f"visual evaluator execution unavailable: {type(error).__name__}"]}
-
+    return {"status": "UNAVAILABLE", "issues": list(capability["issues"])}
 
 def validate_operation_id(value: str | None) -> str:
     if not value or not OPERATION_ID_PATTERN.fullmatch(value):
@@ -1529,18 +1361,32 @@ def final_review_video_bytes(*, body: bytes, expected_sha256: str | None, script
         audio_metrics = _audio_loudness_metrics(source) if technical.get("has_audio") else {}
         if audio_metrics.get("true_peak_db", -99) > -1.5:
             audio_issues.append("成片音频 true peak 超过 -1.5 dBTP。")
-        semantic_review = visual_semantic_review(path=source, duration_seconds=float(technical["duration_seconds"]))
-        transcript = transcribe_video_bytes(body=body, expected_sha256=digest)
-    visual_capability_note = "叠加层、素材引用和文字可读性检查未配置；以下三项为未发现而非已完成语义检查。" if semantic_review["status"] != "CHECKED" else ""
-    transcript_comparison = compare_transcript_to_script(transcript=transcript, script_text=script_text)
+    # No source-aligned multimodal evaluator or certified multilingual speech
+    # comparer is supplied at this Runtime boundary. Fixed CLIP categories and
+    # hand-tuned transcript overlap are diagnostics, not semantic acceptance.
+    semantic_review = {
+        "status": "UNAVAILABLE",
+        "issues": ["未提供与源事实、参考图和分段决定对齐的多模态语义评估器。"],
+    }
+    transcript_comparison = {
+        "status": "NOT_EXPECTED" if not script_text else "UNAVAILABLE",
+        "transcript_matches_script": None,
+        "word_accuracy": None,
+        "issues": [] if not script_text else ["未提供经认证的多语言逐字/语义台词比对器。"],
+    }
+    visual_capability_note = "叠加层、素材身份和文字可读性未执行语义检查；未知项保持 null。"
     transcript_issues = list(transcript_comparison["issues"])
-    transcript_issue = transcript_issues[0] if transcript_issues else ""
     subtitles_expected = caption_policy == "REQUIRED"
     captions_present = bool(technical.get("captions_present"))
     subtitle_issues = ["交付策略要求字幕，但当前成片没有可验证的字幕轨或字幕资产。"] if subtitles_expected and not captions_present else []
-    issues = [*visual_issues, *audio_issues, *subtitle_issues, visual_capability_note, *(["视觉语义评估器未配置，无法自动核对人物/背景/道具连续性。"] if semantic_review["status"] != "CHECKED" else []), transcript_issue]
-    if not transcript_issue and issues and issues[-1] == "":
-        issues.pop()
+    issues = [
+        *visual_issues,
+        *audio_issues,
+        *subtitle_issues,
+        visual_capability_note,
+        *list(semantic_review["issues"]),
+        *transcript_issues,
+    ]
     issues = [issue for issue in issues if issue]
     technical_failed = bool(black_frames) or not bool(technical["valid_container"])
     # Missing audio and the source detector's *unexpected* silence are hard
@@ -1555,9 +1401,11 @@ def final_review_video_bytes(*, body: bytes, expected_sha256: str | None, script
         "visual_spotcheck": {
             "frames_sampled": frames_sampled,
             "black_frames_detected": black_frames,
-            "broken_overlays": False,
-            "missing_assets": False,
-            "unreadable_text": False,
+            # No overlay, asset-identity, or text-readability evaluator runs at
+            # this boundary. Unknown must not be serialized as a checked false.
+            "broken_overlays": None,
+            "missing_assets": None,
+            "unreadable_text": None,
             "issues": [*visual_issues, *([visual_capability_note] if visual_capability_note else [])],
         },
         "audio_spotcheck": {
@@ -1569,12 +1417,12 @@ def final_review_video_bytes(*, body: bytes, expected_sha256: str | None, script
             "issues": audio_issues,
         },
         "promise_preservation": {
-            "status": "CHECKED",
+            "status": "UNAVAILABLE",
             "renderer_family_used": "source-aligned video composition",
             "render_runtime_used": "ffmpeg",
-            "runtime_swap_detected": False,
-            "silent_downgrade_detected": False,
-            "issues": [],
+            "runtime_swap_detected": None,
+            "silent_downgrade_detected": None,
+            "issues": ["Source delivery-promise evidence was not supplied to this Runtime boundary."],
         },
         "subtitle_check": {
             "status": "CHECKED" if captions_present else "UNAVAILABLE" if subtitles_expected else "NOT_EXPECTED",

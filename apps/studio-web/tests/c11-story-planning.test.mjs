@@ -26,22 +26,31 @@ test("C11 Studio uses only public story-planning commands and keeps project deta
   assert.doesNotMatch(api, /\b(?:provider|queue|outbox|object_key|veyra)\b/i);
 });
 
-test("C11 Studio hides planning buttons but still runs the public plan-approve-production sequence", () => {
+test("C11 Studio prepares a reviewable storyboard without auto-approving or starting production", () => {
   const workspace = read("app/pages/projects/[project_id].vue");
   const panel = read("app/components/studio/StoryPlanningPanel.vue");
   const source = `${workspace}\n${panel}`;
 
-  for (const symbol of ["createCreativeBriefRevision", "requestCreativePlan", "approveStoryboardRevision", "createProductionRun"]) {
+  for (const symbol of ["createCreativeBriefRevision", "requestCreativePlan", "storyboardRevisions"]) {
     assert.match(source, new RegExp(symbol));
   }
-  for (const key of ["studio-auto-brief", "studio-auto-plan", "studio-auto-approve", "studio-auto-production"]) {
+  for (const key of ["studio-auto-brief", "studio-auto-plan"]) {
     assert.match(workspace, new RegExp(`commandKey\\("${key}"\\)`));
   }
   assert.match(workspace, /waitForAutoStoryboard/);
-  assert.match(workspace, /applyStoryboardRevision\(approved\.data\);/);
-  assert.match(workspace, /applyProductionRun\(production\.data\);/);
-  assert.match(panel, /AI 会在后台完成所有准备和制作/);
-  assert.doesNotMatch(panel, /生成故事计划|确认故事计划|确认完整制作计划|当前不会提交任何视频/);
+  assert.match(workspace, /applyStoryboardRevision\(storyboard\);/);
+  assert.match(workspace, /分镜方案已生成，等待你确认后再进入交付设置/);
+  const autoPlan = workspace.slice(
+    workspace.indexOf("async function startAutomatedProduction"),
+    workspace.indexOf("async function confirmStoryboardAndCreateDeliveryPlan"),
+  );
+  assert.doesNotMatch(autoPlan, /approveStoryboardRevision|approveDeliveryPlanRevision|createProductionRun|studio-auto-approve|studio-auto-delivery|studio-auto-production/);
+  assert.match(workspace, /async function confirmStoryboardAndCreateDeliveryPlan/);
+  assert.match(workspace, /async function confirmDeliveryAndStartProduction/);
+  assert.match(workspace, /storyboardReviewConfirmed/);
+  assert.match(workspace, /deliveryReviewConfirmed/);
+  assert.match(workspace, /确认分镜并创建交付计划/);
+  assert.match(workspace, /确认交付并开始制作/);
   assert.doesNotMatch(panel, /createGeneration|TaskRun|Provider|模型|队列/);
 });
 

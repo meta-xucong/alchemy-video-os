@@ -11,20 +11,34 @@ const evaluation = (result: "PASS" | "BLEND" | "BRIDGE_REQUIRED" | "UNAVAILABLE"
   retryable: result === "UNAVAILABLE",
 });
 
-test("continuity policy keeps PASS direct and uses bounded blend", () => {
+test("continuity policy accepts PASS but never auto-creates a blend", () => {
   assert.deepEqual(decideContinuityRepair({ evaluation: evaluation("PASS"), repairCount: 0, maxRepairCount: 2 }), {
     strategy: "PASS",
     continuityStatus: "GOOD",
     durationMs: 0,
     shouldCreateRepair: false,
   });
-  assert.equal(decideContinuityRepair({ evaluation: evaluation("BLEND"), repairCount: 0, maxRepairCount: 2 }).durationMs, 600);
+  assert.deepEqual(decideContinuityRepair({ evaluation: evaluation("BLEND"), repairCount: 0, maxRepairCount: 2 }), {
+    strategy: "BLEND",
+    continuityStatus: "NEEDS_ATTENTION",
+    durationMs: 0,
+    shouldCreateRepair: false,
+  });
 });
 
-test("bridge is bounded and stops after the run repair cap", () => {
-  assert.equal(decideContinuityRepair({ evaluation: evaluation("BRIDGE_REQUIRED"), repairCount: 0, maxRepairCount: 1 }).strategy, "BRIDGE");
-  const capped = decideContinuityRepair({ evaluation: evaluation("BRIDGE_REQUIRED"), repairCount: 1, maxRepairCount: 1 });
-  assert.deepEqual(capped, { strategy: "PASS", continuityStatus: "NEEDS_ATTENTION", durationMs: 0, shouldCreateRepair: false });
+test("bridge recommendations remain reviewable until a real repair artifact exists", () => {
+  assert.deepEqual(decideContinuityRepair({ evaluation: evaluation("BRIDGE_REQUIRED"), repairCount: 0, maxRepairCount: 1 }), {
+    strategy: "BRIDGE",
+    continuityStatus: "NEEDS_ATTENTION",
+    durationMs: 0,
+    shouldCreateRepair: false,
+  });
+  assert.deepEqual(decideContinuityRepair({ evaluation: evaluation("BRIDGE_REQUIRED"), repairCount: 1, maxRepairCount: 1 }), {
+    strategy: "BRIDGE",
+    continuityStatus: "NEEDS_ATTENTION",
+    durationMs: 0,
+    shouldCreateRepair: false,
+  });
 });
 
 test("unavailable evaluation never masquerades as semantic PASS", () => {

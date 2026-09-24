@@ -1093,3 +1093,35 @@ ADR-0069 只解决 Aiself 自有参考图交付链路的可达性与可审计性
 | 约束 | 只消费固定来源已有字段和现有薄壳，禁止新增第二 AudioPlan、通用时长算法、静默回退或公开契约。正式 `E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT`；T11 真实账本和实际启用 profile 的逐项外部证据仍独立保留。 |
 
 本 ADR 仅覆盖用户明确范围内的技术收口，不把人工质量证据改写为自动测试通过，也不把未配置 Veyra/计费环境视为已完成。
+
+## ADR-0071：单一语义所有权、证据引用与禁止平台猜测
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `READY_FOR_AUDIT`（G01 代码、本地技术门禁和隔离基础设施集成已完成；尚未独立验收，不得改为 `ACCEPTED`） |
+| 日期 | 2026-09-24 |
+| 影响范围 | Document Knowledge、Reference Planning、Creative Planning、Prompt Compiler、Studio 审批、Production、Media Runtime/QC；不自动开放真实 Provider、TTS、Veyra、VPS、部署或 Git 写入 |
+| 上下文 | 多轮开发把关键词、正则、固定分类、手工评分、默认值和必填 schema 当成语义理解，形成文档、图片、台词、对象、分段、连续性和 QC 的多套并行事实源。真实 LLM 即使已作决定，下游仍会二次解析和补写，造成非通用行为、source 改写、假审批、假修复和未检查即通过。 |
+| 核心决策 | 真实模式只有一个 `SemanticDirectorPort` 可以理解自然语言、图片用途、叙事关系和内容相关性；其决定必须引用冻结 source evidence。平台确定性代码只验证引用、精确文本、顺序、作用域、时长、Provider 能力和协议，不得通过关键词、正则、评分或默认类别猜测语义。 |
+| 数据边界 | 新真实任务以 `CanonicalSourceBundle` 输入，以带 `EvidenceRef` 的 `SemanticDecision` 输出。exact dialogue、document evidence、reference usage、segment decision 和 unresolved items 均可选且有 provenance；没有事实就没有字段，不用 `PLATFORM_OWNED_*` 或空洞 prose 填充。 |
+| Checker 能力边界 | deterministic checker 只校验 schema、identity、hash、精确引用、顺序、范围与 Provider 硬限制；它不证明视觉语义蕴含、source 全量覆盖或成片质量。 |
+| 兼容策略 | 旧 DocumentFact 类别、MotionPlan、ALCHMED、对象锁和历史 snapshots 继续只读；Mock 可保留 deterministic fixtures，但必须物理隔离。真实 Worker 不再创建新的旧语义记录，也不得在新链失败时回退旧 planner/selector/parser。 |
+| 用户决定 | Storyboard、delivery policy、voice、caption、lip sync、duration tolerance、budget 和 BGM mode 必须来自用户动作或已批准项目策略；缺失时保持 PENDING/BLOCKED，不能由前端或 API 自动 approve/代填。 |
+| 真实性 | `APPROVED` 必须有用户动作；`CHECKED/PASS` 必须有实际检查；`succeeded/ACCEPTED` 必须有真实执行与产物；布尔 `false` 只表示已检查且为否，未知使用 `UNKNOWN/UNAVAILABLE/NOT_CHECKED`。 |
+| 来源例外 | 用户明确授权的 BGM 智能匹配可作为 `PLATFORM_OWNED` 保留；权限、API、队列、持久化、存储、幂等、恢复、Provider mapper 和技术校验作为 `PLATFORM_SHELL` 保留。二者均不得扩张为通用语义 fallback。 |
+| 回滚 | 逐工作包切换，不破坏历史数据。每个新入口可关闭并恢复为 fail-closed 读取；不得恢复关键词/正则语义 fallback，不得使用破坏性 Git。 |
+| 审计证据 | 语义逻辑台账、调用链负向测试、CanonicalSourceBundle source hash/span、exact dialogue byte-for-byte、reference identity/order、无 LLM fail-closed、最终 Provider snapshot、QC 三态、Mock/真实依赖扫描、多行业多语言回归，以及隔离 PostgreSQL/Redis/BullMQ/MinIO 根级 `783 passed / 0 skipped / 0 failed`。 |
+
+## ADR-0072：G01 审计交付、敏感历史净化与外部凭据轮换边界
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED`（只覆盖安全处置和审计交付流程，不等于 G01 `ACCEPTED`） |
+| 日期 | 2026-09-24 |
+| 影响范围 | Git 主线、G01 审计分支、验收 PR、密钥治理、审计文档；不授权真实 Provider、Veyra、VPS、部署或生产数据写入 |
+| 上下文 | 旧主线末次提交错误跟踪本地 Control API 启动脚本，并包含 SUB2API 视频、参考图视觉服务和参考图交付签名凭据。即使当前工作区删除文件，旧 PR 的删除差异仍可能展示原值，不能继续作为验收入口。 |
+| 决策 | 立即关闭旧 PR；从旧提交父节点重建等价业务提交，排除凭据脚本并加入精确忽略规则；仅在确认远端主线未变化后使用 `force-with-lease` 更新主线；将 G01 审计分支重放到净化后主线并创建新的验收 PR。Git 仅用于审计交付，独立验收前不得 merge、tag 或部署。 |
+| 外部轮换边界 | 仓库历史净化不能使已经暴露的凭据重新安全。SUB2API 视频密钥、参考图视觉服务密钥和参考图交付签名密钥必须由对应账号/生产环境所有者吊销或轮换，并复核用量日志；本地执行器在没有账号控制台授权时不得伪称已完成。 |
+| 安全证据 | 净化主线为 `1a4d95ba9e79e04540c1f7af61b917053735d1e5`；旧 PR #1 已关闭；当前主线树、审计分支树和 PR 差异不包含已识别原始凭据；`apps/control-api/start-control-api.sh` 已从树中移除并被精确忽略。 |
+| 回滚 | 不恢复含凭据提交或脚本。若业务提交重建有误，以净化前本地安全备份做只读比对，重新生成不含凭据的提交；不得把旧 secret 重新推送。主线回滚也必须保持凭据文件缺失和 ignore guard。 |
+| 验收影响 | G01 可进入独立代码审计，但安全完全关闭仍要求外部轮换证明和账号日志复核。该要求与代码测试相互独立。 |

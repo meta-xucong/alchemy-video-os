@@ -4,6 +4,7 @@ import {
   InternalCreativePlanningQueueMessageSchema,
   InternalEventEnvelopeSchema,
   type ContinuityLevel,
+  type CanonicalReferenceSource,
   type CreativeBriefTargetResolution,
   type CreativeRevisionStatus,
   type DeliveryPlanRevisionId,
@@ -17,18 +18,16 @@ import {
   type CreativeBriefFactContext,
   type FrozenDocumentFact,
   type VideoGenerationInputSnapshot,
+  SemanticDialogueProjectionSchema,
+  type SemanticDialogueProjection,
   type FixedVideoBillingPolicySnapshot,
 } from "@alchemy-video/contracts";
-import { DeterministicFactSelector } from "@alchemy-video/document-intelligence";
 import {
   assertCreativeRevisionTransition,
   assertDeliveryPlanCanCreateProductionRun,
   assertProductionRunCreatable,
   assertProductionRunTransition,
   assertStoryboardPlan,
-  inferVisualReferenceLockPolicies,
-  inferVisualReferenceRoles,
-  parseVisualReferenceAnalysis,
   type StoryboardDurationPolicy,
 } from "@alchemy-video/domain";
 
@@ -39,9 +38,7 @@ import {
   creativeBriefDocumentContexts,
   creativeBriefFactContexts,
   creativeBriefRevisions,
-  documentFacts,
   documentKnowledgeRevisions,
-  documentKnowledgeSections,
   documentConversions,
   documents,
   deliveryPlanRevisions,
@@ -108,12 +105,12 @@ export type ControlStoryboardShotSpec = {
   title: string;
   durationSeconds: number;
   narrativeGoal: string;
-  startState: string;
-  endState: string;
-  transitionSummary: string;
+  startState?: string;
+  endState?: string;
+  transitionSummary?: string;
   referencePolicy: ReferencePolicy;
   dependsOnSequences: number[];
-  continuityNote: string;
+  continuityNote?: string;
   narrativeBeatSequences?: number[];
 };
 
@@ -231,6 +228,8 @@ export type ProductionRunCommandInput = {
   // Optional only for direct repository callers replaying pre-C11.7 history.
   deliveryPlanRevisionId?: DeliveryPlanRevisionId;
   musicPlan?: MusicPlan;
+  /** Private identity of the Pixabay fallback already accepted by Control API preflight. */
+  pixabayFallbackMusicAssetId?: string;
   /** Private billing fact; persisted only inside production_runs.budget_guard. */
   billing?: VideoGenerationInputSnapshot["billing"];
   /** Private fixed-tier policy snapshot for per-segment resolution. */
@@ -251,6 +250,8 @@ export interface CreativePlanningStore {
   findCreativeBriefRevision(workspaceId: string, creativeBriefRevisionId: string): Promise<ControlCreativeBriefRevision | undefined>;
   listProjectStoryboardRevisions(workspaceId: string, projectId: string): Promise<ControlStoryboardRevision[]>;
   findStoryboardRevision(workspaceId: string, storyboardRevisionId: string): Promise<ControlStoryboardRevision | undefined>;
+  listStoryboardDialogueProjections?(workspaceId: string, storyboardRevisionId: string): Promise<SemanticDialogueProjection[]>;
+  resolveCanonicalReferenceSources?(workspaceId: string, projectId: string, sourceAssetIds: string[]): Promise<CanonicalReferenceSource[] | undefined>;
   listProjectProductionRuns(workspaceId: string, projectId: string): Promise<ControlProductionRun[]>;
   createCreativeBriefRevision(input: CreativeBriefCommandInput): Promise<CreativePlanningCommandOutcome<ControlCreativeBriefRevision>>;
   requestCreativePlan(input: PlanningCommandInput): Promise<CreativePlanningCommandOutcome<ControlCreativeBriefRevision>>;
@@ -273,6 +274,24 @@ type StoredSnapshot =
 type StoredCommand = { requestHash: string; snapshot: StoredSnapshot; status: 201 | 202 };
 
 const now = () => new Date().toISOString();
+
+const readDialogueProjection = (snapshot: unknown): SemanticDialogueProjection | undefined => {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return undefined;
+  const parsed = SemanticDialogueProjectionSchema.safeParse(
+    (snapshot as Record<string, unknown>).semantic_dialogue_projection,
+  );
+  return parsed.success ? parsed.data : undefined;
+};
+
+const objectiveReferenceDescription = (metadata: Record<string, unknown> | undefined) => {
+  const analysis = metadata?.visual_analysis;
+  if (!analysis || typeof analysis !== "object" || Array.isArray(analysis)) return undefined;
+  const summary = (analysis as Record<string, unknown>).summary;
+  return typeof summary === "string" && summary.trim() ? summary.trim().slice(0, 5_000) : undefined;
+};
+
+const isCanonicalReferenceMime = (value: unknown): value is CanonicalReferenceSource["mime_type"] =>
+  value === "image/jpeg" || value === "image/png" || value === "image/webp";
 
 const serializeCreativeBrief = (value: typeof creativeBriefRevisions.$inferSelect, documentContexts: ControlPlanningDocumentContext[] = [], factContexts: CreativeBriefFactContext[] = []): ControlCreativeBriefRevision => ({
   id: value.id,
@@ -297,12 +316,12 @@ const serializeShotSpec = (value: typeof storyboardShotSpecs.$inferSelect): Cont
   title: value.title,
   durationSeconds: value.durationSeconds,
   narrativeGoal: value.narrativeGoal,
-  startState: value.startState,
-  endState: value.endState,
-  transitionSummary: value.transitionSummary,
+  ...(value.startState.trim() ? { startState: value.startState } : {}),
+  ...(value.endState.trim() ? { endState: value.endState } : {}),
+  ...(value.transitionSummary.trim() ? { transitionSummary: value.transitionSummary } : {}),
   referencePolicy: value.referencePolicy,
   dependsOnSequences: value.dependsOnSequences,
-  continuityNote: value.continuityNote,
+  ...(value.continuityNote.trim() ? { continuityNote: value.continuityNote } : {}),
   narrativeBeatSequences: value.narrativeBeatSequences,
 });
 
@@ -435,10 +454,13 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
   constructor(
     private readonly sourceAssetResolver?: {
       findAsset(workspaceId: string, assetId: string): Promise<{
+        id?: string;
         projectId: string;
         status: string;
         origin?: string;
         kind?: string;
+        sha256?: string | null;
+        mimeType?: string | null;
         metadata?: Record<string, unknown>;
       } | undefined>;
     },
@@ -482,6 +504,39 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
     return value?.workspaceId === workspaceId ? value : undefined;
   }
 
+  async listStoryboardDialogueProjections(workspaceId: string, storyboardRevisionId: string) {
+    const storyboard = await this.findStoryboardRevision(workspaceId, storyboardRevisionId);
+    if (!storyboard) return [];
+    const packageByShot = new Map(
+      [...this.promptPackages.values()].map((promptPackage) => [promptPackage.shotSpecId, promptPackage]),
+    );
+    return [...storyboard.shotSpecs]
+      .sort((left, right) => left.sequence - right.sequence)
+      .flatMap((shotSpec) => {
+        const projection = readDialogueProjection(packageByShot.get(shotSpec.id)?.capabilitySnapshot);
+        return projection ? [projection] : [];
+      });
+  }
+
+  async resolveCanonicalReferenceSources(workspaceId: string, projectId: string, sourceAssetIds: string[]) {
+    if (!this.sourceAssetResolver) return sourceAssetIds.length === 0 ? [] : undefined;
+    const results: CanonicalReferenceSource[] = [];
+    for (const assetId of sourceAssetIds) {
+      const asset = await this.sourceAssetResolver.findAsset(workspaceId, assetId);
+      if (!asset || asset.projectId !== projectId || asset.status !== "READY" || asset.kind !== "IMAGE") continue;
+      if (typeof asset.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(asset.sha256) || !isCanonicalReferenceMime(asset.mimeType)) return undefined;
+      results.push({
+        asset_id: asset.id ?? assetId,
+        asset_sha256: asset.sha256,
+        mime_type: asset.mimeType,
+        position: results.length,
+        ...(objectiveReferenceDescription(asset.metadata) ? { objective_description: objectiveReferenceDescription(asset.metadata) } : {}),
+      });
+      if (results.length === 7) break;
+    }
+    return results;
+  }
+
   async listProjectProductionRuns(workspaceId: string, projectId: string) {
     return [...this.productionRuns.values()]
       .filter((value) => value.workspaceId === workspaceId && value.projectId === projectId)
@@ -521,24 +576,10 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
     return { kind: "NEW", value, status: 201 };
   }
 
-  async resolveVisualObjectLocks(input: { workspaceId: string; projectId: string; sourceAssetIds: string[]; sourcePrompt?: string }): Promise<KeyVisualObjectLock[]> {
-    if (!this.sourceAssetResolver) return [];
-    const values = await Promise.all(input.sourceAssetIds.map((assetId) => this.sourceAssetResolver!.findAsset(input.workspaceId, assetId)));
-    const roles = inferVisualReferenceRoles({
-      sourcePrompt: input.sourcePrompt ?? "",
-      count: values.length,
-      sourceImageNames: values.map((asset) => typeof asset?.metadata?.filename === "string" ? asset.metadata.filename : undefined),
-      visionAnalyses: values.map((asset) => parseVisualReferenceAnalysis(asset?.metadata?.visual_analysis)),
-    });
-    const lockPolicies = inferVisualReferenceLockPolicies({
-      sourcePrompt: input.sourcePrompt ?? "",
-      roles,
-      sourceImageNames: values.map((asset) => typeof asset?.metadata?.filename === "string" ? asset.metadata.filename : undefined),
-    });
-    return values.flatMap((asset, position) => {
-      if (lockPolicies[position] !== "LOCK_OBJECTS" || !asset || asset.projectId !== input.projectId || asset.status !== "READY") return [];
-      return parseVisualReferenceAnalysis(asset.metadata?.visual_analysis)?.objects ?? [];
-    });
+  async resolveVisualObjectLocks(_input: { workspaceId: string; projectId: string; sourceAssetIds: string[]; sourcePrompt?: string }): Promise<KeyVisualObjectLock[]> {
+    // Objective image observations are not semantic continuity decisions.
+    // Verified Semantic Director locks are projected explicitly by the semantic planning path.
+    return [];
   }
 
   async requestCreativePlan(input: PlanningCommandInput): Promise<CreativePlanningCommandOutcome<ControlCreativeBriefRevision>> {
@@ -943,51 +984,10 @@ const resolveFactContexts = async (
     if (!row || row.revision.status !== "READY") return { kind: "DOCUMENT_KNOWLEDGE_NOT_READY" };
     if (row.revision.markdownSha256 !== context.markdownSha256 || row.assetSha256 !== context.markdownSha256) return { kind: "DOCUMENT_FACT_CONTEXT_INVALID" };
   }
-  const readyRevisionIds = input.documentContexts.map((context) => byConversion.get(context.conversionId)!.revision.id);
-  const factRows = await transaction.select({
-    fact: documentFacts,
-    sectionSequence: documentKnowledgeSections.sequence,
-    locator: documentKnowledgeSections.locator,
-    documentId: documentKnowledgeRevisions.documentId,
-    conversionId: documentKnowledgeRevisions.conversionId,
-  }).from(documentFacts)
-    .innerJoin(documentKnowledgeSections, and(
-      eq(documentKnowledgeSections.workspaceId, documentFacts.workspaceId),
-      eq(documentKnowledgeSections.projectId, documentFacts.projectId),
-      eq(documentKnowledgeSections.id, documentFacts.sectionId),
-    ))
-    .innerJoin(documentKnowledgeRevisions, and(
-      eq(documentKnowledgeRevisions.workspaceId, documentFacts.workspaceId),
-      eq(documentKnowledgeRevisions.projectId, documentFacts.projectId),
-      eq(documentKnowledgeRevisions.id, documentFacts.knowledgeRevisionId),
-      eq(documentKnowledgeRevisions.status, "READY"),
-    ))
-    .where(and(
-      eq(documentFacts.workspaceId, input.workspaceId),
-      eq(documentFacts.projectId, input.projectId),
-      inArray(documentFacts.knowledgeRevisionId, readyRevisionIds),
-    ))
-    .orderBy(asc(documentKnowledgeRevisions.conversionId), asc(documentKnowledgeSections.sequence), asc(documentFacts.createdAt));
-  const frozenRows = factRows.map(({ fact, sectionSequence, locator, documentId, conversionId }) => ({
-    knowledgeRevisionId: fact.knowledgeRevisionId,
-    fact: {
-      fact_id: fact.id,
-      category: fact.category,
-      statement: fact.statement,
-      confidence: fact.confidence,
-      source: { document_id: documentId, conversion_id: conversionId, section_sequence: sectionSequence, locator },
-    },
-  }));
-  const selected = new DeterministicFactSelector().selectForBrief({
-    creativeBriefRevisionId: input.creativeBriefRevisionId,
-    sourceText: input.sourceText,
-    stylePreferences: input.stylePreferences,
-    facts: frozenRows.map((row) => row.fact),
-  });
-  const byFactId = new Map(frozenRows.map((row) => [row.fact.fact_id, row]));
-  const contexts = selected.map((context) => ({ ...context }));
-  if (contexts.some((context) => !byFactId.has(context.fact_id))) return { kind: "DOCUMENT_FACT_CONTEXT_INVALID" };
-  return { kind: "READY", contexts, rows: contexts.map((context) => ({ fact: context.fact, knowledgeRevisionId: byFactId.get(context.fact_id)!.knowledgeRevisionId })) };
+  // New real briefs retain frozen Markdown contexts and do not persist a
+  // keyword-ranked subset of legacy document facts. Historical contexts stay
+  // readable through loadFactContexts, while new rows remain empty.
+  return { kind: "READY", contexts: [], rows: [] };
 };
 
 const loadFactContexts = async (transaction: Pick<PlatformDatabase, "select">, workspaceId: string, creativeBriefRevisionId: string): Promise<CreativeBriefFactContext[]> => {
@@ -1068,6 +1068,81 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
   async findStoryboardRevision(workspaceId: string, storyboardRevisionId: string) {
     const loaded = await loadStoryboard(this.db, workspaceId, storyboardRevisionId);
     return loaded ? serializeStoryboard(loaded.storyboard, loaded.specs, loaded.script?.beats.length ?? 0) : undefined;
+  }
+
+  async listStoryboardDialogueProjections(workspaceId: string, storyboardRevisionId: string) {
+    const specs = await this.db
+      .select({ id: storyboardShotSpecs.id, sequence: storyboardShotSpecs.sequence })
+      .from(storyboardShotSpecs)
+      .where(and(
+        eq(storyboardShotSpecs.workspaceId, workspaceId),
+        eq(storyboardShotSpecs.storyboardRevisionId, storyboardRevisionId),
+      ))
+      .orderBy(asc(storyboardShotSpecs.sequence));
+    if (specs.length === 0) return [];
+    const rows = await this.db
+      .select({
+        shotSpecId: promptPackages.shotSpecId,
+        capabilitySnapshot: promptPackages.capabilitySnapshot,
+        createdAt: promptPackages.createdAt,
+      })
+      .from(promptPackages)
+      .where(and(
+        eq(promptPackages.workspaceId, workspaceId),
+        inArray(promptPackages.shotSpecId, specs.map((spec) => spec.id)),
+      ))
+      .orderBy(desc(promptPackages.createdAt));
+    const latestByShot = new Map<string, SemanticDialogueProjection>();
+    for (const row of rows) {
+      if (latestByShot.has(row.shotSpecId)) continue;
+      const projection = readDialogueProjection(row.capabilitySnapshot);
+      if (projection) latestByShot.set(row.shotSpecId, projection);
+    }
+    return specs.flatMap((spec) => {
+      const projection = latestByShot.get(spec.id);
+      return projection ? [projection] : [];
+    });
+  }
+
+  async resolveCanonicalReferenceSources(workspaceId: string, projectId: string, sourceAssetIds: string[]) {
+    const orderedIds = [...new Set(sourceAssetIds)];
+    if (orderedIds.length === 0) return [];
+    const rows = await this.db
+      .select({
+        id: assets.id,
+        projectId: assets.projectId,
+        status: assets.status,
+        origin: assets.origin,
+        kind: assets.kind,
+        sha256: assets.sha256,
+        mimeType: assets.mimeType,
+        metadata: assets.metadata,
+      })
+      .from(assets)
+      .where(and(
+        eq(assets.workspaceId, workspaceId),
+        eq(assets.projectId, projectId),
+        eq(assets.status, "READY"),
+        eq(assets.kind, "IMAGE"),
+        eq(assets.origin, "USER_UPLOAD"),
+        inArray(assets.id, orderedIds),
+      ));
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const results: CanonicalReferenceSource[] = [];
+    for (const assetId of orderedIds) {
+      const asset = byId.get(assetId);
+      if (!asset) continue;
+      if (typeof asset.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(asset.sha256) || !isCanonicalReferenceMime(asset.mimeType)) return undefined;
+      results.push({
+        asset_id: asset.id,
+        asset_sha256: asset.sha256,
+        mime_type: asset.mimeType,
+        position: results.length,
+        ...(objectiveReferenceDescription(asset.metadata ?? undefined) ? { objective_description: objectiveReferenceDescription(asset.metadata ?? undefined) } : {}),
+      });
+      if (results.length === 7) break;
+    }
+    return results;
   }
 
   async listProjectProductionRuns(workspaceId: string, projectId: string) {
@@ -1163,31 +1238,10 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
     });
   }
 
-  async resolveVisualObjectLocks(input: { workspaceId: string; projectId: string; sourceAssetIds: string[]; sourcePrompt?: string }): Promise<KeyVisualObjectLock[]> {
-    if (input.sourceAssetIds.length === 0) return [];
-    const rows = await this.db.select({ id: assets.id, metadata: assets.metadata }).from(assets).where(and(
-      eq(assets.workspaceId, input.workspaceId),
-      eq(assets.projectId, input.projectId),
-      inArray(assets.id, input.sourceAssetIds),
-      eq(assets.status, "READY"),
-    ));
-    const byId = new Map(rows.map((row) => [row.id, row]));
-    const orderedRows = input.sourceAssetIds.map((assetId) => byId.get(assetId));
-    const roles = inferVisualReferenceRoles({
-      sourcePrompt: input.sourcePrompt ?? "",
-      count: orderedRows.length,
-      sourceImageNames: orderedRows.map((row) => typeof row?.metadata?.filename === "string" ? row.metadata.filename : undefined),
-      visionAnalyses: orderedRows.map((row) => parseVisualReferenceAnalysis(row?.metadata?.visual_analysis)),
-    });
-    const lockPolicies = inferVisualReferenceLockPolicies({
-      sourcePrompt: input.sourcePrompt ?? "",
-      roles,
-      sourceImageNames: orderedRows.map((row) => typeof row?.metadata?.filename === "string" ? row.metadata.filename : undefined),
-    });
-    return orderedRows.flatMap((row, position) => {
-      if (lockPolicies[position] !== "LOCK_OBJECTS") return [];
-      return parseVisualReferenceAnalysis(row?.metadata?.visual_analysis)?.objects ?? [];
-    });
+  async resolveVisualObjectLocks(_input: { workspaceId: string; projectId: string; sourceAssetIds: string[]; sourcePrompt?: string }): Promise<KeyVisualObjectLock[]> {
+    // Objective image observations are not semantic continuity decisions.
+    // Verified Semantic Director locks are projected explicitly by the semantic planning path.
+    return [];
   }
 
   async requestCreativePlan(input: PlanningCommandInput): Promise<CreativePlanningCommandOutcome<ControlCreativeBriefRevision>> {
@@ -1298,12 +1352,12 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
           title: shotSpec.title,
           durationSeconds: shotSpec.durationSeconds,
           narrativeGoal: shotSpec.narrativeGoal,
-          startState: shotSpec.startState,
-          endState: shotSpec.endState,
-          transitionSummary: shotSpec.transitionSummary,
+          startState: shotSpec.startState ?? "",
+          endState: shotSpec.endState ?? "",
+          transitionSummary: shotSpec.transitionSummary ?? "",
           referencePolicy: shotSpec.referencePolicy,
           dependsOnSequences: shotSpec.dependsOnSequences,
-          continuityNote: shotSpec.continuityNote,
+          continuityNote: shotSpec.continuityNote ?? "",
           narrativeBeatSequences: shotSpec.narrativeBeatSequences?.length ? shotSpec.narrativeBeatSequences : [shotSpec.sequence],
           createdAt: timestamp,
           updatedAt: timestamp,
@@ -1499,7 +1553,8 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
           maxAutoRepairCount: 2,
           autoRepairCount: 0,
           budgetGuard: {
-            music_plan: input.musicPlan ?? { mode: "AUTO", style_hint: "" },
+            music_plan: input.musicPlan ?? { mode: "OFF", style_hint: "" },
+            ...(input.pixabayFallbackMusicAssetId ? { pixabay_fallback_music_asset_id: input.pixabayFallbackMusicAssetId } : {}),
             ...(input.billing ? { billing: input.billing } : {}),
             ...(input.fixedBillingPolicy ? { fixed_billing_policy: input.fixedBillingPolicy } : {}),
           },

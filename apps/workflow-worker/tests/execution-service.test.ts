@@ -8,13 +8,13 @@ import {
   LlmFreeformPromptPlanningModel,
   type LlmFreeformPlanningContext,
   type StoryboardCompilerPort,
-} from "@alchemy-video/creative-planning";
+} from "@alchemy-video/creative-planning/mock";
 import type { ControlCreativeBriefRevision, CreativePlanningDraft } from "@alchemy-video/persistence";
 import { UnsupportedVideoGenerationInputError, resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import { InMemoryStoragePort } from "@alchemy-video/storage-client";
 
 import { BoundedDocumentContextReader } from "../src/document-context-reader.js";
-import { CreativePlanningExecutor, resolvePlanningDurationPolicy } from "../src/execution-service.js";
+import { CreativePlanningExecutor, resolvePlanningDurationPolicy } from "../src/mock/execution-service.js";
 import { createProductionTaskRunInputSnapshotFactory } from "../../production-worker/src/video-input-snapshot.js";
 
 const brief: ControlCreativeBriefRevision = {
@@ -223,9 +223,9 @@ test("CreativePlanningExecutor injects freeform visual prompts while preserving 
   for (const [index, promptPackage] of captured.promptPackages.entries()) {
     const generatedPromptParts = promptPackage.capabilitySnapshot.generated_prompt_parts;
     assert.ok(Array.isArray(generatedPromptParts));
-    assert.doesNotMatch(promptPackage.prompt, /PLATFORM_OWNED_/u);
+    assert.doesNotMatch(promptPackage.prompt, /__MOCK_UNSPECIFIED_/u);
     assert.ok(Array.isArray(generatedPromptParts)
-      && generatedPromptParts.every((part): part is string => typeof part === "string" && !part.includes("PLATFORM_OWNED_")));
+      && generatedPromptParts.every((part): part is string => typeof part === "string" && !part.includes("__MOCK_UNSPECIFIED_")));
     if (!Array.isArray(generatedPromptParts)) continue;
     assert.equal(generatedPromptParts[0], "全程无字幕；no subtitles, no captions。字幕只在后期统一添加。");
     const freeformVisualPrompt = index === 0
@@ -254,7 +254,7 @@ test("CreativePlanningExecutor fails closed before completion when the LLM retur
       return undefined;
     },
   }, new LlmFreeformPromptPlanningModel(() => [
-    { duration_seconds: 15, visual_prompt: "PLATFORM_OWNED_CAMERA_SIZE", dialogue_line_sequences: [] },
+    { duration_seconds: 15, visual_prompt: "__MOCK_UNSPECIFIED_CAMERA_SIZE", dialogue_line_sequences: [] },
     { duration_seconds: 15, visual_prompt: "第二段自然语言画面。", dialogue_line_sequences: [] },
   ]));
 
@@ -742,11 +742,11 @@ test("CreativePlanningExecutor persists the compacted prompt used by the product
   assert.equal(snapshot.prompt, promptPackage.prompt);
 });
 
-test("CreativePlanningExecutor keeps the authored sidecar when runtime source-clause compaction changes the prompt", async () => {
+test("CreativePlanningExecutor fails closed instead of deleting authored source clauses", async () => {
   const profile = resolveVideoProviderRuntimeProfile("sub2api");
   const durationPolicy = resolvePlanningDurationPolicy(profile);
   const baseCompiler = new DeterministicStoryboardCompiler();
-  const sourcePrompt = `风格：${"冗余风格事实".repeat(1_700)}\n## 人物与场景\n人物站在入口，保留 @anchor 与原始顺序。`;
+  const sourcePrompt = `风格：${"完整源事实".repeat(1_700)}\n## 人物与场景\n人物站在入口，保留 @anchor 与原始顺序。`;
   const generatedPromptParts = ["Motion timeline: one continuous approach."];
   let captured: CreativePlanningDraft | undefined;
   const compiler: StoryboardCompilerPort = {
@@ -771,7 +771,7 @@ test("CreativePlanningExecutor keeps the authored sidecar when runtime source-cl
   }, new DeterministicPlanningModel(), compiler, undefined, undefined, profile.audioOwner,
   durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
 
-  await executor.execute({
+  await assert.rejects(() => executor.execute({
     brief: { ...brief, sourceText: "入口处的人物。", targetDurationSeconds: 15 },
     event: {
       eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXSCOMP",
@@ -779,116 +779,9 @@ test("CreativePlanningExecutor keeps the authored sidecar when runtime source-cl
       traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXSCOMP",
       correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXSCOMP",
     },
-  });
-
-  assert.ok(captured?.promptPackages?.[0]);
-  const promptPackage = captured?.promptPackages?.[0];
-  if (!promptPackage) return;
-  assert.equal(promptPackage.prompt, [sourcePrompt, ...generatedPromptParts].join(" "));
-  assert.equal(
-    [promptPackage.capabilitySnapshot.source_prompt, ...(promptPackage.capabilitySnapshot.generated_prompt_parts ?? [])].join(" "),
-    promptPackage.prompt,
-  );
-  const snapshot = createProductionTaskRunInputSnapshotFactory("sub2api")({
-    prompt: promptPackage.prompt,
-    sourcePrompt: String(promptPackage.capabilitySnapshot.source_prompt),
-    generatedPromptParts: promptPackage.capabilitySnapshot.generated_prompt_parts as string[],
-    duration: 5,
-    resolution: "720p",
-    ratio: "16:9",
-    referenceAssetIds: [],
-    visualInput: { mode: "TEXT" as const, references: [] },
-    generationSegmentSequence: 1,
-    narrativeBeatSequences: [1],
-  });
-  assert.ok(new TextEncoder().encode(snapshot.prompt).byteLength <= 4_096);
-  assert.ok(snapshot.prompt.includes("## 人物与场景"));
-  assert.equal(snapshot.prompt.includes("冗余风格事实"), false);
+  }), (error) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET");
+  assert.equal(captured, undefined);
 });
-
-test("CreativePlanningExecutor scopes frozen facts to the matching generation segment", async () => {
-  let captured: CreativePlanningDraft | undefined;
-  const executor = new CreativePlanningExecutor({
-    async completeCreativePlan(input) {
-      captured = input.draft;
-      return undefined;
-    },
-  }, new DeterministicPlanningModel());
-
-  await executor.execute({
-    brief: {
-      ...brief,
-      id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXJSEG",
-      sourceText: "展示高铁交通。介绍温泉会所。",
-      targetDurationSeconds: 30,
-      factContexts: [
-        {
-          creative_brief_revision_id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXJSEG",
-          fact_id: "dft_brand_seg",
-          sequence: 1,
-          fact: {
-            fact_id: "dft_brand_seg",
-            category: "BRAND",
-            statement: "云栖度假是项目品牌。",
-            confidence: "EXPLICIT",
-            source: { document_id: "doc_seg", conversion_id: "dcv_seg", section_sequence: 1, locator: "第 1 节：品牌" },
-          },
-          selection_reason: "测试",
-          snapshot_hash: "a".repeat(64),
-        },
-        {
-          creative_brief_revision_id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXJSEG",
-          fact_id: "dft_rail_seg",
-          sequence: 2,
-          fact: {
-            fact_id: "dft_rail_seg",
-            category: "LOCATION",
-            statement: "项目距高铁站 18 公里。",
-            confidence: "EXPLICIT",
-            source: { document_id: "doc_seg", conversion_id: "dcv_seg", section_sequence: 2, locator: "第 2 节：交通" },
-          },
-          selection_reason: "测试",
-          snapshot_hash: "b".repeat(64),
-        },
-        {
-          creative_brief_revision_id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXJSEG",
-          fact_id: "dft_spa_seg",
-          sequence: 3,
-          fact: {
-            fact_id: "dft_spa_seg",
-            category: "AMENITY",
-            statement: "项目提供全天候温泉会所。",
-            confidence: "EXPLICIT",
-            source: { document_id: "doc_seg", conversion_id: "dcv_seg", section_sequence: 3, locator: "第 3 节：配套" },
-          },
-          selection_reason: "测试",
-          snapshot_hash: "c".repeat(64),
-        },
-      ],
-    },
-    event: {
-      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXJXJSEG",
-      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXJXJSEG",
-      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXJXJSEG",
-      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXJXJSEG",
-    },
-  });
-
-  assert.ok(captured?.promptPackages);
-  if (!captured?.promptPackages) return;
-  assert.equal(captured.promptPackages.length, 2);
-  const first = captured.promptPackages[0]!;
-  const second = captured.promptPackages[1]!;
-  assert.ok(first.prompt.includes("云栖度假是项目品牌"));
-  assert.ok(first.prompt.includes("距高铁站 18 公里"));
-  assert.equal(first.prompt.includes("全天候温泉会所"), false);
-  assert.ok(second.prompt.includes("云栖度假是项目品牌"));
-  assert.ok(second.prompt.includes("全天候温泉会所"));
-  assert.equal(second.prompt.includes("距高铁站 18 公里"), false);
-  assert.deepEqual(first.referenceMap.fact_refs, ["dft_brand_seg", "dft_rail_seg"]);
-  assert.deepEqual(second.referenceMap.fact_refs, ["dft_brand_seg", "dft_spa_seg"]);
-});
-
 test("CreativePlanningExecutor semantically replans within Huobao's 8-15 second segment bounds", async () => {
   const profile = resolveVideoProviderRuntimeProfile("sub2api");
   const durationPolicy = resolvePlanningDurationPolicy(profile);

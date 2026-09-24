@@ -8,7 +8,7 @@ import {
   LlmSemanticPlanningError,
   type LlmFreeformPlanningContext,
   type PlanningInput,
-} from "../src/index.js";
+} from "../src/mock.js";
 
 const input: PlanningInput = {
   sourceText: [
@@ -76,7 +76,7 @@ test("LLM decides segment count, duration and ordered dialogue ownership", async
   assert.equal(draft.summary, "共 2 个叙事点，自动合并为 2 个生成片段，总时长 30 秒。");
   assert.equal(draft.shotSpecs[0]!.title, "生成片段 1");
   assert.equal(draft.shotSpecs[0]!.continuityNote, "按分段顺序衔接，不承诺帧级无缝。");
-  assert.doesNotMatch(JSON.stringify(draft), /PLATFORM_OWNED_(?:TITLE|LLM_PLAN_TITLE|LLM_PLAN_SUMMARY)/u);
+  assert.doesNotMatch(JSON.stringify(draft), /__MOCK_UNSPECIFIED_(?:TITLE|LLM_PLAN_TITLE|LLM_PLAN_SUMMARY)/u);
   assert.deepEqual(draft.shotSpecs.map((shot) => shot.dependsOnSequences), [[], [1]]);
 });
 
@@ -240,13 +240,13 @@ test("real LLM segments compile without platform-owned prompt placeholders", asy
       visualPrompt: shot.visualPrompt,
     });
     const generatedPromptParts = compiled.capabilitySnapshot.generated_prompt_parts;
-    assert.doesNotMatch(compiled.prompt, /PLATFORM_OWNED_/u);
-    assert.doesNotMatch(JSON.stringify(compiled.capabilitySnapshot), /PLATFORM_OWNED_/u);
-    assert.doesNotMatch(JSON.stringify(compiled.visualConstraints), /PLATFORM_OWNED_/u);
+    assert.doesNotMatch(compiled.prompt, /__MOCK_UNSPECIFIED_/u);
+    assert.doesNotMatch(JSON.stringify(compiled.capabilitySnapshot), /__MOCK_UNSPECIFIED_/u);
+    assert.doesNotMatch(JSON.stringify(compiled.visualConstraints), /__MOCK_UNSPECIFIED_/u);
     assert.ok(Array.isArray(generatedPromptParts));
     if (!Array.isArray(generatedPromptParts)) continue;
     assert.ok(generatedPromptParts.every((part) => typeof part === "string"));
-    assert.ok(generatedPromptParts.every((part) => !part.includes("PLATFORM_OWNED_")));
+    assert.ok(generatedPromptParts.every((part) => !part.includes("__MOCK_UNSPECIFIED_")));
     assert.equal(
       [compiled.capabilitySnapshot.source_prompt, ...generatedPromptParts].join(" "),
       compiled.prompt,
@@ -254,10 +254,43 @@ test("real LLM segments compile without platform-owned prompt placeholders", asy
   }
 });
 
+test("LLM storyboard boundary defaults stay out of provider prose while authored wording remains", async () => {
+  const visualPrompt = "涂抹护肤霜后，泛红逐渐减轻，终点是更均匀平整的肌肤。";
+  const draft = await new LlmFreeformPromptPlanningModel(() => [{
+    duration_seconds: 15,
+    visual_prompt: visualPrompt,
+    dialogue_line_sequences: [],
+  }]).plan({
+    ...input,
+    sourceText: "本段开始时先展示泛红肌肤，涂抹后泛红逐渐减轻，本段结束时肌肤更均匀平整。",
+    targetDurationSeconds: 15,
+    sourceAssetIds: [],
+  });
+  const shot = draft.shotSpecs[0]!;
+  const compiled = await new DeterministicStoryboardCompiler().compile({
+    ...shot,
+    narrativeGoal: "用户明确要求本段开始时展示泛红肌肤，本段结束时展示均匀平整的肌肤。",
+    generationSegmentSequence: 1,
+    generationSegmentCount: 1,
+    stylePreferences: input.stylePreferences,
+    visualPrompt,
+    motionPlan: shot.motionPlan,
+    motionPlanHash: shot.motionPlanHash,
+    cameraShot: shot.cameraShot,
+  });
+  assert.match(compiled.prompt, /涂抹护肤霜后，泛红逐渐减轻/);
+  assert.match(compiled.prompt, /更均匀平整的肌肤/);
+  assert.doesNotMatch(compiled.prompt, /Begin with: 本段开始/u);
+  assert.doesNotMatch(compiled.prompt, /End with: 本段结束/u);
+  assert.doesNotMatch(compiled.prompt, /Transition: 按分段顺序承接/u);
+  assert.match(compiled.capabilitySnapshot.source_prompt, /本段开始时/);
+  assert.match(compiled.capabilitySnapshot.source_prompt, /本段结束时/);
+});
+
 test("LLM planner fails closed when a visual decision contains a platform placeholder", async () => {
   const invalid = [{
     duration_seconds: 15,
-    visual_prompt: "PLATFORM_OWNED_CAMERA_SIZE",
+    visual_prompt: "__MOCK_UNSPECIFIED_CAMERA_SIZE",
     dialogue_line_sequences: [1],
   }, validDecisions[1]];
   assert.equal(

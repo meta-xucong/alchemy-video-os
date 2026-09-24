@@ -7,7 +7,7 @@ import {
   DeterministicStoryboardCompiler,
   auditCameraCoverage,
   LlmSemanticPlanningError,
-} from "../src/index.js";
+} from "../src/mock.js";
 import { checkOpenMontageSceneVariation, scoreOpenMontageSlideshowRisk } from "../src/openmontage-variation-audit.js";
 import { GenerationSegmentMotionPlanSchema } from "@alchemy-video/contracts";
 

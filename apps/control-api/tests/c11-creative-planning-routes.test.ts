@@ -132,7 +132,11 @@ test("C11 creative planning routes are replay-safe, reviewable, and never create
   const delivery = await readJson(await post(app, `/api/v1/projects/${projectId}/delivery-plan-revisions`, "c11-create-delivery", {
     creative_brief_revision_id: brief.data.id,
     storyboard_revision_id: completed.id,
-    budget_limit: "0",
+    duration_policy: "EXACT",
+    flexible_duration_percent: 0,
+    caption_policy: "OFF",
+    lip_sync_requirement: "OFF",
+    voice_mode: "PLATFORM_GENERIC",
   }));
   const deliveryApproval = await readJson(await post(app, `/api/v1/delivery-plan-revisions/${delivery.data.id}/approve`, "c11-approve-delivery"));
   const confirmedProductionCommand = {
@@ -197,8 +201,8 @@ test("reference planning retries content analysis for READY images without using
       analyze: async ({ assetId }) => {
         calls.push(assetId);
         return assetId === sceneId
-          ? { role: "SCENE" as const, confidence: 0.96, summary: "建筑环境" }
-          : { role: "SUBJECT" as const, confidence: 0.95, summary: "人物主体" };
+          ? { summary: "可见建筑与室内空间。" }
+          : { summary: "可见人物与服装细节。" };
       },
     },
   });
@@ -216,8 +220,9 @@ test("reference planning retries content analysis for READY images without using
   const detail = await assetStore.findProjectDetail("ws_dev_default", projectId);
   const byId = new Map(detail?.assets.map((asset) => [asset.id, asset]));
   assert.equal(byId.get(sceneId)?.metadata.visual_analysis_status, "READY");
-  assert.equal((byId.get(sceneId)?.metadata.visual_analysis as { role?: string } | undefined)?.role, "SCENE");
-  assert.equal((byId.get(subjectId)?.metadata.visual_analysis as { role?: string } | undefined)?.role, "SUBJECT");
+  assert.match(String((byId.get(sceneId)?.metadata.visual_analysis as { summary?: string } | undefined)?.summary), /建筑/);
+  assert.match(String((byId.get(subjectId)?.metadata.visual_analysis as { summary?: string } | undefined)?.summary), /人物/);
+  assert.equal(Object.hasOwn(byId.get(sceneId)?.metadata.visual_analysis as object, "role"), false);
 });
 
 test("production creation retries reference analysis for an approved brief", async () => {
@@ -319,8 +324,8 @@ test("production creation retries reference analysis for an approved brief", asy
       analyze: async ({ assetId }) => {
         calls.push(assetId);
         return assetId === sceneId
-          ? { role: "SCENE" as const, confidence: 0.96, summary: "建筑环境" }
-          : { role: "SUBJECT" as const, confidence: 0.95, summary: "人物主体" };
+          ? { summary: "可见建筑与室内空间。" }
+          : { summary: "可见人物与服装细节。" };
       },
     },
   });
@@ -333,11 +338,12 @@ test("production creation retries reference analysis for an approved brief", asy
   assert.deepEqual(calls, [sceneId, subjectId]);
   const detail = await assetStore.findProjectDetail("ws_dev_default", projectId);
   const byId = new Map(detail?.assets.map((asset) => [asset.id, asset]));
-  assert.equal((byId.get(sceneId)?.metadata.visual_analysis as { role?: string } | undefined)?.role, "SCENE");
-  assert.equal((byId.get(subjectId)?.metadata.visual_analysis as { role?: string } | undefined)?.role, "SUBJECT");
+  assert.match(String((byId.get(sceneId)?.metadata.visual_analysis as { summary?: string } | undefined)?.summary), /建筑/);
+  assert.match(String((byId.get(subjectId)?.metadata.visual_analysis as { summary?: string } | undefined)?.summary), /人物/);
+  assert.equal(Object.hasOwn(byId.get(sceneId)?.metadata.visual_analysis as object, "role"), false);
 });
 
-test("explicit image-purpose text avoids visual analysis and remains authoritative", async () => {
+test("objective image analysis remains independent from image-purpose prose", async () => {
   const store = createInMemoryControlPlaneStore();
   const assetStore = createInMemoryAssetWorkspaceStore(store);
   const taskStore = createInMemoryTaskRunStore(assetStore);
@@ -353,7 +359,7 @@ test("explicit image-purpose text avoids visual analysis and remains authoritati
     assetStore,
     taskStore,
     storage,
-    referenceVisionAnalyzer: { analyze: async () => { calls += 1; return { role: "STYLE" as const, confidence: 0.99 }; } },
+    referenceVisionAnalyzer: { analyze: async () => { calls += 1; return { summary: "可见配色与材质细节。" }; } },
   });
   const brief = await readJson(await post(planningApp, `/api/v1/projects/${projectId}/creative-brief-revisions`, "c11-explicit-vision-brief", {
     source_text: "第1张是场景图，第2张是人物图。",
@@ -364,9 +370,10 @@ test("explicit image-purpose text avoids visual analysis and remains authoritati
   }));
   const planned = await post(planningApp, `/api/v1/creative-brief-revisions/${brief.data.id}/plan`, "c11-explicit-vision-plan");
   assert.equal(planned.status, 202);
-  assert.equal(calls, 0);
+  assert.equal(calls, 2);
   const detail = await assetStore.findProjectDetail("ws_dev_default", projectId);
-  assert.ok(detail?.assets.every((asset) => asset.metadata.visual_analysis_status === "UNAVAILABLE"));
+  assert.ok(detail?.assets.every((asset) => asset.metadata.visual_analysis_status === "READY"));
+  assert.ok(detail?.assets.every((asset) => !Object.hasOwn(asset.metadata.visual_analysis as object, "role")));
 });
 
 test("C11.7 delivery preflight is approval-gated, fail-closed, and event-backed", async () => {
@@ -419,6 +426,12 @@ test("C11.7 delivery preflight is approval-gated, fail-closed, and event-backed"
   assert.equal(storyboardApproval.status, 202);
 
   const deliveryPath = `/api/v1/projects/${projectId}/delivery-plan-revisions`;
+  const implicitDelivery = await post(app, deliveryPath, "c117-implicit-delivery", {
+    creative_brief_revision_id: brief.data.id,
+    storyboard_revision_id: completed.id,
+  });
+  assert.equal(implicitDelivery.status, 400);
+  assert.equal((await readJson(implicitDelivery)).error.code, "VALIDATION_FAILED");
   const command = {
     creative_brief_revision_id: brief.data.id,
     storyboard_revision_id: completed.id,
@@ -427,7 +440,6 @@ test("C11.7 delivery preflight is approval-gated, fail-closed, and event-backed"
     caption_policy: "REQUIRED",
     lip_sync_requirement: "OFF",
     voice_mode: "PLATFORM_GENERIC",
-    budget_limit: "0",
   };
   const createdResponse = await post(app, deliveryPath, "c117-create-delivery", command);
   const created = await readJson(createdResponse);
@@ -454,6 +466,13 @@ test("C11.7 delivery preflight is approval-gated, fail-closed, and event-backed"
   assert.deepEqual(eventsAfterApproval.map((item) => item.event_type), ["delivery_plan.preflight_requested", "delivery_plan.approved"]);
 
   const productionPath = `/api/v1/projects/${projectId}/production-runs`;
+  const implicitMusic = await post(app, productionPath, "c117-production-without-music-mode", {
+    storyboard_revision_id: completed.id,
+    delivery_plan_revision_id: approved.data.id,
+  });
+  assert.equal(implicitMusic.status, 400);
+  assert.equal((await readJson(implicitMusic)).error.code, "VALIDATION_FAILED");
+  assert.equal((await deliveryPreflightStore.findDeliveryPlanRevision("ws_dev_default", approved.data.id)).status, "APPROVED");
   const productionCommand = {
     storyboard_revision_id: completed.id,
     delivery_plan_revision_id: approved.data.id,

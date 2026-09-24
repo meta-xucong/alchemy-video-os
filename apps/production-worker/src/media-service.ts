@@ -24,7 +24,6 @@ import {
   createHandoffFrameObjectKey,
   type StoragePort,
 } from "@alchemy-video/storage-client";
-import { createFixtureHandoffEvaluator } from "./handoff-evaluator.js";
 
 const mediaRuntimeEventTypes = [
   "narration_audio.generation_requested",
@@ -341,7 +340,7 @@ export class MediaRuntimeEventConsumer {
     private readonly storage: StoragePort,
     private readonly runtime: MediaRuntimeClient,
     private readonly input: { consumerName: string; workerId: string; leaseMs: number },
-    private readonly evaluator: HandoffEvaluatorPort = createFixtureHandoffEvaluator(),
+    private readonly evaluator?: HandoffEvaluatorPort,
     private readonly narrationStore?: Pick<NarrationQualityStore, "findNarrationAudioGenerationInput" | "ensureGeneratedNarrationAsset" | "completeNarrationAudioGeneration">,
   ) {}
 
@@ -416,38 +415,51 @@ export class MediaRuntimeEventConsumer {
       if (!this.store.findHandoffReviewInput || !this.store.completeHandoffReview) throw new Error("Handoff review persistence is unavailable.");
       const source = await this.store.findHandoffReviewInput({ event: claim.event });
       if (!source) throw new Error("Handoff review source assets are not ready for evaluation.");
-      if (!this.runtime.extractBoundaryFrames) throw new Error("Media Runtime boundary-frame extraction is unavailable.");
-      const [fromBytes, toBytes] = await Promise.all([
-        readStorageBytes(this.storage, {
-          ...source.fromSourceAsset,
-          expectedObjectKeyPrefix: `${source.workspaceId}/${source.projectId}/${source.fromSourceAsset.id}/`,
-        }),
-        readStorageBytes(this.storage, {
-          ...source.toSourceAsset,
-          expectedObjectKeyPrefix: `${source.workspaceId}/${source.projectId}/${source.toSourceAsset.id}/`,
-        }),
-      ]);
-      const [fromFrames, toFrames] = await Promise.all([
-        this.runtime.extractBoundaryFrames({
-          operationId: mediaOperationId(claim.event.event_id, "from-boundary"),
-          bytes: fromBytes,
-          expectedSha256: source.fromSourceAsset.sha256,
-        }),
-        this.runtime.extractBoundaryFrames({
-          operationId: mediaOperationId(claim.event.event_id, "to-boundary"),
-          bytes: toBytes,
-          expectedSha256: source.toSourceAsset.sha256,
-        }),
-      ]);
-      const evaluation = await this.evaluator.evaluate({
-        fromTailFrame: fromFrames.last.bytes,
-        toHeadFrame: toFrames.first.bytes,
-        continuityHints: {
-          characterCount: 1,
-          sceneSummary: `${source.continuityHints.fromTitle} → ${source.continuityHints.toTitle}`,
-        },
-      });
-      await this.store.completeHandoffReview({ event: claim.event, evaluation, now });
+      if (!this.evaluator) {
+        await this.store.completeHandoffReview({
+          event: claim.event,
+          evaluation: {
+            result: "UNAVAILABLE",
+            reasonCodes: ["EVALUATOR_UNAVAILABLE"],
+            safeSummary: "未配置真实衔接语义评估器；本边界保持未检查，不创建或接受任何自动修复。",
+            evaluatorVersion: "unavailable",
+            retryable: false,
+          },
+          now,
+        });
+      } else {
+        if (!this.runtime.extractBoundaryFrames) throw new Error("Media Runtime boundary-frame extraction is unavailable.");
+        const [fromBytes, toBytes] = await Promise.all([
+          readStorageBytes(this.storage, {
+            ...source.fromSourceAsset,
+            expectedObjectKeyPrefix: `${source.workspaceId}/${source.projectId}/${source.fromSourceAsset.id}/`,
+          }),
+          readStorageBytes(this.storage, {
+            ...source.toSourceAsset,
+            expectedObjectKeyPrefix: `${source.workspaceId}/${source.projectId}/${source.toSourceAsset.id}/`,
+          }),
+        ]);
+        const [fromFrames, toFrames] = await Promise.all([
+          this.runtime.extractBoundaryFrames({
+            operationId: mediaOperationId(claim.event.event_id, "from-boundary"),
+            bytes: fromBytes,
+            expectedSha256: source.fromSourceAsset.sha256,
+          }),
+          this.runtime.extractBoundaryFrames({
+            operationId: mediaOperationId(claim.event.event_id, "to-boundary"),
+            bytes: toBytes,
+            expectedSha256: source.toSourceAsset.sha256,
+          }),
+        ]);
+        const evaluation = await this.evaluator.evaluate({
+          fromTailFrame: fromFrames.last.bytes,
+          toHeadFrame: toFrames.first.bytes,
+          continuityHints: {
+            sceneSummary: `${source.continuityHints.fromTitle} → ${source.continuityHints.toTitle}`,
+          },
+        });
+        await this.store.completeHandoffReview({ event: claim.event, evaluation, now });
+      }
       } else {
       const source = await this.store.findProductionCompositionInput({ event: claim.event });
       if (!source) {

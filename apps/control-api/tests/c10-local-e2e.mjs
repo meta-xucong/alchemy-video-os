@@ -334,11 +334,9 @@ const assertConvertedMaterialFeedsPrivatePlanning = async ({ project, sourceAsse
        WHERE workspace_id = $1 AND project_id = $2 AND creative_brief_revision_id = $3 ORDER BY sequence`,
       ["ws_dev_default", project.id, brief.id],
     );
-    assert.ok(factContexts.rowCount && factContexts.rowCount > 0, "C11.2 did not freeze any READY document facts into the CreativeBrief.");
-    assert.ok(factContexts.rows.some((row) => row.statement.includes(privateMarker)), "C11.2 frozen fact context did not retain the source fact statement.");
-    assert.ok(factContexts.rows.every((row) => /^第 \d+ 节：/u.test(row.locator) && /^[a-f0-9]{64}$/u.test(row.snapshot_hash)), "C11.2 fact context lost source locator or immutable snapshot hash.");
-    assert.ok(prompts.rows.every((row) => !row.prompt.includes("[PROJECT_DOCUMENT_FACTS_")), "C11.2 Workflow fell back to the legacy raw Markdown prompt block after READY facts were available.");
-    assert.ok(prompts.rows.every((row) => row.prompt.includes("FROZEN PROJECT FACT")), "C11.2 PromptPackage did not consume the frozen fact projection.");
+    assert.equal(factContexts.rowCount, 0, "WP-04 must not persist keyword-ranked document facts for new briefs.");
+    assert.ok(prompts.rows.every((row) => row.prompt.includes("[PROJECT_DOCUMENT_FACTS_")), "WP-04 private planning did not receive the frozen Markdown evidence block.");
+    assert.ok(prompts.rows.every((row) => !row.prompt.includes("FROZEN PROJECT FACT")), "WP-04 unexpectedly reintroduced the legacy deterministic fact projection.");
   } finally {
     await database.end();
   }
@@ -369,8 +367,8 @@ const assertPersistedKnowledge = async ({ projectId, sourceAssetId, privateMarke
     assert.equal(revision.status, "READY");
     assert.equal(revision.analysis_quality, "COMPLETE");
     assert.equal(revision.markdown_sha256, revision.source_sha256, "C11.2 knowledge revision did not retain the conversion Markdown SHA.");
-    assert.ok(Number(revision.section_count) > 0, "C11.2 knowledge revision has no persisted sections.");
-    assert.ok(Number(revision.fact_count) > 0, "C11.2 knowledge revision has no persisted facts.");
+    assert.ok(Number(revision.section_count) > 0, "WP-04 structural index has no persisted sections.");
+    assert.equal(Number(revision.fact_count), 0, "WP-04 structural index must not manufacture semantic facts.");
 
     const sections = await database.query(
       `SELECT sequence, locator FROM document_knowledge_sections
@@ -384,9 +382,8 @@ const assertPersistedKnowledge = async ({ projectId, sourceAssetId, privateMarke
        WHERE workspace_id = $1 AND project_id = $2 AND knowledge_revision_id = $3`,
       ["ws_dev_default", projectId, revision.knowledge_revision_id],
     );
-    assert.equal(facts.rowCount, Number(revision.fact_count), "C11.2 fact count does not match the persisted revision.");
-    assert.ok(facts.rows.some((fact) => fact.statement.includes(privateMarker)), "C11.2 did not persist the later source fact used by the planning fixture.");
-    assert.ok(facts.rows.every((fact) => fact.section_id), "C11.2 fact is missing its source section binding.");
+    assert.equal(facts.rowCount, 0, "WP-04 persisted deterministic semantic facts after structural indexing.");
+    assert.equal(facts.rowCount, Number(revision.fact_count), "WP-04 fact count does not match the persisted structural revision.");
 
     const events = await database.query(
       `SELECT event_type, published_at FROM outbox_events

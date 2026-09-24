@@ -89,7 +89,7 @@ test("the real production factory compacts only workflow-verified generated part
   assert.ok(snapshot.prompt.includes("他说：\\\"第一句。\\\"\n第二句。"));
 });
 
-test("the real production factory performs the bounded second source-compaction pass", () => {
+test("the real production factory never deletes authored source clauses", () => {
   const createSnapshot = createProductionTaskRunInputSnapshotFactory("sub2api");
   const sourcePrompt = [
     "风格：现代写实、自然光；人物整体从左向右移动 ## 人物与场景",
@@ -107,7 +107,8 @@ test("the real production factory performs the bounded second source-compaction 
   ].join(" ");
   const generatedPromptParts = ["AUDIO PRIORITY: preserve the declared source dialogue and its timing."];
   const prompt = [sourcePrompt, ...generatedPromptParts].join(" ");
-  const snapshot = createSnapshot({
+  assert.ok(new TextEncoder().encode(sourcePrompt).byteLength > 4_096);
+  assert.throws(() => createSnapshot({
     prompt,
     sourcePrompt,
     generatedPromptParts,
@@ -118,14 +119,7 @@ test("the real production factory performs the bounded second source-compaction 
     visualInput: { mode: "TEXT", references: [] },
     generationSegmentSequence: 1,
     narrativeBeatSequences: [1],
-  });
-
-  assert.ok(new TextEncoder().encode(sourcePrompt).byteLength > 4_096);
-  assert.ok(new TextEncoder().encode(snapshot.prompt).byteLength <= 4_096);
-  assert.match(snapshot.prompt, /核心事实/);
-  assert.match(snapshot.prompt, /Character says: "早上好，小家伙。"/);
-  assert.doesNotMatch(snapshot.prompt, /\*\*声音：\*\*/u);
-  assert.doesNotMatch(snapshot.prompt, /不添加手机提示音/u);
+  }), (error) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET");
 });
 
 test("the real production factory rejects an authored source over the provider ceiling", () => {

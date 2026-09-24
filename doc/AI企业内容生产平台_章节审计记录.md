@@ -29,6 +29,7 @@
 | C12.1 | 语义衔接质检与自动转场修复 | `ACCEPTED` | C12 | 2026-08-17 | 2026-08-17 | 独立复核契约、迁移、Worker/Runtime、活动租约恢复、三段混合转场夹具、隔离 E2E、根回归和公开投影；不触碰 C13-A 外部边界 |
 | C12.2 | OpenMontage 终检与真实成片质量门禁 | `NOT_ACTIVE_IN_THIS_SCOPE` | C12.1 | 2026-08-23 |  | 历史 `READY_FOR_AUDIT` 技术终检证据保留于下方快照；本轮不活动，语义 evaluator/transcriber 仍明确不可用 |
 | C12.4/C12.5 | 连续旁白、音频编排与口播时长 | `IMPLEMENTED_PENDING_AUDIT` | C12.1/C12.7B | 2026-08-30 |  | S01/E02、E03/HB-STORYBOARD-TIMING 8–15 秒、E04/Piper pace、E05 `_full_mix`/ALCHMED8、E06 approved full narration 窗口与 cue-only、E07 uniform transition/xfade、E08 segmented/HyperFrames、E09 source-expressed transcript/subtitle/FFmpeg fallback、E10 approval/formal asset/TimelinePlan identity-window、E11/S08 measured-duration feedback 均为已独立审计的窄切片 `ACCEPTED`；混合/连续非 cut、完整 section windows、Studio/REQUIRED 字幕、中文口音、自动重规划和其它硬门仍 `BLOCKED/DEFERRED`；E12 实测仍阻断总体硬门未收口 |
+| G01 | 反自造语义治理与单一语义所有权 | `READY_FOR_AUDIT` | C11/C12 | 2026-09-24 |  | 代码、本地技术/基础设施门禁、文档配置收口、安全历史净化、ALCHMED 生产 runbook 和 Git 验收交付完成；仅验证 provenance/结构，不证明视觉语义正确或 source 完整覆盖；真实 LLM/Provider、VPS、成片语义 QC、人工质量、生产历史盘点、外部凭据轮换证明和独立签字仍缺证据 |
 | C13 | 发布前审计和部署准备 | `PENDING` | C09/C12/C12.1 |  |  |  |
 
 ### 2.1 当前窄范围审计账本（2026-09-10）
@@ -2759,3 +2760,282 @@ Exit Gate：`ACCEPTED`（仅本窄范围）。Compose 拓扑、固定内部 URL 
 - 审计指出的两项修正已验证：最后既有 duration-only trailing segment 若无 visual span，沿现有 `LlmSemanticPlanningError` fail-closed，不注入 `visualBeatSequenceBySourceSpan.size` 伪造 beat；span `start/end` 必须为 Unicode code-point 边界，中文与 `😀` UTF-16 offset 回归通过。
 - 定向证据（全为本地 fixture/mock）：creative-planning `99/99 pass / 0 fail / 0 skip`；workflow-worker `38/38 pass / 0 fail / 0 skip`；`pnpm --filter @alchemy-video/creative-planning typecheck`、`pnpm --filter @alchemy-video/workflow-worker typecheck`、`git diff --check` 均通过。diff check 仅报告既有换行格式提示，无错误；未调用真实 Provider/TTS/Veyra、网络、VPS 或 Git。
 - 结论：独立审计已通过，本条窄片标记为 `ACCEPTED`；不升级 `E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT` 或 C12.4/C12.5 其它状态；OpenMontage 完整 section 时间窗及其它 deferred/blocked 硬门保留。
+
+## 2026-09-23 场景音乐意图与单曲 AUTO 选曲（IMPLEMENTED_PENDING_AUDIT）
+
+- 审计对象：`doc/AI企业内容生产平台_场景音乐意图与单曲自动选曲最小适配开发文档.md` 及其允许范围内的规划、workflow、persistence 变更；不覆盖此前已存在的其它 planner/LLM 改动，也不将其冒充本条证据。
+- 来源对账：Huobao 仅提供可选 `bgm_prompt`，Seedance 提供显式声音意图，OpenMontage 提供整片单曲与 Pixabay 候选语义；平台同分 tie-break 明确标注 `PLATFORM_OWNED`。
+- 最新修正：删除误入仓库的本地真实凭据启动脚本；同分候选改为逐候选 `sha256(production_run_id + asset_id)`，不使用时间或随机数。
+- 当前证据：creative-planning `93/93`、workflow-worker `38/38`、persistence `83 pass / 12 skip / 0 fail`，typecheck 与 diff check 通过；尚待独立复审和真实 Provider 产物验证，不能标记 `ACCEPTED`。
+
+## 2026-09-23 场景音乐意图与单曲 AUTO 选曲真实验证（IMPLEMENTED_PENDING_AUDIT）
+
+- 独立复审已通过当前修正：同分候选按逐候选 `sha256(production_run_id + asset_id)` 稳定排序；误入仓库的本地凭据启动脚本已删除；无新增公开字段、Provider 协议或网络路径。
+- 真实本地端到端：`VIDEO_PROVIDER=sub2api`、Grok `grok-imagine-video-1.5`、15 秒/480P、两张参考图、字幕关闭；任务 `prd_01M36MHFPT5E3FJAM03C47HAN9` → `SUCCEEDED`，片段 `ACCEPTED`，产物为 H.264 848×480 + AAC、约 15.042 秒。
+- 本项目没有 READY MUSIC 候选，故真实产物只证明无合格音乐时保持 Provider 原生音频且不伪造 BGM；具体曲目选择与 Pixabay fallback 仍由 fixture/行为测试覆盖，不能宣称真实调用已选曲。
+- 状态继续保持 `IMPLEMENTED_PENDING_AUDIT`，不升级总体账本，不将本次真实产物替代人工质量或完整媒体审计。
+
+## 2026-09-23 场景音乐 AUTO 真实成片复测（IMPLEMENTED_PENDING_AUDIT）
+
+- 复用 `30秒高端护肤品商业广告` 项目两张原始参考图与批准分镜 `sbr_01M358EDJXA6E73BGEAQBVE4GG`；新建批准交付计划 `dpr_01M36P95B0GY6SE50D1ZQP7NF4`，目标 30 秒/480P、字幕 OFF，生产命令显式指定 `music_plan.mode=AUTO` 与“高级护肤品纯音乐 BGM”。
+- 真实本地 Sub2API/Grok 任务 `prd_01M36PA2H2EABZG9B3ZGP18GHZ` 的 8/8 段均 `ACCEPTED`，ProductionRun=`SUCCEEDED`；`vvr_01M36PXDQ3D2NJ44JMFNX6X2SH` / `ast_01M36PWN1JNGA0A0Q3M4K86DXE` 成片 `30.336s`、`848x480` H.264/AAC，`has_audio=true`、`music_applied=true`、`unexpected_silence=false`，QC=`NEEDS_ATTENTION`（人工复核项）。
+- QC 实际记录曲目 `bgm-test.wav`（`ast_01M0WPSSXBCJ9QBS0VTK9GC43T`）。该候选仅带 `filename` 与 `audio_role=MUSIC`，没有 mood/style/genre/selection_hint；故本次技术证据确认 AUTO 候选过滤、混音和稳定同分选择已生效，但不能宣称该曲目是高质量语义匹配。中文 brief 与现有英文标签无交集时，当前来源允许的轻量文本匹配会进入稳定 tie-break，这是已知能力边界。
+- 本轮无公开契约、Provider 协议或状态升级；正式 `E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT` 保持不变。人工听感与选择器是否需要进一步升级，留待用户基于成片决定。
+
+## 2026-09-23 AUTO 音乐来源标签接通（IMPLEMENTED_PENDING_AUDIT）
+
+- 任务 `music_tags_01`；冻结契约 `v1.3.1-route-guard`。仅扩大既有 AUTO token match 可见的 Asset metadata 字段；不生成标签，不改评分权重/阈值、公开契约、schema、角色/workspace 边界、时长过滤或 Pixabay 网络路径。
+- 来源：`OpenMontage@4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/pixabay_music.py::PixabayMusic.execute/_parse_bootstrap` 只提供已查询结果的 title/duration/artist 等事实，并无平台 MUSIC tags 或 AUTO 推荐算法；Control API 现有导入已保存 query/title/source title/filename。
+- 实现：`scoreMusicAsset` 沿用原 token match 与 duration-fit，补读 `pixabay_query`、`pixabay_title`、`source_title`、filename、已有分类字段及 `tags` 数组；`Unknown` token 不参与匹配/分类。同分最高候选中，有真实描述标签者优先，之后保留逐候选 `sha256(production_run_id + asset_id)` 稳定排序。
+- 定向证据：Persistence `production-repository.test.ts` `9/9`；Control API `pixabay-music.test.ts` + `pixabay-auto-fallback.test.ts` `12/12`；Persistence/Control API `tsc --noEmit` 均通过；全为 fixture/mock，未调用真实 Pixabay/Provider/网络/Veyra/VPS。最终 `git diff --check` 通过，仅有既有 LF→CRLF 转换提示。
+- 送审边界：仅本音乐来源 metadata 窄片等待独立审计；不升级 E02/S01、E12/R01 或总体 `C12.4/C12.5` 状态。执行者停止写入后由独立审计员复核。
+
+### 2026-09-23 独立审计返工：过滤非字符串 tags
+
+- 按审计意见，`musicMetadataTokens` 展开 metadata 数组时只保留字符串成员；其余标量字段处理不变。新增 persistence 负向夹具含数字和对象，证明它们不增加 token match，也不让候选获得“有标签”优先级。
+- 首轮负向复跑发现两个调用点在进入 helper 前已 spread `tags`，因此数组过滤没有覆盖这些值；修正为将既有 tags 数组整体传入后，负向测试按预期通过。
+- 返工后证据：Persistence `production-repository.test.ts` `10/10`；Control API Pixabay client + AUTO import `12/12`；Persistence/Control API `tsc --noEmit` 通过；`git diff --check` 通过（仅 LF→CRLF 提示）。
+- 仅审计意见指明的类型过滤和测试/证据同步；评分、稳定 tie-break、角色隔离、时长语义及导入/网络路径未改。状态仍 `IMPLEMENTED_PENDING_AUDIT`，等待独立复审。
+
+### 2026-09-23 独立审计返工：过滤文件/运输泛词
+
+- 复测发现 filename `latest-selected-bgm.mp3` 的 `bgm` 与用户 brief 中通用 BGM 用语相等，会获得既有 token match 分并可能压过带真实内容标签的曲目。专项契约新增有限 exact-token 排除集：`unknown`、`bgm`、`music`、`audio`、`latest`、`selected`、`pixabay`、`track`；同一 `musicMetadataTokens` helper 用于评分和已有分类标签判定，不做子串过滤或通用词库。
+- 定向测试新增 filename-only 泛词负向夹具（该候选不因 brief 中这些泛词获得 token 分），`instrumental/ambient/beauty` 真实标签正向夹具，以及泛词不触发同分“已分类优先”的选择回归。既有非字符串 tags 过滤、角色隔离、时长覆盖和逐候选 run+asset SHA-256 稳定 tie-break 同包回归仍覆盖。
+- 最终版本证据：`pnpm --filter @alchemy-video/persistence exec tsx --test tests/production-repository.test.ts` `12/12` pass；`pnpm --filter @alchemy-video/persistence exec tsc --noEmit` 退出 `0`；`git diff --check` 退出 `0`，仅有 LF→CRLF 提示。未调用真实 Provider/Pixabay/网络/Veyra/VPS/Git。
+- 仅本次 helper 的有限泛词过滤、定向测试和文档登记；token 权重、duration-fit、MUSIC/工作区边界、时长过滤、SHA tie-break、Pixabay fallback 原义均不变。返工仍为 `IMPLEMENTED_PENDING_AUDIT`，等待独立复审，不升级 E02/S01、E12/R01 或总体状态。
+
+## 2026-09-23 AUTO 音乐 metadata 泛词过滤真实复测（IMPLEMENTED_PENDING_AUDIT）
+
+- 独立代码审计已通过：`musicMetadataTokens` 对 `unknown/bgm/music/audio/latest/selected/pixabay/track` 做完整 token、小写后的有限排除；评分与分类共用该 helper；原评分权重、duration-fit、MUSIC/时长隔离、run+asset SHA tie-break 和 Pixabay fallback 未变。
+- 定向证据：Persistence `12/12`、Control API Pixabay `12/12`、两包 typecheck 通过；`git diff --check` 通过（仅既有 LF/CRLF 提示）。测试覆盖泛词负向、真实标签正向、分类优先、角色隔离、短曲 fallback 和导入元数据保真。
+- 真实本地 Sub2API/Grok 复测：项目 `prj_01M32DEQ9D8MG79C38G31JE9CZ`、任务 `prd_01M36WB19YDPJS9CXNYNJCV0QD`，8/8 段 `ACCEPTED`、ProductionRun=`SUCCEEDED`；版本 `vvr_01M36X2ZYBRS1KNGV0AS7Y81Y6`、成片资产 `ast_01M36X1S8V713WBE3D4NTNQ4ZF`。
+- 产物 `30.336s`、`848x480` H.264/AAC、48 kHz 双声道，`music_applied=true`、`unexpected_silence=false`；实际曲目为带来源标签的 `freesound_723830_Upbeat-Country-Blues-loop-ver-3.mp3`，证明泛词过滤已进入真实组合路径。QC=`NEEDS_ATTENTION`（true peak `-1.2 dB`），该人工复核项不能写成技术 PASS。
+- 状态仍为 `IMPLEMENTED_PENDING_AUDIT`；不升级 `E02/S01`、`E12/R01` 或总体账本，不执行 Git/VPS 同步。本条不把轻量词面匹配宣称为多模态审美推荐。
+
+## 2026-09-23 AUTO 音乐无内容命中时回退（music-match-20260923；IMPLEMENTED_PENDING_AUDIT）
+
+- 实现前冻结：本轮目标是禁止仅凭 duration-fit/泛词进入 SHA 选择；只有现有 token helper 命中 authored 内容时才允许本地 AUTO。无内容命中后由 Control API 走现有 Pixabay query→duration filter→first result 导入一次，导入仍须满足 MUSIC、MIME、SHA、幂等与时长校验，否则 fail-closed。
+- 来源边界：固定 OpenMontage Pixabay 工具仅提供查询、时长筛选和首条结果，不提供语义推荐。本地匹配只复用已有字段/token helper；不加词典、翻译、评分权重、音频分析或第二路径。查询限现有 `style_hint`、brief `stylePreferences` 与项目名；组合阶段保留现有 `musicIntentHints`，不新增 sidecar 读取 API。
+- 非目标：不改公开 API/schema、Provider 协议、状态、计费、前端、VPS/Git；MANUAL/OFF 不进入 fallback。本文前述 2026-09-23 metadata/tie-break 记录是旧实现历史证据，已被此次选择门 supersede，未构成当前规则的审计通过。
+- 执行证据（修订前计数，已由下方返工证据覆盖）：Persistence `production-repository.test.ts` + `production-repository.native-audio.test.ts` `28/28`，Control API `pixabay-auto-fallback.test.ts` `7/7`；Persistence build、Persistence/Control API `tsc --noEmit`、`git diff --check` 均退出 `0`。本地 fixtures 覆盖内容命中门、单次 fallback/幂等回放、项目名 query 命中、时长不足阻断、MANUAL/OFF；没有真实 Pixabay/Provider/网络/Veyra/VPS 调用。
+- （早期对账，已由下方独立审计返工条目 supersede）执行者已停止写入；当时版本等待主控安排独立只读审计，不得据当时测试证据升级为 `READY_FOR_AUDIT`/`ACCEPTED`，不改变 E02/S01、E12/R01 或总体 C12.4/C12.5 状态。
+
+### 2026-09-23 独立审计返工：Pixabay query 不构成内容命中（IMPLEMENTED_PENDING_AUDIT）
+
+- 审计发现 `musicContentTokenMatchCount` 曾把 `metadata.pixabay_query` 当候选内容，因此导入曲目可因 authored 搜索 query 与 brief/project name 相同而自命中；这是内容门的假阳性。
+- 最小修正仅从内容匹配 token 输入移除 `pixabay_query`；导入 metadata 仍保留该字段供来源审计。Persistence 选择器测试将 query-only 评分改为 duration-fit-only；composition fixture 证明项目名与 query 相同但 track title/其它候选事实不匹配时 fail-closed。
+- Control API 回归：query 命中 brief、首条曲目 title/其它候选事实不命中且时长合格时，一次 import 后返回 `503 PROVIDER_PROTOCOL_INVALID`；实际 title 命中 authored 意图时导入成功并保留幂等回放。不得把 query metadata 持久化误读为命中证据。
+- 最新定向证据：`pnpm --filter @alchemy-video/persistence exec tsx --test tests/production-repository.test.ts tests/production-repository.native-audio.test.ts` 为 `28/28 pass`；`pnpm --filter @alchemy-video/control-api exec tsx --test tests/pixabay-auto-fallback.test.ts` 为 `8/8 pass`；合并运行 `pixabay-auto-fallback.test.ts` + `pixabay-music.test.ts` 为 `15/15 pass`；两包 `tsc --noEmit`、Persistence build 与 `git diff --check` 均退出 `0`。全部为本地 fixture/mock，无真实 Pixabay/Provider/网络/Veyra/VPS 调用。
+- 证据覆盖：query-only 导入阻断、实际标题命中导入成功、一次导入及幂等回放、时长不足阻断、MUSIC 角色/元数据保留、MANUAL/OFF 不调用。独立审计复核通过后，本窄片才可提交 `READY_FOR_AUDIT`；不升级 `ACCEPTED`、E02/S01、E12/R01 或总体 C12.4/C12.5。
+
+### 审计回流：移除平台自造的导入后内容门（IMPLEMENTED_PENDING_AUDIT）
+
+- 上一条把 query-only 导入结果阻断的行为已 superseded。来源边界复核确认 OpenMontage 的 Pixabay query→duration filter→first result→download 已决定并取得首条结果；Control API 不应再叠加 title/content 命中门。
+- Control API 导入后现只调用既有 `isUsableMusicAsset` 校验 MUSIC 角色、对象/MIME/SHA 与时长条件。`pixabay_query` 不参与本地内容匹配，因此 query-only 本地候选仍触发 fallback；来源首条曲目 title 不命中但资产/时长合格时接受。
+- 本轮定向验证：`pnpm --filter @alchemy-video/persistence exec tsx --test tests/production-repository.test.ts tests/production-repository.native-audio.test.ts`=`28/28`；`pnpm --filter @alchemy-video/control-api exec tsx --test tests/pixabay-auto-fallback.test.ts`=`8/8`；Persistence/Control API `tsc --noEmit` 和 `git diff --check` 均退出 `0`。新增 fixture 覆盖 query-only local candidate fallback，以及非匹配首条 title 在现有资产/时长校验合格时仍成功。未调用真实 Pixabay/Provider/网络/Veyra/VPS；状态仍 `IMPLEMENTED_PENDING_AUDIT`，不得升级 `ACCEPTED`。
+
+### 审计 BLOCKED 返修：固化 fallback 已选 asset identity 到组合选择（IMPLEMENTED_PENDING_AUDIT）
+
+- 审计发现仅修正 Control API post-import gate 不足：最终 Persistence composition 仍把已下载的 Pixabay 首条资产当普通本地候选，因 `pixabay_query` 被正确排除而无 content token，导致 AUTO 组合选曲为空。
+- 最小修正：Control API 对本次通过既有 `isUsableMusicAsset` + target duration 检查的 import result，记录其 exact asset ID；该私有事实存入现有 `production_runs.budget_guard`，随 `ProductionRunCommandInput` 进入 final composition。未新增公开 API/schema/状态/Provider 协议。
+- Composition 仅对该 exact fallback identity 使用既有 MUSIC/workspace object/MIME/SHA/duration candidate filters 后接受；`selectAutoMusicAsset` 的其他本地候选仍必须经过 `hasMusicContentMatch`，`pixabay_query` 从未恢复为内容证据。
+- 定向覆盖：query-only Pixabay import identity 被传入 run 创建并在最终 composition fixture 成功消费；相同幂等请求复用既有 run，不重复下载/导入；fallback short track 在前置目标时长校验 fail-closed，composition 的指定短资产 fixture 也阻断。没有 fallback identity 的本地候选仍必须 content match。
+- 定向证据：Persistence `production-repository.test.ts` + `production-repository.native-audio.test.ts` `29/29 pass`；Control API `pixabay-auto-fallback.test.ts` `8/8 pass`；Persistence build、Persistence/Control API `tsc --noEmit`、`git diff --check` 均退出 `0`。全为本地 fixture/mock；不执行真实 Provider/Pixabay/网络/Veyra/VPS/Git。
+
+### 2026-09-23 真实护肤品项目复测（仅有盖瓶子/盒子参考图；IMPLEMENTED_PENDING_AUDIT）
+
+- 独立审计 r3 已通过；状态仍保持 `IMPLEMENTED_PENDING_AUDIT`，不升级 `ACCEPTED`。本地完整栈重启后使用真实 Sub2API/Grok 30 秒、480P 运行 `prd_01M37BBA4PEK340490HJESPNBA`，3/3 片段 `ACCEPTED`，合成 `SUCCEEDED`。
+- 本次新建 brief 只绑定有盖瓶子/盒子资产 `ast_01M32DFW9FWVB3TRRF6Y43CPVF`；历史无盖图片 `ast_01M32DH0X2C8XJSYSQZFK6B900` 未进入本次 brief/input snapshot。生成结果抽帧显示盒子、完整有盖瓶子、护肤霜涂抹皮肤和实验室/城市画面，未要求或推断瓶盖打开后的内部结构。
+- 成片资产 `ast_01M37BKBMG8E1V24SMS1N29P36`，VideoVersion `vvr_01M37BMBSA4H2TYCXK6EF8H1DP`；`ffprobe-static` 实测 MP4 为 H.264 848×480、30.126s，AAC 48kHz 双声道，4,181,164 bytes。Composition QC=`NEEDS_ATTENTION` 仅表示既有人工质量复核门，不代表生成失败。
+- AUTO BGM 真实落地为 Pixabay 首条合格结果“武侠打斗纯音乐”（artist=`we-o_rd35ogy3mky6nohgw`），`music_applied=true`，integrated LUFS=`-16.3`，true peak=`-1.2dB`，无 unexpected silence。该结果证明 fallback/组合身份链已闭合，但不把 OpenMontage 首条选择宣称为语义审美推荐；曲目是否适合护肤广告仍需人工判断。
+- 本轮未执行 GitHub/VPS 同步；正式 `E12/R01=BLOCKED` 与总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT` 保持原值。
+
+### 2026-09-23 真实护肤片反馈修正（IMPLEMENTED_PENDING_AUDIT）
+
+- 来源核对确认：Pixabay 实际请求 query 为 authored 的“高级护肤品纯音乐 BGM”，返回“武侠打斗纯音乐”是 OpenMontage `query→duration filter→first result` 的来源语义；未新增语义评分、标题硬过滤或第二曲库。
+- `packages/creative-planning/src/index.ts` 仅在 LLM 壳同时使用三个精确平台默认值时，不再把“本段开始/本段结束/按分段顺序承接”序列化进 provider prompt；用户在 source prompt 中明确写出的同名内容仍保留。
+- `apps/workflow-worker/src/semantic-planning-client.ts` 补充源文已有前后变化时保留起始状态、可见动作和明确终点的自然语言规则；不添加源文没有的功效或视觉算法。
+- 定向证据：creative-planning `94/94`、workflow-worker semantic planning `4/4`，两包 typecheck 通过，`git diff --check` 通过；均为本地 fixture/mock，未调用真实 Provider/Pixabay/VPS。本轮状态仍 pending，不升级 `ACCEPTED`。
+
+## G01 反自造语义治理与单一语义所有权
+
+- 当前状态：`READY_FOR_AUDIT`
+- 当前工作包：`WP-00–WP-12 已实现；本地跨层证据已完成，等待独立审计与真实外部/质量证据`
+- 主执行方案：`AI企业内容生产平台_反自造逻辑治理与源仓库收敛完整优化方案.md`
+- 决策：ADR-0071
+- 基线：`main@36a7ceba08f2c62fbf9f78e77e56c6973ce5f07c`，与 `origin/main` 为 `+0/-0`；开工前已有 14 个 tracked 修改、1 个 tracked 删除及 3 份未跟踪治理文档，后续不得覆盖或归因错误。
+- 测试基线：`378 passed / 17 skipped / 0 failed`；该计数只证明既有测试无失败，不代表 P0/P1 已完成。
+- 目标：停止真实路径中的关键词、语义正则、手工评分、默认创作决定、自动批准、source 改写、伪修复和伪 QC；建立唯一 LLM Semantic Director 与只校验 provenance/结构的 checker。
+- 保留：用户授权的 BGM 智能匹配、身份/权限/API/队列/持久化/存储/幂等/恢复/Provider mapper/技术校验等必要薄壳。
+- 开工硬门：不得新增自然语言词表、行业特例、semantic score、unknown→默认类别、静默 fallback、未执行即成功或未检查即通过。
+- 当前外部边界：不调用真实 Provider/TTS/Veyra，不改 VPS/生产数据库，不 commit/push/deploy。
+- WP-00 Exit Gate：总控、ADR、语义台账和工作区基线一致；每项 P0/P1 均有调用链、目标处置和工作包；`git diff --check` 通过后才进入 WP-01。
+
+### G01 / WP-01 止血与真实性门禁审计
+
+- 工作包结果：`IMPLEMENTED / LOCAL_TECHNICAL_GATE_PASS`（不等于 G01 或平台 `ACCEPTED`）。
+- Source 保真：移除 `sourceCompactionPatterns` 及所有 source 子句删除路径；只允许整项省略有 sidecar provenance 的 generated parts，source 自身超限返回 `PROMPT_BUDGET`。
+- 用户控制：Studio 只创建 brief、请求 plan 并展示待复核 storyboard；不再自动 approve storyboard、delivery plan、narration 或 production run，也不在 Vue 中重解析旁白。
+- 默认行为：MusicPlan 历史缺省从 `AUTO` 改为 `OFF`；新显式 mode 契约留待 WP-09 完成。
+- 连续性真实性：BLEND/BRIDGE 只记录为 `NEEDS_ATTENTION`；不再创建无 task/asset 的 `ACCEPTED` repair，也不再同事务发 requested/succeeded；只有全部边界真实 PASS 才请求合成。
+- QC 真实性：未执行的 overlay/asset/text 和 promise-preservation 检查使用 `null/UNAVAILABLE`，不再以 false/CHECKED 冒充结果。
+- 代码审计：真实代码中无 source compaction helper、无 Studio 自动审批 key、无生产路径 `characterCount: 1`、无新缺省 AUTO；历史事件 schema 与 fixture 中的字符串只读保留。
+- 测试：Provider Video 70、Domain 70、Contracts 84、Production Worker 72、Persistence 92（12 skip）、Studio 43 + typecheck、Media Runtime 147、Control API 94（1 skip），合计 `672 passed / 13 skipped / 0 failed`。
+- 静态门：`pnpm contracts:generate` 已刷新生成契约；`git diff --check=0`，只有既有 LF/CRLF 提示。
+- 外部边界：未调用真实 Provider/TTS/Veyra，未修改生产数据库/VPS，未 commit/push/deploy。
+- 下一包准入：允许进入 WP-02 最小 provenance 契约；不得把旧关键词 parser 作为兼容 fallback。
+
+### G01 / WP-02 最小 provenance 契约审计
+
+- 工作包结果：`IMPLEMENTED / LOCAL_TECHNICAL_GATE_PASS`（不等于 G01 或平台 `ACCEPTED`）。
+- 新契约：`packages/contracts/src/semantic-provenance.ts`。
+- 输入：`CanonicalSourceBundle` 冻结 source text/hash、文档内容/hash、参考图 canonical order/hash、用户决定/hash、Provider 硬能力和目标时长。
+- 证据：`SOURCE_TEXT` 使用精确 start/end/quote；`DOCUMENT` 使用 document/conversion/hash/locator/quote；`REFERENCE_ASSET` 使用 asset/hash；`USER_DECISION` 使用 decision/field/value hash。
+- 输出：`SemanticDirectorDecision` 只包含 exact dialogue、reference usage、自然语言 segment decision、evidence refs 和 unresolved items；不包含必填 pose、camera、opening/closing、transition 或 complexity。
+- 结构门：引用、dialogue、segment 和 reference identity 唯一；segment 顺序连续；总时长精确；台词全量、单次、原顺序分配；blocking unresolved 禁止 READY；strict schema 拒绝 legacy 假创作字段。
+- 兼容：该契约当前为内部导出，不改变公开 OpenAPI 路由或数据库；旧 schema 保持历史读取，切换由后续工作包完成。
+- 测试：Contracts `48 passed / 0 failed`；`tsc` build 通过；tracked contract drift 测试通过；`git diff --check=0`。
+- 下一包准入：WP-03 实现验证器与 LLM Director；验证器不得包含任何自然语言关键词、类别、评分或默认创作判断。
+
+### G01 / WP-03 Semantic Director 与证据验证器审计
+
+- 工作包结果：`IMPLEMENTED / LOCAL_TECHNICAL_GATE_PASS`（不等于 G01 或平台 `ACCEPTED`）。
+- Builder：`createCanonicalSourceBundle` 只计算 source/document/user-decision 哈希并保持参考图顺序，不做内容分类。
+- Verifier：只校验 schema、SHA、source exact span、document exact quote、asset/user-decision identity、台词逐字与源顺序、reference canonical order、Provider 时长和 READY/BLOCKED 门；无关键词、行业词表、评分或默认类别。
+- Client：`OpenAiCompatibleSemanticDirector` 发送完整 bundle，要求严格 JSON object；旧数组、Markdown fence、非法 URL、Provider 拒绝、超时或证据不符均失败；无 deterministic fallback。
+- BLOCKED 语义：允许无 segment，但必须有 blocking unresolved；READY 必须有完整 segment、时长闭合、全部台词单次原序分配且无阻断项。
+- 通用性：新 Director system prompt 不含护肤、房地产、保险、温泉、道具等行业示例；旧 planner 中护肤例句已替换为抽象的起点—变化—终点原则。
+- 测试：Contracts `49/49`、Creative Planning `100/100`、Workflow Worker `43/43`；Workflow build 通过；超时和无配置负向测试通过。
+- 静态审计：新 verifier 的命中仅为提示词中的“禁止 keyword/score/fallback”，实现中不存在语义词表或回退调用；`git diff --check=0`。
+- 集成边界：新 Director 尚未替换文档、参考图、台词和 planner 的旧入口；这些切换分别由 WP-04–WP-07 完成，切换前不得宣称真实主链已收敛。
+
+
+### G01 / WP-04 文档理解与事实选择切换审计
+
+- 工作包结果：`IMPLEMENTED / LOCAL_TECHNICAL_GATE_PASS`（不等于 G01 或平台 `ACCEPTED`）。
+- 真实 Document Worker 显式注入 `StructuralDocumentIndexAdapter`；`DocumentKnowledgeExecutor` 不再默认创建 deterministic analyzer。新 knowledge revision 只持久化章节、locator、表格/视觉缺口等结构事实，`document_facts` 必须为空。
+- Control API 与 Drizzle brief 创建不再实例化或调用 `DeterministicFactSelector`，新 `creative_brief_fact_contexts` 保持为空；Workflow 在未显式注入 legacy selector 时直接读取冻结 Markdown，不以 bigram、类别权重或固定数量筛选内容。
+- 历史 deterministic analyzer/selector 仅保留旧测试与兼容读取，生产入口扫描未发现 app 实例化；其物理迁移和删除留待 WP-11，不得作为真实 fallback。
+- E2E 断言已同步为结构索引语义：章节必须存在、事实计数必须为 0、私有 PromptPackage 消费冻结 Markdown、不得出现 `FROZEN PROJECT FACT` 投影。该脚本已通过 `node --check`；完整本地栈执行留到 WP-12 环境回归。
+- 定向测试：document-intelligence `6/6`、document-worker `12/12`、workflow-worker `43/43`、Control API `94 pass / 1 skip`、Persistence `92 pass / 12 skip`；合计 `247 passed / 13 skipped / 0 failed`。五个相关包 `tsc --noEmit` 通过，`git diff --check=0`。
+- Skip 均为既有 PostgreSQL/BullMQ/服务环境门，不计作行为通过；本包未调用真实 Provider、TTS、Veyra 或网络，未修改 VPS/生产数据库，未 commit/push/deploy。
+- 下一包准入：WP-05 参考图用途、canonical order 与对象事实切换。不得以旧 role 关键词或对象正则作为 fallback。
+
+
+### G01 / WP-05 参考图用途、canonical order 与对象事实切换审计
+
+- 工作包结果：`IMPLEMENTED / LOCAL_TECHNICAL_GATE_PASS`（不等于 G01 或平台 `ACCEPTED`）。
+- 新增 `SemanticReferenceProjection`：只允许从已验证 Semantic Director decision 为指定 segment 投影 asset、Provider role、usage 和 evidence IDs；source hash 不匹配、引用缺失、顺序越界时 fail-closed。
+- 图片分析器改为客观观察：只描述可见内容和对象，不再输出 SUBJECT/SCENE/STYLE、用途置信度、控制维度或连续性策略。历史 role/confidence 仅兼容读取，不再作为新真实任务依据。
+- 直生成只使用用户显式 Shot binding：FIRST_FRAME→HANDOFF、SUBJECT→SUBJECT、STYLE→STYLE；source prose、文件名和图片内容不再改写 binding，也不生成对象锁。
+- 自动生产必须消费 PromptPackage 中与 source hash 对齐的 `semantic_reference_projection`；REFERENCE_SET 缺少投影、asset 不存在或投影顺序偏离 canonical source order 时保持 `WAITING`。Handoff 固定在 position 0，用户参考图按投影/原顺序跟随。
+- Task Worker 删除 HANDOFF/SCENE/SUBJECT/STYLE 二次优先级排序，只接受冻结的连续 position；Provider URL、role、asset ID 与 prompt image N 共用同一顺序。
+- Provider compiler 不再从 source 正则提取道具、左右手或 transfer；只有显式传入、已验证的 `visualObjectLocks` 才能生成对象约束。
+- 真实路径静态扫描未发现 `inferVisualReferenceRoles`、`inferVisualReferenceLockPolicies`、`extractKeyVisualObjectLocks`、`roleTerms`、`detectTransfer` 或 reference role sort 的调用。旧 domain helper 仅留待 WP-11 物理退役，不得作为 fallback。
+- 定向测试：contracts `49/49`、domain `70/70`、reference-analysis `2/2`、creative-planning `101/101`、provider-video `70/70`、task-worker `49 pass / 5 skip`、Control API `94 pass / 1 skip`、Persistence `92 pass / 12 skip`；合计 `527 passed / 18 skipped / 0 failed`。相关包 typecheck 与 `git diff --check=0`。
+- Skip 均为既有 PostgreSQL/BullMQ/外部服务环境门，不计作行为通过；本包未调用真实 Provider、未修改 VPS/生产数据库，未 commit/push/deploy。
+- 下一包准入：WP-06 exact dialogue/narration 单一 owner。下游不得重新从 prose 提取台词。
+
+
+### G01 / WP-06 exact dialogue 与 narration 单一 owner 审计
+
+- 工作包结果：`IMPLEMENTED / LOCAL_TECHNICAL_GATE_PASS`（不等于 G01 或平台 `ACCEPTED`）。
+- 新增 `SemanticDialogueProjection`，每条 dialogue 固定 `dialogue_id + exact_text + evidence_id + source span`；投影要求 source quote 与 exact text 一致、ID 唯一且只属于已验证 segment。
+- Provider compiler 删除 source prose 台词正则，真实路径只消费显式 `dialogueLines`；source 中即使出现引号也不会自动生成对白合同。
+- Control API 的真实平台旁白门只读取 storyboard PromptPackage 中的 exact dialogue projection；缺失 projection 或片段不完整时阻断。Mock-only 分支保留 deterministic transcript fixture，生产 real profile 不可达。
+- Production composition 优先读取 semantic dialogue projection；新 DeliveryPlan 不再从 brief 或 legacy motion cue 回推旁白。`deriveTranscriptScript` 仅保留 Mock/pre-DeliveryPlan 历史读取。
+- 原生 Provider audio 明确绕过平台 narration；平台 narration 仍要求已批准 TimelinePlan。没有 exact projection 时不会自行合成。
+- 验证：Contracts `49/49`、Creative Planning `102/102`、Provider Video `72/72`、Workflow `46/46`、Persistence `92 pass / 12 skip`、Control API `94 pass / 1 skip`、Task Worker `49 pass / 5 skip`；合计 `504 passed / 18 skipped / 0 failed`，`git diff --check=0`。
+
+### G01 / WP-07 真实分段与创作规划切换审计
+
+- 工作包结果：`IMPLEMENTED / LOCAL_TECHNICAL_GATE_PASS`（不等于 G01 或平台 `ACCEPTED`）。
+- 新增真实模式专用 `SemanticCreativePlanningExecutor`：从 Canonical Source Bundle 调用 `ProvenanceCheckedSemanticDirector.requireExecutable`，每个 segment 的顺序、时长、visual decision、dialogue IDs、reference IDs 和 evidence 均来自 provenance-checked decision；该检查不证明视觉语义蕴含或 source 全量覆盖。
+- `apps/workflow-worker/src/index.ts` 已按 runtime mode 物理分支：Mock 使用旧 deterministic planner/compiler；真实 profile 使用 Semantic Director executor。真实分支没有 fallback。
+- 真实计划不执行 ACTION/STATE/CONTROL 词表、scene-change regex、字符容量分段、camera derivation、对象 transfer 或固定 narrative beat 算法。
+- Canonical references 由 Persistence 按 sourceAssetIds 原序、SHA、MIME 和 READY 用户图片解析；文档内容由冻结 Markdown reader 提供，无法解析即 fail-closed。
+- BLOCKED/unresolved decision 不持久化 storyboard；Provider 能力边界仅作为硬参数验证，不作为本地创作算法。
+- 验证同 G03，总计 `504 passed / 18 skipped / 0 failed`；Creative Planning 新增 exact dialogue/reference projection 与无 fallback 行为测试。
+
+### G01 / WP-08 schema、pure projector 与 Prompt 预算审计
+
+- 工作包结果：`IMPLEMENTED / LOCAL_TECHNICAL_GATE_PASS`（不等于 G01 或平台 `ACCEPTED`）。
+- Storyboard 的 start/end state、transition summary、continuity note 改为可选；真实 executor 不再填 `PLATFORM_OWNED_*`、motion plan、伪 pose、camera 或 transition。数据库旧 non-null 列仅写空字符串作为存储兼容，公共序列化会省略。
+- Provider compiler 只拼接 verified visual decision、exact dialogue、canonical reference roles 和已认证字幕/音频指令；不再理解完整 source prose。
+- `sourceCompactionPatterns` 与 source 子句删除路径不存在；source 保持 byte-for-byte。可证明 provenance 的可选 generated object prose可省略，但 exact dialogue、reference roles 和 required caption directive 任何一项放不下即 `PROMPT_BUDGET`。
+- OpenAPI/AsyncAPI 与 JSON Schema 已重新生成并通过导出一致性测试。
+- 静态审计：真实 Workflow 仅 real branch 使用 `SemanticCreativePlanningExecutor`；deterministic constructor 只在 Mock branch。source compaction 扫描为空；下游 dialogue parser 命中仅为 Mock-only/历史读取兼容。
+- 验证同 G03，总计 `504 passed / 18 skipped / 0 failed`，相关 build/typecheck 与 `git diff --check=0`。
+- 下一包准入：WP-09 用户显式决定与 BGM 例外治理。缺失音乐模式不得隐式 AUTO，审批不得由前端自签。
+
+
+### G01 / WP-09 用户显式决定与 BGM 例外治理审计
+
+- 工作包结果：`IMPLEMENTED / LOCAL_TECHNICAL_GATE_PASS`（不等于 G01 或平台 `ACCEPTED`）。
+- 新交付计划命令必须显式提交时长策略、浮动比例、字幕、口型和声音模式；`EXACT` 只允许 0% 浮动。删除未持久化、却以固定估算 `0` 参与预检的伪 `budget_limit` 语义；真实费用继续由既有冻结计费策略与结算链负责。
+- 新生产命令必须显式提交 `music_plan.mode`，缺失 AUTO/MANUAL/OFF 任一明确选择即 `VALIDATION_FAILED`。历史快照缺失 mode 只在读取边界归一为 `OFF`，不得触发 AUTO。
+- Studio 自动规划只运行到 `READY_FOR_REVIEW`；自动函数内没有 storyboard approve、delivery approve 或 production create。页面新增两次独立用户确认：先逐段确认分镜并创建交付计划，再确认交付策略与音乐模式后才开始制作。任何设置、音乐或分镜变化都会撤销确认勾选。
+- `musicMetadataTokens`、内容命中、duration-fit、标签优先、`scoreMusicAsset`、`selectAutoMusicAsset` 与稳定 hash tie-break 整套均登记为用户明确授权的 `PLATFORM_OWNED` 能力；只在显式 AUTO 运行，不宣称为 OpenMontage、Pixabay、Huobao 或 Seedance 原生推荐算法。
+- 静态扫描未发现 `MusicPlanSchema.default`、隐式 AUTO、交付 `budget_limit` 或 `estimatedAmount: "0"` 的运行路径；自动规划代码块不包含任何批准或生产命令。
+- 定向测试：Contracts `49/49`、Persistence `92 pass / 12 skip`、Control API `94 pass / 1 skip`、Studio Web `43/43`；合计 `278 passed / 13 skipped / 0 failed`。Contracts 生成/构建、Persistence 构建、Control API typecheck、Nuxt typecheck 和 `git diff --check=0`。
+- Skip 均为既有 PostgreSQL/BullMQ/外部服务环境门，不计作行为通过；本包未调用真实 Provider、Pixabay 网络、Veyra、VPS 或生产数据库，未 commit/push/deploy。
+- 下一包准入：WP-10 连续性、媒体和 QC 真实性。没有真实 evaluator/task/artifact 不得记录 repair succeeded；未检查项不得写 false/CHECKED/PASS。
+
+
+### G01 / WP-10 连续性、媒体与 QC 真实性审计
+
+- 工作包结果：`IMPLEMENTED / LOCAL_TECHNICAL_GATE_PASS`（不等于 G01 或平台 `ACCEPTED`）。
+- Production Worker 不再默认实例化 fixture handoff evaluator。真实部署未注入 evaluator 时，handoff review 直接持久化 `UNAVAILABLE/EVALUATOR_UNAVAILABLE`，不读取视频、不提取边界帧、不创建 transition repair，也不记录任何 succeeded/ACCEPTED。
+- `decideContinuityRepair` 对 PASS 仅记录 GOOD；BLEND/BRIDGE_REQUIRED 只记录 `NEEDS_ATTENTION`，`shouldCreateRepair=false`。Persistence 未发现 `transition_repair.succeeded` 或新 `ACCEPTED` 修复写入；不可用/失败边界继续使用 direct cut 并公开需关注状态。
+- Media Runtime Final Review 不再调用固定 CLIP 类别作为语义验收，也不再调用手工 0.75/0.9/1.15 台词覆盖算法宣称台词正确。缺少 source-aligned multimodal evaluator 或经认证多语言比对器时，`semantic_evaluation`/`transcript_comparison` 为 `UNAVAILABLE`。
+- 未执行的 overlay、asset、text-readability 检查均为 `null`；promise preservation 为 `UNAVAILABLE`，runtime swap/silent downgrade 为 `null`。技术 QC 继续保留容器、尺寸、时长、帧、音轨、静音与响度等实际测量。
+- 定向测试：Media Runtime + OpenMontage adapter `158 passed / 7 subtests passed`，Production Worker `73/73`，Domain `70/70`，Persistence `92 pass / 12 skip`；合计 `393 passed / 12 skipped / 0 failed`，另 `7 subtests passed`。Python compile、Production Worker typecheck/build 与 `git diff --check=0`。
+- Skip 均为既有 PostgreSQL/BullMQ 环境门，不计作行为通过；本包没有安装语义模型、调用真实 Provider/TTS、VPS 或生产数据库，未 commit/push/deploy。
+- 下一包准入：WP-11 物理退役与重复实现收敛。仅历史读取/Mock 需要的代码必须移出真实生产模块或清晰隔离，且不得改变历史可读性。
+
+
+### G01 / WP-11 Mock、legacy wire 与重复实现退役审计
+
+- 工作包结果：`IMPLEMENTED / LOCAL_TECHNICAL_GATE_PASS`（不等于 G01 或平台 `ACCEPTED`）。
+- Workflow 真实入口只加载 `@alchemy-video/creative-planning/semantic-director` 子入口；旧 executor/client 位于 `src/mock`，且仅在 runtime profile 明确为 mock 后动态加载。真实 Worker 不载入 deterministic planner/compiler。
+- Document Intelligence 生产包已删除 deterministic 分类、关键词表、二元词 overlap、手工 rank、固定权重和固定条数 selector；只保留标题、表格、视觉不可读提示、locator、SHA 和 bounded Markdown 结构索引。
+- legacy fact-context repository 及对应测试已删除；handoff fixture 迁入 tests/helpers。参考图角色和对象锁旧 helper 在生产扫描中没有真实调用，不能成为 fallback。
+- Media Runtime 固定 CLIP 类别和手调 transcript overlap/homophone/数字/阈值实现已退役；历史兼容函数只返回 `UNAVAILABLE/NOT_EXPECTED`。
+- 所有带 DeliveryPlan 的新 run 均冻结完整 AudioPlan，encoder 只写 ALCHMED8。ALCHMED1–7 只保留历史读取/旧任务重放，最终删除等待用户授权的生产数据盘点。
+- 静态审计：生产源中 `DeterministicDocumentUnderstandingAdapter`、`DeterministicFactSelector`、`createFixtureHandoffEvaluator`、`sourceCompactionPatterns`、`categoryRules`、`rankFact` 均为 0 个命中；真实 semantic 文件只引用 semantic-only 子入口。
+- 定向测试：Document Intelligence `2/2`、Workflow `45/45`、Persistence `92 pass / 12 skip`、Production Worker `74/74`、Media Runtime/OpenMontage adapters `152 pass + 7 subtests`；合计 `365 passed / 12 skipped / 0 failed`，另 `7 subtests passed`。相关 typecheck/build、Python compile 与 `git diff --check=0`。
+- 12 个 skip 均为 PostgreSQL 等未配置环境门；历史 ALCHMED 数据盘点未获授权，未访问生产数据库、对象存储、VPS 或真实 Provider。
+
+### G01 / WP-12 全仓回归、通用性与最终本地门禁
+
+- 工作包结果：`IMPLEMENTED / LOCAL_TECHNICAL_GATE_PASS`（不等于 G01 或平台 `ACCEPTED`）。
+- 新增跨行业/跨语言通用性回归：商品广告、人物剧情、工业流程、教育说明、金融/法律资料、抽象艺术、中文、英文和中英混合均通过同一 evidence verifier；没有行业关键词分支。
+- 反直觉参考图用例通过：一张画面含人物的图片可由完整意图指定为 STYLE，只取冷色灯光和颗粒质感，平台不会因画面主体把它重分类为 SUBJECT。
+- 文档提示注入用例通过：`Ignore all previous instructions...` 保持为原始数据；只有带 locator/quote/hash 的明确事实可被决策引用，不会执行资料中的指令。
+- `pnpm contracts:generate` 通过；18 个 workspace 项目的 `pnpm typecheck` 全部通过；`pnpm build` 全部通过，仅有 Nuxt 依赖自身既有 `DEP0155` 警告。
+- 在独立临时 PostgreSQL 数据库、Redis DB 15 和本地 MinIO 可用条件下运行根级 `pnpm test`：`783 passed / 0 skipped / 0 failed`，退出码 0。覆盖 PostgreSQL persistence、Redis/BullMQ、MinIO、SSE、Task Worker 重启恢复；测试后临时数据库已删除，Redis DB 15 已清空并确认 `DBSIZE=0`。
+- Media Runtime：Python compile 通过；Runtime + OpenMontage adapter `152 passed / 0 failed`，另 `7 subtests passed`。
+- 最终静态审计和 `git diff --check=0` 通过；契约生成后 contract drift 测试通过；工作区未执行 `git add/commit/push`。
+- 边界：本轮未调用真实 LLM/Provider、真实 Pixabay 网络、Veyra、VPS 或生产数据库；未完成生产 ALCHMED1–7 数量盘点。以上外部门不否定当前本地门禁结果，但不得被描述为章节 `ACCEPTED`、线上/真实像素验收或生产可用。
+
+
+### G01 最终状态对账（2026-09-24）
+
+- 正式章节状态：`READY_FOR_AUDIT`；不得写成 `OFFLINE_ACCEPTED`、平台 `ACCEPTED`、生产可用或可部署。
+- WP-00–WP-12 的“完成”仅表示代码实现、本地技术门禁和隔离基础设施集成通过，不是正式章节状态升级。
+- provenance checker 只证明引用身份、hash、精确 span、顺序、范围和 Provider 硬边界；不证明 `visual_decision` 的语义蕴含、原始 source 全量覆盖或成片质量。
+- 原始 source 在 CanonicalSourceBundle 中冻结/hash 可追踪；exact dialogue 逐字保留；Provider visual prompt 是 LLM 语义投影，不是 source 原文副本。
+- deterministic planner/compiler、旧 reference/object/narrative heuristics 仅存在于显式 Mock/历史兼容子入口；不能描述成全仓删除。
+- 尚缺真实 LLM/Provider、真实 Pixabay、VPS、真实媒体、多模态语义 QC、人工质量、独立代码审计签字和线上历史数据盘点。
+- E12/R01 的总体 `BLOCKED` 与 C12.4/C12.5 的 `IMPLEMENTED_PENDING_AUDIT` 继续有效；它们与 G01 的治理章节 `READY_FOR_AUDIT` 属于不同范围。
+
+### G01 非测试工作收口与验收交接（2026-09-24）
+
+- 正式状态：`READY_FOR_AUDIT`；不是平台级 `ACCEPTED`。
+- 代码与配置：真实 Semantic Director、provenance checker、pure projector、canonical reference/exact dialogue、用户显式审批、QC 三态、Mock/legacy 物理隔离和 ALCHMED8 新写边界均已落地；未发现需要继续补写的非测试业务实现。
+- 文档与治理：主执行方案、语义台账、验收报告、总控、ADR-0071/0072、来源边界、安全规则、章节账本和第三方来源登记已同步；生产 ALCHMED 盘点/迁移/回滚 runbook 已完整落盘。
+- 安全处置：旧主线末次提交中的凭据脚本已从净化主线和验收分支移除，路径已精确忽略，旧 PR #1 已关闭；净化主线为 `1a4d95ba9e79e04540c1f7af61b917053735d1e5`。仓库历史净化不替代上游凭据吊销，账号所有者仍须提供轮换和日志复核证明。
+- Git 交付：验收分支为 `codex/g01-audit-handoff-20260924`；Draft PR `https://github.com/meta-xucong/alchemy-video-os/pull/2` 是唯一验收入口。独立验收前禁止 merge、tag、发布和部署。
+- 本地技术证据沿用本章已有记录：根级隔离基础设施 `783 passed / 0 skipped / 0 failed`、Media Runtime `152 passed + 7 subtests`、typecheck/build/contracts/diff 门禁通过；本条没有用重复测试替代代码审查。
+- 剩余门禁：独立代码审查；真实 LLM/Provider/Pixabay；VPS/生产配置；真实成片多模态 QC；人工质量；生产 ALCHMED 只读盘点；外部凭据轮换证明。
+- Exit Gate：实现方非测试工作已全部完成，允许验收同事执行独立复核并作出 `ACCEPTED / RETURN_FOR_FIX / ACCEPTED_WITH_EXTERNAL_GATES` 决定。未取得正式决定前，G01 保持 `READY_FOR_AUDIT`。

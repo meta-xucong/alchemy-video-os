@@ -1562,70 +1562,15 @@ class MediaRuntimeTests(unittest.TestCase):
         })
         self.assertIn("前 內 後", srt)
 
-    def test_transcript_comparison_matches_source_openmontage_threshold(self) -> None:
+    def test_transcript_comparison_is_unavailable_without_a_certified_comparer(self) -> None:
         transcript = {"status": "CHECKED", "word_timestamps": [{"word": "Hello"}, {"word": "world"}]}
         result = compare_transcript_to_script(transcript=transcript, script_text="Hello world")
-        self.assertEqual(result["status"], "CHECKED")
-        self.assertTrue(result["transcript_matches_script"])
-        self.assertEqual(result["word_accuracy"], 1.0)
-        self.assertEqual(result["issues"], [])
+        self.assertEqual(result["status"], "UNAVAILABLE")
+        self.assertIsNone(result["transcript_matches_script"])
+        self.assertIsNone(result["word_accuracy"])
+        self.assertTrue(result["issues"])
 
-    def test_transcript_comparison_tolerates_cjk_asr_homophones(self) -> None:
-        transcript = {"status": "CHECKED", "word_timestamps": [{"word": "受夠城市霧媽尾氣就來毛山溫泉陶里春風"}]}
-        result = compare_transcript_to_script(
-            transcript=transcript,
-            script_text="受够城市雾霾尾气就来茅山温泉桃李春风",
-        )
-        self.assertEqual(result["status"], "CHECKED")
-        self.assertTrue(result["transcript_matches_script"])
-        self.assertEqual(result["word_accuracy"], 1.0)
-
-    def test_transcript_comparison_collapses_spelled_acronyms(self) -> None:
-        transcript = {"status": "CHECKED", "word_timestamps": [{"word": "拥有一支"}, {"word": "A"}, {"word": "I"}, {"word": "营销团队"}]}
-        result = compare_transcript_to_script(transcript=transcript, script_text="拥有一支 AI 营销团队")
-        self.assertTrue(result["transcript_matches_script"])
-        self.assertEqual(result["issues"], [])
-
-    def test_transcript_comparison_ignores_asr_homophone_for_chinese_script_acronym(self) -> None:
-        transcript = {"status": "CHECKED", "word_timestamps": [{"word": "拥有一支艾艾营销团队"}]}
-        result = compare_transcript_to_script(transcript=transcript, script_text="拥有一支 AI 营销团队")
-        self.assertTrue(result["transcript_matches_script"])
-        self.assertEqual(result["issues"], [])
-
-    def test_transcript_comparison_accepts_spoken_chinese_numbers_for_numeric_copy(self) -> None:
-        transcript = {"status": "CHECKED", "word_timestamps": [{"word": "晚上十点四十一分一条消息被秒回内容日产四十七条让每一位代理人都有一支艾艾营销团队"}]}
-        result = compare_transcript_to_script(
-            transcript=transcript,
-            script_text="晚上10点41分，一条消息被秒回。内容日产47条，让每一位代理人都有一支 AI 营销团队。",
-        )
-        self.assertTrue(result["transcript_matches_script"])
-        self.assertEqual(result["issues"], [])
-
-    def test_transcript_comparison_flags_inserted_cjk_filler(self) -> None:
-        result = compare_transcript_to_script(
-            transcript={
-                "status": "CHECKED",
-                "word_timestamps": [
-                    {"word": word, "start": index * 0.1, "end": index * 0.1 + 0.05}
-                    for index, word in enumerate("富含高浓度负氧离子啊推窗尽揽草木清香")
-                ],
-            },
-            script_text="富含高浓度负氧离子推窗尽揽草木清香",
-        )
-        self.assertFalse(result["transcript_matches_script"])
-        self.assertTrue(any("inserted spoken characters" in issue for issue in result["issues"]))
-
-    def test_transcript_comparison_flags_missing_cjk_script_content(self) -> None:
-        transcript = {"status": "CHECKED", "word_timestamps": [{"word": "受夠城市"}]}
-        result = compare_transcript_to_script(
-            transcript=transcript,
-            script_text="受够城市雾霾尾气就来茅山温泉桃李春风",
-        )
-        self.assertEqual(result["status"], "CHECKED")
-        self.assertFalse(result["transcript_matches_script"])
-        self.assertIn("Low transcript-to-script coverage", result["issues"][0])
-
-    def test_transcript_comparison_skips_visual_only_story_without_warning(self) -> None:
+    def test_transcript_comparison_keeps_visual_only_story_not_expected(self) -> None:
         result = compare_transcript_to_script(
             transcript={"status": "CHECKED", "word_timestamps": [{"word": "ambient"}]},
             script_text=None,
@@ -1713,7 +1658,7 @@ class MediaRuntimeTests(unittest.TestCase):
             review = final_review_video_bytes(body=body, expected_sha256=hashlib.sha256(body).hexdigest()).payload
         self.assertEqual(review["recommended_action"], "PRESENT_WITH_REVIEW")
 
-    def test_final_review_accepts_source_visual_evaluator_result(self) -> None:
+    def test_final_review_does_not_promote_fixed_visual_categories_to_semantic_acceptance(self) -> None:
         body = b"mock-final"
         technical = {
             "valid_container": True, "duration_seconds": 15.0, "resolution": "848x480", "fps": 24.0,
@@ -1725,10 +1670,12 @@ class MediaRuntimeTests(unittest.TestCase):
              patch("runtime._probe_final_review_technical", return_value=technical), \
              patch("runtime._sample_review_frames", return_value=(4, False, [])), \
              patch("runtime._audio_review", return_value=(False, [])), \
-             patch("runtime.visual_semantic_review", return_value={"status": "CHECKED", "issues": []}), \
+             patch("runtime.visual_semantic_review", return_value={"status": "CHECKED", "issues": []}) as fixed_categories, \
              patch("runtime.transcribe_video_bytes", return_value={"status": "CHECKED", "word_timestamps": [], "issues": []}):
             review = final_review_video_bytes(body=body, expected_sha256=hashlib.sha256(body).hexdigest()).payload
-        self.assertEqual(review["semantic_evaluation"]["status"], "CHECKED")
+        fixed_categories.assert_not_called()
+        self.assertEqual(review["semantic_evaluation"]["status"], "UNAVAILABLE")
+        self.assertEqual(review["status"], "NEEDS_ATTENTION")
 
     def test_final_review_blocks_long_tail_silence(self) -> None:
         body = b"mock-final"
@@ -2149,7 +2096,7 @@ class MediaRuntimeTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "QC_FAILED")
         run.assert_not_called()
 
-    def test_final_review_uses_automatically_bound_script_context(self) -> None:
+    def test_final_review_does_not_promote_hand_tuned_transcript_overlap_to_semantic_acceptance(self) -> None:
         body = b"mock-final"
         technical = {
             "valid_container": True, "duration_seconds": 15.0, "resolution": "848x480", "fps": 24.0,
@@ -2163,10 +2110,13 @@ class MediaRuntimeTests(unittest.TestCase):
              patch("runtime._sample_review_frames", return_value=(4, False, [])), \
              patch("runtime._audio_review", return_value=(False, [])), \
              patch("runtime.visual_semantic_review", return_value={"status": "CHECKED", "issues": []}), \
-             patch("runtime.transcribe_video_bytes", return_value=transcript):
+             patch("runtime.transcribe_video_bytes", return_value=transcript) as transcriber:
             review = final_review_video_bytes(body=body, expected_sha256=hashlib.sha256(body).hexdigest(), script_text="你好").payload
-        self.assertEqual(review["transcript_comparison"]["status"], "CHECKED")
-        self.assertTrue(review["transcript_comparison"]["transcript_matches_script"])
+        transcriber.assert_not_called()
+        self.assertEqual(review["transcript_comparison"]["status"], "UNAVAILABLE")
+        self.assertIsNone(review["transcript_comparison"]["transcript_matches_script"])
+        self.assertIsNone(review["transcript_comparison"]["word_accuracy"])
+        self.assertEqual(review["status"], "NEEDS_ATTENTION")
 
     def test_final_review_handler_returns_structured_payload(self) -> None:
         request = StreamRequest([b"mock-final"], "video/mp4")

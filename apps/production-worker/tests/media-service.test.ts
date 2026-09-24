@@ -2325,3 +2325,53 @@ test("Media Runtime releases its lease when composition fails so retries preserv
   assert.equal(released[0]?.deadLetter, false);
   assert.match(String(released[0]?.reason), /QC_FAILED: black frame/);
 });
+
+
+test("real handoff review without a configured evaluator remains UNAVAILABLE and creates no frame work", async () => {
+  const evaluations: Array<Record<string, unknown>> = [];
+  let boundaryCalls = 0;
+  const consumer = new MediaRuntimeEventConsumer({
+    async claimMediaRuntimeEvent() { return { kind: "CLAIMED" as const, event: handoffReviewRequestedEvent }; },
+    async findHandoffReviewInput() {
+      return {
+        workspaceId: handoffReviewRequestedEvent.workspace_id,
+        projectId: handoffReviewRequestedEvent.project_id!,
+        productionRunId: handoffReviewRequestedEvent.data.production_run_id,
+        handoffReviewId: handoffReviewRequestedEvent.data.handoff_review_id,
+        fromSequence: 1,
+        toSequence: 2,
+        fromSourceAsset: { id: "ast_unavailable_from", objectKey: "unused/from.mp4", sha256: "a".repeat(64), byteSize: 1, mimeType: "video/mp4" },
+        toSourceAsset: { id: "ast_unavailable_to", objectKey: "unused/to.mp4", sha256: "b".repeat(64), byteSize: 1, mimeType: "video/mp4" },
+        continuityHints: { fromTitle: "前段", toTitle: "后段" },
+      };
+    },
+    async completeHandoffReview(input) { evaluations.push(input.evaluation as unknown as Record<string, unknown>); return undefined; },
+    async findProductionSegmentQcInput() { throw new Error("QC should not run"); },
+    async findProductionCompositionInput() { throw new Error("composition should not run"); },
+    async acceptProductionSegmentQc() { throw new Error("QC should not run"); },
+    async completeProductionComposition() { throw new Error("composition should not run"); },
+    async failMediaRuntimeEvent() { throw new Error("failure should not run"); },
+    async completeMediaRuntimeEvent() {},
+    async releaseMediaRuntimeEvent() { throw new Error("release should not run"); },
+  }, createInMemoryStoragePort(), {
+    async inspect() { throw new Error("inspect should not run"); },
+    async extractHandoffFrame() { throw new Error("handoff should not run"); },
+    async extractBoundaryFrames() { boundaryCalls += 1; throw new Error("boundary extraction should not run"); },
+    async compose() { throw new Error("compose should not run"); },
+  }, { consumerName: "handoff-unavailable", workerId: "handoff-unavailable-worker", leaseMs: 100 });
+
+  assert.equal(await consumer.process(createMediaRuntimeQueueMessage({
+    id: handoffReviewRequestedEvent.event_id,
+    workspaceId: handoffReviewRequestedEvent.workspace_id,
+    event: handoffReviewRequestedEvent,
+    publishAttempts: 0,
+  })!), "CLAIMED");
+  assert.equal(boundaryCalls, 0);
+  assert.deepEqual(evaluations, [{
+    result: "UNAVAILABLE",
+    reasonCodes: ["EVALUATOR_UNAVAILABLE"],
+    safeSummary: "未配置真实衔接语义评估器；本边界保持未检查，不创建或接受任何自动修复。",
+    evaluatorVersion: "unavailable",
+    retryable: false,
+  }]);
+});

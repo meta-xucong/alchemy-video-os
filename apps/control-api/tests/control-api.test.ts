@@ -85,7 +85,7 @@ test("reference vision capability is AVAILABLE only when an analyzer is injected
   const app = createApp({
     referenceVisionAnalyzer: {
       async analyze() {
-        return { role: "SCENE", confidence: 1 };
+        return { summary: "可见室内空间与背景建筑。" };
       },
     },
   });

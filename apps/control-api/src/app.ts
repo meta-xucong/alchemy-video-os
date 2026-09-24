@@ -43,7 +43,6 @@ import {
   UpdateShotCommandSchema,
   WorkspaceIdSchema,
   projectPublicWorkspaceEvent,
-  type VisualReferenceRole,
   AudioCapabilitiesSchema,
   PixabayMusicImportCommandSchema,
   FixedVideoBillingSettingsUpdateSchema,
@@ -55,8 +54,7 @@ import {
   type InternalEventEnvelope,
   type DocumentUnderstandingSummary,
 } from "@alchemy-video/contracts";
-import { fingerprintRequest, inferVisualReferenceLockPolicies, inferVisualReferenceRoles, parseVideoBillingFixedFee, parseVideoBillingModelRates, parseVideoBillingSurchargeMultiplier, parseVisualReferenceAnalysis } from "@alchemy-video/domain";
-import { DeterministicFactSelector } from "@alchemy-video/document-intelligence";
+import { fingerprintRequest, parseVideoBillingFixedFee, parseVideoBillingModelRates, parseVideoBillingSurchargeMultiplier, parseVisualReferenceAnalysis } from "@alchemy-video/domain";
 import {
   UnsupportedVideoGenerationInputError,
   VideoPromptCompilationError,
@@ -68,7 +66,7 @@ import {
 } from "@alchemy-video/provider-video";
 import { ReferenceDeliveryTokenCodec } from "@alchemy-video/reference-delivery";
 import { ReferenceVisionAnalysisError, type ReferenceVisionAnalyzerPort } from "@alchemy-video/reference-analysis";
-import { deriveTranscriptScript, InMemoryCreativePlanningStore, InMemoryDeliveryPreflightStore, InMemoryDocumentConversionStore, InMemoryDocumentKnowledgeStore, InMemoryNarrationQualityStore, isUsableMusicAsset, MAX_DOCUMENT_CONTEXT_CHARACTERS, MAX_DOCUMENT_CONTEXTS_PER_BRIEF, type AssetWorkspaceStore, type ControlAsset, type ControlPlaneStore, type CreativePlanningStore, type DeliveryPreflightStore, type DocumentConversionStore, type DocumentKnowledgeStore, type NarrationQualityStore, type ProductionStore, type TaskRunStore } from "@alchemy-video/persistence";
+import { deriveTranscriptScript, hasMusicContentMatch, InMemoryCreativePlanningStore, InMemoryDeliveryPreflightStore, InMemoryDocumentConversionStore, InMemoryDocumentKnowledgeStore, InMemoryNarrationQualityStore, isUsableMusicAsset, MAX_DOCUMENT_CONTEXT_CHARACTERS, MAX_DOCUMENT_CONTEXTS_PER_BRIEF, type AssetWorkspaceStore, type ControlAsset, type ControlPlaneStore, type CreativePlanningStore, type DeliveryPreflightStore, type DocumentConversionStore, type DocumentKnowledgeStore, type NarrationQualityStore, type ProductionStore, type TaskRunStore } from "@alchemy-video/persistence";
 import { InMemoryStoragePort, StorageObjectAlreadyExistsError, StorageUnavailableError, createAssetObjectKey, type ObjectMetadataInspection, type StoragePort } from "@alchemy-video/storage-client";
 import type { z } from "zod";
 import { CreditPortError, VeyraIdentityError, type VideoVeyraBridgeAdapter } from "@alchemy-video/credit-veyra";
@@ -370,6 +368,12 @@ const narrationApprovalRequired = () => new ControlApiError(
   "旁白脚本必须先完成样音审批并生成 READY 时间线；请先调用旁白脚本、批准和时间线接口，再开始制作。",
   true,
 );
+const semanticDialoguePlanRequired = () => new ControlApiError(
+  422,
+  "DELIVERY_PLAN_STATE_INVALID",
+  "真实平台旁白需要每个片段都有已验证的 exact dialogue projection；请重新完成语义规划。",
+  true,
+);
 const mapVeyraError = (error: unknown): never => {
   if (error instanceof VeyraIdentityError) throw new ControlApiError(error.code === "AUTH_FORBIDDEN" ? 403 : 503, error.code, error.message, error.retryable);
   if (error instanceof CreditPortError) throw new ControlApiError(error.code === "CREDIT_INSUFFICIENT" ? 409 : (error.code === "AUTH_FORBIDDEN" ? 403 : 503), error.code, error.message, error.retryable);
@@ -381,11 +385,6 @@ const requestedMetadataMatches = (asset: { metadata: Record<string, unknown> }, 
 
 const referenceImageMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 const maxReferenceImageBytes = 8 * 1024 * 1024;
-
-const inferVisualReferenceRole = (input: { bindingRole: string; promptRole?: VisualReferenceRole }): VisualReferenceRole | undefined => {
-  if (input.bindingRole === "FIRST_FRAME") return "HANDOFF";
-  return input.promptRole;
-};
 
 const readReferenceBytes = async (stream: ReadableStream<Uint8Array>, maximumBytes: number) => {
   const reader = stream.getReader();
@@ -424,13 +423,12 @@ const firstValidPixabayQuery = (values: unknown[]) => {
 
 /**
  * Retry the existing reference-vision adapter for READY images that predate
- * visual analysis. Role ownership still comes only from explicit user text or
- * the analyzer; sourceAssetIds are used solely to locate the selected assets.
+ * objective visual observation. This step never assigns image usage or Provider role;
+ * sourceAssetIds are used solely to locate the selected assets.
  */
 const analyzeMissingReferenceImages = async (input: {
   workspaceId: string;
   projectId: string;
-  sourcePrompt: string;
   sourceAssetIds: string[];
   assetStore: AssetWorkspaceStore;
   storage: StoragePort;
@@ -455,14 +453,9 @@ const analyzeMissingReferenceImages = async (input: {
   }
   if (images.length === 0) return;
 
-  const roles = inferVisualReferenceRoles({
-    sourcePrompt: input.sourcePrompt,
-    count: images.length,
-    sourceImageNames: images.map((asset) => typeof asset.metadata.filename === "string" ? asset.metadata.filename : undefined),
-    visionAnalyses: images.map((asset) => parseVisualReferenceAnalysis(asset.metadata.visual_analysis)),
-  });
-  for (const [position, asset] of images.entries()) {
-    if (roles[position] !== undefined) continue;
+  for (const asset of images) {
+    if (asset.metadata.visual_analysis_status === "READY"
+      && parseVisualReferenceAnalysis(asset.metadata.visual_analysis)) continue;
     try {
       const inspection = await input.storage.inspectObject({ objectKey: asset.objectKey });
       if (!inspection
@@ -524,7 +517,7 @@ export function createApp(options: CreateAppOptions = {}) {
           conversionId: completion.conversionId,
           markdownAssetId: completion.markdownAssetId,
           markdownSha256: completion.markdownSha256,
-          analyzerVersion: "deterministic-document-understanding-v1",
+          analyzerVersion: "structural-document-index-v1",
           event: {
             eventId: createPrefixedId("evt"),
             messageId: createPrefixedId("msg"),
@@ -609,41 +602,11 @@ export function createApp(options: CreateAppOptions = {}) {
       return contexts;
     },
   };
-  const factSelector = new DeterministicFactSelector();
+  // New real plans consume frozen Markdown through the Semantic Director.
+  // Legacy document facts remain readable, but Control API no longer ranks or
+  // selects them with keyword overlap or category weights.
   const factContextResolver = {
-    resolveFactContexts: async (input: { workspaceId: string; projectId: string; creativeBriefRevisionId: string; sourceAssetIds: string[]; sourceText: string; stylePreferences: string }) => {
-      const facts = [] as Array<{
-        fact_id: string;
-        category: "BRAND" | "PRODUCT" | "LOCATION" | "AUDIENCE" | "SELLING_POINT" | "AMENITY" | "STYLE" | "CTA" | "COMPLIANCE" | "NUMERIC_CLAIM" | "RISK";
-        statement: string;
-        confidence: "EXPLICIT" | "INFERRED" | "NEEDS_CONFIRMATION";
-        source: { document_id: string; conversion_id: string; section_sequence: number; locator: string };
-      }>;
-      let selectedDocumentCount = 0;
-      const conversions = await documentStore.listProjectDocumentConversions(input.workspaceId, input.projectId);
-      for (const sourceAssetId of input.sourceAssetIds) {
-        const source = await assetStore.findAsset(input.workspaceId, sourceAssetId);
-        if (!source || source.kind !== "DOCUMENT") continue;
-        selectedDocumentCount += 1;
-        const conversion = conversions.find((item) => item.sourceAssetId === sourceAssetId && item.status === "SUCCEEDED" && item.markdownAssetId);
-        if (!conversion || !conversion.markdownAssetId) return undefined;
-        const markdown = await assetStore.findAsset(input.workspaceId, conversion.markdownAssetId);
-        const knowledge = (await documentKnowledgeStore.listProjectKnowledgeRevisions(input.workspaceId, input.projectId)).find((item) => item.conversionId === conversion.id && item.status === "READY" && item.markdownSha256 === markdown?.sha256);
-        if (!knowledge) return undefined;
-        const sections = await documentKnowledgeStore.listSections(input.workspaceId, knowledge.id);
-        const sectionLocators = new Map(sections.map((section) => [section.sequence, section.locator]));
-        const documentFacts = await documentKnowledgeStore.listFacts(input.workspaceId, knowledge.id);
-        facts.push(...documentFacts.map((fact) => ({
-          fact_id: fact.id,
-          category: fact.category,
-          statement: fact.statement,
-          confidence: fact.confidence,
-          source: { document_id: knowledge.documentId, conversion_id: knowledge.conversionId, section_sequence: fact.sectionSequence, locator: sectionLocators.get(fact.sectionSequence) ?? `第 ${fact.sectionSequence} 节` },
-        })));
-      }
-      if (selectedDocumentCount === 0) return [];
-      return [...factSelector.selectForBrief({ creativeBriefRevisionId: input.creativeBriefRevisionId, sourceText: input.sourceText, stylePreferences: input.stylePreferences, facts })];
-    },
+    resolveFactContexts: async () => [],
   };
   const planningStore = options.planningStore ?? new InMemoryCreativePlanningStore(assetStore, documentContextResolver, factContextResolver);
   const deliveryPreflightStore = options.deliveryPreflightStore ?? new InMemoryDeliveryPreflightStore(planningStore);
@@ -1767,7 +1730,6 @@ export function createApp(options: CreateAppOptions = {}) {
       await analyzeMissingReferenceImages({
         workspaceId: identity.workspaceId,
         projectId: briefForReferenceAnalysis.projectId,
-        sourcePrompt: briefForReferenceAnalysis.sourceText,
         sourceAssetIds: briefForReferenceAnalysis.sourceAssetIds,
         assetStore,
         storage,
@@ -1860,7 +1822,6 @@ export function createApp(options: CreateAppOptions = {}) {
       captionPolicy: command.caption_policy,
       lipSyncRequirement: command.lip_sync_requirement,
       voiceMode: command.voice_mode,
-      budgetLimit: command.budget_limit,
       event: {
         eventId: createPrefixedId("evt"),
         messageId: createPrefixedId("msg"),
@@ -2113,7 +2074,6 @@ export function createApp(options: CreateAppOptions = {}) {
           await analyzeMissingReferenceImages({
             workspaceId: identity.workspaceId,
             projectId,
-            sourcePrompt: briefForReferenceAnalysis.sourceText,
             sourceAssetIds: briefForReferenceAnalysis.sourceAssetIds,
             assetStore,
             storage,
@@ -2123,11 +2083,9 @@ export function createApp(options: CreateAppOptions = {}) {
       }
     }
 
-    // Platform narration remains approval-gated for explicit speech.  A
-    // source-backed native provider owner is the one exception: its generated
-    // MP4 already owns the audible track and must not wait for a platform
-    // narration TimelinePlan or trigger a second TTS path.
-    if (videoProfile.audioOwner !== "NATIVE_PROVIDER"
+    // Mock keeps its legacy deterministic transcript fixture only to exercise
+    // the local approval gate. This parser is never used by a real profile.
+    if (videoProfile.mode === "mock"
       && command.delivery_plan_revision_id
       && narrationQualityStore.hasReadyTimelinePlan) {
       const deliveryPlan = await deliveryPreflightStore.findDeliveryPlanRevision(identity.workspaceId, command.delivery_plan_revision_id);
@@ -2140,17 +2098,45 @@ export function createApp(options: CreateAppOptions = {}) {
       }
     }
 
+    // Real platform narration consumes only the exact dialogue projection
+    // frozen by the verified Semantic Director. It never reparses brief prose.
+    // Native-provider audio is the explicit exception because the generated
+    // MP4 owns the audible track.
+    if (videoProfile.mode !== "mock"
+      && videoProfile.audioOwner !== "NATIVE_PROVIDER"
+      && command.delivery_plan_revision_id
+      && narrationQualityStore.hasReadyTimelinePlan) {
+      const deliveryPlan = await deliveryPreflightStore.findDeliveryPlanRevision(identity.workspaceId, command.delivery_plan_revision_id);
+      if (deliveryPlan?.projectId === projectId && deliveryPlan.status === "APPROVED") {
+        const storyboard = await planningStore.findStoryboardRevision(identity.workspaceId, deliveryPlan.storyboardRevisionId);
+        const dialogueProjections = planningStore.listStoryboardDialogueProjections
+          ? await planningStore.listStoryboardDialogueProjections(
+            identity.workspaceId,
+            deliveryPlan.storyboardRevisionId,
+          )
+          : [];
+        if (!storyboard || dialogueProjections.length !== storyboard.shotSpecs.length) {
+          throw semanticDialoguePlanRequired();
+        }
+        const hasExactDialogue = dialogueProjections.some((projection) => projection.dialogues.length > 0);
+        if (hasExactDialogue
+          && !(await narrationQualityStore.hasReadyTimelinePlan(identity.workspaceId, projectId, command.delivery_plan_revision_id))) {
+          throw narrationApprovalRequired();
+        }
+      }
+    }
+
     // Freeze the same account/rule fact used by direct shot generation before
     // the production run is persisted.  The existing worker settles it only
     // after each validated artifact; this is a preflight, never a debit.
     const fixedBillingPolicy = await createFixedProductionBillingPolicy(identity);
     const billing = fixedBillingPolicy ? undefined : await createFrozenVideoBilling(identity);
+    let pixabayFallbackMusicAssetId: string | undefined;
 
-    // AUTO is local-first.  Only when the same source-aligned candidate
-    // predicate finds no usable workspace MUSIC asset do we perform one
-    // server-side Pixabay import before creating the production run.  The
-    // public command shape stays unchanged; MANUAL and OFF never enter this
-    // branch.
+    // AUTO is local-first.  A duration-qualified MUSIC asset is still not a
+    // local choice unless the shared source token matcher finds a content hit.
+    // With no hit, keep the existing single server-side Pixabay import path.
+    // MANUAL and OFF never enter this branch.
     if (command.music_plan.mode === "AUTO") {
       const deliveryPlan = await deliveryPreflightStore.findDeliveryPlanRevision(identity.workspaceId, command.delivery_plan_revision_id);
       if (!deliveryPlan || deliveryPlan.projectId !== projectId) throw notFound("Delivery plan not found.");
@@ -2165,13 +2151,16 @@ export function createApp(options: CreateAppOptions = {}) {
       // the complete video.  A measured short/unknown local asset is not a
       // suitable AUTO candidate; it must not suppress the existing Pixabay
       // fallback and leave an `apad` silence tail in the final mix.
+      const brief = await planningStore.findCreativeBriefRevision(identity.workspaceId, deliveryPlan.creativeBriefRevisionId);
+      const musicIntentText = [command.music_plan.style_hint, brief?.stylePreferences, projectDetail.project.name]
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .join(" ");
       const existingMusic = (await assetStore.listWorkspaceMusicAssets(identity.workspaceId))
         .filter((asset) => isUsableMusicAsset(asset, { minimumDurationMs: minimumMusicDurationMs }));
-      if (existingMusic.length === 0) {
+      if (!existingMusic.some((asset) => hasMusicContentMatch(asset, musicIntentText))) {
         if (!pixabayMusicEnabled || !pixabayMusic) {
-          throw new ControlApiError(503, "PROVIDER_UNAVAILABLE", "AUTO music needs a configured Pixabay Music capability when the workspace catalog is empty.", true);
+          throw new ControlApiError(503, "PROVIDER_UNAVAILABLE", "AUTO music needs a configured Pixabay Music capability when no duration-qualified local MUSIC asset matches authored content.", true);
         }
-        const brief = await planningStore.findCreativeBriefRevision(identity.workspaceId, deliveryPlan.creativeBriefRevisionId);
         const query = firstValidPixabayQuery([
           command.music_plan.style_hint,
           brief?.stylePreferences,
@@ -2187,18 +2176,17 @@ export function createApp(options: CreateAppOptions = {}) {
         const productionScope = `${identity.userId}:POST:/api/v1/projects/${projectId}/production-runs`;
         const fallbackFingerprint = `${productionScope}:${idempotencyKey}:${fingerprintRequest(sourceCommand.data)}`;
         const fallbackKey = `auto-${createHash("sha256").update(fallbackFingerprint).digest("hex")}`;
-        await importPixabayMusicAsset({
+        const imported = await importPixabayMusicAsset({
           workspaceId: identity.workspaceId,
           projectId,
           command: sourceCommand.data,
           scope: `${productionScope}:pixabay-import`,
           idempotencyKey: fallbackKey,
         });
-        const importedMusic = (await assetStore.listWorkspaceMusicAssets(identity.workspaceId))
-          .filter((asset) => isUsableMusicAsset(asset, { minimumDurationMs: minimumMusicDurationMs }));
-        if (importedMusic.length === 0) {
-          throw new ControlApiError(503, "PROVIDER_PROTOCOL_INVALID", "Pixabay did not produce a MUSIC asset that covers the target video duration.", false);
+        if (!isUsableMusicAsset(imported.asset, { minimumDurationMs: minimumMusicDurationMs })) {
+          throw new ControlApiError(503, "PROVIDER_PROTOCOL_INVALID", "Pixabay did not produce a MUSIC asset that meets the existing asset and target-duration checks.", false);
         }
+        pixabayFallbackMusicAssetId = imported.asset.id;
       }
     }
     const execution = await planningStore.createProductionRun({
@@ -2211,6 +2199,7 @@ export function createApp(options: CreateAppOptions = {}) {
       storyboardRevisionId: command.storyboard_revision_id,
       deliveryPlanRevisionId: command.delivery_plan_revision_id,
       musicPlan: command.music_plan,
+      ...(pixabayFallbackMusicAssetId ? { pixabayFallbackMusicAssetId } : {}),
       ...(billing ? { billing } : {}),
       ...(fixedBillingPolicy ? { fixedBillingPolicy } : {}),
       event: {
@@ -2313,36 +2302,18 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!hasFirstFrame && bindings.some((binding) => binding.role !== "STYLE" && binding.role !== "SUBJECT")) {
       throw validationError("The saved reference images do not form a supported video input.");
     }
-    const promptReferenceRoles = inferVisualReferenceRoles({
-      sourcePrompt: shot.prompt,
-      count: bindings.length,
-      sourceImageNames: references.map(({ asset }) => typeof asset?.metadata?.filename === "string" ? asset.metadata.filename : undefined),
-    });
-    const resolvedReferenceRoles = inferVisualReferenceRoles({
-      sourcePrompt: shot.prompt,
-      count: bindings.length,
-      sourceImageNames: references.map(({ asset }) => typeof asset?.metadata?.filename === "string" ? asset.metadata.filename : undefined),
-      visionAnalyses: references.map(({ asset }) => parseVisualReferenceAnalysis(asset?.metadata.visual_analysis)),
-    });
-    const referenceLockPolicies = inferVisualReferenceLockPolicies({
-      sourcePrompt: shot.prompt,
-      roles: resolvedReferenceRoles,
-      sourceImageNames: references.map(({ asset }) => typeof asset?.metadata?.filename === "string" ? asset.metadata.filename : undefined),
-    });
-    const resolvedReferenceInputs = references.map(({ binding, asset }, index) => ({
+    const resolvedReferenceInputs = references.map(({ binding, asset }) => ({
       binding,
       asset,
-      role: inferVisualReferenceRole({
-        bindingRole: binding.role,
-        promptRole: promptReferenceRoles[index],
-      }) ?? (binding.role === "SUBJECT" ? "SUBJECT" : resolvedReferenceRoles[index]),
+      role: binding.role === "FIRST_FRAME"
+        ? "HANDOFF" as const
+        : binding.role === "SUBJECT"
+          ? "SUBJECT" as const
+          : binding.role === "STYLE"
+            ? "STYLE" as const
+            : undefined,
     }));
-    // A generic STYLE binding is only a selection mode, not a semantic claim.
-    // Do not turn an unresolved image into STYLE by upload order: the user must
-    // name its role or the server must have a sufficiently confident analysis.
-    if (!hasFirstFrame && resolvedReferenceInputs.some(({ role }) => role === undefined)) {
-      throw invalidReference();
-    }
+    if (resolvedReferenceInputs.some(({ role }) => role === undefined)) throw invalidReference();
     const visualInput = bindings.length === 0
       ? { mode: "TEXT" as const, references: [] as [] }
       : hasFirstFrame
@@ -2378,9 +2349,8 @@ export function createApp(options: CreateAppOptions = {}) {
         referenceRoles: visualInput.mode === "REFERENCE_SET"
           ? visualInput.references.map((reference) => reference.role ?? "STYLE")
           : [],
-        visualObjectLocks: references.flatMap(({ asset }, index) => referenceLockPolicies[index] === "LOCK_OBJECTS"
-          ? parseVisualReferenceAnalysis(asset?.metadata.visual_analysis)?.objects ?? []
-          : []),
+        // Direct generation accepts only explicit binding roles. Objective image observations never become object locks.
+        visualObjectLocks: [],
       });
       inputSnapshot = createRuntimeVideoInputSnapshot({
         prompt: compiledPrompt.prompt,

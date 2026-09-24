@@ -54,64 +54,19 @@ export const resolveEffectiveVideoPromptMaxUtf8Bytes = (
 
 export type RuntimePromptCompactionOptions = Readonly<{
   /**
-   * The authored source portion that the caller has already identified.  A
-   * string-only caller cannot safely distinguish source from derived prose.
+   * The immutable prompt prefix already identified by the caller. A string-only
+   * compactor cannot decide whether that prefix is authored source or an LLM
+   * projection, so it never interprets or rewrites it.
    */
   sourcePrompt?: string;
   /**
-   * Derived compiler parts in their original order.  Only these parts may be
-   * omitted in the first compaction pass; the second pass has its own fixed,
-   * source-clause allowlist below.
+   * Derived compiler parts in their original order. Only complete parts whose
+   * provenance is supplied by the caller may be omitted. The caller-designated
+   * source prefix is immutable here; in the real semantic path that prefix is
+   * an LLM visual projection, while the authored brief is frozen separately.
    */
   generatedPromptParts?: readonly string[];
 }>;
-
-/**
- * These are the only authored-source clauses that the second pass is allowed
- * to remove.  They are redundant presentation/safety prose already carried by
- * the structured motion/audio snapshot; arbitrary user sentences are never
- * selected by this pass.  The rules are intentionally narrow and ordered so a
- * source that does not match them remains fail-closed.
- */
-const sourceCompactionPatterns: readonly RegExp[] = [
-  /^风格：[\s\S]*?(?=##\s*人物与场景)/u,
-  /\s*\*\*声音：\*\*[^。]*。/u,
-  /\s*\*\*表演重点：\*\*[^；]*；/u,
-  /\s*-\s*保留真实[^。]*。/u,
-  /\s*-\s*不添加[^。]*。/u,
-  /\s*-\s*斜挎包[^。]*。/u,
-  /\s*-\s*人物移动方向[^。]*。/u,
-  /\s*-\s*不让女主[^。]*。/u,
-  /\s*-\s*不让小猫[^。]*。/u,
-];
-
-const sourceCompactionCandidates = (sourcePrompt: string) => {
-  const candidates: string[] = [];
-  let remaining = sourcePrompt;
-  while (remaining) {
-    let matchStart = Number.POSITIVE_INFINITY;
-    let matchText: string | undefined;
-    for (const pattern of sourceCompactionPatterns) {
-      const match = remaining.match(pattern);
-      if (!match || match[0].length === 0) continue;
-      const start = match.index ?? -1;
-      if (start >= 0 && start < matchStart) {
-        matchStart = start;
-        matchText = match[0];
-      }
-    }
-    if (matchText === undefined || !Number.isFinite(matchStart)) break;
-    candidates.push(matchText);
-    remaining = remaining.slice(matchStart + matchText.length);
-  }
-  return candidates;
-};
-
-const removeFirstExactSourceClause = (sourcePrompt: string, clause: string) => {
-  const index = sourcePrompt.indexOf(clause);
-  if (index < 0) return undefined;
-  return `${sourcePrompt.slice(0, index)}${sourcePrompt.slice(index + clause.length)}`;
-};
 
 /**
  * Internal reason carried across the production-worker boundary.  It is not
@@ -121,12 +76,12 @@ const removeFirstExactSourceClause = (sourcePrompt: string, clause: string) => {
 export type UnsupportedVideoGenerationInputCode = "PROMPT_BUDGET" | "UNSUPPORTED_INPUT";
 
 /**
- * Keep the authored source and fit caller-identified generated parts first;
- * only then use the fixed source-clause allowlist above. This is the
- * intentionally small platform adapter: the fixed upstream sources provide
- * prompt shape and source/lock priorities, but no generic compressor or
- * provenance marker. Without the sidecar parts a caller gets the existing
- * fail-closed error instead of a string-level guess.
+ * Preserve the caller-designated immutable prompt prefix byte-for-byte and fit
+ * only caller-identified generated parts around it. This function does not
+ * claim that the prefix is the complete authored brief: in the real semantic
+ * path it is the LLM visual projection, while the brief is frozen and hashed
+ * separately. Without an exact sidecar match, fail closed rather than infer
+ * which text may be removed.
  */
 export const compactRuntimePrompt = (
   prompt: string,
@@ -134,9 +89,9 @@ export const compactRuntimePrompt = (
   maxUtf8Bytes = DEFAULT_VIDEO_PROMPT_MAX_UTF8_BYTES,
   options: RuntimePromptCompactionOptions = {},
 ) => {
-  // The local Mock path and all under-ceiling prompts are immutable.  In
-  // particular, do not trim authored whitespace before deciding whether to
-  // send the source unchanged.
+  // The local Mock path and all under-ceiling prompts are immutable. In
+  // particular, do not trim caller-supplied whitespace before deciding
+  // whether to send the prompt unchanged.
   if (mode !== "sub2api") return prompt;
   const resolvedMaxUtf8Bytes = resolveVideoPromptMaxUtf8Bytes(maxUtf8Bytes);
   // A prompt already within the provider ceiling is sent unchanged.  An
@@ -166,21 +121,8 @@ export const compactRuntimePrompt = (
     }
   }
   const retainedGeneratedPromptParts = generatedPromptParts.filter((_part, index) => selected.has(index));
-  const compose = (source: string) => [source, ...retainedGeneratedPromptParts].join(" ");
-  let compacted = compose(sourcePrompt);
+  const compacted = [sourcePrompt, ...retainedGeneratedPromptParts].join(" ");
   if (utf8ByteLength(compacted) <= resolvedMaxUtf8Bytes) return compacted;
-
-  // Second pass: remove only complete, explicitly-recognised optional source
-  // clauses. This is still fail-closed: if the authored text has no such
-  // clause, or the remaining text cannot fit, no arbitrary sentence is cut.
-  let compactedSource = sourcePrompt;
-  for (const clause of sourceCompactionCandidates(sourcePrompt)) {
-    const nextSource = removeFirstExactSourceClause(compactedSource, clause);
-    if (nextSource === undefined) continue;
-    compactedSource = nextSource;
-    compacted = compose(nextSource);
-    if (utf8ByteLength(compacted) <= resolvedMaxUtf8Bytes) return compacted;
-  }
 
   throw new UnsupportedVideoGenerationInputError("The video prompt cannot fit the configured provider prompt limit without deleting authored source content.", "PROMPT_BUDGET");
 };

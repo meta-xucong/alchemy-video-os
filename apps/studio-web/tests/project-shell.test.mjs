@@ -101,12 +101,10 @@ test("project shell exposes source-aligned Pixabay import and AUTO local-first f
   assert.doesNotMatch(`${page}\n${api}`, /searchFreeMusic|importFreeMusic|FREESOUND_API_KEY|AUDIO_EXTERNAL_CATALOG/);
 });
 
-test("Studio keeps authored narration line breaks before the provider receives provider_text", () => {
+test("Studio never re-parses authored narration before semantic approval", () => {
   const page = read("app/pages/projects/[project_id].vue");
-  assert.match(page, /const quotedNarrationSections =/);
-  assert.match(page, /口播文案\|旁白文案\|配音文案\|对白文案/);
-  assert.match(page, /”\(\[\\s\\S\]\*\?\)”/);
-  assert.match(page, /replace\(\/\\r\\n\?\/gu, "\\n"\)/);
-  assert.match(page, /replace\(\/\[\^\\S\\n\]\+\/gu, " "\)/);
-  assert.doesNotMatch(page, /match\[1\]!\.replace\(\/\\s\+\/gu, " "\)/);
+  assert.doesNotMatch(page, /quotedNarrationSections|extractQuotedNarration|labelledNarration/);
+  assert.doesNotMatch(page, /口播文案\|旁白文案\|配音文案\|对白文案/);
+  assert.doesNotMatch(page, /createNarrationScriptRevision|provider_text/);
+  assert.match(page, /分镜方案已生成，等待你确认后再进入交付设置/);
 });

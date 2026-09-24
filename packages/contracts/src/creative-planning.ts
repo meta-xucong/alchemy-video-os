@@ -75,7 +75,7 @@ export const ScriptBeatSchema = z.object({
   sequence: z.number().int().positive(),
   title: z.string().min(1).max(160),
   summary: z.string().min(1).max(2_000),
-  narrative_goal: z.string().min(1).max(1_000),
+  narrative_goal: z.string().min(1).max(4_000),
   visible_facts: z.array(z.string().min(1).max(512)).max(20),
   generation_segment_sequence: z.number().int().positive().optional(),
 }).strict();
@@ -97,13 +97,13 @@ export const StoryboardShotSpecSchema = z.object({
   sequence: z.number().int().positive(),
   title: z.string().min(1).max(160),
   duration_seconds: z.number().int().min(1).max(15),
-  narrative_goal: z.string().min(1).max(1_000),
-  start_state: z.string().min(1).max(1_000),
-  end_state: z.string().min(1).max(1_000),
-  transition_summary: z.string().min(1).max(1_000),
+  narrative_goal: z.string().min(1).max(4_000),
+  start_state: z.string().min(1).max(1_000).optional(),
+  end_state: z.string().min(1).max(1_000).optional(),
+  transition_summary: z.string().min(1).max(1_000).optional(),
   reference_policy: ReferencePolicySchema,
   depends_on_sequences: z.array(z.number().int().positive()).max(20),
-  continuity_note: z.string().min(1).max(1_000),
+  continuity_note: z.string().min(1).max(1_000).optional(),
   narrative_beat_sequences: z.array(z.number().int().positive()).max(60).default([]),
   // Source-aligned bindings from huobao storyboard-breaker. Optional for old
   // revisions; new revisions must not invent IDs that are absent from context.
@@ -325,7 +325,7 @@ export const ApproveStoryboardRevisionCommandSchema = z.object({}).strict();
 export const CreateProductionRunCommandSchema = z.object({
   storyboard_revision_id: StoryboardRevisionIdSchema,
   delivery_plan_revision_id: DeliveryPlanRevisionIdSchema,
-  music_plan: MusicPlanSchema.default({}),
+  music_plan: MusicPlanSchema,
 }).strict();
 
 export type CreativeRevisionStatus = z.infer<typeof CreativeRevisionStatusSchema>;

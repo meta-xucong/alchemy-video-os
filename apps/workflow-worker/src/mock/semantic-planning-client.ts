@@ -4,7 +4,7 @@ import {
   LlmSemanticPlanningError,
   type LlmFreeformPlanningContext,
   type PlanningModelPort,
-} from "@alchemy-video/creative-planning";
+} from "@alchemy-video/creative-planning/mock";
 import type { VideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 
 /**
@@ -62,6 +62,7 @@ const naturalLanguagePlannerSystemPrompt = [
   "总量锚定：所有 duration_seconds 的总和必须正好等于 targetDurationSeconds；duration_seconds 是该完整片段的总时长，不是单个子镜头时长；严格服从 context.durationBounds。过渡段通常 8-10 秒，叙事段通常 10-15 秒，爆点段通常 12-15 秒。若总时长、边界或 8-15 秒片段规则无法同时满足，返回空数组，不得输出短于下限的片段。",
   "台词是平台已经提取并保护的事实；dialogue_line_sequences 只填写台词编号，编号从 1 开始（没有 0），每条恰好一次且全局按原序；不要生成、改写、翻译、复述或新增台词，最终口播由平台按编号逐字注入。每段台词字数÷4.5+2 秒不得超过该段时长。",
   "Seedance 规则：visual_prompt 按需用自然语言覆盖参考图声明、整体概览、动作推进与明确终点、全局连续性锁四个层次；`@` 引用标签按输入原样保留且不改变输入顺序；只有确有多阶段、对白或剪辑时才写自然语言时间推进，不输出任何时间戳 schema 或字符偏移。",
+  "若源文本明确描述变化过程或前后结果，visual_prompt 必须保留已有的起始事实、可见动作和明确终点；不能只保留过程而丢掉结果，也不得添加源文没有的效果、因果或承诺。",
   "Huobao storyboard-breaker 规则：如果本段有明确的音乐/氛围意图，可用可选 bgm_prompt 写一个简洁短语；不要只写空泛情绪词，不要把完整画面或台词复制进去。没有可靠音乐意图时省略该字段。",
   "OpenMontage 规则：每段有清晰的可见叙事职责；在相应信息存在时按镜头、运动、主体、光线、风格的紧凑层次组织，缺少的层不补造，不给每段复制大段固定说明或整段源文本。",
   "语言规则：visual_prompt 用与源文本一致的语言连贯成文（源文本是中文就写通顺中文句子），不输出 Camera:/Movement:/Subject:/Lighting:/Style 等英文层标签或字段名，镜头层次信息融合进自然语言叙述。",

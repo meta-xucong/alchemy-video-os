@@ -56,7 +56,7 @@ test("the compiler makes scene and subject reference semantics explicit to the p
   assert.match(compiled.prompt, /Do not infer roles from the original upload order/);
 });
 
-test("the compiler adds generic key-object locks before reference semantics", () => {
+test("the compiler never infers object locks from authored source prose", () => {
   const compiled = compileVideoPrompt({
     sourcePrompt: "道家女子手持白色拂尘走过庭院，保持拂尘清晰可见。",
     generationSettings: {},
@@ -64,22 +64,38 @@ test("the compiler adds generic key-object locks before reference semantics", ()
     referenceRoles: ["SUBJECT", "SCENE"],
   });
 
-  assert.match(compiled.prompt, /关键对象连续性锁/);
-  assert.match(compiled.prompt, /白色拂尘/);
-  assert.match(compiled.prompt, /全片仅一个实例/);
-  assert.doesNotMatch(compiled.prompt, /树枝|木棍/u, "an unanalysed source object must not receive an invented replacement rule");
-  assert.ok(compiled.prompt.indexOf("关键对象连续性锁") < compiled.prompt.indexOf("Reference image roles"));
+  assert.equal(compiled.generatedPromptParts.some((part) => part.includes("关键对象")), false);
+  assert.doesNotMatch(compiled.prompt, /已验证关键对象约束/);
+  assert.match(compiled.prompt, /Reference image roles/);
 });
 
-test("the compiler enforces one instance and atomic handoff without adding a UI setting", () => {
-  const compiled = compileVideoPrompt({
-    sourcePrompt: "她左手拿着手机，随后从左手换到右手。",
+test("the compiler emits object continuity only from an explicit verified lock", () => {
+  const sourcePrompt = "她左手拿着手机，随后从左手换到右手。";
+  const withoutLock = compileVideoPrompt({
+    sourcePrompt,
     generationSettings: {},
     profile,
   });
-  assert.match(compiled.prompt, /全片仅一个实例/);
+  assert.doesNotMatch(withoutLock.prompt, /已验证关键对象约束/);
+
+  const compiled = compileVideoPrompt({
+    sourcePrompt,
+    generationSettings: {},
+    profile,
+    visualObjectLocks: [{
+      name: "手机",
+      description: "黑色手机，外观与已确认参考保持一致。",
+      relation: "初始由左手持有。",
+      prohibited_changes: ["不得替换为其它物体。"],
+      instance_count: 1,
+      holder: "LEFT_HAND",
+      transfer: { from: "LEFT_HAND", to: "RIGHT_HAND" },
+    }],
+  });
+  assert.match(compiled.prompt, /已验证关键对象约束/);
+  assert.match(compiled.prompt, /明确换手/);
   assert.match(compiled.prompt, /释放，再双手接触交接，最后由右手持有/);
-  assert.match(compiled.prompt, /禁止复制、分裂、残影/);
+  assert.match(compiled.prompt, /不得替换为其它物体/);
 });
 
 test("the compiler preserves explicit dialogue as a visible performance while platform narration owns final audio", () => {
@@ -87,6 +103,7 @@ test("the compiler preserves explicit dialogue as a visible performance while pl
     sourcePrompt: "她走近镜头，开口问到：“真巧，你什么时候来的？”",
     generationSettings: {},
     profile: legacyNarrationProfile,
+    dialogueLines: ["真巧，你什么时候来的？"],
   });
   assert.match(compiled.prompt, /Dialogue visual contract/);
   assert.match(compiled.prompt, /真巧，你什么时候来的/);
@@ -104,6 +121,7 @@ test("the native provider owner emits the source dialogue syntax for native audi
     sourcePrompt: `她走近镜头，开口问到：“${script}”`,
     generationSettings: {},
     profile,
+    dialogueLines: [script],
   });
   assert.ok(compiled.prompt.includes(`One speaker per clip. Character says: "${script}"`));
   assert.equal((compiled.prompt.match(new RegExp(captionSuppressionDirective, "gu")) ?? []).length, 1);
@@ -131,9 +149,17 @@ test("the native compiler keeps multiline source dialogue complete in its provid
     sourcePrompt: `画面中的人物口播：“${script}”`,
     generationSettings: {},
     profile,
+    dialogueLines: [script],
   });
   assert.ok(compiled.prompt.includes(`Character says: "${script}"`));
   assert.ok(compiled.prompt.includes(script));
+});
+
+test("the compiler never derives dialogue from quoted source prose", () => {
+  const sourcePrompt = "人物面对镜头说：“这只是原始提示中的引号。”";
+  const compiled = compileVideoPrompt({ sourcePrompt, generationSettings: {}, profile });
+  assert.ok(compiled.prompt.includes(sourcePrompt));
+  assert.doesNotMatch(compiled.prompt, /One speaker per clip|Dialogue visual contract/);
 });
 
 test("the native compiler does not duplicate an already compiled exact dialogue contract or filler quotes", () => {
@@ -168,13 +194,12 @@ test("the compiler rejects malformed saved settings and source text that cannot 
   );
 });
 
-test("the compiler keeps the authored source and omits only generated directives when they exceed the provider ceiling", () => {
+test("the compiler keeps authored source and may omit only non-critical verified object prose", () => {
   const sourcePrompt = "A".repeat(3_600);
   const compiled = compileVideoPrompt({
     sourcePrompt,
     generationSettings: {},
     profile,
-    referenceRoles: ["SUBJECT", "SCENE", "STYLE"],
     visualObjectLocks: [{
       name: "产品包装盒",
       description: "同一包装盒保持清晰可见",
@@ -198,7 +223,7 @@ test("the compiler fails closed when a near-ceiling source cannot retain caption
   );
 });
 
-test("the compiler can use the bounded second source pass without generated directives", () => {
+test("the compiler fails closed instead of deleting source-looking clauses", () => {
   const sourcePrompt = [
     "风格：现代写实、自然光；人物整体从左向右移动 ## 人物与场景",
     "核心事实：人物在街道边与橘白猫互动，先停步、蹲下等待，小猫靠近后轻抚，最后起身离开。",
@@ -207,16 +232,24 @@ test("the compiler can use the bounded second source pass without generated dire
     captionSuppressionDirective,
     "补充事实：" + "湿润街道与橘白猫保持可辨识关系。".repeat(80),
   ].join(" ");
-  const compiled = compileVideoPrompt({
-    sourcePrompt,
-    generationSettings: {},
-    profile,
-  });
-
   assert.ok(utf8ByteLength(sourcePrompt) > 4_096);
-  assert.ok(utf8ByteLength(compiled.prompt) <= 4_096);
-  assert.match(compiled.prompt, /核心事实/);
-  assert.match(compiled.prompt, /no subtitles, no captions/u);
-  assert.doesNotMatch(compiled.prompt, /\*\*声音：\*\*/u);
-  assert.deepEqual(compiled.generatedPromptParts, []);
+  assert.throws(
+    () => compileVideoPrompt({ sourcePrompt, generationSettings: {}, profile }),
+    (error) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET",
+  );
+});
+
+
+test("prompt budget fails closed instead of dropping exact dialogue or reference roles", () => {
+  assert.throws(
+    () => compileVideoPrompt({
+      sourcePrompt: "场".repeat(3_700),
+      generationSettings: {},
+      profile,
+      referenceRoles: ["SCENE"],
+      dialogueLines: ["这句台词必须逐字保留，不能为了提示词预算被删除。"],
+    }),
+    (error: unknown) => error instanceof UnsupportedVideoGenerationInputError
+      && error.code === "PROMPT_BUDGET",
+  );
 });
