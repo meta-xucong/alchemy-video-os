@@ -282,6 +282,36 @@ test("accepted native-owner composition preserves the source audio boundary with
   // no TTS input can be assembled from this fixture.
 });
 
+test("new DeliveryPlan-backed native composition freezes a complete legacy-preserve AudioPlan", async () => {
+  const repository = new DrizzleProductionRepository(fakeDatabase(baseRows("NATIVE_PROVIDER", {
+    run: { deliveryPlanRevisionId: ids.deliveryPlanRevisionId },
+  })));
+  const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
+
+  assert.ok(result);
+  assert.equal(result.compositionPlan?.audio_policy, "LEGACY_PRESERVE");
+  assert.equal(result.compositionPlan?.audio_tracks, undefined);
+  assert.equal(result.compositionPlan?.audio_plan?.version, 1);
+  assert.equal(result.compositionPlan?.audio_plan?.stitch_policy, "LEGACY_PRESERVE");
+  assert.deepEqual(result.compositionPlan?.audio_plan?.narration_sections, [{
+    section_id: "no-platform-narration",
+    start_ms: 0,
+    end_ms: 1_000,
+    visual_role: "HOLD",
+  }]);
+  assert.deepEqual(result.compositionPlan?.audio_plan?.tracks.map((track) => ({
+    track_id: track.track_id,
+    ownership: track.ownership,
+    asset_id: track.asset_id,
+    gain_db: track.gain_db,
+  })), [{
+    track_id: "segment-1",
+    ownership: "LEGACY_PRESERVE",
+    asset_id: ids.sourceAssetId,
+    gain_db: "0",
+  }]);
+});
+
 test("AUTO composition consumes only a MUSIC asset whose measured duration covers the target", async () => {
   const musicAsset = {
     ...sourceAsset(),
@@ -290,7 +320,7 @@ test("AUTO composition consumes only a MUSIC asset whose measured duration cover
     objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_music_fixture/music.mp3`,
     mimeType: "audio/mpeg",
     durationMs: 42_000,
-    metadata: { audio_role: "MUSIC", source_title: "Fixture background music" },
+    metadata: { audio_role: "MUSIC", source_title: "源对白 background music" },
   };
   const repository = new DrizzleProductionRepository(fakeDatabase({
     ...baseRows("NATIVE_PROVIDER", {
@@ -318,6 +348,55 @@ test("AUTO composition consumes only a MUSIC asset whose measured duration cover
   assert.deepEqual(result.compositionPlan?.music_segments_ms, [{ start_ms: 0, end_ms: 1_000 }]);
   assert.equal(isUsableMusicAsset({ ...musicAsset }, { minimumDurationMs: 1_000 }), true);
   assert.equal(isUsableMusicAsset({ ...musicAsset, durationMs: 500 }, { minimumDurationMs: 1_000 }), false);
+});
+
+test("AUTO composition does not treat a Pixabay query matching the project name as track content", async () => {
+  const musicAsset = {
+    ...sourceAsset(),
+    id: "ast_native_project_query_music",
+    kind: "AUDIO" as const,
+    objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_project_query_music/music.mp3`,
+    mimeType: "audio/mpeg",
+    durationMs: 42_000,
+    metadata: { audio_role: "MUSIC", pixabay_query: "Product launch", source_title: "upbeat energetic instrumental" },
+  };
+  const repository = new DrizzleProductionRepository(fakeDatabase({
+    ...baseRows("NATIVE_PROVIDER", {
+      run: { budgetGuard: { music_plan: { mode: "AUTO" } } },
+      assets: [sourceAsset(), musicAsset],
+    }),
+    projects: [{ workspaceId: ids.workspaceId, id: ids.projectId, name: "Product launch" }],
+  }, { assets: [[sourceAsset()], [musicAsset]] }));
+
+  await assert.rejects(
+    repository.findProductionCompositionInput({ event: compositionEvent() }),
+    /AUTO music selection requires a READY AUDIO asset with audio_role=MUSIC/,
+  );
+});
+
+test("AUTO composition consumes the preselected Pixabay fallback identity without a content match", async () => {
+  const pixabayAsset = {
+    ...sourceAsset(),
+    id: "ast_native_pixabay_fallback",
+    kind: "AUDIO" as const,
+    objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_pixabay_fallback/music.mp3`,
+    mimeType: "audio/mpeg",
+    durationMs: 42_000,
+    metadata: { audio_role: "MUSIC", pixabay_query: "Product launch", source_title: "upbeat coastal guitar" },
+  };
+  const repository = new DrizzleProductionRepository(fakeDatabase({
+    ...baseRows("NATIVE_PROVIDER", {
+      run: { budgetGuard: { music_plan: { mode: "AUTO" }, pixabay_fallback_music_asset_id: pixabayAsset.id } },
+      assets: [sourceAsset(), pixabayAsset],
+    }),
+    projects: [{ workspaceId: ids.workspaceId, id: ids.projectId, name: "Product launch" }],
+  }, { assets: [[sourceAsset()], [pixabayAsset]] }));
+
+  const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
+
+  assert.ok(result);
+  assert.equal(result.musicAsset?.id, pixabayAsset.id);
+  assert.equal(result.compositionPlan?.music_mix.enabled, true);
 });
 
 test("AUTO composition consumes the persisted per-segment bgm_prompt as a matching hint", async () => {
@@ -352,6 +431,29 @@ test("AUTO composition consumes the persisted per-segment bgm_prompt as a matchi
   assert.equal(result?.musicAsset?.id, coolMusic.id);
 });
 
+test("AUTO composition fails closed when a duration-qualified MUSIC asset has no content hit", async () => {
+  const unrelatedMusic = {
+    ...sourceAsset(),
+    id: "ast_native_unrelated_music_fixture",
+    kind: "AUDIO" as const,
+    objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_unrelated_music_fixture/music.mp3`,
+    mimeType: "audio/mpeg",
+    durationMs: 42_000,
+    metadata: { audio_role: "MUSIC", source_title: "upbeat energetic instrumental" },
+  };
+  const repository = new DrizzleProductionRepository(fakeDatabase({
+    ...baseRows("NATIVE_PROVIDER", {
+      run: { budgetGuard: { music_plan: { mode: "AUTO" } } },
+      assets: [sourceAsset(), unrelatedMusic],
+    }),
+  }, { assets: [[sourceAsset()], [unrelatedMusic]] }));
+
+  await assert.rejects(
+    repository.findProductionCompositionInput({ event: compositionEvent() }),
+    /AUTO music selection requires a READY AUDIO asset with audio_role=MUSIC/,
+  );
+});
+
 test("AUTO composition fails closed instead of padding a short MUSIC asset with silence", async () => {
   const shortMusicAsset = {
     ...sourceAsset(),
@@ -364,7 +466,7 @@ test("AUTO composition fails closed instead of padding a short MUSIC asset with 
   };
   const repository = new DrizzleProductionRepository(fakeDatabase({
     ...baseRows("NATIVE_PROVIDER", {
-      run: { budgetGuard: { music_plan: { mode: "AUTO" } } },
+      run: { budgetGuard: { music_plan: { mode: "AUTO" }, pixabay_fallback_music_asset_id: shortMusicAsset.id } },
       assets: [sourceAsset(), shortMusicAsset],
     }),
   }, { assets: [[sourceAsset()], [shortMusicAsset]] }));
@@ -499,7 +601,7 @@ test("TTS-owner composition consumes an approved independent section asset at it
   }]);
 });
 
-test("reference audio and narration samples are not promoted to a final TTS output", async () => {
+test("reference audio and narration samples are not promoted and source prose is not reparsed into TTS", async () => {
   const approved = approvedNarrationRows();
   const sampleAssetId = "ast_narration_sample_fixture";
   const referenceAudioAssetId = "ast_reference_audio_fixture";
@@ -538,7 +640,7 @@ test("reference audio and narration samples are not promoted to a final TTS outp
   assert.equal(result.narrationAsset, undefined);
   assert.equal(result.narrationAssets, undefined);
   assert.equal(result.musicAsset, undefined);
-  assert.deepEqual(result.narrationSegments, [{ text: "源对白", startMs: 0 }]);
+  assert.equal(result.narrationSegments, undefined);
   const serializedPlan = JSON.stringify(result.compositionPlan);
   assert.equal(serializedPlan.includes(sampleAssetId), false);
   assert.equal(serializedPlan.includes(referenceAudioAssetId), false);

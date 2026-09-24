@@ -54,7 +54,7 @@ const transferForObject = (text: string, name: string): { from: Holder; to: Hold
   };
 };
 
-/** Extract conservative, user-authored object locks. Never infers from upload position. */
+/** @deprecated MOCK_ONLY. Real object locks require verified source evidence from Semantic Director. */
 export const extractKeyVisualObjectLocks = (sourceText: string): KeyVisualObjectLock[] => {
   const text = normalize(sourceText);
   const candidates = [

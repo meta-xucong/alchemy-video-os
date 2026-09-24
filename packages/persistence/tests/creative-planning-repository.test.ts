@@ -121,7 +121,7 @@ test("provider duration policy reaches final storyboard validation", async () =>
   assert.equal(storyboard.totalDurationSeconds, 6);
 });
 
-test("mixed references keep explicit foreground analysis locks and filter UI analysis", async () => {
+test("objective reference observations never become semantic object locks", async () => {
   const sourceAssetIds = ["ast_ui_screen", "ast_person"];
   const assets = new Map(sourceAssetIds.map((assetId, index) => [assetId, {
     projectId: "prj_story",
@@ -151,7 +151,7 @@ test("mixed references keep explicit foreground analysis locks and filter UI ana
     sourceAssetIds,
     sourcePrompt: "dashboard.png 是产品界面参考；person.png 是人物原型。",
   });
-  assert.deepEqual(locks.map((lock) => lock.name), ["人物主体"]);
+  assert.deepEqual(locks, []);
 });
 
 const completePlan = (

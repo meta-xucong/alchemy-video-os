@@ -516,3 +516,58 @@ E11 逐符号映射：`compose-director.md:80-107` 为时长预算→TTS 原始�
 - 可由固定 OpenMontage/ALCHMED8 事实支持的独立 section 窄片已在平台薄壳中对账：正式 AUDIO asset/version、PRIMARY 绝对窗口、实测时长、底层 asset identity、`start/gain/fade` 和 CUT/BLEND/BRIDGE。证据为 persistence `88/88`、composition `14/14`、production-worker `72/72`、workflow-worker `38/38`、Media Runtime `147/147`、typecheck 通过。
 - 本记录只支持独立 section 技术窄片提交 `READY_FOR_AUDIT` 候选；不把平台适配宣称为固定来源中的通用音频算法，不升级 E12/R01 或总体账本。T11 真实账本与实际启用 profile 的逐项来源认证仍按原状态保留。
 - 版本 ID 只在 Runtime 前由 Worker 关系校验；ALCHMED8 wire 不含 `narration_asset_version_id`。当前没有单条真实正式资产贯穿 PostgreSQL→scheduler→factory→Runtime→Compose 的行为测试，因此不能把该窄片写成 `ACCEPTED`。
+
+## 2026-09-23 场景音乐意图与单曲 AUTO 选曲（待独立复审）
+
+- 固定来源：Huobao storyboard 的可选 `bgm_prompt`；Seedance 的显式声音/BGM owner 语义；OpenMontage 的整片单曲、时长覆盖和 Pixabay 候选路径。三者均未提供跨运行去重或轮换算法。
+- 用户授权的 `PLATFORM_OWNED` 能力：`packages/creative-planning/src/index.ts` → workflow PromptPackage 私有 `capabilitySnapshot.bgm_prompt` → `packages/persistence/src/production-repository.ts` 的 `musicMetadataTokens`、内容命中、duration-fit、标签优先、`scoreMusicAsset`、`selectAutoMusicAsset` 与 `sha256(production_run_id + asset_id)` 稳定 tie-break。整套本地匹配均不宣称为 OpenMontage、Pixabay、Huobao 或 Seedance 原生逻辑；新任务仅在用户显式选择 `AUTO` 时运行，缺失 mode 必须拒绝。
+- Pixabay 仍只在 AUTO 且无合格本地 MUSIC 候选时走既有单一路径；不新增多轨、BPM、随机、变速或补静音。
+- 证据：creative-planning `93/93`、workflow-worker `38/38`、persistence `83 pass / 12 skip / 0 fail`，相关 typecheck 通过；真实 Provider/网络/VPS 尚未作为本条证据。状态 `IMPLEMENTED_PENDING_AUDIT`，不升级全局账本。
+
+## 2026-09-23 AUTO 音乐 metadata 泛词过滤返工登记（待独立复审）
+
+- 固定来源仍为 Huobao `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 的可选 `bgm_prompt`、Seedance `ebc68d3c19a62fba0f9ba9d2805af1f711a82aa7` 的显式音频意图，以及 OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的整片单曲/Pixabay 候选事实；这些来源不提供文件名停用词表或新的推荐算法。
+- 平台落点：`packages/persistence/src/production-repository.ts::musicMetadataTokens/scoreMusicAsset/hasExistingMusicLabels`。有限 exact-token 集 `{unknown,bgm,music,audio,latest,selected,pixabay,track}` 只排除来源/运输/文件命名泛词；同一 helper 同时控制匹配证据和已有标签分类。真实内容标签（如 `instrumental`、`ambient`、`beauty`）仍进入既有匹配。
+- 定向证据：`production-repository.test.ts` `12/12` pass；Persistence `tsc --noEmit` 退出 `0`。测试覆盖 filename-only 泛词负向、真实标签正向、分类优先边界、MUSIC 角色隔离、时长覆盖及稳定 tie-break；最终 `git diff --check` 本次复核中确认。
+- 变更性质：只修复 `latest-selected-bgm.mp3` 中泛词与 brief 偶合而压过真实标签的问题；无子串规则、通用词库、权重/阈值/时长/tie-break/角色边界/导入或 Pixabay fallback 语义变化。
+- 状态：`music_tags_01` 仅此返工切片仍 `IMPLEMENTED_PENDING_AUDIT`；无上游行为归属声明，不改变 E02/S01、E12/R01 或总体 C12.4/C12.5 状态。
+
+## 2026-09-23 场景音乐意图与单曲 AUTO 选曲真实验证（IMPLEMENTED_PENDING_AUDIT）
+
+- 独立代码审计通过：同分候选使用逐候选 `sha256(production_run_id + asset_id)`，删除含本地真实凭据的启动脚本；来源仍限于 Huobao `bgm_prompt`、Seedance 显式音频 owner、OpenMontage 单曲/时长/Pixabay 事实。
+- 真实本地 Provider 证据：Grok `grok-imagine-video-1.5` 15 秒/480P 任务 `prd_01M36MHFPT5E3FJAM03C47HAN9` 成功，产物含 H.264/AAC，约 15.042 秒，字幕关闭。
+- 该运行没有 READY MUSIC 候选，故只证明无候选时保留 Provider 原生音频；AUTO 选曲、同分稳定选择和 Pixabay fallback 仍以 fixture/行为测试为准，不能写成真实选曲已验收。状态继续 `IMPLEMENTED_PENDING_AUDIT`。
+
+## 2026-09-23 AUTO 音乐无内容命中回退规则修订（实现前冻结；待独立审计）
+
+- 固定来源边界：OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930`，`upstream/openmontage/tools/audio/pixabay_music.py::PixabayMusic.execute`。只复用其 Pixabay query → duration filter → first result 单路径；该来源不提供内容语义推荐或本地曲库排序算法。
+- 本地平台适配：`packages/persistence/src/production-repository.ts::musicMetadataTokens/scoreMusicAsset/selectAutoMusicAsset` 仍使用现有字段、token helper、评分与 SHA tie-break；新增门仅要求至少一个非泛词内容 token 命中。无命中时 selection 为空，时长覆盖本身不构成内容依据。
+- Control API 预检仅用既有可见 authored `music_plan.style_hint`、brief `stylePreferences`、项目名，并调用同一 persistence 匹配 helper；组合阶段继续消费已经持久化的 `musicIntentHints`。私有 PromptPackage 不新增跨层读取 API。
+- 无内容命中时仅 AUTO 调用现有 Pixabay import 一次；原有 workspace/MUSIC/MIME/大小/SHA/幂等/时长校验保留，导入失败或最终无合格资产即阻断。MANUAL/OFF 不回退；无真实网络或 Provider 验证。
+- 历史 2026-09-23 metadata/tie-break 条目记录的是修订前实现与证据，不是本规则的验收或 `ACCEPTED` 证明；当前修订仍 `IMPLEMENTED_PENDING_AUDIT`，不改变 E02/S01、E12/R01 或 C12.4/C12.5 状态。
+- 定向证据：Persistence composition/selector `28/28`、Control API AUTO fallback `7/7`；Persistence build、两包 typecheck、`git diff --check` 均退出 `0`。全为本地 fixtures，无真实 Pixabay/Provider/网络/Veyra/VPS 调用；等待独立审计。
+
+### 独立审计返工：查询词不得成为导入曲目的内容证据
+
+- OpenMontage Pixabay `query` 是搜索输入；本地 Asset 的 `metadata.pixabay_query` 保留该来源事实用于审计，但不进入 `musicContentTokenMatchCount`。若它参与匹配，导入曲目会因复用自己的查询词而自命中。
+- 仅由查询词与 authored brief/project name 相同，不足以接受候选；导入后仍须由实际 title 或已有描述性候选事实命中，并满足原时长/资产校验。title 不命中时单次导入后 fail-closed；title 命中 fixture 成功。
+- 这项修正不改变 OpenMontage 来源能力边界、Pixabay query→duration filter→first result 路径或 metadata 保留；状态仍 `IMPLEMENTED_PENDING_AUDIT`，等待主控独立复审。
+
+### 后续审计回流：不叠加 post-import 语义筛选
+
+- OpenMontage 的既有路径已用 authored query 搜索、按 duration 筛选并下载首条结果；没有来源依据要求 Control API 再以 title 做语义命中筛选。此前的 post-import content gate 属平台自造逻辑，现移除。
+- `pixabay_query` 仍不参与本地候选匹配，query-only 本地资产仍触发 fallback；已经通过来源首条路径导入的资产仅按既有 `isUsableMusicAsset` 规则接受或阻断。
+- 该次已校验导入 asset identity 随既有内部 `budget_guard` 事实进入组合选择；只有该精确预选资产绕过本地内容匹配，其余候选不变。不新增公开字段/schema 或来源网络路径。
+- 定向证据：Persistence `production-repository.test.ts` + `production-repository.native-audio.test.ts` `29/29`、Control API `pixabay-auto-fallback.test.ts` `8/8`；Persistence build、两包 `tsc --noEmit` 与 `git diff --check` 通过。Fixture 证明 query-only 本地候选回退、指定的 query-only 导入 identity 被最终 composition 消费、重复幂等不重复导入、短曲 fail-closed；其它本地候选仍要求内容命中。全为本地 fixture/mock，无真实 Provider/Pixabay/网络/Veyra/VPS 调用。实现状态维持 `IMPLEMENTED_PENDING_AUDIT`，待独立复审。
+
+### 2026-09-23 真实护肤品成片复测登记（仅有盖瓶子/盒子参考图）
+
+- 固定来源和适配未改变：OpenMontage Pixabay `query→duration filter→first result→download`，平台仅做既有资产/MUSIC/MIME/SHA/时长边界及内部 fallback identity 传递。
+- 真实本地完整栈/Sub2API/Grok 运行 `prd_01M37BBA4PEK340490HJESPNBA`（30s/480P）3/3 段成功，成片 `vvr_01M37BMBSA4H2TYCXK6EF8H1DP`；AUTO BGM 为 Pixabay 首条合格结果“武侠打斗纯音乐”。
+- 输入 brief 只绑定有盖瓶子/盒子资产 `ast_01M32DFW9FWVB3TRRF6Y43CPVF`；无盖图 `ast_01M32DH0X2C8XJSYSQZFK6B900` 未进入本次输入。该条只登记来源和产物事实，不宣称首条曲目具备语义审美推荐；状态仍 `IMPLEMENTED_PENDING_AUDIT`。
+
+### 2026-09-23 真实护肤片反馈窄适配
+
+- Huobao `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 与 Seedance `ebc68d3c19a62fba0f9ba9d2805af1f711a82aa7` 均要求自然语言保留有序可见动作和明确终点；workflow-worker 仅补充源文前后变化不得丢失结果的导演提示，不新增视觉算法。
+- creative-planning 的 LLM 分段壳默认边界字段“本段开始/本段结束/按分段顺序承接”不再进入 provider prompt；source prompt 中用户明确写出的同名文字仍按 source-first 保留。该改动是现有编译器边界薄适配，不是上游新协议。
+- OpenMontage Pixabay 来源仍严格按 authored query、duration filter、first result；本次真实记录中的“武侠打斗纯音乐”与 query“高级护肤品纯音乐 BGM”不一致属于来源首条语义限制，平台不添加自造标题/情绪评分器。状态继续 `IMPLEMENTED_PENDING_AUDIT`。

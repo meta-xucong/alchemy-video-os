@@ -91,6 +91,7 @@ const imageInstructionClause = (input: Readonly<{
  * locks; only an explicit foreground instruction opts into the existing lock
  * path. Unknown cases remain reference-only (no lock is invented).
  */
+/** @deprecated MOCK_ONLY. Real reference usage comes from verified SemanticReferenceProjection. */
 export const inferVisualReferenceLockPolicies = (input: Readonly<{
   sourcePrompt: string;
   roles: ReadonlyArray<VisualReferenceRole | undefined>;
@@ -104,8 +105,9 @@ export const inferVisualReferenceLockPolicies = (input: Readonly<{
 });
 
 export type VisualReferenceAnalysis = {
-  role: Exclude<VisualReferenceRole, "HANDOFF">;
-  confidence: number;
+  /** Legacy fields may exist on historical assets; new objective observations omit them. */
+  role?: Exclude<VisualReferenceRole, "HANDOFF">;
+  confidence?: number;
   summary?: string;
   objects?: Array<{
     name: string;
@@ -115,32 +117,48 @@ export type VisualReferenceAnalysis = {
   }>;
 };
 
-const validAnalysisRole = (value: unknown): value is VisualReferenceAnalysis["role"] =>
+const validAnalysisRole = (value: unknown): value is Exclude<VisualReferenceRole, "HANDOFF"> =>
   value === "SUBJECT" || value === "SCENE" || value === "STYLE";
 
-/** Read the internal, server-produced visual analysis stored on an asset. */
+/** Read objective visual observations. Legacy role/confidence are retained only for historical reads. */
 export const parseVisualReferenceAnalysis = (value: unknown): VisualReferenceAnalysis | undefined => {
   if (!value || typeof value !== "object") return undefined;
   const candidate = value as { role?: unknown; confidence?: unknown; summary?: unknown; objects?: unknown };
-  if (!validAnalysisRole(candidate.role) || typeof candidate.confidence !== "number" || !Number.isFinite(candidate.confidence) || candidate.confidence < 0.7) return undefined;
+  const summary = typeof candidate.summary === "string" && candidate.summary.trim()
+    ? candidate.summary.trim().slice(0, 2_000)
+    : undefined;
   const objects = Array.isArray(candidate.objects)
     ? candidate.objects.flatMap((object) => {
       if (!object || typeof object !== "object") return [];
       const item = object as Record<string, unknown>;
       if (typeof item.name !== "string" || typeof item.description !== "string" || typeof item.relation !== "string") return [];
-      const prohibited = Array.isArray(item.prohibited_changes) ? item.prohibited_changes.filter((entry): entry is string => typeof entry === "string").slice(0, 4) : [];
-      return [{ name: item.name.trim().slice(0, 80), description: item.description.trim().slice(0, 300), relation: item.relation.trim().slice(0, 200), prohibited_changes: prohibited.map((entry) => entry.slice(0, 240)) }];
+      const prohibited = Array.isArray(item.prohibited_changes)
+        ? item.prohibited_changes.filter((entry): entry is string => typeof entry === "string").slice(0, 4)
+        : [];
+      return [{
+        name: item.name.trim().slice(0, 80),
+        description: item.description.trim().slice(0, 300),
+        relation: item.relation.trim().slice(0, 200),
+        prohibited_changes: prohibited.map((entry) => entry.slice(0, 240)),
+      }];
     }).filter((object) => object.name && object.description && object.relation).slice(0, 12)
     : undefined;
+  const legacyConfidence = typeof candidate.confidence === "number"
+    && Number.isFinite(candidate.confidence)
+    && candidate.confidence >= 0
+    && candidate.confidence <= 1
+    ? candidate.confidence
+    : undefined;
+  const legacyRole = validAnalysisRole(candidate.role) && legacyConfidence !== undefined ? candidate.role : undefined;
+  if (!summary && (!objects || objects.length === 0) && !legacyRole) return undefined;
   return {
-    role: candidate.role,
-    confidence: candidate.confidence,
-    ...(typeof candidate.summary === "string" && candidate.summary.trim() ? { summary: candidate.summary.trim().slice(0, 240) } : {}),
+    ...(legacyRole ? { role: legacyRole, confidence: legacyConfidence } : {}),
+    ...(summary ? { summary } : {}),
     ...(objects && objects.length > 0 ? { objects } : {}),
   };
 };
 
-/** Resolve user instructions first, then server-produced visual analysis. Never infer by position. */
+/** @deprecated MOCK_ONLY. Real image usage is decided jointly by Semantic Director with evidence. */
 export const inferVisualReferenceRoles = (input: Readonly<{
   sourcePrompt: string;
   count: number;

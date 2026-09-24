@@ -13,7 +13,7 @@ import {
   OpenAiCompatibleSemanticPlanningClient,
   createPlanningModelFromEnv,
   createSemanticPlanningClientFromEnv,
-} from "../src/semantic-planning-client.js";
+} from "../src/mock/semantic-planning-client.js";
 
 const planningInput: PlanningInput = {
   sourceText: "夜幕下，团队完成交付。",
@@ -85,6 +85,11 @@ test("semantic client posts the complete LLM segment-decision contract", async (
   assert.ok(system.includes("每一项对应一个完整 storyboard/provider 片段"));
   assert.ok(system.includes("显式叙事节拍边界必须拆段"));
   assert.ok(system.includes("同一节拍内的子镜头优先合并在同一项"));
+  assert.ok(system.includes("起始事实、可见动作和明确终点"));
+  assert.ok(system.includes("不能只保留过程而丢掉结果"));
+  for (const forbidden of ["泛红", "肤色", "护肤", "保险", "房地产"]) {
+    assert.equal(system.includes(forbidden), false);
+  }
   assert.ok(system.includes("2-4 个各 2-6 秒"));
   assert.ok(system.includes("duration_seconds 是该完整片段的总时长"));
   assert.ok(system.includes("不得把段内子镜头各自变成独立的短片段"));

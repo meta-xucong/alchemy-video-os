@@ -1,13 +1,12 @@
-import { DeterministicStoryboardCompiler } from "@alchemy-video/creative-planning";
 import { resolveEffectiveVideoPromptMaxUtf8Bytes, resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import { DrizzleCreativePlanningRepository, createDatabase } from "@alchemy-video/persistence";
 import { BullMqCreativePlanningQueue, createBullMqCreativePlanningWorker } from "@alchemy-video/task-queue";
 import { createS3StoragePort } from "@alchemy-video/storage-client";
 
 import { BoundedDocumentContextReader } from "./document-context-reader.js";
-import { CreativePlanningExecutor, resolvePlanningDurationPolicy } from "./execution-service.js";
+import { SemanticCreativePlanningExecutor } from "./semantic-execution-service.js";
 import { CreativePlanningEventConsumer, CreativePlanningOutboxRelay } from "./service.js";
-import { createPlanningModelFromEnv } from "./semantic-planning-client.js";
+import { createVerifiedSemanticDirectorFromEnv } from "./semantic-director-client.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const redisUrl = process.env.REDIS_URL;
@@ -31,19 +30,39 @@ const storage = createS3StoragePort({
   secretAccessKey: process.env.S3_SECRET_KEY!,
 });
 const runtimeProfile = resolveVideoProviderRuntimeProfile(process.env.VIDEO_PROVIDER);
-const durationPolicy = resolvePlanningDurationPolicy(runtimeProfile);
 const providerPromptMaxUtf8Bytes = resolveEffectiveVideoPromptMaxUtf8Bytes(runtimeProfile, process.env.VIDEO_PROMPT_MAX_UTF8_BYTES);
-const executor = new CreativePlanningExecutor(
-  planningStore,
-  createPlanningModelFromEnv({ runtimeProfile, maxPromptUtf8Bytes: providerPromptMaxUtf8Bytes }),
-  new DeterministicStoryboardCompiler(),
-  new BoundedDocumentContextReader(storage),
-  undefined,
-  runtimeProfile.audioOwner,
-  durationPolicy,
-  runtimeProfile,
+const effectiveRuntimeProfile = {
+  ...runtimeProfile,
   providerPromptMaxUtf8Bytes,
-);
+};
+const documentReader = new BoundedDocumentContextReader(storage);
+const executor = runtimeProfile.mode === "mock"
+  ? await (async () => {
+    // Mock semantic code is loaded only after the runtime mode is resolved.
+    // A real Worker process never imports the deterministic planner/compiler.
+    const [planningModule, executionModule, clientModule] = await Promise.all([
+      import("@alchemy-video/creative-planning"),
+      import("./mock/execution-service.js"),
+      import("./mock/semantic-planning-client.js"),
+    ]);
+    return new executionModule.CreativePlanningExecutor(
+      planningStore,
+      clientModule.createPlanningModelFromEnv({ runtimeProfile, maxPromptUtf8Bytes: providerPromptMaxUtf8Bytes }),
+      new planningModule.DeterministicStoryboardCompiler(),
+      documentReader,
+      undefined,
+      runtimeProfile.audioOwner,
+      executionModule.resolvePlanningDurationPolicy(runtimeProfile),
+      runtimeProfile,
+      providerPromptMaxUtf8Bytes,
+    );
+  })()
+  : new SemanticCreativePlanningExecutor(
+    planningStore,
+    createVerifiedSemanticDirectorFromEnv(),
+    effectiveRuntimeProfile,
+    documentReader,
+  );
 const queueName = process.env.CREATIVE_PLANNING_QUEUE_NAME;
 const deadLetterQueueName = process.env.CREATIVE_PLANNING_DEAD_LETTER_QUEUE_NAME;
 const queue = new BullMqCreativePlanningQueue(redisUrl, { ...(queueName ? { queueName } : {}) });

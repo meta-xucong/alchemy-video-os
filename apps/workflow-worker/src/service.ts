@@ -1,9 +1,14 @@
 import { InternalCreativePlanningQueueMessageSchema, type InternalCreativePlanningQueueMessage } from "@alchemy-video/contracts";
 import { createPrefixedId } from "@alchemy-video/domain";
-import type { CreativePlanningStore, OutboxRelayStore, PersistedOutboxEvent } from "@alchemy-video/persistence";
+import type { ControlCreativeBriefRevision, CreativePlanningEvent, CreativePlanningStore, OutboxRelayStore, PersistedOutboxEvent } from "@alchemy-video/persistence";
 import type { CreativePlanningQueuePort } from "@alchemy-video/task-queue";
 
-import type { CreativePlanningExecutor } from "./execution-service.js";
+type CreativePlanningExecutorPort = {
+  execute(input: {
+    brief: ControlCreativeBriefRevision;
+    event: CreativePlanningEvent;
+  }): Promise<unknown>;
+};
 
 const failureReason = (error: unknown) =>
   (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/g, " ").slice(0, 500);
@@ -68,7 +73,7 @@ export class CreativePlanningOutboxRelay {
 export class CreativePlanningEventConsumer {
   constructor(
     private readonly store: Pick<CreativePlanningStore, "claimCreativePlanningEvent" | "completeCreativePlanningEvent" | "releaseCreativePlanningEvent" | "failCreativePlan">,
-    private readonly executor: Pick<CreativePlanningExecutor, "execute">,
+    private readonly executor: CreativePlanningExecutorPort,
     private readonly input: { consumerName: string; workerId: string; leaseMs: number },
   ) {}
 

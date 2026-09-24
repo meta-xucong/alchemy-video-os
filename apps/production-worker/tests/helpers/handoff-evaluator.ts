@@ -2,6 +2,7 @@ import type { HandoffEvaluation, HandoffEvaluatorPort } from "@alchemy-video/dom
 
 const safeSummary = (value: string) => value.replace(/[\r\n\t]+/g, " ").trim().slice(0, 240);
 
+/** @deprecated TEST_ONLY. The real Production Worker never imports this fixture. */
 export const createFixtureHandoffEvaluator = (input: {
   result?: HandoffEvaluation["result"];
   reasonCodes?: HandoffEvaluation["reasonCodes"];

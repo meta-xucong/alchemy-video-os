@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createFixtureHandoffEvaluator } from "../src/handoff-evaluator.js";
+import { createFixtureHandoffEvaluator } from "./helpers/handoff-evaluator.js";
 
 test("fixture evaluator is fail-closed by default", async () => {
   const result = await createFixtureHandoffEvaluator().evaluate({

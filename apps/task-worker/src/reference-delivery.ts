@@ -240,10 +240,14 @@ const createSignedReferenceDeliveryPort = (input: Readonly<{
   const ttlMs = input.ttlMs ?? DEFAULT_REFERENCE_DELIVERY_TTL_MS;
   return {
     async createVisualInput({ workspaceId, projectId, visualInput }) {
-      const orderedReferences = [...visualInput.references].sort((left, right) => {
-        const priority = (role: string | undefined) => role === "HANDOFF" ? 0 : role === "SCENE" ? 1 : role === "SUBJECT" ? 2 : 3;
-        return priority(left.role) - priority(right.role) || left.position - right.position;
-      });
+      const orderedReferences = [...visualInput.references];
+      if (orderedReferences.some((reference, index) => reference.position !== index)) {
+        throw new VideoProviderProtocolError("Reference input positions must preserve the frozen canonical order.");
+      }
+      const handoffIndex = orderedReferences.findIndex((reference) => reference.role === "HANDOFF");
+      if (handoffIndex > 0) {
+        throw new VideoProviderProtocolError("A handoff reference must already be frozen at canonical position zero.");
+      }
       if (visualInput.mode === "FIRST_FRAME" && orderedReferences.length !== 1) {
         throw new VideoProviderProtocolError("A first-frame video input must resolve exactly one image.");
       }

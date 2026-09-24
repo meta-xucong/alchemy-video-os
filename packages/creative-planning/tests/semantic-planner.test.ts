@@ -254,6 +254,39 @@ test("real LLM segments compile without platform-owned prompt placeholders", asy
   }
 });
 
+test("LLM storyboard boundary defaults stay out of provider prose while authored wording remains", async () => {
+  const visualPrompt = "涂抹护肤霜后，泛红逐渐减轻，终点是更均匀平整的肌肤。";
+  const draft = await new LlmFreeformPromptPlanningModel(() => [{
+    duration_seconds: 15,
+    visual_prompt: visualPrompt,
+    dialogue_line_sequences: [],
+  }]).plan({
+    ...input,
+    sourceText: "本段开始时先展示泛红肌肤，涂抹后泛红逐渐减轻，本段结束时肌肤更均匀平整。",
+    targetDurationSeconds: 15,
+    sourceAssetIds: [],
+  });
+  const shot = draft.shotSpecs[0]!;
+  const compiled = await new DeterministicStoryboardCompiler().compile({
+    ...shot,
+    narrativeGoal: "用户明确要求本段开始时展示泛红肌肤，本段结束时展示均匀平整的肌肤。",
+    generationSegmentSequence: 1,
+    generationSegmentCount: 1,
+    stylePreferences: input.stylePreferences,
+    visualPrompt,
+    motionPlan: shot.motionPlan,
+    motionPlanHash: shot.motionPlanHash,
+    cameraShot: shot.cameraShot,
+  });
+  assert.match(compiled.prompt, /涂抹护肤霜后，泛红逐渐减轻/);
+  assert.match(compiled.prompt, /更均匀平整的肌肤/);
+  assert.doesNotMatch(compiled.prompt, /Begin with: 本段开始/u);
+  assert.doesNotMatch(compiled.prompt, /End with: 本段结束/u);
+  assert.doesNotMatch(compiled.prompt, /Transition: 按分段顺序承接/u);
+  assert.match(compiled.capabilitySnapshot.source_prompt, /本段开始时/);
+  assert.match(compiled.capabilitySnapshot.source_prompt, /本段结束时/);
+});
+
 test("LLM planner fails closed when a visual decision contains a platform placeholder", async () => {
   const invalid = [{
     duration_seconds: 15,

@@ -22,6 +22,7 @@ import {
 } from "@alchemy-video/domain";
 import { checkOpenMontageSceneVariation, scoreOpenMontageSlideshowRisk } from "./openmontage-variation-audit.js";
 export { buildNarrationTimeline, normalizeNarrationSections } from "./narration-quality.js";
+export * from "./semantic-director.js";
 
 export const DETERMINISTIC_PLANNER_VERSION = "c12.5-voiceover-first-planner-v1";
 export const DETERMINISTIC_PROMPT_COMPILER_VERSION = "c11.6-camera-segment-prompt-compiler-v6";
@@ -469,6 +470,15 @@ const containsPlatformOwnedPlaceholder = (value: unknown): boolean => {
   if (value && typeof value === "object") return Object.values(value).some(containsPlatformOwnedPlaceholder);
   return false;
 };
+
+// The free-form director shell still has to populate legacy storyboard
+// fields. These exact values are platform scaffolding, not authored visual
+// facts, so they must not be serialized into a provider prompt. Source text
+// remains authoritative and is never filtered by this helper.
+const isPlatformBoundaryShell = (input: Pick<CompilationInput, "startState" | "endState" | "transitionSummary">) =>
+  input.startState === "本段开始"
+  && input.endState === "本段结束"
+  && input.transitionSummary === "按分段顺序承接";
 
 // Dialogue is an authored provider-facing utterance.  Keep its line breaks
 // intact while normalizing only horizontal formatting whitespace; the
@@ -1728,6 +1738,7 @@ export class DeterministicStoryboardCompiler implements StoryboardCompilerPort {
     const keyVisualObjectInstruction = (motionPlan?.key_visual_objects ?? [])
       .map((object) => `关键对象${object.name}全片仅一个实例；不得复制、分裂、残影或同时出现在两只手中`)
       .join(" ");
+    const platformBoundaryShell = isPlatformBoundaryShell(input);
     const sourcePrompt = [
       visualNarrativeGoal ? normalize(visualNarrativeGoal) : "",
       dialogueSource,
@@ -1750,9 +1761,11 @@ export class DeterministicStoryboardCompiler implements StoryboardCompilerPort {
       input.generationSegmentSequence && input.generationSegmentSequence > 1
         ? "PROP CONTINUITY CONTRACT: continue visible props and holder assignments from the approved prior endpoint; change only on a declared transfer."
         : "PROP CONTINUITY CONTRACT: keep visible props and holder assignments consistent; add, remove, or replace them only when explicitly requested.",
-      `Begin with: ${input.startState}`,
-      `End with: ${input.endState}`,
-      `Transition: ${input.transitionSummary}`,
+      ...(platformBoundaryShell ? [] : [
+        `Begin with: ${input.startState}`,
+        `End with: ${input.endState}`,
+        `Transition: ${input.transitionSummary}`,
+      ]),
       `Continuity: ${input.continuityNote}`,
       stylePreferences ? `Visual style: ${stylePreferences}` : "",
       factContextInstruction,

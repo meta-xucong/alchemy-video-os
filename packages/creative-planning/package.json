@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./semantic-director": {
+      "types": "./dist/semantic-director.d.ts",
+      "import": "./dist/semantic-director.js"
     }
   },
   "scripts": {

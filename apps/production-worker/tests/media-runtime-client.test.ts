@@ -114,6 +114,41 @@ test("C12.4 ownership bundle carries platform and source track windows", () => {
   assert.equal(Buffer.from(bundle).includes(Buffer.from("PROVIDER_AMBIENCE")), false, "ownership is encoded as bounded enum bytes, never text");
 });
 
+test("DeliveryPlan legacy-preserve AudioPlan writes the current ALCHMED8 envelope", () => {
+  const bundle = encodeMediaCompositionBundle(
+    [new Uint8Array([1])],
+    {
+      target_duration_ms: 1_000,
+      transitions: [],
+      bridge_durations_ms: [],
+      audio_policy: "LEGACY_PRESERVE",
+      audio_plan: {
+        version: 1,
+        target_duration_ms: 1_000,
+        narration_sections: [{
+          section_id: "no-platform-narration",
+          start_ms: 0,
+          end_ms: 1_000,
+          visual_role: "HOLD",
+        }],
+        stitch_policy: "LEGACY_PRESERVE",
+        tracks: [{
+          track_id: "segment-1",
+          ownership: "PROVIDER_DIALOGUE",
+          asset_id: "ast-segment-1",
+          start_ms: 0,
+          end_ms: 1_000,
+          gain_db: "0",
+          duck_under_narration: false,
+        }],
+      },
+    },
+  );
+  assert.deepEqual([...bundle.slice(0, 8)], [...Buffer.from("ALCHMED8")]);
+  assert.ok(Buffer.from(bundle).includes(Buffer.from("no-platform-narration")));
+  assert.ok(Buffer.from(bundle).includes(Buffer.from("ast-segment-1")));
+});
+
 test("C12.4 ALCHMED8 carries the complete AudioPlan metadata block", () => {
   const bundle = encodeMediaCompositionBundle(
     [new Uint8Array([1])],
@@ -702,9 +737,9 @@ test("C12.2 media runtime client preserves OpenMontage final-review statuses", a
       return new Response(JSON.stringify({
         status: "NEEDS_ATTENTION",
         technical_probe: { valid_container: true, duration_seconds: 15, resolution: "848x480", fps: 24, has_audio: true, codec: "h264", file_size_bytes: 3, issues: [] },
-        visual_spotcheck: { frames_sampled: 4, black_frames_detected: false, broken_overlays: false, missing_assets: false, unreadable_text: false, issues: [] },
+        visual_spotcheck: { frames_sampled: 4, black_frames_detected: false, broken_overlays: null, missing_assets: null, unreadable_text: null, issues: [] },
         audio_spotcheck: { has_audio: true, unexpected_silence: false, issues: [] },
-        promise_preservation: { status: "UNAVAILABLE", renderer_family_used: "source-aligned video composition", render_runtime_used: "ffmpeg", runtime_swap_detected: false, silent_downgrade_detected: false, issues: [] },
+        promise_preservation: { status: "UNAVAILABLE", renderer_family_used: "source-aligned video composition", render_runtime_used: "ffmpeg", runtime_swap_detected: null, silent_downgrade_detected: null, issues: ["not checked"] },
         subtitle_check: { status: "NOT_EXPECTED", subtitles_expected: false, subtitles_present: false, issues: [] },
         transcript_comparison: { status: "UNAVAILABLE", transcript_matches_script: null, word_accuracy: null, issues: [] },
         semantic_evaluation: { status: "UNAVAILABLE", issues: [] },
@@ -770,8 +805,8 @@ test("C12.3 media runtime client sends bounded script context as UTF-8 base64", 
       assert.equal(Buffer.from(headers.get("X-Media-Script-Text-Base64") ?? "", "base64url").toString("utf8"), "你好");
       return new Response(JSON.stringify({
         status: "NEEDS_ATTENTION", technical_probe: { valid_container: true, duration_seconds: 15, resolution: "848x480", fps: 24, has_audio: true, codec: "h264", file_size_bytes: 3, issues: [] },
-        visual_spotcheck: { frames_sampled: 4, black_frames_detected: false, broken_overlays: false, missing_assets: false, unreadable_text: false, issues: [] }, audio_spotcheck: { has_audio: true, unexpected_silence: false, issues: [] },
-        promise_preservation: { status: "UNAVAILABLE", renderer_family_used: "source-aligned video composition", render_runtime_used: "ffmpeg", runtime_swap_detected: false, silent_downgrade_detected: false, issues: [] }, subtitle_check: { status: "NOT_EXPECTED", subtitles_expected: false, subtitles_present: false, issues: [] }, transcript_comparison: { status: "CHECKED", transcript_matches_script: true, word_accuracy: 1, issues: [] }, semantic_evaluation: { status: "CHECKED", issues: [] }, issues_found: [], recommended_action: "PRESENT_WITH_REVIEW",
+        visual_spotcheck: { frames_sampled: 4, black_frames_detected: false, broken_overlays: null, missing_assets: null, unreadable_text: null, issues: [] }, audio_spotcheck: { has_audio: true, unexpected_silence: false, issues: [] },
+        promise_preservation: { status: "UNAVAILABLE", renderer_family_used: "source-aligned video composition", render_runtime_used: "ffmpeg", runtime_swap_detected: null, silent_downgrade_detected: null, issues: ["not checked"] }, subtitle_check: { status: "NOT_EXPECTED", subtitles_expected: false, subtitles_present: false, issues: [] }, transcript_comparison: { status: "CHECKED", transcript_matches_script: true, word_accuracy: 1, issues: [] }, semantic_evaluation: { status: "CHECKED", issues: [] }, issues_found: [], recommended_action: "PRESENT_WITH_REVIEW",
       }), { headers: { "Content-Type": "application/json" } });
     },
   });

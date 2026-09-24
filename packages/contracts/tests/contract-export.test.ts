@@ -363,20 +363,36 @@ test("C11.7 delivery preflight contracts keep approval and authorization facts e
   assert.equal(deliveryPlan.duration_policy, "FLEXIBLE");
   assert.equal(DeliveryPlanRevisionSchema.parse({ ...deliveryPlan, target_duration_seconds: 1 }).target_duration_seconds, 1);
   assert.throws(() => DeliveryPlanRevisionSchema.parse({ ...deliveryPlan, status: "PREFLIGHT_BLOCKED", block_reasons: [] }));
+  assert.throws(() => CreateDeliveryPlanRevisionCommandSchema.parse({
+    creative_brief_revision_id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    storyboard_revision_id: "sbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+  }));
   assert.deepEqual(CreateDeliveryPlanRevisionCommandSchema.parse({
     creative_brief_revision_id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
     storyboard_revision_id: "sbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
-    budget_limit: "0",
+    duration_policy: "EXACT",
+    flexible_duration_percent: 0,
+    caption_policy: "OFF",
+    lip_sync_requirement: "OFF",
+    voice_mode: "PLATFORM_GENERIC",
   }), {
     creative_brief_revision_id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
     storyboard_revision_id: "sbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
-    duration_policy: "FLEXIBLE",
-    flexible_duration_percent: 20,
-    caption_policy: "REQUIRED",
+    duration_policy: "EXACT",
+    flexible_duration_percent: 0,
+    caption_policy: "OFF",
     lip_sync_requirement: "OFF",
     voice_mode: "PLATFORM_GENERIC",
-    budget_limit: "0",
   });
+  assert.throws(() => CreateDeliveryPlanRevisionCommandSchema.parse({
+    creative_brief_revision_id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    storyboard_revision_id: "sbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    duration_policy: "EXACT",
+    flexible_duration_percent: 20,
+    caption_policy: "OFF",
+    lip_sync_requirement: "OFF",
+    voice_mode: "PLATFORM_GENERIC",
+  }));
 
   assert.throws(() => NarrationPlanRevisionSchema.parse({
     ...base,

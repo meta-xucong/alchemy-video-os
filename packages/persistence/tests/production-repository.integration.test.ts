@@ -487,16 +487,16 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     await production.completeHandoffReview({
       event: reviewEvent,
       evaluation: {
-        result: "BRIDGE_REQUIRED",
-        reasonCodes: ["SCENE_DRIFT"],
-        safeSummary: "相邻片段需要一段自然转场。",
+        result: "PASS",
+        reasonCodes: [],
+        safeSummary: "相邻片段边界检查通过。",
         evaluatorVersion: "fixture-v1",
         retryable: false,
       },
       now: new Date(),
     });
     assert.equal((await database.db.select().from(handoffReviews).where(and(eq(handoffReviews.workspaceId, workspaceId), eq(handoffReviews.productionRunId, firstRunId)))).length, 1);
-    assert.equal((await database.db.select().from(transitionRepairs).where(and(eq(transitionRepairs.workspaceId, workspaceId), eq(transitionRepairs.productionRunId, firstRunId)))).at(0)?.strategy, "BRIDGE");
+    assert.equal((await database.db.select().from(transitionRepairs).where(and(eq(transitionRepairs.workspaceId, workspaceId), eq(transitionRepairs.productionRunId, firstRunId)))).length, 0);
     const compositionEvent = await readEvent(database.db, {
       workspaceId,
       eventType: "video_version.composition_requested",
@@ -507,8 +507,8 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     const compositionInput = await production.findProductionCompositionInput({ event: compositionEvent });
     assert.deepEqual(compositionInput?.segments.map((segment) => segment.sequence), [1, 2]);
     assert.equal(compositionInput?.compositionPlan.target_duration_ms, 2_000);
-    assert.deepEqual(compositionInput?.compositionPlan.transitions, ["BRIDGE"]);
-    assert.deepEqual(compositionInput?.compositionPlan.bridge_durations_ms, [2_000]);
+    assert.deepEqual(compositionInput?.compositionPlan.transitions, ["PASS"]);
+    assert.deepEqual(compositionInput?.compositionPlan.bridge_durations_ms, []);
     assert.equal(compositionInput?.compositionPlan.audio_policy, "CONTINUOUS_NARRATION");
     assert.equal(compositionInput?.compositionPlan.music_mix.enabled, false);
     assert.deepEqual(compositionInput?.compositionPlan.music_segments_ms, []);

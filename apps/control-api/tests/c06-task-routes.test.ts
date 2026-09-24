@@ -243,7 +243,7 @@ test("C09-C creates real-provider I2V and R2V snapshots only from saved Shot bin
   const referenceBinding = await app.request(`http://localhost/api/v1/shots/${referenceSetShot.shotId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", "Idempotency-Key": "c09-c-reference-set-binding" },
-    body: JSON.stringify({ reference_bindings: referenceAssetIds.map((asset_id, position) => ({ asset_id, role: "STYLE", position })) }),
+    body: JSON.stringify({ reference_bindings: referenceAssetIds.map((asset_id, position) => ({ asset_id, role: position === 0 ? "SUBJECT" : "STYLE", position })) }),
   });
   assert.equal(referenceBinding.status, 200);
   const referenceSetResponse = await app.request(`http://localhost/api/v1/shots/${referenceSetShot.shotId}/generations`, {
@@ -256,7 +256,7 @@ test("C09-C creates real-provider I2V and R2V snapshots only from saved Shot bin
   const referenceSnapshot = await tasks.findTaskRun("ws_dev_default", referenceSet.data.id);
   assert.equal(referenceSnapshot?.inputSnapshot.visual_input?.mode, "REFERENCE_SET");
   assert.deepEqual(referenceSnapshot?.inputSnapshot.reference_asset_ids, referenceAssetIds);
-  assert.deepEqual(referenceSnapshot?.inputSnapshot.visual_input?.references.map((reference) => reference.role), ["SUBJECT", "SCENE"]);
+  assert.deepEqual(referenceSnapshot?.inputSnapshot.visual_input?.references.map((reference) => reference.role), ["SUBJECT", "STYLE"]);
   assert.match(referenceSnapshot?.inputSnapshot.prompt ?? "", /do not substitute a generic environment/);
   assert.equal(JSON.stringify(referenceSet).includes("reference_images"), false);
 });
@@ -366,7 +366,7 @@ test("C09-C keeps ready reference images available to the local Mock task flow",
   assert.equal(internal?.inputSnapshot.visual_input?.mode, "REFERENCE_SET");
 });
 
-test("generation blocks unresolved reference images instead of guessing STYLE", async () => {
+test("direct generation honors an explicit STYLE binding without reclassifying image content", async () => {
   const control = createInMemoryControlPlaneStore();
   const assets = createInMemoryAssetWorkspaceStore(control);
   const tasks = createInMemoryTaskRunStore(assets);
@@ -399,13 +399,13 @@ test("generation blocks unresolved reference images instead of guessing STYLE", 
     headers: { "Content-Type": "application/json", "Idempotency-Key": "c09-c-fallback-generation" },
     body: JSON.stringify({}),
   });
-  assert.equal(response.status, 400);
+  assert.equal(response.status, 202);
   const payload = await readJson(response);
-  assert.equal(payload.error.code, "VALIDATION_FAILED");
-  assert.equal((await tasks.listProjectTaskRuns("ws_dev_default", projectId)).length, 0);
+  const task = await tasks.findTaskRun("ws_dev_default", payload.data.id);
+  assert.deepEqual(task?.inputSnapshot.visual_input?.references.map((reference) => reference.role), ["STYLE", "STYLE"]);
 });
 
-test("reference vision analysis is persisted at confirmation and user text remains authoritative", async () => {
+test("objective reference vision analysis is persisted but does not override explicit bindings", async () => {
   const control = createInMemoryControlPlaneStore();
   const assets = createInMemoryAssetWorkspaceStore(control);
   const tasks = createInMemoryTaskRunStore(assets);
@@ -416,7 +416,7 @@ test("reference vision analysis is persisted at confirmation and user text remai
     taskStore: tasks,
     storage,
     referenceVisionAnalyzer: {
-      analyze: async () => ({ role: "SUBJECT" as const, confidence: 0.96, summary: "视觉识别为人物主体" }),
+      analyze: async () => ({ summary: "可见一位人物，穿着深色外套。" }),
     },
   });
   const { projectId, shotId } = await createReadyShot(app, { prompt: "第一张是场景图，第二张是人物图。", keySuffix: "vision-analysis" });
@@ -426,7 +426,7 @@ test("reference vision analysis is persisted at confirmation and user text remai
   const binding = await app.request(`http://localhost/api/v1/shots/${shotId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", "Idempotency-Key": "c09-c-vision-binding" },
-    body: JSON.stringify({ reference_bindings: referenceAssetIds.map((asset_id, position) => ({ asset_id, role: "STYLE", position })) }),
+    body: JSON.stringify({ reference_bindings: referenceAssetIds.map((asset_id, position) => ({ asset_id, role: position === 0 ? "SUBJECT" : "STYLE", position })) }),
   });
   assert.equal(binding.status, 200);
   const response = await app.request(`http://localhost/api/v1/shots/${shotId}/generations`, {
@@ -437,7 +437,8 @@ test("reference vision analysis is persisted at confirmation and user text remai
   assert.equal(response.status, 202);
   const created = await readJson(response);
   const internal = await tasks.findTaskRun("ws_dev_default", created.data.id);
-  assert.deepEqual(internal?.inputSnapshot.visual_input?.references.map((reference) => reference.role), ["SCENE", "SUBJECT"]);
+  assert.deepEqual(internal?.inputSnapshot.visual_input?.references.map((reference) => reference.role), ["SUBJECT", "STYLE"]);
+  assert.ok(detail?.assets.every((asset) => !Object.hasOwn(asset.metadata.visual_analysis as object, "role")));
 });
 
 test("C09-C provider-input only streams its encrypted token's scoped image without exposing storage paths", async () => {

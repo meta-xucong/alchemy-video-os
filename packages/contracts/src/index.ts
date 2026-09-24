@@ -11,4 +11,5 @@ export * from "./narration-quality.js";
 export * from "./primitives.js";
 export * from "./production.js";
 export * from "./resources.js";
+export * from "./semantic-provenance.js";
 export * from "./specifications.js";

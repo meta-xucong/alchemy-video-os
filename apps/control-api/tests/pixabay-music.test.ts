@@ -4,9 +4,10 @@ import { HttpPixabayMusicClient, PixabayMusicError, PIXABAY_MAX_AUDIO_BYTES } fr
 
 test("Pixabay loopback client transports bytes and metadata without exposing provider URL", async () => {
   let request = "";
-  const client = new HttpPixabayMusicClient({ runtimeUrl: "http://127.0.0.1:3433/", token: "t", fetcher: async (u) => { request = String(u); return new Response(new Uint8Array([1]), { headers: { "content-type": "audio/mpeg", "x-pixabay-track-title-base64": Buffer.from("fixture").toString("base64url"), "x-pixabay-rating": "4.75", "x-pixabay-download-count": "321" } }); } });
+  const client = new HttpPixabayMusicClient({ runtimeUrl: "http://127.0.0.1:3433/", token: "t", fetcher: async (u) => { request = String(u); return new Response(new Uint8Array([1]), { headers: { "content-type": "audio/mpeg", "x-pixabay-query-base64": Buffer.from("forest film").toString("base64url"), "x-pixabay-track-title-base64": Buffer.from("fixture").toString("base64url"), "x-pixabay-rating": "4.75", "x-pixabay-download-count": "321" } }); } });
   const result = await client.execute({ query: "ambient" });
   assert.equal(request, "http://127.0.0.1:3433/internal/v1/media/pixabay-music");
+  assert.equal(result.query, "forest film");
   assert.equal(result.track.title, "fixture");
   assert.equal(result.track.rating, 4.75);
   assert.equal(result.track.download_count, 321);
