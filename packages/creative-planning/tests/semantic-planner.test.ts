@@ -72,11 +72,24 @@ test("LLM decides segment count, duration and ordered dialogue ownership", async
   assert.ok(draft.shotSpecs.every((shot) => !("voicePerformance" in shot)));
   assert.ok(draft.shotSpecs.every((shot) => !("dialogue_duration_seconds" in shot.motionPlan)));
   assert.ok(draft.shotSpecs.every((shot) => !("voice_performance" in shot.motionPlan)));
-  assert.equal(draft.title, "PLATFORM_OWNED_LLM_PLAN_TITLE");
-  assert.equal(draft.summary, "PLATFORM_OWNED_LLM_PLAN_SUMMARY");
-  assert.equal(draft.shotSpecs[0]!.title, "PLATFORM_OWNED_TITLE 1");
-  assert.equal(draft.shotSpecs[0]!.continuityNote, "PLATFORM_OWNED_CONTINUITY");
+  assert.equal(draft.title, "故事计划");
+  assert.equal(draft.summary, "共 2 个叙事点，自动合并为 2 个生成片段，总时长 30 秒。");
+  assert.equal(draft.shotSpecs[0]!.title, "生成片段 1");
+  assert.equal(draft.shotSpecs[0]!.continuityNote, "按分段顺序衔接，不承诺帧级无缝。");
+  assert.doesNotMatch(JSON.stringify(draft), /PLATFORM_OWNED_(?:TITLE|LLM_PLAN_TITLE|LLM_PLAN_SUMMARY)/u);
   assert.deepEqual(draft.shotSpecs.map((shot) => shot.dependsOnSequences), [[], [1]]);
+});
+
+test("optional source-aligned bgm_prompt is preserved without entering visual or dialogue fields", async () => {
+  const decisions = [
+    { duration_seconds: 15, visual_prompt: "人物在晨光中整理桌面并停稳。", dialogue_line_sequences: [1], bgm_prompt: "温暖克制的钢琴与轻柔弦乐" },
+    { duration_seconds: 15, visual_prompt: "成品在窗边光线中收束。", dialogue_line_sequences: [2] },
+  ];
+  const draft = await new LlmFreeformPromptPlanningModel(() => decisions).plan(input);
+  assert.equal(draft.shotSpecs[0]!.bgmPrompt, decisions[0]!.bgm_prompt);
+  assert.equal(draft.shotSpecs[1]!.bgmPrompt, undefined);
+  assert.equal(draft.shotSpecs[0]!.visualPrompt, decisions[0]!.visual_prompt);
+  assert.deepEqual(draft.shotSpecs[0]!.dialogueLines, ["保障要逐字写清。"]);
 });
 
 test("dialogue-free visual segments keep their natural-language goal without duplicate visual injection", async () => {
@@ -95,6 +108,102 @@ test("dialogue-free visual segments keep their natural-language goal without dup
   assert.deepEqual(draft.shotSpecs.map((shot) => shot.visualPrompt), [undefined, undefined]);
   assert.ok(draft.shotSpecs[0]!.narrativeGoal.includes("办公室灯光亮起"));
   assert.equal(draft.generationSegmentCount, 2);
+});
+
+test("same-scene subshots remain one complete LLM storyboard/provider segment", async () => {
+  const visualPrompt = "同一办公室场景内依次呈现三个子镜头：人物将文件放到桌面（约4秒），镜头切到手部整理文件（约3秒），再切回人物确认交付并停稳（约5秒）。";
+  const draft = await new LlmFreeformPromptPlanningModel(() => [{
+    duration_seconds: 12,
+    visual_prompt: visualPrompt,
+    dialogue_line_sequences: [],
+  }]).plan({
+    ...input,
+    sourceText: "同一办公室内，人物整理文件并确认交付。",
+    targetDurationSeconds: 12,
+    sourceAssetIds: ["ast_office"],
+    sourceShotBindings: { 1: { sceneId: "office", referenceAnchors: ["@office"] } },
+  });
+
+  assert.equal(draft.generationSegmentCount, 1);
+  assert.equal(draft.shotSpecs.length, 1);
+  assert.equal(draft.shotSpecs[0]!.durationSeconds, 12);
+  assert.equal(draft.shotSpecs[0]!.narrativeGoal, visualPrompt);
+  assert.equal(draft.shotSpecs[0]!.motionPlan.motion_beats.length, 1);
+  assert.equal(draft.shotSpecs[0]!.motionPlan.motion_beats[0]!.action, visualPrompt);
+  assert.equal(draft.shotSpecs[0]!.referencePolicy, "REFERENCE_SET");
+});
+
+test("source-bound explicit scene change refreshes only its mapped LLM destination segment", async () => {
+  const decisions = [
+    { duration_seconds: 10, visual_prompt: "人物在办公室完成交付准备并停稳。", dialogue_line_sequences: [] },
+    { duration_seconds: 10, visual_prompt: "人物在仓库新场景中检查成品并停稳。", dialogue_line_sequences: [] },
+    { duration_seconds: 10, visual_prompt: "人物继续在仓库核对清单并停稳。", dialogue_line_sequences: [] },
+  ];
+  const draft = await new LlmFreeformPromptPlanningModel(() => decisions).plan({
+    ...input,
+    sourceText: "人物在办公室准备交付。随后画面切至仓库检查成品，并继续核对清单。",
+    targetDurationSeconds: 30,
+    sourceAssetIds: ["ast_scene"],
+    sourceShotBindings: {
+      1: { sceneId: "office" },
+      2: { sceneId: "warehouse" },
+      3: { sceneId: "warehouse" },
+    },
+  });
+
+  assert.deepEqual(draft.shotSpecs.map((shot) => shot.referencePolicy), ["REFERENCE_SET", "REFERENCE_SET", "HANDOFF_FIRST_FRAME"]);
+});
+
+test("explicit source scene change without verifiable scene bindings fails closed in the LLM path", async () => {
+  const decisions = [
+    { duration_seconds: 10, visual_prompt: "人物在办公室整理文件并停稳。", dialogue_line_sequences: [] },
+    { duration_seconds: 10, visual_prompt: "画面切至仓库新场景，人物检查成品并停稳。", dialogue_line_sequences: [] },
+  ];
+  assert.equal(
+    await errorCode(() => new LlmFreeformPromptPlanningModel(() => decisions).plan({
+      ...input,
+      sourceText: "人物在办公室整理文件。随后画面切至仓库检查成品。",
+      targetDurationSeconds: 20,
+      sourceAssetIds: ["ast_office"],
+      sourceShotBindings: undefined,
+    })),
+    "LLM_PLANNER_MALFORMED",
+  );
+});
+
+test("source without an explicit scene change keeps LLM handoff when scene bindings are absent", async () => {
+  const decisions = [
+    { duration_seconds: 10, visual_prompt: "人物在办公室整理文件并停稳。", dialogue_line_sequences: [] },
+    { duration_seconds: 10, visual_prompt: "镜头切换到手部特写，人物继续整理同一份文件并停稳。", dialogue_line_sequences: [] },
+  ];
+  const draft = await new LlmFreeformPromptPlanningModel(() => decisions).plan({
+    ...input,
+    sourceText: "同一间办公室里，人物整理文件并确认交付。",
+    targetDurationSeconds: 20,
+    sourceAssetIds: ["ast_office"],
+    sourceShotBindings: undefined,
+  });
+
+  assert.deepEqual(draft.shotSpecs.map((shot) => shot.referencePolicy), ["REFERENCE_SET", "HANDOFF_FIRST_FRAME"]);
+});
+
+test("same-scene LLM hard cuts with bound scene continuity remain HANDOFF_FIRST_FRAME", async () => {
+  const decisions = [
+    { duration_seconds: 10, visual_prompt: "人物在办公室整理文件并停稳。", dialogue_line_sequences: [] },
+    { duration_seconds: 10, visual_prompt: "镜头切换到手部特写，人物继续整理同一份文件并停稳。", dialogue_line_sequences: [] },
+  ];
+  const draft = await new LlmFreeformPromptPlanningModel(() => decisions).plan({
+    ...input,
+    sourceText: "同一间办公室里，人物整理文件并确认交付。",
+    targetDurationSeconds: 20,
+    sourceAssetIds: ["ast_office"],
+    sourceShotBindings: {
+      1: { sceneId: "office" },
+      2: { sceneId: "office" },
+    },
+  });
+
+  assert.deepEqual(draft.shotSpecs.map((shot) => shot.referencePolicy), ["REFERENCE_SET", "HANDOFF_FIRST_FRAME"]);
 });
 
 test("LLM visual_prompt remains complete in its segment-local natural-language fields", async () => {
@@ -187,10 +296,11 @@ test("minimumSegments is passed to the director and enforced without mechanical 
   assert.equal(received[0]!.minimumSegments, 2);
 });
 
-test("exact three-key response and duration sum are required", async () => {
+test("required response keys and duration sum are required", async () => {
   const cases: unknown[] = [
     { duration_seconds: 15, visual_prompt: "对象", dialogue_line_sequences: [] },
     [{ duration_seconds: 15, visual_prompt: "第一段", dialogue_line_sequences: [1], extra: true }, validDecisions[1]],
+    [{ duration_seconds: 15, visual_prompt: "第一段", dialogue_line_sequences: [1], bgm_prompt: 42 }, validDecisions[1]],
     [{ duration_seconds: 15, visual_prompt: "第一段", dialogue_line_sequences: [1] }, { duration_seconds: 14, visual_prompt: "第二段", dialogue_line_sequences: [2] }],
     [{ duration_seconds: 7, visual_prompt: "太短", dialogue_line_sequences: [1] }, { duration_seconds: 23, visual_prompt: "太长", dialogue_line_sequences: [2] }],
   ];

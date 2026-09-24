@@ -114,6 +114,8 @@ export type PlannedShotSpec = {
   referenceAnchors?: string[];
   /** Internal LLM-generated visual supplement; never persisted or exposed. */
   visualPrompt?: string;
+  /** Huobao storyboard music intent; carried privately to the composition selector. */
+  bgmPrompt?: string;
 };
 
 export type StoryboardPlanDraft = {
@@ -207,6 +209,8 @@ export type LlmFreeformSegment = Readonly<{
   duration_seconds: number;
   visual_prompt: string;
   dialogue_line_sequences: readonly number[];
+  /** Huobao storyboard-breaker optional short music-intent phrase. */
+  bgm_prompt?: string;
 }>;
 
 export type LlmFreeformPlanningClient = {
@@ -270,7 +274,7 @@ const containsForeignSemanticSource = (
 
 /**
  * Parse the only response shape allowed by this seam: an ordered top-level
- * array of exact three-key segment decisions. No duration repair, dialogue
+ * array of exact required-key segment decisions. No duration repair, dialogue
  * redistribution, visual rewriting, or deterministic fallback is permitted.
  */
 const readLlmSegmentDecisions = (
@@ -283,14 +287,16 @@ const readLlmSegmentDecisions = (
   if (value.length < Math.max(1, context.minimumSegments ?? 1)) {
     return malformed("The semantic director returned fewer segments than the requested minimum.");
   }
-  const keys = ["duration_seconds", "visual_prompt", "dialogue_line_sequences"];
+  const requiredKeys = ["duration_seconds", "visual_prompt", "dialogue_line_sequences"];
+  const allowedKeys = [...requiredKeys, "bgm_prompt"];
   const decisions = value.map((item, index) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       return malformed(`Segment ${index + 1} must be an object.`);
     }
     const record = item as Record<string, unknown>;
-    if (Object.keys(record).length !== keys.length || keys.some((key) => !Object.hasOwn(record, key))) {
-      return malformed(`Segment ${index + 1} must contain exactly duration_seconds, visual_prompt, and dialogue_line_sequences.`);
+    if (Object.keys(record).some((key) => !allowedKeys.includes(key))
+      || requiredKeys.some((key) => !Object.hasOwn(record, key))) {
+      return malformed(`Segment ${index + 1} must contain duration_seconds, visual_prompt, and dialogue_line_sequences, with optional bgm_prompt.`);
     }
     if (!Number.isSafeInteger(record.duration_seconds)
       || (record.duration_seconds as number) < context.durationBounds.minDurationSeconds
@@ -310,10 +316,17 @@ const readLlmSegmentDecisions = (
       || (record.dialogue_line_sequences as unknown[]).some((sequence) => !Number.isSafeInteger(sequence) || (sequence as number) < 1)) {
       return malformed(`Segment ${index + 1} dialogue_line_sequences must be positive integer references.`);
     }
+    if (Object.hasOwn(record, "bgm_prompt")
+      && record.bgm_prompt !== undefined
+      && typeof record.bgm_prompt !== "string") {
+      return malformed(`Segment ${index + 1} bgm_prompt must be a string when provided.`);
+    }
+    const bgmPrompt = typeof record.bgm_prompt === "string" ? record.bgm_prompt.trim() : "";
     return {
       duration_seconds: record.duration_seconds as number,
       visual_prompt: record.visual_prompt as string,
       dialogue_line_sequences: [...record.dialogue_line_sequences as number[]],
+      ...(bgmPrompt ? { bgm_prompt: bgmPrompt } : {}),
     };
   });
   const total = decisions.reduce((sum, item) => sum + item.duration_seconds, 0);
@@ -1233,7 +1246,7 @@ const distributeEvents = (events: string[], count: number) => {
 const explicitSceneChangePattern = /(?:转场(?:至|到)|镜头(?:切换|转到)|画面(?:切至|转到)|场景(?:切换|转到)|地点(?:切换|变为)|(?:镜头|画面)[^。！？!？\n]*拉远甩镜[^。！？!？\n]*(?:界面|场景|空间|环境)[^。！？!？\n]*(?:展开|出现|切入|进入))/u;
 const hasExplicitSceneChangeSignal = (value: string) => explicitSceneChangePattern.test(value);
 
-const shotReferencePolicy = (input: PlanningInput, sequence: number, hasExplicitSceneChange: boolean): ReferencePolicy => {
+const shotReferencePolicy = (input: PlanningInput, sequence: number, hasExplicitSceneChange?: boolean): ReferencePolicy => {
   if (input.sourceAssetIds.length > 0 && sequence === 1) return "REFERENCE_SET";
   if (input.sourceAssetIds.length > 0 && sequence > 1) {
     const currentSceneId = input.sourceShotBindings?.[sequence]?.sceneId;
@@ -1262,9 +1275,6 @@ const LLM_PLATFORM_OWNED_TRANSITION_IN = "PLATFORM_OWNED_TRANSITION_IN";
 const LLM_PLATFORM_OWNED_TRANSITION_OUT = "PLATFORM_OWNED_TRANSITION_OUT";
 const LLM_PLATFORM_OWNED_SCENE_LOCK = "PLATFORM_OWNED_SCENE_LOCK";
 const LLM_PLATFORM_OWNED_CONTINUITY = "PLATFORM_OWNED_CONTINUITY";
-const LLM_PLATFORM_OWNED_TITLE = "PLATFORM_OWNED_TITLE";
-const LLM_PLATFORM_OWNED_PLAN_TITLE = "PLATFORM_OWNED_LLM_PLAN_TITLE";
-const LLM_PLATFORM_OWNED_PLAN_SUMMARY = "PLATFORM_OWNED_LLM_PLAN_SUMMARY";
 const LLM_PLATFORM_OWNED_COMPLEXITY_SCORE = 0;
 
 const buildLlmPlatformMotionPlan = (input: {
@@ -1331,12 +1341,29 @@ const buildLlmSegmentedDraft = (
   context: LlmFreeformPlanningContext,
   decisions: readonly LlmFreeformSegment[],
 ): StoryboardPlanDraft => {
+  if (input.sourceAssetIds.length > 0 && hasExplicitSceneChangeSignal(input.sourceText)) {
+    const hasBoundSceneChange = decisions.some((_decision, index) => {
+      const sequence = index + 1;
+      if (sequence === 1) return false;
+      const currentSceneId = input.sourceShotBindings?.[sequence]?.sceneId;
+      const previousSceneId = input.sourceShotBindings?.[sequence - 1]?.sceneId;
+      return currentSceneId !== undefined
+        && previousSceneId !== undefined
+        && currentSceneId !== previousSceneId;
+    });
+    if (!hasBoundSceneChange) {
+      malformed("The semantic director cannot safely map an explicit scene change without source-bound scene IDs.");
+    }
+  }
+
   const dialogueLines = [...context.dialogueLines];
   const keyVisualObjects = [...(input.visualObjectLocks ?? [])];
   const durationPolicy = input.durationPolicy ?? DEFAULT_STORYBOARD_DURATION_POLICY;
   const beats: PlannedScriptBeat[] = decisions.map((decision, index) => ({
     sequence: index + 1,
-    title: `${LLM_PLATFORM_OWNED_TITLE} ${index + 1}`,
+    // The three-key director response has no title field. Keep this required
+    // label neutral; the authored visual prompt remains in summary/goal.
+    title: `叙事点 ${index + 1}`,
     summary: decision.visual_prompt,
     narrativeGoal: decision.visual_prompt,
     visibleFacts: [decision.visual_prompt],
@@ -1346,9 +1373,10 @@ const buildLlmSegmentedDraft = (
   const shotSpecs = decisions.map((decision, index) => {
     const sequence = index + 1;
     const segmentBeatSequences = [sequence];
-    // Reference policy may use only already-bound assets and source facts.
-    // The LLM visual prompt is never scanned for scene-change keywords.
-    const referencePolicy = shotReferencePolicy(input, sequence, false);
+    // The shared reference policy can localize only source-bound scene IDs.
+    // A visual prompt may describe an allowed same-scene hard cut, and the
+    // complete source text cannot locate that transfer to this segment.
+    const referencePolicy = shotReferencePolicy(input, sequence);
     const sourceBinding = input.sourceShotBindings?.[sequence];
     const selectedDialogueLines = decision.dialogue_line_sequences.map((lineSequence) => dialogueLines[lineSequence - 1]!);
     const narrativeGoal = selectedDialogueLines.length > 0
@@ -1374,23 +1402,24 @@ const buildLlmSegmentedDraft = (
     });
     return {
       sequence,
-      // Title is a required internal label, not a director decision.
-      title: `${LLM_PLATFORM_OWNED_TITLE} ${sequence}`,
+      // Title is a required platform label, not a director decision.
+      title: `生成片段 ${sequence}`,
       durationSeconds: decision.duration_seconds,
       narrativeGoal,
-      startState: LLM_PLATFORM_OWNED_OPENING_STATE,
-      endState: LLM_PLATFORM_OWNED_CLOSING_STATE,
-      transitionSummary: LLM_PLATFORM_OWNED_TRANSITION_OUT,
+      startState: "本段开始",
+      endState: "本段结束",
+      transitionSummary: "按分段顺序承接",
       referencePolicy,
       // Structural order is owned by the platform adapter; no transition
       // fact is inferred from the director prompt.
       dependsOnSequences: sequence === 1 ? [] : [sequence - 1],
-      continuityNote: LLM_PLATFORM_OWNED_CONTINUITY,
+      continuityNote: "按分段顺序衔接，不承诺帧级无缝。",
       narrativeBeatSequences: segmentBeatSequences,
       motionPlan: motion.motionPlan,
       motionPlanHash: motion.motionPlanHash,
       cameraShot,
       dialogueLines: selectedDialogueLines,
+      ...(decision.bgm_prompt ? { bgmPrompt: decision.bgm_prompt } : {}),
       ...(sourceBinding?.sceneId ? { sceneId: sourceBinding.sceneId } : {}),
       ...(sourceBinding?.characterIds?.length ? { characterIds: [...sourceBinding.characterIds] } : {}),
       ...(sourceBinding?.propIds?.length ? { propIds: [...sourceBinding.propIds] } : {}),
@@ -1415,11 +1444,11 @@ const buildLlmSegmentedDraft = (
   return {
     plannerVersion: "PLATFORM_OWNED_LLM_FREEFORM_PLANNER",
     beats,
-    title: LLM_PLATFORM_OWNED_PLAN_TITLE,
-    summary: LLM_PLATFORM_OWNED_PLAN_SUMMARY,
+    title: "故事计划",
+    summary: `共 ${beats.length} 个叙事点，自动合并为 ${shotSpecs.length} 个生成片段，总时长 ${input.targetDurationSeconds} 秒。`,
     totalDurationSeconds: input.targetDurationSeconds,
     continuityLevel,
-    continuityNote: LLM_PLATFORM_OWNED_CONTINUITY,
+    continuityNote: "按分段顺序衔接，不承诺帧级无缝。",
     shotSpecs,
     narrativeBeatCount: beats.length,
     generationSegmentCount: shotSpecs.length,

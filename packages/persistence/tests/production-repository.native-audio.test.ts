@@ -303,10 +303,53 @@ test("AUTO composition consumes only a MUSIC asset whose measured duration cover
 
   assert.ok(result);
   assert.equal(result.musicAsset?.id, musicAsset.id);
-  assert.equal(result.compositionPlan?.music_mix.enabled, true);
+  assert.deepEqual(result.compositionPlan?.music_mix, {
+    enabled: true,
+    volume: 0.08,
+    fade_in_ms: 1_500,
+    fade_out_ms: 2_500,
+    ducking_enabled: true,
+    ducking_reduction_db: 18,
+    target_lufs: -14,
+    true_peak_db: -1.5,
+    voice_enhance: true,
+    music_eq_cut_db: 3,
+  });
   assert.deepEqual(result.compositionPlan?.music_segments_ms, [{ start_ms: 0, end_ms: 1_000 }]);
   assert.equal(isUsableMusicAsset({ ...musicAsset }, { minimumDurationMs: 1_000 }), true);
   assert.equal(isUsableMusicAsset({ ...musicAsset, durationMs: 500 }, { minimumDurationMs: 1_000 }), false);
+});
+
+test("AUTO composition consumes the persisted per-segment bgm_prompt as a matching hint", async () => {
+  const warmMusic = {
+    ...sourceAsset(),
+    id: "ast_native_music_warm",
+    kind: "AUDIO" as const,
+    objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_music_warm/music.mp3`,
+    mimeType: "audio/mpeg",
+    durationMs: 42_000,
+    metadata: { audio_role: "MUSIC", mood: "warm" },
+  };
+  const coolMusic = {
+    ...sourceAsset(),
+    id: "ast_native_music_cool",
+    kind: "AUDIO" as const,
+    objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_music_cool/music.mp3`,
+    mimeType: "audio/mpeg",
+    durationMs: 42_000,
+    metadata: { audio_role: "MUSIC", mood: "cool" },
+  };
+  const rows = baseRows("NATIVE_PROVIDER", {
+    run: { budgetGuard: { music_plan: { mode: "AUTO" } } },
+    assets: [sourceAsset(), warmMusic, coolMusic],
+  });
+  const promptPackage = rows.prompt_packages[0] as Record<string, unknown>;
+  promptPackage.capabilitySnapshot = { bgm_prompt: "cool" };
+  const repository = new DrizzleProductionRepository(fakeDatabase(rows, {
+    assets: [[sourceAsset()], [warmMusic, coolMusic]],
+  }));
+  const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
+  assert.equal(result?.musicAsset?.id, coolMusic.id);
 });
 
 test("AUTO composition fails closed instead of padding a short MUSIC asset with silence", async () => {

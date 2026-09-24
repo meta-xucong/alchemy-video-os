@@ -8,6 +8,8 @@
 
 本版本性质：`MINIMAL IMPLEMENTATION / FIXTURES ONLY / NO REAL EXTERNAL CALL`
 
+**2026-09-23 范围覆盖说明：** 本文关于“不得新增本地 AUTO 候选评分/轮换”的表述，仅继续约束 Pixabay 网络路径、查询改写和导入流程；单曲全片 AUTO 的分镜 `bgm_prompt` 意图汇入与等分候选稳定 tie-break，改以《AI企业内容生产平台_场景音乐意图与单曲自动选曲最小适配开发文档.md》为准。Pixabay 仍不参与评分、轮换或多曲切换。
+
 ## 0. 本版裁定
 
 本文件只解决一个目标：**用户点击生成时，`AUTO` 在现有音乐选择器找不到有效 MUSIC 资产，才自动通过现有 OpenMontage Pixabay 路径补一首；`MANUAL` 和 `OFF` 永不触发自动补曲。**

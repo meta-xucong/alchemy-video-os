@@ -69,3 +69,6 @@ infrastructure/deploy/.env.video.tmp-*
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local launchers may contain runtime credentials
+apps/control-api/start-control-api.sh

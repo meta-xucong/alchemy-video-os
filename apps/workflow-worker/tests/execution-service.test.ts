@@ -45,9 +45,9 @@ const toLlmDecisionFixture = (draft: Awaited<ReturnType<DeterministicPlanningMod
   });
 };
 
-test("runtime profile mapper only enables Grok's one-second minimum", () => {
+test("runtime profile mapper keeps the Huobao storyboard duration bounds for sub2api", () => {
   const sub2apiPolicy = resolvePlanningDurationPolicy(resolveVideoProviderRuntimeProfile("sub2api"));
-  assert.deepEqual(sub2apiPolicy, { minDurationSeconds: 1, maxDurationSeconds: 15 });
+  assert.deepEqual(sub2apiPolicy, { minDurationSeconds: 8, maxDurationSeconds: 15 });
   assert.equal(resolvePlanningDurationPolicy(resolveVideoProviderRuntimeProfile("mock")), undefined);
   assert.equal(resolvePlanningDurationPolicy(undefined), undefined);
   assert.throws(() => resolveVideoProviderRuntimeProfile("unknown"), /VIDEO_PROVIDER must be mock or sub2api/);
@@ -193,7 +193,7 @@ test("CreativePlanningExecutor injects freeform visual prompts while preserving 
   const planner = new LlmFreeformPromptPlanningModel(async (context) => {
     receivedSegmentContext = context;
     return [
-      { duration_seconds: 15, visual_prompt: "自由视觉 1\n保留原文格式", dialogue_line_sequences: [1] },
+      { duration_seconds: 15, visual_prompt: "自由视觉 1\n保留原文格式", dialogue_line_sequences: [1], bgm_prompt: "克制的暖色钢琴与轻柔弦乐" },
       { duration_seconds: 15, visual_prompt: "自由视觉 2\n保持交付现场收束", dialogue_line_sequences: [] },
     ];
   });
@@ -216,6 +216,8 @@ test("CreativePlanningExecutor injects freeform visual prompts while preserving 
 
   assert.ok(captured?.promptPackages);
   if (!captured?.promptPackages) return;
+  assert.equal(captured.promptPackages[0]?.capabilitySnapshot.bgm_prompt, "克制的暖色钢琴与轻柔弦乐");
+  assert.equal(captured.promptPackages[1]?.capabilitySnapshot.bgm_prompt, undefined);
   assert.equal(receivedSegmentContext?.targetDurationSeconds, 30);
   assert.ok(captured.shotSpecs.every((shot) => !("visualPrompt" in shot)));
   for (const [index, promptPackage] of captured.promptPackages.entries()) {
@@ -560,37 +562,35 @@ test("CreativePlanningExecutor keeps dialogue native when the provider profile o
   }));
 });
 
-test("CreativePlanningExecutor passes an explicitly resolved Grok duration policy to planning", async () => {
-  let captured: CreativePlanningDraft | undefined;
+test("CreativePlanningExecutor fails closed when sub2api target is below Huobao's storyboard minimum", async () => {
+  const profile = resolveVideoProviderRuntimeProfile("sub2api");
+  const durationPolicy = resolvePlanningDurationPolicy(profile);
+  let completeCalls = 0;
   const executor = new CreativePlanningExecutor({
     async completeCreativePlan(input) {
-      captured = input.draft;
+      completeCalls += 1;
       return undefined;
     },
-  }, new DeterministicPlanningModel(), undefined, undefined, undefined, "NATIVE_PROVIDER", {
-    minDurationSeconds: 1,
-    maxDurationSeconds: 15,
-  });
+  }, new DeterministicPlanningModel(), undefined, undefined, undefined, profile.audioOwner,
+  durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
 
-  await executor.execute({
+  await assert.rejects(() => executor.execute({
     brief: {
       ...brief,
-      id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXJGROK",
+      id: "cbr_01J4N8QZ8PCW2N2G6D2XJXJXJMIN8",
       sourceText: "人物抬手完成一个清晰动作。",
       targetDurationSeconds: 1,
       sourceAssetIds: [],
     },
     event: {
-      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXJGROK",
-      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXJGROK",
-      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXJGROK",
-      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXJGROK",
+      eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXJMIN8",
+      messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXJMIN8",
+      traceId: "trc_01J4N8QZ8PCW2N2G6D2XJXJMIN8",
+      correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXJMIN8",
     },
-  });
+  }), /A storyboard requires a total duration of at least 8 seconds/);
 
-  assert.deepEqual(captured?.shotSpecs.map((shot) => shot.durationSeconds), [1]);
-  assert.equal(captured?.promptPackages?.[0]?.motionPlan?.duration_seconds, 1);
-  assert.deepEqual(captured?.durationPolicy, { minDurationSeconds: 1, maxDurationSeconds: 15 });
+  assert.equal(completeCalls, 0);
 });
 
 test("CreativePlanningExecutor carries reference-analysis objects into every private prompt package", async () => {
@@ -889,7 +889,7 @@ test("CreativePlanningExecutor scopes frozen facts to the matching generation se
   assert.deepEqual(second.referenceMap.fact_refs, ["dft_brand_seg", "dft_spa_seg"]);
 });
 
-test("CreativePlanningExecutor keeps semantically replanning after a sub2api prompt budget preflight failure", async () => {
+test("CreativePlanningExecutor semantically replans within Huobao's 8-15 second segment bounds", async () => {
   const profile = resolveVideoProviderRuntimeProfile("sub2api");
   const durationPolicy = resolvePlanningDurationPolicy(profile);
   const baseCompiler = new DeterministicStoryboardCompiler();
@@ -907,10 +907,10 @@ test("CreativePlanningExecutor keeps semantically replanning after a sub2api pro
   const compiler: StoryboardCompilerPort = {
     async compile(input) {
       const compiled = await baseCompiler.compile(input);
-      // The fixture models a source-first budget failure for the first three
-      // semantic plans. Only the existing planner's fifth-segment split makes
-      // every authored source unit small enough; no characters are cut here.
-      if ((input.generationSegmentCount ?? 1) >= 5) return compiled;
+      // The fixture models a source-first budget failure for the initial
+      // semantic plan. The existing planner can fit the authored content into
+      // three valid 8-15 second windows; no characters are cut here.
+      if ((input.generationSegmentCount ?? 1) >= 3) return compiled;
       const sourcePrompt = `${compiled.capabilitySnapshot.source_prompt as string}${"不可删除源事实。".repeat(700)}`;
       return {
         ...compiled,
@@ -942,19 +942,19 @@ test("CreativePlanningExecutor keeps semantically replanning after a sub2api pro
     },
   });
 
-  assert.equal(plannerCalls, 4);
-  assert.deepEqual(requestedMinimums, [undefined, 3, 4, 5]);
+  assert.equal(plannerCalls, 2);
+  assert.deepEqual(requestedMinimums, [undefined, 3]);
   assert.equal(completeCalls, 1);
-  assert.equal(captured?.generationSegmentCount, 5);
-  assert.deepEqual(captured?.shotSpecs.map((shot) => shot.durationSeconds), [10, 5, 5, 5, 5]);
+  assert.equal(captured?.generationSegmentCount, 3);
+  assert.deepEqual(captured?.shotSpecs.map((shot) => shot.durationSeconds), [10, 10, 10]);
   const sourcePrompts = captured?.promptPackages?.map((promptPackage) => String(promptPackage.capabilitySnapshot.source_prompt ?? "")) ?? [];
   assert.equal(sourcePrompts.filter((sourcePrompt) => sourcePrompt.includes("第一段台词。")).length, 1);
   assert.equal(sourcePrompts.filter((sourcePrompt) => sourcePrompt.includes("第二段台词。")).length, 1);
   assert.equal(sourcePrompts.join("").includes("第一段台词。\n第二段台词。"), true);
   assert.ok(sourcePrompts.some((sourcePrompt) => sourcePrompt.includes("第一视觉段") && sourcePrompt.includes("@入口")));
   assert.ok(sourcePrompts.some((sourcePrompt) => sourcePrompt.includes("第二视觉段") && sourcePrompt.includes("@屏幕")));
-  assert.deepEqual(captured?.promptPackages?.map((promptPackage) => promptPackage.referenceMap.reference_policy), ["REFERENCE_SET", "HANDOFF_FIRST_FRAME", "HANDOFF_FIRST_FRAME", "HANDOFF_FIRST_FRAME", "HANDOFF_FIRST_FRAME"]);
-  assert.ok(captured?.shotSpecs.every((shot) => shot.durationSeconds >= 1 && shot.durationSeconds <= 15));
+  assert.deepEqual(captured?.promptPackages?.map((promptPackage) => promptPackage.referenceMap.reference_policy), ["REFERENCE_SET", "HANDOFF_FIRST_FRAME", "HANDOFF_FIRST_FRAME"]);
+  assert.ok(captured?.shotSpecs.every((shot) => shot.durationSeconds >= 8 && shot.durationSeconds <= 15));
   assert.ok(captured?.shotSpecs[0]?.narrativeGoal.includes("第一视觉段"));
   assert.ok(captured?.shotSpecs.some((shot) => shot.narrativeGoal.includes("第五视觉段")));
   assert.ok(captured?.promptPackages?.every((promptPackage) => new TextEncoder().encode(promptPackage.prompt).byteLength <= 4_096));
@@ -968,7 +968,7 @@ test("CreativePlanningExecutor keeps semantically replanning after a sub2api pro
   }));
 });
 
-test("CreativePlanningExecutor stops at the target/min-duration segment bound when source remains over budget", async () => {
+test("CreativePlanningExecutor fails closed when a valid 8-second segment remains over budget", async () => {
   const profile = resolveVideoProviderRuntimeProfile("sub2api");
   const durationPolicy = resolvePlanningDurationPolicy(profile);
   const baseCompiler = new DeterministicStoryboardCompiler();
@@ -999,7 +999,7 @@ test("CreativePlanningExecutor stops at the target/min-duration segment bound wh
   }, planner, compiler, undefined, undefined, profile.audioOwner, durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
 
   await assert.rejects(() => executor.execute({
-    brief: { ...brief, sourceText: "一个不可再分的超长源单元。", targetDurationSeconds: 2 },
+    brief: { ...brief, sourceText: "一个不可再分的超长源单元。", targetDurationSeconds: 8 },
     event: {
       eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXJXFAIL",
       messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXJXFAIL",
@@ -1007,7 +1007,7 @@ test("CreativePlanningExecutor stops at the target/min-duration segment bound wh
       correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXJXFAIL",
     },
   }), (error: unknown) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET");
-  assert.equal(plannerCalls, 2);
+  assert.equal(plannerCalls, 1);
   assert.equal(completeCalls, 0);
 });
 
@@ -1198,7 +1198,7 @@ test("CreativePlanningExecutor keeps a missing sidecar fail-closed at the segmen
   }, planner, compiler, undefined, undefined, profile.audioOwner, durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
 
   await assert.rejects(() => executor.execute({
-    brief: { ...brief, sourceText: "单一不可截断源事实。", targetDurationSeconds: 2 },
+    brief: { ...brief, sourceText: "单一不可截断源事实。", targetDurationSeconds: 8 },
     event: {
       eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXMISS",
       messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXMISS",
@@ -1206,7 +1206,7 @@ test("CreativePlanningExecutor keeps a missing sidecar fail-closed at the segmen
       correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXMISS",
     },
   }), (error: unknown) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET");
-  assert.equal(plannerCalls, 2);
+  assert.equal(plannerCalls, 1);
   assert.equal(completeCalls, 0);
 });
 
@@ -1245,7 +1245,7 @@ test("CreativePlanningExecutor keeps a mismatched sidecar fail-closed at the seg
   }, planner, compiler, undefined, undefined, profile.audioOwner, durationPolicy, profile, profile.providerPromptMaxUtf8Bytes);
 
   await assert.rejects(() => executor.execute({
-    brief: { ...brief, sourceText: "单一不可重排源事实。", targetDurationSeconds: 2 },
+    brief: { ...brief, sourceText: "单一不可重排源事实。", targetDurationSeconds: 8 },
     event: {
       eventId: "evt_01J4N8QZ8PCW2N2G6D2XJXMISM",
       messageId: "msg_01J4N8QZ8PCW2N2G6D2XJXMISM",
@@ -1253,6 +1253,6 @@ test("CreativePlanningExecutor keeps a mismatched sidecar fail-closed at the seg
       correlationId: "cor_01J4N8QZ8PCW2N2G6D2XJXMISM",
     },
   }), (error: unknown) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET");
-  assert.equal(plannerCalls, 2);
+  assert.equal(plannerCalls, 1);
   assert.equal(completeCalls, 0);
 });
