@@ -29,7 +29,7 @@
 | C12.1 | 语义衔接质检与自动转场修复 | `ACCEPTED` | C12 | 2026-08-17 | 2026-08-17 | 独立复核契约、迁移、Worker/Runtime、活动租约恢复、三段混合转场夹具、隔离 E2E、根回归和公开投影；不触碰 C13-A 外部边界 |
 | C12.2 | OpenMontage 终检与真实成片质量门禁 | `NOT_ACTIVE_IN_THIS_SCOPE` | C12.1 | 2026-08-23 |  | 历史 `READY_FOR_AUDIT` 技术终检证据保留于下方快照；本轮不活动，语义 evaluator/transcriber 仍明确不可用 |
 | C12.4/C12.5 | 连续旁白、音频编排与口播时长 | `IMPLEMENTED_PENDING_AUDIT` | C12.1/C12.7B | 2026-08-30 |  | S01/E02、E03/HB-STORYBOARD-TIMING 8–15 秒、E04/Piper pace、E05 `_full_mix`/ALCHMED8、E06 approved full narration 窗口与 cue-only、E07 uniform transition/xfade、E08 segmented/HyperFrames、E09 source-expressed transcript/subtitle/FFmpeg fallback、E10 approval/formal asset/TimelinePlan identity-window、E11/S08 measured-duration feedback 均为已独立审计的窄切片 `ACCEPTED`；混合/连续非 cut、完整 section windows、Studio/REQUIRED 字幕、中文口音、自动重规划和其它硬门仍 `BLOCKED/DEFERRED`；E12 实测仍阻断总体硬门未收口 |
-| G01 | 反自造语义治理与单一语义所有权 | `READY_FOR_AUDIT` | C11/C12 | 2026-09-24 |  | 代码、本地技术/基础设施门禁、文档配置收口、安全历史净化、ALCHMED 生产 runbook 和 Git 验收交付完成；仅验证 provenance/结构，不证明视觉语义正确或 source 完整覆盖；真实 LLM/Provider、VPS、成片语义 QC、人工质量、生产历史盘点、外部凭据轮换证明和独立签字仍缺证据 |
+| G01 | 反自造语义治理与单一语义所有权 | `ACCEPTED`（范围限定） | C11/C12 | 2026-09-24 | 2026-09-24 | 独立审计确认本地治理与代码边界、历史安全处置、证据分层和验收交接均符合；不证明视觉语义正确或 source 完整覆盖；真实 LLM/Provider、VPS、成片语义 QC、人工质量、生产历史盘点和外部凭据轮换仍为发布前外部门 |
 | C13 | 发布前审计和部署准备 | `PENDING` | C09/C12/C12.1 |  |  |  |
 
 ### 2.1 当前窄范围审计账本（2026-09-10）
@@ -3050,4 +3050,12 @@ Exit Gate：`ACCEPTED`（仅本窄范围）。Compose 拓扑、固定内部 URL 
 - ALCHMED 对账：本轮完成的是生产只读盘点、迁移、保留和回滚 runbook；生产历史数据盘点本身未执行，继续列为外部门。
 - 远端备份分支处置：`origin/codex/backup-20260919-snapshot@12446154` 是与主线/PR #2 无共同祖先的孤立 WIP 文件快照，含 19 个 PR #2 不存在的路径和 92 个不同文件。为避免误删独立工作，决定明确保留为 `RETAINED_NOT_ACCEPTANCE`；不得作为基线或直接合并，删除需仓库所有者确认。被删除的旧远端审计分支仅指 `codex/audit-snapshot-20260924`。
 - 外部门保持不变：真实 LLM/Provider/Pixabay、VPS、生产 ALCHMED 数据盘点、真实成片语义 QC、人工质量和外部凭据轮换证明仍未完成。
-- 状态结论：G01 继续为 `READY_FOR_AUDIT`。本条只完成审计意见对账与文档纠正，不预判最终验收人将选择 `ACCEPTED_WITH_EXTERNAL_GATES` 或 `RETURN_FOR_FIX`。
+- 状态结论：独立验收决定为 `ACCEPTED_WITH_EXTERNAL_GATES`；正式章节状态收口为 `ACCEPTED`（仅限 G01 本地治理与代码边界）。真实 LLM/Provider、VPS、生产数据、真实成片 QC、人工质量和外部凭据轮换仍保持发布前阻断；E12/R01 与 C12.4/C12.5 不变。
+
+### G01 范围限定验收决定（2026-09-24）
+
+- 验收决定：`ACCEPTED_WITH_EXTERNAL_GATES`。
+- 正式章节状态：`ACCEPTED`，仅覆盖 G01 反自造语义治理与单一语义所有权的本地实现、代码边界、证据分层和安全历史处置。
+- 合并边界：允许合并 PR #2；不授权 tag、发布、VPS/生产部署、真实 Provider 调用或关闭 E12/R01、C12.4/C12.5 阻断。
+- 未闭合外部门：真实 LLM/Provider/Pixabay、VPS/生产配置、生产 ALCHMED 历史盘点、真实多模态 QC、人工质量和外部凭据轮换证明。
+- 证据：当前 `f9843562d2b9ca56db94373c7e7b5407b8e08753` docs-only 修正；历史完整基础设施 `783/0/0`、独立当前复跑 `763/20/0`、Media Runtime `152 + 7 subtests`、typecheck/build、secret scan 和 diff check 均已登记。

@@ -4,7 +4,7 @@
 
 日期：`2026-09-24`
 
-状态：`READY_FOR_AUDIT`
+状态：`ACCEPTED_WITH_EXTERNAL_GATES`
 
 实现口径：`IMPLEMENTED / LOCAL_TECHNICAL_AND_INFRA_GATES_PASS / EXTERNAL_VALIDATION_PENDING / NOT_DEPLOYED`
 
@@ -12,7 +12,7 @@
 
 ## 1. 当前结论
 
-WP-00 至 WP-12 已完成代码实现、本地技术门禁和隔离基础设施集成回归。按 `AGENTS.md` 的正式状态机，G01 当前仍为 **`READY_FOR_AUDIT`**；本地绿测、基础设施绿测和静态审计均不等于章节 `ACCEPTED`、平台生产可用或部署授权。
+WP-00 至 WP-12 已完成代码实现、本地技术门禁和隔离基础设施集成回归。独立审计已将 G01 按范围限定收口为 **`ACCEPTED`**；该结论只覆盖本地反自造语义治理与单一语义所有权边界，不等于平台生产可用或部署授权。
 
 当前可以确认：
 
@@ -42,7 +42,7 @@ WP-00 至 WP-12 已完成代码实现、本地技术门禁和隔离基础设施�
 | 3 | “source byte-for-byte 保留”表述过强 | 原始 source 在 `CanonicalSourceBundle` 中冻结并 hash；exact dialogue 与 source span 逐字一致；Provider visual prompt 使用 LLM `visual_decision` | 统一表述为“source 可追踪、台词逐字、视觉 prompt 为语义投影” |
 | 4 | verifier 不能证明视觉语义正确 | 名称和文档改为 `ProvenanceCheckedSemanticDirector` / `verifySemanticDirectorProvenance`；checker 只校验 schema、identity、hash、span、顺序、时长和 Provider 硬限制 | 只称 `evidence-referenced/provenance-checked`，不称语义已证明 |
 | 5 | 旧关键词/对象推断代码仍存在 | 旧 reference/object/narrative heuristics 位于 `@alchemy-video/domain/mock-heuristics`，生产根不导出，真实调用扫描和负向测试均为零 | 明确为 Mock/历史兼容，不宣称全仓删除 |
-| 6 | 状态账本冲突和 `非正式离线接受` 非正式状态 | 主方案、台账、验收报告、正式总控、ADR-0071 和章节审计统一为 G01=`READY_FOR_AUDIT`；WP 仅为 `IMPLEMENTED / LOCAL_TECHNICAL_GATE_PASS` | E12/R01 与 C12.4/C12.5 既有阻断/待审计状态保持不变 |
+| 6 | 状态账本冲突和 `非正式离线接受` 非正式状态 | 主方案、台账、验收报告、正式总控、ADR-0071/0073/0074 和章节审计统一为 G01=`ACCEPTED`（仅范围限定）；WP 仅为 `IMPLEMENTED / LOCAL_TECHNICAL_GATE_PASS` | E12/R01 与 C12.4/C12.5 既有阻断/待审计状态保持不变 |
 | 7 | 缺 PostgreSQL/Redis/MinIO 跨层证据 | 实现方历史上使用独立临时 PostgreSQL DB、Redis DB 15 和本地 MinIO 完成根级集成回归，结果 `783/0/0`；独立复核人在 `5a9d354` 当前环境复跑为 `763/20/0`，20 skip 为未配置环境门 | 历史全基础设施证据与当前复跑证据分列；skip 不计通过，真实外部系统和生产质量仍未闭合 |
 | 8 | Media Runtime 测试命令工作目录不完整 | 正式命令固定先进入 `services/media-runtime`，再运行 compile 与 pytest | 正确目录下 `152 passed / 0 failed`，另 `7 subtests passed` |
 
@@ -348,6 +348,6 @@ uv run --with pytest python -m pytest -q tests/test_runtime.py adapters/openmont
 
 综合文档、代码、静态审计、本地回归和隔离基础设施集成：
 
-> **WP-00 至 WP-12 已实现；实现方历史完整基础设施证据为 `783/0/0`，独立复核当前环境证据为 `763/20/0`。G01 正式状态仍为 `READY_FOR_AUDIT`，当前不构成平台级 `ACCEPTED`，也不构成生产可用、可合并或可部署结论。**
+> **WP-00 至 WP-12 已实现；实现方历史完整基础设施证据为 `783/0/0`，独立复核当前环境证据为 `763/20/0`。G01 已按范围限定收口为 `ACCEPTED`，但当前不构成平台级生产验收或部署授权。**
 
-非测试实现、文档、配置、安全和版本交付已经完成。下一步是由独立验收人复核本次证据对账修正，并在 `ACCEPTED_WITH_EXTERNAL_GATES` 与 `RETURN_FOR_FIX` 中作出决定。真实 LLM、视频 Provider、Pixabay、VPS、真实媒体语义 QC、人工质量、生产历史盘点和外部凭据轮换证明仍需单独授权；未补齐相应证据前，不得宣称生产可用，也不得部署。
+非测试实现、文档、配置、安全和版本交付已经完成。独立验收决定为 `ACCEPTED_WITH_EXTERNAL_GATES`；真实 LLM、视频 Provider、Pixabay、VPS、真实媒体语义 QC、生产历史盘点和外部凭据轮换证明仍需单独授权，未补齐前不得宣称生产可用或部署。该决定允许合并 G01 审计 PR，不改变其它章节状态。

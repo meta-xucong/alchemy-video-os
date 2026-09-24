@@ -4,7 +4,7 @@
 
 日期：`2026-09-24`
 
-状态：`READY_FOR_AUDIT_HANDOFF`
+状态：`ACCEPTED`（仅限 G01 本地治理与代码边界；外部发布门仍阻断）
 
 主线安全基线：`1a4d95ba9e79e04540c1f7af61b917053735d1e5`
 
@@ -101,8 +101,8 @@ G01 只验收“反自造语义治理与单一语义所有权”改造：真实�
 鉴于真实 LLM/Provider/VPS、生产 ALCHMED 数据盘点、真实成片语义 QC、人工质量和外部凭据轮换仍明确未完成，本轮正式决定只允许二选一：
 
 ```text
-[ ] ACCEPTED_WITH_EXTERNAL_GATES
-    代码与本地治理边界接受；以下真实环境、账号、生产数据和人工证据继续作为发布前阻断：__________。
+[x] ACCEPTED_WITH_EXTERNAL_GATES
+    代码与本地治理边界接受；真实 LLM/Provider/Pixabay、VPS/生产配置、生产 ALCHMED 历史数据、真实成片 QC、人工质量和外部凭据轮换继续作为发布前阻断。
 
 [ ] RETURN_FOR_FIX
     阻断问题：__________
@@ -110,12 +110,14 @@ G01 只验收“反自造语义治理与单一语义所有权”改造：真实�
     必须修复：__________
 ```
 
-验收人：__________
+验收人：Codex 独立复核
 
-日期：__________
+日期：2026-09-24
 
-复核 commit：__________
+复核基线：`f9843562d2b9ca56db94373c7e7b5407b8e08753`；本决定随本次文档收口提交固化。
+
+正式章节状态：`ACCEPTED`（范围限定于 G01；不表示平台生产可用，也不关闭 E12/R01 或 C12.4/C12.5）。
 
 ## 7. 可直接转发的验收摘要
 
-> G01“反自造语义治理与单一语义所有权”已完成非测试实现、代码边界收敛、配置/文档/ADR/状态账本同步、历史兼容退役 runbook、安全历史净化和 Git 验收交付。真实链现统一为 CanonicalSourceBundle → Semantic Director → evidence-referenced decision → provenance/结构验证 → pure projector；deterministic planner 与旧 heuristics 仅存在于显式 Mock/历史兼容入口，真实链无 fallback。Studio 不再自动审批，BGM mode 必须显式选择，未检查/未执行状态不再伪装为通过。测试证据分两层：实现方历史全基础设施回归为 783/0/0；独立复核人在 5a9d354 上当前复跑为 763/20/0，20 个 skip 是未配置的 PostgreSQL、Redis/BullMQ、MinIO 环境门。Media Runtime 为 152/0，另 7 个 subtests；typecheck、build、secret scan 和 diff check 通过。请独立重点复核真实/Mock 物理隔离、provenance checker 能力边界、exact dialogue/reference order、Provider pure projection、用户审批门、QC 三态、ALCHMED8 新写边界和安全凭据处置。`origin/codex/backup-20260919-snapshot` 明确保留为非验收孤立 WIP 归档，PR #2 仍是唯一验收入口。当前正式状态仍为 READY_FOR_AUDIT；未完成的真实 LLM/Provider/VPS/成片语义 QC/人工质量/生产 ALCHMED 历史盘点/外部凭据轮换证明不得被写成已通过。
+> G01“反自造语义治理与单一语义所有权”已完成非测试实现、代码边界收敛、配置/文档/ADR/状态账本同步、历史兼容退役 runbook、安全历史净化和 Git 验收交付。真实链现统一为 CanonicalSourceBundle → Semantic Director → evidence-referenced decision → provenance/结构验证 → pure projector；deterministic planner 与旧 heuristics 仅存在于显式 Mock/历史兼容入口，真实链无 fallback。Studio 不再自动审批，BGM mode 必须显式选择，未检查/未执行状态不再伪装为通过。测试证据分两层：实现方历史全基础设施回归为 783/0/0；独立复核人在 5a9d354 上当前复跑为 763/20/0，20 个 skip 是未配置的 PostgreSQL、Redis/BullMQ、MinIO 环境门。Media Runtime 为 152/0，另 7 个 subtests；typecheck、build、secret scan 和 diff check 通过。`origin/codex/backup-20260919-snapshot` 明确保留为非验收孤立 WIP 归档，PR #2 仍是唯一验收入口。G01 正式状态已按范围限定收口为 ACCEPTED；未完成的真实 LLM/Provider/VPS/成片语义 QC/人工质量/生产 ALCHMED 历史盘点/外部凭据轮换证明不得被写成已通过。
