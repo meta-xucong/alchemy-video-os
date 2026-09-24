@@ -3033,9 +3033,21 @@ Exit Gate：`ACCEPTED`（仅本窄范围）。Compose 拓扑、固定内部 URL 
 
 - 正式状态：`READY_FOR_AUDIT`；不是平台级 `ACCEPTED`。
 - 代码与配置：真实 Semantic Director、provenance checker、pure projector、canonical reference/exact dialogue、用户显式审批、QC 三态、Mock/legacy 物理隔离和 ALCHMED8 新写边界均已落地；未发现需要继续补写的非测试业务实现。
-- 文档与治理：主执行方案、语义台账、验收报告、总控、ADR-0071/0072、来源边界、安全规则、章节账本和第三方来源登记已同步；生产 ALCHMED 盘点/迁移/回滚 runbook 已完整落盘。
+- 文档与治理：主执行方案、语义台账、验收报告、总控、ADR-0071/0072、来源边界、安全规则、章节账本和第三方来源登记已同步；生产 ALCHMED 只读盘点/迁移/回滚 runbook 已完整落盘，生产历史数据盘点本身未执行。
 - 安全处置：旧主线末次提交中的凭据脚本已从净化主线和验收分支移除，路径已精确忽略，旧 PR #1 已关闭；净化主线为 `1a4d95ba9e79e04540c1f7af61b917053735d1e5`。仓库历史净化不替代上游凭据吊销，账号所有者仍须提供轮换和日志复核证明。
-- Git 交付：验收分支为 `codex/g01-audit-handoff-20260924`；Draft PR `https://github.com/meta-xucong/alchemy-video-os/pull/2` 是唯一验收入口。独立验收前禁止 merge、tag、发布和部署。
-- 本地技术证据沿用本章已有记录：根级隔离基础设施 `783 passed / 0 skipped / 0 failed`、Media Runtime `152 passed + 7 subtests`、typecheck/build/contracts/diff 门禁通过；本条没有用重复测试替代代码审查。
+- Git 交付：验收分支为 `codex/g01-audit-handoff-20260924`；Draft PR `https://github.com/meta-xucong/alchemy-video-os/pull/2` 是唯一验收入口。`origin/codex/backup-20260919-snapshot@12446154` 明确保留为非验收孤立 WIP 归档，不得直接合并；独立验收前禁止 merge、tag、发布和部署。
+- 证据分层：实现方历史完整隔离基础设施运行 `783/0/0`；独立复核人在 `5a9d354` 当前环境复跑 `763/20/0`，20 skip 为 PostgreSQL、Redis/BullMQ、MinIO 环境门。Media Runtime `152 passed + 7 subtests`、typecheck/build/secret scan/diff 门禁通过；不得把历史结果写成本轮复跑，也不得把 skip 计作通过。
 - 剩余门禁：独立代码审查；真实 LLM/Provider/Pixabay；VPS/生产配置；真实成片多模态 QC；人工质量；生产 ALCHMED 只读盘点；外部凭据轮换证明。
-- Exit Gate：实现方非测试工作已全部完成，允许验收同事执行独立复核并作出 `ACCEPTED / RETURN_FOR_FIX / ACCEPTED_WITH_EXTERNAL_GATES` 决定。未取得正式决定前，G01 保持 `READY_FOR_AUDIT`。
+- Exit Gate：实现方非测试工作已全部完成。鉴于外部门已确认仍存在，允许验收同事在 `ACCEPTED_WITH_EXTERNAL_GATES / RETURN_FOR_FIX` 中作出决定；未取得正式决定前，G01 保持 `READY_FOR_AUDIT`。
+
+### G01 独立复核对账与文档纠正（2026-09-24）
+
+- 独立复核对象：PR #2，复核 commit `5a9d354547f2462990ecdf7e1943541d7284e93f`；PR 当时为 `OPEN / DRAFT / CLEAN`，基于净化后 `main`。
+- 复核确认：真实 Workflow 不直接加载 deterministic planner；Mock/legacy 逻辑位于显式入口；exact dialogue、canonical reference order、provenance checker 能力上限、pure projector、Studio 审批门、BGM 显式模式和 QC `UNAVAILABLE` 边界均有代码及负向证据。
+- 当前独立复跑：根级 `763 passed / 20 skipped / 0 failed`；20 个 skip 主要是 PostgreSQL、Redis/BullMQ、MinIO 环境门。`pnpm typecheck`、`pnpm build`、Media Runtime `152 passed + 7 subtests`、secret pattern 扫描和 `git diff --check` 通过。
+- 历史证据对账：实现方此前在完整隔离 PostgreSQL/Redis/BullMQ/MinIO 环境中记录 `783 passed / 0 skipped / 0 failed`。该结果继续作为历史基础设施证据，但不再表述为本轮独立复跑结果。
+- 合同生成器对账：独立复核执行 `contracts:generate` 后三个合同文件一度显示工作区修改，但 blob hash 与 HEAD 完全一致且 `git diff` 为空；属于状态/换行元数据变化，不是内容变更，已恢复 clean。
+- ALCHMED 对账：本轮完成的是生产只读盘点、迁移、保留和回滚 runbook；生产历史数据盘点本身未执行，继续列为外部门。
+- 远端备份分支处置：`origin/codex/backup-20260919-snapshot@12446154` 是与主线/PR #2 无共同祖先的孤立 WIP 文件快照，含 19 个 PR #2 不存在的路径和 92 个不同文件。为避免误删独立工作，决定明确保留为 `RETAINED_NOT_ACCEPTANCE`；不得作为基线或直接合并，删除需仓库所有者确认。被删除的旧远端审计分支仅指 `codex/audit-snapshot-20260924`。
+- 外部门保持不变：真实 LLM/Provider/Pixabay、VPS、生产 ALCHMED 数据盘点、真实成片语义 QC、人工质量和外部凭据轮换证明仍未完成。
+- 状态结论：G01 继续为 `READY_FOR_AUDIT`。本条只完成审计意见对账与文档纠正，不预判最终验收人将选择 `ACCEPTED_WITH_EXTERNAL_GATES` 或 `RETURN_FOR_FIX`。

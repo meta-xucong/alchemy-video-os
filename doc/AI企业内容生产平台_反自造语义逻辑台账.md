@@ -1,6 +1,6 @@
 # AI 企业内容生产平台：反自造语义逻辑台账
 
-版本：`1.4.0`
+版本：`1.5.0`
 
 日期：`2026-09-24`
 
@@ -14,7 +14,7 @@
 - 分支：`codex/g01-audit-handoff-20260924`
 - 净化后主线基线：`origin/main@1a4d95ba9e79e04540c1f7af61b917053735d1e5`；验收分支：`codex/g01-audit-handoff-20260924`；验收 PR：`https://github.com/meta-xucong/alchemy-video-os/pull/2`。
 - 开工时工作区为非干净状态；既有差异已通过安全快照和提交历史保留。当前验收分支以净化后主线为基线，交付前必须保持 clean。
-- 开工前定向基线：`378 passed / 17 skipped / 0 failed`；最终隔离基础设施根级回归：`783 passed / 0 skipped / 0 failed`。
+- 开工前定向基线：`378 passed / 17 skipped / 0 failed`。实现方历史隔离基础设施根级回归：`783 passed / 0 skipped / 0 failed`；独立复核人在 `5a9d354` 上当前复跑：`763 passed / 20 skipped / 0 failed`，20 个 skip 主要是 PostgreSQL、Redis/BullMQ、MinIO 环境门。
 - Git 边界：已完成审计提交、验收分支推送和 PR 交付；独立验收前禁止 merge、tag 和部署。生产数据库迁移、真实 Provider/TTS/Veyra、VPS 与未授权网络调用继续关闭。
 
 本台账用于定位真实调用入口和处置结果，不把源码命中当作行为证据。每项只有在代码、调用链、负向测试和最终 snapshot 同时通过后才能关闭。
@@ -85,7 +85,7 @@
 
 ## 6. 工作包状态
 
-`IMPLEMENTED` 仅表示相应代码与本地技术门禁已完成，不是 `AGENTS.md` 中的正式章节 `ACCEPTED`。G01 当前正式状态统一为 `READY_FOR_AUDIT`；下表的测试数字是各包实施时的本地证据。本地 PostgreSQL/Redis/BullMQ/MinIO 跨层门禁已经闭合，但这些数字仍不能替代真实 LLM/Provider、真实媒体语义、人工质量、生产历史盘点和独立审计。
+`IMPLEMENTED` 仅表示相应代码与本地技术门禁已完成，不是 `AGENTS.md` 中的正式章节 `ACCEPTED`。G01 当前正式状态统一为 `READY_FOR_AUDIT`；下表数字默认是各包实施时的历史证据。实现方曾在完整隔离基础设施环境中得到 `783/0/0`，独立复核人在当前未配置全部服务的环境中得到 `763/20/0`；二者必须分列，20 个环境门 skip 不计作通过。任何数字都不能替代真实 LLM/Provider、真实媒体语义、人工质量、生产历史盘点和独立审计。
 
 | 工作包 | 实现状态 | 本地技术证据 |
 | --- | --- | --- |
@@ -101,7 +101,7 @@
 | WP-09 | `IMPLEMENTED` | 新命令显式要求分镜/交付/音乐决定；Studio 两次独立人工确认；无自动审批、无隐式 AUTO、无伪 budget=0；整套 BGM 匹配登记为用户授权 PLATFORM_OWNED；278 pass / 13 skip / 0 fail |
 | WP-10 | `IMPLEMENTED` | 无真实 evaluator 时连续性保持 UNAVAILABLE 且零 repair/frame work；无伪 succeeded/ACCEPTED；Final Review 未检查项=null/UNAVAILABLE，固定 CLIP 与手调台词阈值不参与验收；393 pass / 12 skip / 0 fail，另 7 subtests pass |
 | WP-11 | `IMPLEMENTED` | 真实 Worker 只加载 semantic-only 子入口；deterministic planner/compiler 与 reference/object/narrative heuristics 迁入显式 mock 子路径，仍为 Mock/历史兼容存在；文档关键词/二元词/评分器及 legacy fact store 从生产实现删除；固定 CLIP/台词阈值退役；新 DeliveryPlan 只写完整 AudioPlan/ALCHMED8，ALCHMED1-7 只读并等待授权盘点；定向门通过 |
-| WP-12 | `IMPLEMENTED` | contracts 生成、18 项目 typecheck、全仓 build、隔离 PostgreSQL/Redis/BullMQ/MinIO 根级回归 783 pass / 0 skip / 0 fail、Media Runtime 152 pass + 7 subtests、Python compile 与 diff check 通过；真实 LLM/Provider、VPS、成片语义 QC、人工质量和生产历史盘点仍缺证据，不构成平台验收 |
+| WP-12 | `IMPLEMENTED` | 实现方历史全基础设施证据：根级 `783 pass / 0 skip / 0 fail`；独立复核 `5a9d354` 当前证据：`763 pass / 20 skip / 0 fail`，20 skip 为 PostgreSQL、Redis/BullMQ、MinIO 环境门。Media Runtime `152 pass + 7 subtests`，typecheck/build/secret scan/diff check 通过；真实 LLM/Provider、VPS、成片语义 QC、人工质量和生产历史盘点仍缺证据，不构成平台验收 |
 
 每个工作包完成后必须记录修改文件、定向命令、通过/失败/跳过数量、代码审计结论、残余风险和下一包准入，不允许批量回填虚假通过。
 
@@ -110,6 +110,7 @@
 - 旧主线提交 `36a7ceba08f2c62fbf9f78e77e56c6973ce5f07c` 曾错误跟踪本地启动脚本并包含外部凭据；原验收 PR #1 已关闭。
 - 净化后主线 `1a4d95ba9e79e04540c1f7af61b917053735d1e5` 保留业务改动、移除该脚本并加入精确忽略规则；审计分支已重放到该基线。
 - 当前树和验收差异不保存原始凭据；完整处置及外部轮换责任见 `AI企业内容生产平台_20260924凭据暴露处置记录.md`。
+- `origin/codex/backup-20260919-snapshot@12446154` 是与 `main`/PR #2 无共同祖先的孤立 WIP 文件快照，包含尚未逐项确认可删除的独有内容，故明确保留为非验收归档；不得作为基线、不得直接合并，删除需仓库所有者确认。PR #2 仍是唯一验收入口。
 - 仓库历史净化不等于凭据吊销。外部账号所有者必须完成密钥轮换与用量日志复核，验收同事应检查轮换证明。
 - ALCHMED 生产历史只读盘点未越权执行；执行 runbook 已完整落盘，可在取得授权后由生产管理员运行。
 - 非测试工作已经完成，剩余项只属于独立审计、真实环境、生产数据或人工质量证据。

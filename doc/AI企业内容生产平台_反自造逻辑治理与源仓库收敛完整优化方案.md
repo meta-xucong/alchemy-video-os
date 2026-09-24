@@ -1,6 +1,6 @@
 # AI 企业内容生产平台：反自造逻辑治理与源仓库收敛完整优化方案
 
-版本：`2.3.0`
+版本：`2.4.0`
 
 日期：`2026-09-24`
 
@@ -29,7 +29,7 @@ WP-00 至 WP-12 已按依赖顺序完成代码实现、本地技术门禁和隔�
 - 未执行的 QC 保持 `UNAVAILABLE/null`，没有真实 repair task/artifact 时不写 succeeded/ACCEPTED；
 - 跨商品、剧情、工业、教育、金融/法律、抽象艺术以及中英混合语料的本地通用性回归已通过，但这不是实际 LLM 或成片质量证明。
 
-最新本地门禁为：`contracts:generate`、18 项目 typecheck、全仓 build、在隔离 PostgreSQL/Redis/BullMQ/MinIO 环境中的 `783 passed / 0 skipped / 0 failed` 根级测试、Media Runtime `152 passed + 7 subtests`、Python compile 和 `git diff HEAD --check=0`。本地跨层证据已经闭合；真实 LLM/Provider、VPS、真实媒体语义 QC、人工质量和生产历史盘点仍待独立证据。
+测试证据必须分层记录：实现方在隔离 PostgreSQL/Redis/BullMQ/MinIO 全部启用时的历史根级结果为 `783 passed / 0 skipped / 0 failed`；独立复核人在 `5a9d354` 当前环境复跑为 `763 passed / 20 skipped / 0 failed`，20 个 skip 主要是 PostgreSQL、Redis/BullMQ、MinIO 环境门，未按通过计。`contracts:generate`、18 项目 typecheck、全仓 build、Media Runtime `152 passed + 7 subtests`、Python compile、secret scan 和 `git diff --check` 均有通过证据。真实 LLM/Provider、VPS、真实媒体语义 QC、人工质量和生产历史盘点仍待独立证据。
 
 本地 PostgreSQL→scheduler→Worker、Redis/BullMQ 重启恢复与 MinIO 实物存取证据已经闭合。当前仅剩真实 LLM 语义质量、真实 Provider/Pixabay、VPS/生产配置、真实媒体多模态 QC、人工质量、生产 ALCHMED 历史盘点、外部凭据轮换证明和独立审计签字。审计分支与 PR 只用于验收交付；本轮不合并、不部署。
 
@@ -590,8 +590,9 @@ Exit Gate：
 本方案基于 2026-09-24 当前工作区审计：
 
 - 净化后主线基线为 `origin/main@1a4d95ba9e79e04540c1f7af61b917053735d1e5`；验收分支为 `codex/g01-audit-handoff-20260924`，以 Draft PR #2 最新 head 为验收事实；
+- `origin/codex/backup-20260919-snapshot@12446154` 明确保留为与主线无共同祖先的非验收 WIP 归档；它包含独有路径，不得直接合并，删除需仓库所有者确认。旧远端审计分支的删除仅指 `codex/audit-snapshot-20260924`；
 - 工作区在本轮开始前已经是非干净状态，并同时存在 staged、unstaged、删除和未跟踪差异；不得把整个差异集合归因于本轮；
-- 初始定向基线为 `378 passed / 17 skipped / 0 failed`；最终隔离基础设施根级回归为 `783 passed / 0 skipped / 0 failed`；
+- 初始定向基线为 `378 passed / 17 skipped / 0 failed`；实现方历史隔离基础设施根级回归为 `783 passed / 0 skipped / 0 failed`；独立复核人在 `5a9d354` 当前环境复跑为 `763 passed / 20 skipped / 0 failed`，20 skip 为未配置的 PostgreSQL、Redis/BullMQ、MinIO 环境门；
 - 绿测只证明相应本地行为，不证明真实 LLM 语义、生产集成、媒体质量或平台级验收。
 
 后续每个工作包开始和结束时都必须比较工作区差异集合。不得覆盖、回滚或重新归因既有修改。审计分支的 commit/push/PR 已按 review-only 边界完成；独立验收前不得 merge、tag、部署、改生产数据库或调用未授权真实 Provider。

@@ -1,6 +1,6 @@
 # AI 企业内容生产平台：G01 反自造语义治理验收交接清单
 
-版本：`1.0.0`
+版本：`1.1.0`
 
 日期：`2026-09-24`
 
@@ -31,22 +31,23 @@ G01 只验收“反自造语义治理与单一语义所有权”改造：真实�
 - [x] 未执行 QC 保持 UNKNOWN/UNAVAILABLE/null；
 - [x] 无真实 evaluator 时不伪造 handoff repair 成功；
 - [x] 新 DeliveryPlan-backed 写入统一 ALCHMED8；旧 wire 只读；
-- [x] ALCHMED 生产盘点、迁移、保留和回滚 runbook；
+- [x] ALCHMED1–7 生产只读盘点、迁移、保留和回滚 runbook 已落盘；生产历史数据盘点本身未执行；
 - [x] 主方案、总控、语义台账、ADR、来源登记、章节账本、验收报告同步；
 - [x] 凭据暴露仓库处置、旧 PR 关闭、主线历史净化和 ignore guard；
 - [x] 审计分支重放到净化主线并准备新 PR；
 - [x] 不合并、不部署。
 
-## 3. 已有技术证据（供复核，不要求实现方重复执行）
+## 3. 已有技术证据（历史证据与本轮独立复跑分列）
 
-- 根级隔离 PostgreSQL/Redis/BullMQ/MinIO：`783 passed / 0 skipped / 0 failed`；
+- 实现方历史隔离基础设施回归：在临时 PostgreSQL、Redis DB 15 和本地 MinIO 全部启用时为 `783 passed / 0 skipped / 0 failed`；该结果保留为历史证据，不冒充本轮复跑结果；
+- 独立复核人在 `5a9d354` 上当前复跑根级测试：`763 passed / 20 skipped / 0 failed`；20 个 skip 主要是 PostgreSQL、Redis/BullMQ、MinIO 环境门，未按通过计；
+- 独立复核 `pnpm typecheck`、`pnpm build` 通过，build 仅有既有 Nuxt `DEP0155` 警告；
 - Media Runtime：`152 passed / 0 failed`，另 `7 subtests passed`；
-- `contracts:generate`、contract drift、18 workspace typecheck、全仓 build 通过；
-- `git diff HEAD --check=0`；
-- production root export/import 和 Workflow composition root 负向门通过；
-- 临时 PostgreSQL 数据库和 Redis DB 15 已清理。
+- secret pattern 扫描与 `git diff --check` 通过；
+- 独立复核执行 `contracts:generate` 后，三个合同文件虽一度显示工作区修改，但工作区 blob hash 与 HEAD 完全一致且 `git diff` 为空；现已恢复为 clean，无内容变更；
+- production root export/import 和 Workflow composition root 负向门的历史证据继续保留。
 
-详细命令与分包计数见 `AI企业内容生产平台_反自造逻辑治理与源仓库收敛验收报告.md`。
+详细命令、分包计数和证据分层见 `AI企业内容生产平台_反自造逻辑治理与源仓库收敛验收报告.md`。
 
 ## 4. 验收同事重点检查
 
@@ -78,6 +79,7 @@ G01 只验收“反自造语义治理与单一语义所有权”改造：真实�
 - 当前树和 PR diff 是否无原始凭据；
 - 凭据脚本是否缺失且被精确忽略；
 - 旧 PR #1 是否保持关闭；
+- `origin/codex/backup-20260919-snapshot@12446154` 是否继续被明确标记为非验收、不可直接合并的孤立 WIP 归档；
 - 是否有外部密钥轮换和用量日志复核证明；
 - 是否未发生合并、tag、发布或部署。
 
@@ -96,14 +98,11 @@ G01 只验收“反自造语义治理与单一语义所有权”改造：真实�
 
 ## 6. 验收决定模板
 
-验收人请选择其一：
+鉴于真实 LLM/Provider/VPS、生产 ALCHMED 数据盘点、真实成片语义 QC、人工质量和外部凭据轮换仍明确未完成，本轮正式决定只允许二选一：
 
 ```text
-[ ] ACCEPTED
-    G01 Exit Gate 全部满足；可以按正式流程合并。该结论不自动授权部署或关闭其它章节阻断。
-
 [ ] ACCEPTED_WITH_EXTERNAL_GATES
-    代码与本地边界接受；下列真实环境/账号/人工证据仍为发布前阻断：__________。
+    代码与本地治理边界接受；以下真实环境、账号、生产数据和人工证据继续作为发布前阻断：__________。
 
 [ ] RETURN_FOR_FIX
     阻断问题：__________
@@ -119,4 +118,4 @@ G01 只验收“反自造语义治理与单一语义所有权”改造：真实�
 
 ## 7. 可直接转发的验收摘要
 
-> G01“反自造语义治理与单一语义所有权”已完成非测试实现、代码边界收敛、配置/文档/ADR/状态账本同步、历史兼容退役方案、安全历史净化和 Git 验收交付。真实链现统一为 CanonicalSourceBundle → Semantic Director → evidence-referenced decision → provenance/结构验证 → pure projector；deterministic planner 与旧 heuristics 仅存在于显式 Mock/历史兼容入口，真实链无 fallback。Studio 不再自动审批，BGM mode 必须显式选择，未检查/未执行状态不再伪装为通过。已有本地技术证据为 783/0/0 根级隔离基础设施回归、Media Runtime 152/0 及 7 个 subtests、18 workspace typecheck 和全仓 build 通过。请独立重点复核真实/Mock 物理隔离、provenance checker 能力边界、exact dialogue/reference order、Provider pure projection、用户审批门、QC 三态、ALCHMED8 新写边界和安全凭据处置。当前正式状态仍为 READY_FOR_AUDIT；未完成的真实 LLM/Provider/VPS/成片语义 QC/人工质量/生产历史盘点/外部凭据轮换证明不得被写成已通过，也不应阻止对代码与本地边界作出独立结论。
+> G01“反自造语义治理与单一语义所有权”已完成非测试实现、代码边界收敛、配置/文档/ADR/状态账本同步、历史兼容退役 runbook、安全历史净化和 Git 验收交付。真实链现统一为 CanonicalSourceBundle → Semantic Director → evidence-referenced decision → provenance/结构验证 → pure projector；deterministic planner 与旧 heuristics 仅存在于显式 Mock/历史兼容入口，真实链无 fallback。Studio 不再自动审批，BGM mode 必须显式选择，未检查/未执行状态不再伪装为通过。测试证据分两层：实现方历史全基础设施回归为 783/0/0；独立复核人在 5a9d354 上当前复跑为 763/20/0，20 个 skip 是未配置的 PostgreSQL、Redis/BullMQ、MinIO 环境门。Media Runtime 为 152/0，另 7 个 subtests；typecheck、build、secret scan 和 diff check 通过。请独立重点复核真实/Mock 物理隔离、provenance checker 能力边界、exact dialogue/reference order、Provider pure projection、用户审批门、QC 三态、ALCHMED8 新写边界和安全凭据处置。`origin/codex/backup-20260919-snapshot` 明确保留为非验收孤立 WIP 归档，PR #2 仍是唯一验收入口。当前正式状态仍为 READY_FOR_AUDIT；未完成的真实 LLM/Provider/VPS/成片语义 QC/人工质量/生产 ALCHMED 历史盘点/外部凭据轮换证明不得被写成已通过。

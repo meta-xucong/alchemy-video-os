@@ -5,9 +5,9 @@
 | 项目 | 内容 |
 | --- | --- |
 | 文档性质 | 开发基线、阶段门禁和审计总控文档 |
-| 当前版本 | `0.5.3-semantic-owner-audit-handoff` |
+| 当前版本 | `0.5.4-semantic-owner-audit-reconciled` |
 | 当前阶段 | G01“反自造语义治理与单一语义所有权”是唯一现行治理章节，正式状态为 `READY_FOR_AUDIT`。WP-00 至 WP-12 只表示 `IMPLEMENTED / LOCAL_TECHNICAL_AND_INFRA_GATES_PASS`，不等于章节 `ACCEPTED` 或生产可用。过去 C11.2、C11.4、C11.5、C11.6、C12.1、C12.2 等章节中依赖关键词、正则、手工评分、自动批准、伪修复或未检查即通过的历史 `ACCEPTED` 结论仅保留为历史证据，不再授权新的真实任务继续写入这些语义。C12.4/C12.5 与 E12/R01 的既有阻断/待审计状态不因 G01 本地绿测自动升级。 |
-| 当前允许范围 | G01 已完成隔离本地 PostgreSQL/Redis/BullMQ/MinIO 跨层验证，以及代码、文档、配置、安全历史净化和 Git 验收交付；当前仅允许独立代码审计、审计缺陷修复、离线/本地回归和经单独授权的外部验收准备。不得把本地证据写成平台验收。真实 LLM、Provider、Pixabay、VPS、媒体产物与人工质量仍需单独授权和独立门禁。用户明确授权的 BGM 智能匹配和必要平台薄壳可以保留，但必须清楚标注来源与边界。 |
+| 当前允许范围 | G01 已完成代码、文档、配置、安全历史净化和 Git 验收交付。测试证据分层：实现方历史完整隔离基础设施运行 `783/0/0`；独立复核当前环境运行 `763/20/0`，20 skip 为 PostgreSQL、Redis/BullMQ、MinIO 环境门。当前仅允许独立代码审计、审计缺陷修复、离线/本地回归和经单独授权的外部验收准备。不得把本地证据写成平台验收。真实 LLM、Provider、Pixabay、VPS、媒体产物与人工质量仍需单独授权和独立门禁。用户明确授权的 BGM 智能匹配和必要平台薄壳可以保留，但必须清楚标注来源与边界。 |
 | 当前禁止范围 | 未获单独授权的真实 Provider/TTS、Veyra、共享积分、网络、VPS、SSH、DNS、TLS 和生产部署继续禁止。Git 仅允许审计分支、验收 PR 和审计缺陷修复；独立验收前禁止 merge、tag 和发布。不得新增自然语言关键词表、语义正则、手工评分、行业特例、静默 fallback、自动批准、source 改写、未执行即成功或未检查即通过。公共契约、状态、事件、数据库或 wire 若确需改变，必须先落 ADR、兼容策略和测试，不得先改代码绕过。 |
 | 当前执行方案 | `AI企业内容生产平台_反自造逻辑治理与源仓库收敛完整优化方案.md` 是 G01 唯一主执行方案；`AI企业内容生产平台_反自造逻辑与通用LLM边界专项审计报告.md` 与 `AI企业内容生产平台_源仓库创作逻辑收敛与平台薄壳边界开发文档.md` 分别作为问题证据和固定来源边界。其它专项文档只保留历史或局部证据，冲突时不得覆盖主方案。 |
 | 语音路线专项参考 | `AI企业内容生产平台_原仓库语音路线与旁白质量迁移修复开发文档.md`；仅用于 native Provider/TTS owner、来源 selector、样音 gate、时长/混音/QC 的冲突裁定，不自动授权代码、状态或外部调用 |
@@ -32,7 +32,7 @@
 
 | 章节/范围 | 当前状态 | 本轮含义 |
 | --- | --- | --- |
-| G01 / 反自造语义治理 | `READY_FOR_AUDIT` | 代码、本地技术门禁、隔离 PostgreSQL/Redis/BullMQ/MinIO 跨层回归、文档/配置收口、安全历史净化和 Git 验收交付均已完成；provenance checker 只校验引用/结构，不证明语义正确或 source 完整覆盖；真实 LLM/Provider、VPS、成片语义 QC、人工质量、生产历史盘点、外部凭据轮换证明和独立签字仍待证据，禁止升级为 `ACCEPTED` |
+| G01 / 反自造语义治理 | `READY_FOR_AUDIT` | 代码、文档/配置收口、安全历史净化和 Git 验收交付已完成。实现方历史完整基础设施回归为 `783/0/0`；独立复核当前环境为 `763/20/0`，20 skip 是服务环境门。provenance checker 只校验引用/结构，不证明语义正确或 source 完整覆盖；真实 LLM/Provider、VPS、成片语义 QC、人工质量、生产历史盘点、外部凭据轮换证明和最终独立签字仍待证据，禁止升级为 `ACCEPTED` |
 | C11.2 | `ACCEPTED`（历史窄切片） | 仅表示旧资料理解/事实包范围的历史记录；deterministic analyzer/selector 已不再构成当前真实路径授权，也不开放真实外部系统 |
 | C12.4/C12.5 | `IMPLEMENTED_PENDING_AUDIT` | S01/E02、E03/HB-STORYBOARD-TIMING 8–15 秒、E04/OpenMontage Piper、E05/OpenMontage `_full_mix` + ALCHMED8、E06 approved full narration 窗口与 cue-only 边界、E07 transition/xfade 与有效时长、E09 source-expressed checked transcript/subtitle/FFmpeg fallback、E10 approval/formal asset/TimelinePlan identity-window、E11/S08 measured-duration feedback、E08 segmented/HyperFrames timed-audio 均为来源可表达窄切片 `ACCEPTED`；E12/R01 的 native/Doubao canary 仅是已授权产物/连通性证据，仍不足以关闭已选 profile 的能力证据、自动生成样音审批、正式旁白/TimelinePlan、section windows、中文口音和 Studio 硬门。统一 source registry/rank 明确 `DEFERRED`，不作为总体关闭条件。用户上传旁白/样音不属于当前自动流程前提；完整 AudioPlan、混合转场、continuous narration 非 cut、REQUIRED 字幕、完整 E11 自动重规划及其它未映射能力继续 fail-closed；总体不得扩展第二套协议或平行逻辑 |
 | E08 / OM-SEGMENTED-MUSIC + OM-HYPERFRAMES-AUDIO | `ACCEPTED`（窄切片） | 固定 OpenMontage segmented `[start,end]` 音乐窗口/fade 与 HyperFrames 独立音频 `data-start/data-duration` 已完成最小适配、fixture/受控媒体证据、纠察复核和独立验收；完整 renderer/其它硬门不随之关闭 |
@@ -43,6 +43,7 @@
 | Doubao TTS | `AUTHORIZED_LOCAL_OPERATIONAL` | 用户已授权本机显式 Doubao 实际使用/对照；profile 为 `seed-tts-2.0` + `zh_female_meilinvyou_uranus_bigtts`，只在操作者选择时调用，密钥仅来自未入库环境，不自动 fallback、不写入默认配置 |
 | Veyra/共享积分/VPS/DNS/TLS/部署 | `DISABLED` | 本轮不启用、不扣费、不部署 |
 | Git 审计交付 | `REVIEW_ONLY` | 允许净化主线、审计分支和验收 PR；禁止未经验收的 merge、tag、发布或部署 |
+| 远端 WIP 归档 | `RETAINED_NOT_ACCEPTANCE` | `origin/codex/backup-20260919-snapshot@12446154` 是无共同祖先的孤立文件快照，含独有内容；明确保留但不得作为基线、验收入口或直接合并对象，删除需仓库所有者确认。PR #2 是唯一验收入口 |
 
 部署前/历史默认与用户授权例外对账（2026-09-10；仅运行证据）：上表及本文较早“VPS/部署/Git 禁止”段落按未获单独授权的部署前/历史默认理解，不抹掉本地 MVP 默认值或未授权外部边界。前述 route-guard 窄范围独立审计收口为 `ACCEPTED` 后，用户另行明确授权同步并部署：
 

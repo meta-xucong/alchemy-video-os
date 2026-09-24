@@ -1110,7 +1110,7 @@ ADR-0069 只解决 Aiself 自有参考图交付链路的可达性与可审计性
 | 真实性 | `APPROVED` 必须有用户动作；`CHECKED/PASS` 必须有实际检查；`succeeded/ACCEPTED` 必须有真实执行与产物；布尔 `false` 只表示已检查且为否，未知使用 `UNKNOWN/UNAVAILABLE/NOT_CHECKED`。 |
 | 来源例外 | 用户明确授权的 BGM 智能匹配可作为 `PLATFORM_OWNED` 保留；权限、API、队列、持久化、存储、幂等、恢复、Provider mapper 和技术校验作为 `PLATFORM_SHELL` 保留。二者均不得扩张为通用语义 fallback。 |
 | 回滚 | 逐工作包切换，不破坏历史数据。每个新入口可关闭并恢复为 fail-closed 读取；不得恢复关键词/正则语义 fallback，不得使用破坏性 Git。 |
-| 审计证据 | 语义逻辑台账、调用链负向测试、CanonicalSourceBundle source hash/span、exact dialogue byte-for-byte、reference identity/order、无 LLM fail-closed、最终 Provider snapshot、QC 三态、Mock/真实依赖扫描、多行业多语言回归，以及隔离 PostgreSQL/Redis/BullMQ/MinIO 根级 `783 passed / 0 skipped / 0 failed`。 |
+| 审计证据 | 语义逻辑台账、调用链负向测试、CanonicalSourceBundle source hash/span、exact dialogue byte-for-byte、reference identity/order、无 LLM fail-closed、最终 Provider snapshot、QC 三态、Mock/真实依赖扫描、多行业多语言回归。测试分层：实现方历史完整隔离基础设施运行 `783/0/0`；独立复核 `5a9d354` 当前运行 `763/20/0`，20 skip 为 PostgreSQL、Redis/BullMQ、MinIO 环境门。 |
 
 ## ADR-0072：G01 审计交付、敏感历史净化与外部凭据轮换边界
 
@@ -1125,3 +1125,17 @@ ADR-0069 只解决 Aiself 自有参考图交付链路的可达性与可审计性
 | 安全证据 | 净化主线为 `1a4d95ba9e79e04540c1f7af61b917053735d1e5`；旧 PR #1 已关闭；当前主线树、审计分支树和 PR 差异不包含已识别原始凭据；`apps/control-api/start-control-api.sh` 已从树中移除并被精确忽略。 |
 | 回滚 | 不恢复含凭据提交或脚本。若业务提交重建有误，以净化前本地安全备份做只读比对，重新生成不含凭据的提交；不得把旧 secret 重新推送。主线回滚也必须保持凭据文件缺失和 ignore guard。 |
 | 验收影响 | G01 可进入独立代码审计，但安全完全关闭仍要求外部轮换证明和账号日志复核。该要求与代码测试相互独立。 |
+
+## ADR-0073：G01 验收证据分层与孤立 WIP 备份分支处置
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `ACCEPTED`（只覆盖证据记账和远端分支分类，不等于 G01 `ACCEPTED`） |
+| 日期 | 2026-09-24 |
+| 上下文 | 独立复核 `5a9d354` 得到根级 `763 passed / 20 skipped / 0 failed`，而交接文档此前只写实现方在完整隔离基础设施环境取得的 `783/0/0`。远端另有 `origin/codex/backup-20260919-snapshot`，它不是 PR #2 分支，而是无共同祖先的孤立文件快照。 |
+| 证据分层决策 | 两组结果都保留但不得混写：`783/0/0` 标记为实现方历史完整 PostgreSQL/Redis/BullMQ/MinIO 证据；`763/20/0` 标记为独立复核当前环境证据。20 个环境门 skip 不计作通过，也不反向否定历史完整基础设施运行。 |
+| ALCHMED 口径 | 已完成的是生产只读盘点、迁移、保留和回滚 runbook；生产历史数据盘点、迁移执行和 decoder 删除均未执行，继续作为外部门。 |
+| 备份分支调查 | `origin/codex/backup-20260919-snapshot@12446154` 与 `main`/PR #2 无共同祖先；含 546 个文件，其中 19 个路径不在 PR #2，92 个文件内容不同。未发现已知凭据启动脚本；模式扫描命中的是测试 token 形状和占位符，不能据此宣称该分支完成全面安全认证。 |
+| 备份分支决策 | 状态定为 `RETAINED_NOT_ACCEPTANCE`：为避免误删独立 WIP，暂保留原分支；不得作为净化基线、验收入口或直接合并对象。删除必须由仓库所有者确认独有内容已无保留价值。PR #2 仍是唯一验收入口。 |
+| 合同生成器对账 | `contracts:generate` 后三个 tracked 合同文件可能因文件状态/换行元数据显示 modified；只有 blob hash 或 diff 变化才算内容变更。本次三个工作区 blob 与 HEAD 相同，`git diff` 为空，已恢复 clean。 |
+| 验收影响 | G01 继续 `READY_FOR_AUDIT`。修正文档后，由独立验收人决定 `ACCEPTED_WITH_EXTERNAL_GATES` 或 `RETURN_FOR_FIX`；本 ADR 不预判结论。 |

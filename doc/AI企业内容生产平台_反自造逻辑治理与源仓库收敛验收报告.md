@@ -1,6 +1,6 @@
 # AI 企业内容生产平台：反自造逻辑治理与源仓库收敛本地技术验证及待审计报告
 
-版本：`1.3.0`
+版本：`1.4.0`
 
 日期：`2026-09-24`
 
@@ -20,8 +20,8 @@ WP-00 至 WP-12 已完成代码实现、本地技术门禁和隔离基础设施�
 - deterministic planner/compiler 与 reference/object/narrative heuristics 位于显式 Mock 子入口，生产根导出面不可见；
 - 文档关键词分类、二元词评分和固定事实 selector 已退出生产实现；
 - 用户授权的 BGM 智能匹配已明确标记为 `PLATFORM_OWNED`；
-- PostgreSQL、Redis/BullMQ、MinIO、SSE、Worker 重启恢复已在隔离本地环境中完成行为回归；
-- contracts 生成、18 个 workspace typecheck、全仓 build、全仓 test、Media Runtime 和 diff check 均通过。
+- 实现方历史上已在隔离本地 PostgreSQL、Redis/BullMQ、MinIO 环境中完成 SSE、Worker 重启恢复等行为回归；当前独立复跑未配置这些服务，因此对应 20 项保持 skip；
+- 实现方历史全基础设施回归、独立复核当前环境回归、Media Runtime、typecheck、build、secret scan 和 diff check 均有通过证据；历史 `783/0/0` 与当前独立复跑 `763/20/0` 必须分列，不能互相覆盖。
 
 当前不能确认：
 
@@ -29,9 +29,9 @@ WP-00 至 WP-12 已完成代码实现、本地技术门禁和隔离基础设施�
 - 真实 Semantic Director、真实视频 Provider、真实 Pixabay、VPS 与线上运行是否可靠；
 - 实际媒体产物是否满足 source-aligned 多模态语义 QC、对白听感和人工质量；
 - ALCHMED1–7 线上历史数据已完成数量盘点、迁移或安全删除；
-- 当前非干净工作区已经完成独立代码审查、适合提交、合并或部署。
+- PR #2 是否已获得最终独立验收决定、是否适合合并或部署；当前仅完成复核意见回填，正式状态仍为 `READY_FOR_AUDIT`。
 
-本轮没有调用真实 LLM/视频 Provider/Pixabay/Veyra，没有修改生产数据库，没有操作 VPS，没有执行 `git add`、commit、push、建 PR、合并或部署。
+本轮没有调用真实 LLM/视频 Provider/Pixabay/Veyra，没有修改生产数据库，没有操作 VPS，也没有合并、tag、发布或部署。Git 仅用于净化主线、提交审计修正、推送验收分支和维护 Draft PR #2。
 
 ## 2. 独立复审八项问题处置
 
@@ -43,7 +43,7 @@ WP-00 至 WP-12 已完成代码实现、本地技术门禁和隔离基础设施�
 | 4 | verifier 不能证明视觉语义正确 | 名称和文档改为 `ProvenanceCheckedSemanticDirector` / `verifySemanticDirectorProvenance`；checker 只校验 schema、identity、hash、span、顺序、时长和 Provider 硬限制 | 只称 `evidence-referenced/provenance-checked`，不称语义已证明 |
 | 5 | 旧关键词/对象推断代码仍存在 | 旧 reference/object/narrative heuristics 位于 `@alchemy-video/domain/mock-heuristics`，生产根不导出，真实调用扫描和负向测试均为零 | 明确为 Mock/历史兼容，不宣称全仓删除 |
 | 6 | 状态账本冲突和 `非正式离线接受` 非正式状态 | 主方案、台账、验收报告、正式总控、ADR-0071 和章节审计统一为 G01=`READY_FOR_AUDIT`；WP 仅为 `IMPLEMENTED / LOCAL_TECHNICAL_GATE_PASS` | E12/R01 与 C12.4/C12.5 既有阻断/待审计状态保持不变 |
-| 7 | 缺 PostgreSQL/Redis/MinIO 跨层证据 | 已使用独立临时 PostgreSQL DB、Redis DB 15 和本地 MinIO 完成根级集成回归；结果 `783 passed / 0 skipped / 0 failed`，随后删除临时 DB 并清空 Redis DB 15 | 本地基础设施缺口闭合；真实外部系统和生产质量仍未闭合 |
+| 7 | 缺 PostgreSQL/Redis/MinIO 跨层证据 | 实现方历史上使用独立临时 PostgreSQL DB、Redis DB 15 和本地 MinIO 完成根级集成回归，结果 `783/0/0`；独立复核人在 `5a9d354` 当前环境复跑为 `763/20/0`，20 skip 为未配置环境门 | 历史全基础设施证据与当前复跑证据分列；skip 不计通过，真实外部系统和生产质量仍未闭合 |
 | 8 | Media Runtime 测试命令工作目录不完整 | 正式命令固定先进入 `services/media-runtime`，再运行 compile 与 pytest | 正确目录下 `152 passed / 0 failed`，另 `7 subtests passed` |
 
 ## 3. 最终架构边界
@@ -234,9 +234,24 @@ exit code 0
 
 该结果闭合了本地 PostgreSQL、Redis/BullMQ、MinIO、SSE 和 Worker 重启恢复证据；它不替代真实 LLM/Provider、VPS、真实成片和人工质量验收。
 
+### 6.4 PR #2 独立复跑证据（`5a9d354`）
+
+独立复核人在当前环境实际得到：
+
+- 根级测试：`763 passed / 20 skipped / 0 failed`；
+- 20 个 skip 主要是 PostgreSQL、Redis/BullMQ、MinIO 环境门，未按行为通过计；
+- `pnpm typecheck`：通过；
+- `pnpm build`：通过，仅有既有 Nuxt `DEP0155` 警告；
+- Media Runtime：`152 passed / 0 failed`，另 `7 subtests passed`；
+- secret pattern 扫描与 `git diff --check`：通过。
+
+本节是当前独立复跑事实。第 6.1–6.3 节的 `783/0/0` 是实现方此前在完整隔离基础设施可用时取得的历史证据，不能写成独立复核本轮复跑结果，也不应被当前未配置服务产生的 20 个 skip 抹掉。
+
+独立复核执行 `contracts:generate` 后，`contracts/openapi.json`、`contracts/openapi.yaml`、`contracts/platform-contracts.schema.json` 一度显示为工作区修改；逐文件 `git hash-object` 与 `HEAD:<path>` 完全一致且 `git diff` 为空，属于生成器触发的文件状态/换行元数据变化，不是合同内容变更。交接修正时已恢复为 clean。
+
 ## 7. 最终测试证据
 
-### 7.1 全仓 JavaScript/TypeScript
+### 7.1 实现方历史全基础设施运行（存档证据）
 
 | 项目 | Passed | Skipped | Failed |
 | --- | ---: | ---: | ---: |
@@ -259,6 +274,8 @@ exit code 0
 | Task Worker | 54 | 0 | 0 |
 | Workflow Worker | 47 | 0 | 0 |
 | **合计** | **783** | **0** | **0** |
+
+该表属于实现方历史完整基础设施运行，不是独立复核人在 `5a9d354` 当前环境的复跑明细；当前独立复跑总数以第 6.4 节 `763/20/0` 为准。
 
 ### 7.2 Python Media Runtime
 
@@ -318,18 +335,19 @@ uv run --with pytest python -m pytest -q tests/test_runtime.py adapters/openmont
 - 含凭据的本地启动脚本已从净化后的主线历史和验收分支中移除，并加入精确忽略规则；
 - `origin/main` 安全基线已重建为 `1a4d95ba9e79e04540c1f7af61b917053735d1e5`，业务改动保留；
 - 验收分支固定为 `codex/g01-audit-handoff-20260924`，Draft PR 为 `https://github.com/meta-xucong/alchemy-video-os/pull/2`；只允许独立审计，不允许直接合并或部署；
+- `origin/codex/backup-20260919-snapshot@12446154` 是无共同祖先的孤立 WIP 文件快照，包含 19 个当前 PR 不存在的路径和 92 个不同文件；为避免误删独立工作，明确保留为非验收归档。它不是净化基线、不是 PR #2 的 head、不得直接合并，删除需仓库所有者确认；
 - 当前主线树、验收分支树及两者差异均不包含已识别的原始凭据值。
 
 仓库历史净化不能替代上游凭据吊销。SUB2API 视频密钥、参考图视觉服务密钥和参考图交付签名密钥仍须由对应账号/生产环境所有者轮换，并提供后台时间戳或审计记录；这属于外部账号处置，不是本地代码缺口。
 
 ## 10. 工作区与版本控制保护声明
 
-本轮先对既有非干净工作区建立本地安全快照，再在净化后的 `main` 上重放审计分支。仅对包含凭据文件的主线末次提交实施受控、带租约的历史净化，业务差异全部保留；旧 PR 立即关闭，未使用无条件 force push，未清理或覆盖用户数据。最终验收以新的开放 PR 为唯一入口。
+本轮先对既有非干净工作区建立本地安全快照，再在净化后的 `main` 上重放审计分支。仅对包含凭据文件的主线末次提交实施受控、带租约的历史净化，业务差异全部保留；旧 PR 立即关闭，未使用无条件 force push，未清理或覆盖用户数据。被删除的旧远端审计分支仅指 `codex/audit-snapshot-20260924`。独立的 `codex/backup-20260919-snapshot` 因包含尚未逐项确认可删除的 WIP 内容而明确保留，但不构成验收入口；最终验收仍只看 PR #2。
 
 ## 11. 当前审计决定
 
 综合文档、代码、静态审计、本地回归和隔离基础设施集成：
 
-> **WP-00 至 WP-12 已实现，并通过本地技术与基础设施门禁；G01 正式状态为 `READY_FOR_AUDIT`。当前不构成平台级 `ACCEPTED`，也不构成生产可用、可合并或可部署结论。**
+> **WP-00 至 WP-12 已实现；实现方历史完整基础设施证据为 `783/0/0`，独立复核当前环境证据为 `763/20/0`。G01 正式状态仍为 `READY_FOR_AUDIT`，当前不构成平台级 `ACCEPTED`，也不构成生产可用、可合并或可部署结论。**
 
-非测试实现、文档、配置、安全和版本交付已经完成。下一道流程是独立代码审计；之后仍需单独授权的真实 LLM、视频 Provider、Pixabay、VPS、真实媒体语义 QC、人工质量、生产历史盘点和外部凭据轮换证明。未补齐相应证据前，不得升级正式状态，也不得合并或部署。
+非测试实现、文档、配置、安全和版本交付已经完成。下一步是由独立验收人复核本次证据对账修正，并在 `ACCEPTED_WITH_EXTERNAL_GATES` 与 `RETURN_FOR_FIX` 中作出决定。真实 LLM、视频 Provider、Pixabay、VPS、真实媒体语义 QC、人工质量、生产历史盘点和外部凭据轮换证明仍需单独授权；未补齐相应证据前，不得宣称生产可用，也不得部署。
