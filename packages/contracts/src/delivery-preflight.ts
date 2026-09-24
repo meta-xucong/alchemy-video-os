@@ -255,13 +255,16 @@ export const QualityGateDecisionSchema = z.object({
 export const CreateDeliveryPlanRevisionCommandSchema = z.object({
   creative_brief_revision_id: CreativeBriefRevisionIdSchema,
   storyboard_revision_id: StoryboardRevisionIdSchema,
-  duration_policy: DurationPolicySchema.default("FLEXIBLE"),
-  flexible_duration_percent: z.number().int().min(0).max(50).default(20),
-  caption_policy: CaptionPolicySchema.default("REQUIRED"),
-  lip_sync_requirement: LipSyncRequirementSchema.default("OFF"),
-  voice_mode: VoiceModeSchema.default("PLATFORM_GENERIC"),
-  budget_limit: DecimalStringSchema.default("0"),
-}).strict();
+  duration_policy: DurationPolicySchema,
+  flexible_duration_percent: z.number().int().min(0).max(50),
+  caption_policy: CaptionPolicySchema,
+  lip_sync_requirement: LipSyncRequirementSchema,
+  voice_mode: VoiceModeSchema,
+}).strict().superRefine((value, context) => {
+  if (value.duration_policy === "EXACT" && value.flexible_duration_percent !== 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["flexible_duration_percent"], message: "EXACT duration policy requires a zero flexible duration percent." });
+  }
+});
 
 export const ApproveDeliveryPlanRevisionCommandSchema = z.object({}).strict();
 

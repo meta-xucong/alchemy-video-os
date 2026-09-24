@@ -3,8 +3,7 @@ import {
   type PlanningModelPort,
   type StoryboardPlanDraft,
   type StoryboardCompilerPort,
-} from "@alchemy-video/creative-planning";
-import { DeterministicFactSelector, type FactSelectionPort } from "@alchemy-video/document-intelligence";
+} from "@alchemy-video/creative-planning/mock";
 import { createPrefixedId, DEFAULT_STORYBOARD_DURATION_POLICY, type StoryboardDurationPolicy } from "@alchemy-video/domain";
 import {
   compactRuntimePrompt,
@@ -12,9 +11,17 @@ import {
   type VideoProviderRuntimeProfile,
 } from "@alchemy-video/provider-video";
 import type { ControlCreativeBriefRevision, CreativePlanningDraft, CreativePlanningEvent, CreativePlanningStore } from "@alchemy-video/persistence";
-import type { VideoAudioOwner } from "@alchemy-video/contracts";
+import type { CreativeBriefFactContext, SegmentFactPack, VideoAudioOwner } from "@alchemy-video/contracts";
 
-import type { BoundedDocumentContextReader } from "./document-context-reader.js";
+import type { BoundedDocumentContextReader } from "../document-context-reader.js";
+
+type MockFactSelectionPort = {
+  selectForSegment(input: {
+    segmentSequence: number;
+    narrativeText: string;
+    contexts: readonly CreativeBriefFactContext[];
+  }): SegmentFactPack;
+};
 
 /**
  * Keep provider capability adaptation at the Worker boundary. The runtime
@@ -79,7 +86,7 @@ export class CreativePlanningExecutor {
     private readonly planner: PlanningModelPort,
     private readonly compiler: StoryboardCompilerPort = new DeterministicStoryboardCompiler(),
     private readonly documentContextReader?: Pick<BoundedDocumentContextReader, "read">,
-    private readonly factSelector: Pick<FactSelectionPort, "selectForSegment"> = new DeterministicFactSelector(),
+    private readonly factSelector?: MockFactSelectionPort,
     private readonly audioOwner?: VideoAudioOwner,
     private readonly durationPolicy?: StoryboardDurationPolicy,
     private readonly runtimeProfile?: Pick<VideoProviderRuntimeProfile, "mode">,
@@ -87,12 +94,13 @@ export class CreativePlanningExecutor {
   ) {}
 
   async execute(input: { brief: ControlCreativeBriefRevision; event: CreativePlanningEvent }) {
-    const factContexts = input.brief.factContexts ?? [];
+    const legacyFactContexts = input.brief.factContexts ?? [];
+    const factContexts = this.factSelector ? legacyFactContexts : [];
     const hasFrozenFacts = factContexts.length > 0;
-    if (input.brief.documentContexts.length > 0 && !hasFrozenFacts && !this.documentContextReader) {
+    if (input.brief.documentContexts.length > 0 && !this.documentContextReader) {
       throw new Error("Workflow Worker has no bounded Markdown reader for frozen document context.");
     }
-    const documentContexts = !hasFrozenFacts && input.brief.documentContexts.length > 0
+    const documentContexts = input.brief.documentContexts.length > 0
       ? await this.documentContextReader!.read(input.brief.documentContexts)
       : [];
     const visualObjectLocks = this.store.resolveVisualObjectLocks
@@ -124,7 +132,7 @@ export class CreativePlanningExecutor {
         narrativeBeatSequences: shotSpec.narrativeBeatSequences,
       }));
       const promptPackages = await Promise.all(shotSpecs.map(async (shotSpec, index) => {
-        const segmentFactPack = hasFrozenFacts
+        const segmentFactPack = hasFrozenFacts && this.factSelector
           ? this.factSelector.selectForSegment({
             segmentSequence: shotSpec.sequence,
             narrativeText: shotSpec.narrativeGoal,

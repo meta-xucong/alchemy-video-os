@@ -159,7 +159,7 @@ test("the Worker treats a transient non-JSON status response as retryable withou
   assert.deepEqual(requests, ["GET https://gateway.example.invalid/v1/videos/video_existing_request"]);
 });
 
-test("reference delivery prioritizes a scene anchor before a subject for R2V", async () => {
+test("reference delivery preserves the frozen canonical order regardless of semantic roles", async () => {
   const profile = (await createWorkerVideoProviderRuntime({ environment: {} })).profile;
   const references = [
     {
@@ -190,7 +190,7 @@ test("reference delivery prioritizes a scene anchor before a subject for R2V", a
   assert.equal(resolved.mode, "REFERENCE_SET");
   if (resolved.mode !== "REFERENCE_SET") return;
   const codec = new ReferenceDeliveryTokenCodec(key);
-  assert.deepEqual(resolved.urls.map((url) => codec.verify(decodeURIComponent(new URL(url).pathname.split("/").at(-1)!))?.assetId), [references[1]!.asset_id, references[0]!.asset_id]);
+  assert.deepEqual(resolved.urls.map((url) => codec.verify(decodeURIComponent(new URL(url).pathname.split("/").at(-1)!))?.assetId), [references[0]!.asset_id, references[1]!.asset_id]);
 });
 
 test("real reference delivery fails before a Provider request when its HTTPS relay is not configured", async () => {

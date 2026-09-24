@@ -196,7 +196,7 @@ test("source-first compaction rejects an authored source that is itself over the
   );
 });
 
-test("second-pass compaction removes only recognised optional source clauses and keeps authored dialogue", () => {
+test("source-looking optional clauses are never removed when authored source exceeds the provider ceiling", () => {
   const sourcePrompt = [
     "风格：现代写实、自然光；人物整体从左向右移动 ## 人物与场景",
     "人物与场景核心事实：一位女性在湿润街道边与橘白猫互动。",
@@ -215,22 +215,18 @@ test("second-pass compaction removes only recognised optional source clauses and
   const generatedPromptParts = ["AUDIO PRIORITY: spoken dialogue remains audible."];
   const prompt = [sourcePrompt, ...generatedPromptParts].join(" ");
   assert.ok(utf8ByteLength(sourcePrompt) > SUB2API_GROK_PROFILE_PROMPT_MAX_UTF8_BYTES);
-  const compacted = compactRuntimePrompt(
-    prompt,
-    "sub2api",
-    SUB2API_GROK_PROFILE_PROMPT_MAX_UTF8_BYTES,
-    { sourcePrompt, generatedPromptParts },
+  assert.throws(
+    () => compactRuntimePrompt(
+      prompt,
+      "sub2api",
+      SUB2API_GROK_PROFILE_PROMPT_MAX_UTF8_BYTES,
+      { sourcePrompt, generatedPromptParts },
+    ),
+    (error) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET",
   );
-  assert.ok(utf8ByteLength(compacted) <= SUB2API_GROK_PROFILE_PROMPT_MAX_UTF8_BYTES);
-  assert.match(compacted, /人物与场景核心事实/);
-  assert.match(compacted, /动作顺序/);
-  assert.match(compacted, /Character says: "早上好，小家伙。"/);
-  assert.doesNotMatch(compacted, /\*\*声音：\*\*/u);
-  assert.doesNotMatch(compacted, /不添加手机提示音/u);
-  assert.doesNotMatch(compacted, /不让小猫突然扑入怀中/u);
 });
 
-test("second-pass compaction also works when the compiler has no generated parts", () => {
+test("authored source is immutable even when no generated parts exist", () => {
   const sourcePrompt = [
     "风格：现代写实、自然光；人物整体从左向右移动 ## 人物与场景",
     "核心事实：人物在街道边与橘白猫互动，先停步、蹲下等待，小猫靠近后轻抚，最后起身离开。",
@@ -240,16 +236,15 @@ test("second-pass compaction also works when the compiler has no generated parts
     "补充事实：" + "湿润街道与橘白猫保持可辨识关系。".repeat(80),
   ].join(" ");
   assert.ok(utf8ByteLength(sourcePrompt) > SUB2API_GROK_PROFILE_PROMPT_MAX_UTF8_BYTES);
-  const compacted = compactRuntimePrompt(
-    sourcePrompt,
-    "sub2api",
-    SUB2API_GROK_PROFILE_PROMPT_MAX_UTF8_BYTES,
-    { sourcePrompt, generatedPromptParts: [] },
+  assert.throws(
+    () => compactRuntimePrompt(
+      sourcePrompt,
+      "sub2api",
+      SUB2API_GROK_PROFILE_PROMPT_MAX_UTF8_BYTES,
+      { sourcePrompt, generatedPromptParts: [] },
+    ),
+    (error) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET",
   );
-  assert.ok(utf8ByteLength(compacted) <= SUB2API_GROK_PROFILE_PROMPT_MAX_UTF8_BYTES);
-  assert.match(compacted, /核心事实/);
-  assert.match(compacted, /Character says: "早上好，小家伙。"/);
-  assert.doesNotMatch(compacted, /\*\*声音：\*\*/u);
 });
 
 test("prompt compaction errors carry a scheduler-only budget discriminant", () => {

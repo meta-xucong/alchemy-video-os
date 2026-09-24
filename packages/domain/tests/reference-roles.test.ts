@@ -6,7 +6,7 @@ import {
   inferVisualReferenceRoles,
   isVisualReferenceOnlyInstruction,
   isVisualReferenceRoleInstruction,
-} from "../src/reference-roles.js";
+} from "../src/mock/reference-roles.js";
 
 test("user image-role instructions override visual analysis", () => {
   assert.deepEqual(

@@ -368,7 +368,7 @@ export class DrizzleDocumentConversionRepository implements DocumentConversionSt
         conversionId: conversion.id,
         markdownAssetId: asset.id,
         markdownSha256: input.markdownSha256,
-        analyzerVersion: "deterministic-document-understanding-v1",
+        analyzerVersion: "structural-document-index-v1",
         status: "QUEUED",
         retryable: false,
         sectionCount: 0,

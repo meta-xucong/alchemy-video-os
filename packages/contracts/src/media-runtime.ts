@@ -178,9 +178,11 @@ export const MediaRuntimeFinalReviewSchema = z.object({
   visual_spotcheck: z.object({
     frames_sampled: z.number().int().min(4),
     black_frames_detected: z.boolean(),
-    broken_overlays: z.boolean(),
-    missing_assets: z.boolean(),
-    unreadable_text: z.boolean(),
+    // Null means the corresponding semantic check was not executed. False is
+    // reserved for an actual check whose result was negative.
+    broken_overlays: z.boolean().nullable(),
+    missing_assets: z.boolean().nullable(),
+    unreadable_text: z.boolean().nullable(),
     issues: z.array(z.string().max(240)).max(20),
   }).strict(),
   audio_spotcheck: z.object({
@@ -197,8 +199,8 @@ export const MediaRuntimeFinalReviewSchema = z.object({
     status: z.enum(["CHECKED", "UNAVAILABLE"]),
     renderer_family_used: z.string().min(1).max(80),
     render_runtime_used: z.enum(["ffmpeg"]),
-    runtime_swap_detected: z.boolean(),
-    silent_downgrade_detected: z.boolean(),
+    runtime_swap_detected: z.boolean().nullable(),
+    silent_downgrade_detected: z.boolean().nullable(),
     issues: z.array(z.string().max(240)).max(20),
   }).strict(),
   subtitle_check: z.object({
@@ -318,7 +320,9 @@ export const MediaRuntimeMusicMixSchema = z.object({
 }).strict();
 export const MusicSelectionModeSchema = z.enum(["AUTO", "MANUAL", "OFF"]);
 export const MusicPlanSchema = z.object({
-  mode: MusicSelectionModeSchema.default("AUTO"),
+  // New production commands must select AUTO, MANUAL, or OFF explicitly.
+  // Historical snapshots without a mode are normalized to OFF at their read boundary.
+  mode: MusicSelectionModeSchema,
   asset_id: z.string().min(1).max(160).optional(),
   style_hint: z.string().max(500).default(""),
 }).strict().superRefine((value, context) => {

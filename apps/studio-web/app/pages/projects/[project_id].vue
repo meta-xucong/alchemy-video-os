@@ -184,7 +184,94 @@
             </div>
           </section>
 
-          <GenerationPanel
+          <section v-if="currentStoryboard && !currentProductionRun" class="delivery-review-card" aria-labelledby="delivery-review-heading">
+        <header class="delivery-review-header">
+          <div>
+            <p class="section-eyebrow">人工确认门</p>
+            <h2 id="delivery-review-heading">确认分镜与交付设置</h2>
+            <p>AI 只提交方案。分镜、字幕、声音、时长容差和音乐模式必须由你明确确认后才会开始制作。</p>
+          </div>
+          <span class="status-pill">{{ currentStoryboard.status === "READY_FOR_REVIEW" ? "等待确认分镜" : currentDeliveryPlan ? "等待确认交付" : "分镜已确认" }}</span>
+        </header>
+
+        <div class="storyboard-review-summary">
+          <strong>{{ currentStoryboard.title }}</strong>
+          <span>{{ currentStoryboard.total_duration_seconds }} 秒 · {{ currentStoryboard.shot_specs.length }} 个生成片段</span>
+          <p>{{ currentStoryboard.summary }}</p>
+        </div>
+        <ol class="storyboard-review-list">
+          <li v-for="shot in currentStoryboard.shot_specs" :key="shot.id">
+            <span>{{ shot.sequence }}</span>
+            <div>
+              <strong>{{ shot.title }}</strong>
+              <p>{{ shot.duration_seconds }} 秒 · {{ shot.narrative_goal }}</p>
+            </div>
+          </li>
+        </ol>
+
+        <template v-if="!currentDeliveryPlan">
+          <div class="delivery-setting-grid">
+            <label>
+              <span>时长策略</span>
+              <select v-model="deliverySettings.durationPolicy">
+                <option value="EXACT">严格按计划时长</option>
+                <option value="FLEXIBLE">允许有限浮动</option>
+              </select>
+            </label>
+            <label v-if="deliverySettings.durationPolicy === 'FLEXIBLE'">
+              <span>允许浮动</span>
+              <input v-model.number="deliverySettings.flexibleDurationPercent" type="number" min="0" max="50" step="1" />
+              <small>%</small>
+            </label>
+            <label>
+              <span>口型同步</span>
+              <select v-model="deliverySettings.lipSyncRequirement">
+                <option value="OFF">不要求</option>
+                <option value="PREFERRED">优先保持</option>
+                <option value="REQUIRED">必须具备认证能力</option>
+              </select>
+            </label>
+            <label>
+              <span>声音模式</span>
+              <select v-model="deliverySettings.voiceMode">
+                <option value="PLATFORM_GENERIC">平台通用声音 / Provider 原生声音</option>
+                <option value="AUTHORIZED_CLONE">已授权克隆声音</option>
+                <option value="USER_SOURCE">用户提供声音</option>
+              </select>
+            </label>
+          </div>
+          <label class="explicit-confirmation">
+            <input v-model="storyboardReviewConfirmed" type="checkbox" />
+            <span>我已逐段检查分镜，并确认当前时长、字幕、口型和声音设置。系统不会替我自动批准。</span>
+          </label>
+          <button type="button" class="button button-primary" :disabled="!canConfirmStoryboard" @click="confirmStoryboardAndCreateDeliveryPlan">
+            {{ productionBusy ? "正在保存确认…" : "确认分镜并创建交付计划" }}
+          </button>
+        </template>
+
+        <template v-else>
+          <div class="delivery-plan-summary" :class="{ blocked: currentDeliveryPlan.status === 'PREFLIGHT_BLOCKED' }">
+            <strong>{{ currentDeliveryPlan.safe_summary }}</strong>
+            <p>时长：{{ currentDeliveryPlan.duration_policy === "EXACT" ? "严格" : `允许 ±${currentDeliveryPlan.flexible_duration_percent}%` }}；字幕：{{ currentDeliveryPlan.caption_policy }}；口型：{{ currentDeliveryPlan.lip_sync_requirement }}；声音：{{ currentDeliveryPlan.voice_mode }}。</p>
+            <p v-if="currentDeliveryPlan.block_reasons.length">阻断原因：{{ currentDeliveryPlan.block_reasons.join("、") }}</p>
+          </div>
+          <label v-if="musicPlan.mode === 'AUTO'" class="auto-music-intent">
+            <span>自动配乐意图</span>
+            <input v-model="musicPlan.styleHint" type="text" maxlength="500" placeholder="例如：克制、轻奢、现代电子氛围；留空则使用已批准创作语境" />
+          </label>
+          <p v-if="musicPlan.mode === 'MANUAL' && !musicPlan.assetId" class="field-error">手动配乐必须先选择一首已验证的 MUSIC 素材。</p>
+          <label v-if="currentDeliveryPlan.status !== 'PREFLIGHT_BLOCKED'" class="explicit-confirmation">
+            <input v-model="deliveryReviewConfirmed" type="checkbox" />
+            <span>我确认以上交付策略和当前音乐模式（{{ musicPlan.mode }}），并明确授权现在开始制作。</span>
+          </label>
+          <button v-if="currentDeliveryPlan.status !== 'PREFLIGHT_BLOCKED'" type="button" class="button button-primary" :disabled="!canConfirmDelivery" @click="confirmDeliveryAndStartProduction">
+            {{ productionBusy ? "正在开始制作…" : "确认交付并开始制作" }}
+          </button>
+        </template>
+        <p v-if="productionError" class="field-error" role="alert">{{ productionError }}</p>
+      </section>
+
+      <GenerationPanel
             :progress="creationProgress"
             :feedback="generationFeedback"
             :busy="creationBusy || planningBusy || productionBusy"
@@ -274,7 +361,7 @@ import ProductionProgressPanel from "../../components/studio/ProductionProgressP
 import ReferenceShelf from "../../components/studio/ReferenceShelf.vue";
 import StoryPlanningPanel from "../../components/studio/StoryPlanningPanel.vue";
 import { creationProgressFor, isRecoverableWaitingProduction, productionProgressFor } from "../../composables/useCreationProgress";
-import type { Asset, CreativeBriefRevision, DocumentConversion, DocumentKnowledgeDetail, ProductionRun, ProductionRunProgress, Shot, StoryboardRevision, TaskRun, VideoVersion } from "../../composables/useControlApi";
+import type { Asset, CreativeBriefRevision, DeliveryPlanRevision, DocumentConversion, DocumentKnowledgeDetail, ProductionRun, ProductionRunProgress, Shot, StoryboardRevision, TaskRun, VideoVersion } from "../../composables/useControlApi";
 import { useRelayConnection } from "../../composables/useRelayConnection";
 
 const route = useRoute();
@@ -297,10 +384,9 @@ const {
   requestCreativePlan,
   storyboardRevisions,
   approveStoryboardRevision,
+  deliveryPlanRevisions,
   createDeliveryPlanRevision,
   approveDeliveryPlanRevision,
-  narrationScriptRevisions,
-  createNarrationScriptRevision,
   createProductionRun,
   productionRuns,
   videoVersions,
@@ -377,8 +463,17 @@ const planningDraft = reactive({
   stylePreferences: "",
   sourceAssetIds: [] as string[],
 });
-const musicPlan = reactive({ mode: "AUTO" as "AUTO" | "MANUAL" | "OFF", assetId: "", styleHint: "" });
+const musicPlan = reactive({ mode: "OFF" as "AUTO" | "MANUAL" | "OFF", assetId: "", styleHint: "" });
 const captionPolicy = ref<"OFF" | "REQUIRED">("OFF");
+const deliverySettings = reactive({
+  durationPolicy: "EXACT" as "EXACT" | "FLEXIBLE",
+  flexibleDurationPercent: 0,
+  lipSyncRequirement: "OFF" as "OFF" | "PREFERRED" | "REQUIRED",
+  voiceMode: "PLATFORM_GENERIC" as "PLATFORM_GENERIC" | "AUTHORIZED_CLONE" | "USER_SOURCE",
+});
+const storyboardReviewConfirmed = ref(false);
+const deliveryReviewConfirmed = ref(false);
+const projectDeliveryPlans = ref<DeliveryPlanRevision[]>([]);
 const productionProgress = ref<ProductionRunProgress[]>([]);
 const projectVideoVersions = ref<VideoVersion[]>([]);
 const projectAudioCapabilities = ref<Array<{ id: string; label: string; status: "AVAILABLE" | "BLOCKED" | "NOT_CONFIGURED"; free: boolean; reason: string }>>([]);
@@ -465,13 +560,22 @@ async function auditionSelectedMusic() {
   }
 }
 
-watch([() => musicPlan.mode, () => musicPlan.assetId], () => {
+watch([() => musicPlan.mode, () => musicPlan.assetId, () => musicPlan.styleHint], () => {
   resetMusicPreview();
+  deliveryReviewConfirmed.value = false;
+});
+watch([
+  () => captionPolicy.value,
+  () => deliverySettings.durationPolicy,
+  () => deliverySettings.flexibleDurationPercent,
+  () => deliverySettings.lipSyncRequirement,
+  () => deliverySettings.voiceMode,
+], () => {
+  storyboardReviewConfirmed.value = false;
+  deliveryReviewConfirmed.value = false;
 });
 const workspaceId = computed(() => detail.value?.project.workspace_id);
 const pixabayMusicCapability = computed(() => projectAudioCapabilities.value.find((capability) => capability.id === "pixabay_music"));
-const providerNativeAudioCapability = computed(() => projectAudioCapabilities.value.find((capability) => capability.id === "provider_native_audio"));
-const providerNativeAudioAvailable = computed(() => providerNativeAudioCapability.value?.status === "AVAILABLE");
 const isLocalDemoMode = computed(() => runtimeConfig.public.localDemoMode === true);
 const commandKey = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 const supportedImageTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -544,6 +648,34 @@ const currentPlanningBrief = computed<CreativeBriefRevision | undefined>(() => [
   .sort((left, right) => right.revision - left.revision || right.updated_at.localeCompare(left.updated_at))[0]);
 const currentStoryboard = computed<StoryboardRevision | undefined>(() => [...(detail.value?.storyboard_revisions ?? [])]
   .sort((left, right) => right.revision - left.revision || right.updated_at.localeCompare(left.updated_at))[0]);
+watch(() => currentStoryboard.value?.id, () => {
+  storyboardReviewConfirmed.value = false;
+  deliveryReviewConfirmed.value = false;
+});
+const currentDeliveryPlan = computed<DeliveryPlanRevision | undefined>(() => {
+  const storyboardId = currentStoryboard.value?.id;
+  if (!storyboardId) return undefined;
+  return [...projectDeliveryPlans.value]
+    .filter((plan) => plan.storyboard_revision_id === storyboardId)
+    .sort((left, right) => right.revision - left.revision || right.updated_at.localeCompare(left.updated_at))[0];
+});
+const musicSelectionValid = computed(() => musicPlan.mode !== "MANUAL" || Boolean(musicPlan.assetId));
+const canConfirmStoryboard = computed(() => Boolean(
+  currentStoryboard.value
+  && ["READY_FOR_REVIEW", "APPROVED"].includes(currentStoryboard.value.status)
+  && !currentDeliveryPlan.value
+  && storyboardReviewConfirmed.value
+  && !productionBusy.value,
+));
+const canConfirmDelivery = computed(() => Boolean(
+  currentStoryboard.value?.status === "APPROVED"
+  && currentDeliveryPlan.value
+  && ["AWAITING_APPROVAL", "APPROVED"].includes(currentDeliveryPlan.value.status)
+  && deliveryReviewConfirmed.value
+  && musicSelectionValid.value
+  && !currentProductionRun.value
+  && !productionBusy.value,
+));
 const currentProductionRun = computed<ProductionRun | undefined>(() => {
   const storyboardId = currentStoryboard.value?.id;
   if (!storyboardId) return undefined;
@@ -908,6 +1040,7 @@ async function openProject() {
   }
   const projectChanged = id !== selectedProjectId.value;
   if (projectChanged) {
+    projectDeliveryPlans.value = [];
     productionProgress.value = [];
     projectVideoVersions.value = [];
     workspaceMusicAssets.value = [];
@@ -1051,11 +1184,13 @@ async function retryDocumentKnowledge(knowledgeRevisionId: string) {
 async function refreshProductionViews(expectedProjectId = selectedProjectId.value) {
   if (!expectedProjectId) return;
   try {
-    const [progressResponse, versionsResponse] = await Promise.all([
+    const [deliveryPlansResponse, progressResponse, versionsResponse] = await Promise.all([
+      deliveryPlanRevisions(expectedProjectId),
       productionRuns(expectedProjectId),
       videoVersions(expectedProjectId),
     ]);
     if (expectedProjectId !== selectedProjectId.value) return;
+    projectDeliveryPlans.value = deliveryPlansResponse.data;
     productionProgress.value = progressResponse.data;
     projectVideoVersions.value = versionsResponse.data;
     syncProjectResultPreview();
@@ -1091,6 +1226,12 @@ function applyStoryboardRevision(storyboard: StoryboardRevision) {
     ...current,
     storyboard_revisions: [...current.storyboard_revisions.filter((item) => item.id !== storyboard.id), storyboard],
   });
+}
+
+function applyDeliveryPlan(plan: DeliveryPlanRevision) {
+  const current = detail.value;
+  if (!current || plan.project_id !== current.project.id) return;
+  projectDeliveryPlans.value = [...projectDeliveryPlans.value.filter((item) => item.id !== plan.id), plan];
 }
 
 function applyProductionRun(productionRun: ProductionRun) {
@@ -1145,91 +1286,78 @@ async function startAutomatedProduction(projectId: string) {
   const storyboard = await waitForAutoStoryboard(projectId, startedAt);
   applyStoryboardRevision(storyboard);
 
-  planningMessage.value = "AI 正在准备制作。";
-  const approved = await approveStoryboardRevision(storyboard.id, commandKey("studio-auto-approve"));
-  applyStoryboardRevision(approved.data);
+  planningMessage.value = "分镜方案已生成，等待你确认后再进入交付设置。";
+}
 
-  // Keep authored line/paragraph breaks in the canonical provider_text.  The
-  // OpenMontage voice path uses punctuation and provider-specific pause
-  // handling; flattening all whitespace here changes the spoken rhythm before
-  // the TTS provider sees the script.  Match the planner's labelled-block
-  // extraction as well: users often type a paired `”... ”` boundary instead
-  // of a directional `“... ”` pair, and that text is still authoritative
-  // narration rather than a visual-only description.
-  const normalizeNarrationText = (value: string) => value
-    .replace(/\r\n?/gu, "\n")
-    .replace(/[^\S\n]+/gu, " ")
-    .replace(/[ \t]+\n/gu, "\n")
-    .replace(/\n[ \t]+/gu, "\n")
-    .trim();
-  const extractQuotedNarration = (value: string) => [...value.matchAll(/“([\s\S]*?)”|”([\s\S]*?)”|「([\s\S]*?)」|『([\s\S]*?)』|"([\s\S]*?)"/gu)]
-    .map((match) => normalizeNarrationText(match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5] ?? ""))
-    .filter(Boolean);
-  const labelledNarration = sourceText.match(/(?:^|\n)\s*(?:口播文案|旁白文案|配音文案|对白文案)\s*(?:为)?\s*[:：]?\s*([\s\S]*?)(?=\n\s*(?:视频生成意图描述|视频生成意图|画面描述|镜头描述|视觉描述|备注|说明)(?:\s*[:：][^\n]*)?(?:\n|$)|$)/u)?.[1];
-  const labelledText = labelledNarration
-    ? normalizeNarrationText(labelledNarration).replace(/^[“”「」『』"']+|[“”「」『』"']+$/gu, "").trim()
-    : undefined;
-  const labelledQuotes = labelledNarration ? extractQuotedNarration(labelledNarration) : [];
-  const narrationTexts = labelledText
-    ? (labelledQuotes.length > 0 ? labelledQuotes : [labelledText])
-    : extractQuotedNarration(sourceText);
-  const quotedNarrationSections = narrationTexts
-    .map((text, index) => ({ id: `section_${index + 1}`, text }))
-    .filter((section) => section.text.length > 0);
-
-  const deliveryPlan = await createDeliveryPlanRevision(projectId, {
-    creative_brief_revision_id: briefResponse.data.id,
-    storyboard_revision_id: approved.data.id,
-    duration_policy: "FLEXIBLE",
-    flexible_duration_percent: 20,
-    caption_policy: captionPolicy.value,
-    lip_sync_requirement: "OFF",
-    voice_mode: "PLATFORM_GENERIC",
-    budget_limit: "0",
-  }, commandKey("studio-auto-delivery-plan"));
-  const approvedDeliveryPlan = deliveryPlan.data.status === "APPROVED"
-    ? deliveryPlan
-    : await approveDeliveryPlanRevision(deliveryPlan.data.id, commandKey("studio-auto-delivery-approve"));
-
-  // A speech-bearing delivery uses the source-owned native provider track
-  // when the current runtime profile exposes that fact.  In that case do not
-  // create a platform narration script or wait for a second TTS timeline.
-  // Non-native profiles retain the existing approval-gated path.
-  if (!providerNativeAudioAvailable.value) {
-    // A speech-bearing delivery cannot safely enter an active ProductionRun
-    // until the C12.7B script/sample/timeline facts exist.  Create only the
-    // normalized script draft here; server-generated sample approval and
-    // TimelinePlan creation remain explicit, auditable actions in the
-    // narration flow. No user-uploaded narration/sample is required.
-    const narrationScripts = await narrationScriptRevisions(approvedDeliveryPlan.data.id);
-    const hasApprovedNarration = narrationScripts.data.some((revision) => revision.status === "APPROVED");
-    if (!hasApprovedNarration) {
-      // Visual-only descriptions have no source transcript and may use the
-      // existing production path. Explicit quoted dialogue still requires the
-      // source-backed sample approval and measured TimelinePlan gate below.
-      if (quotedNarrationSections.length > 0) {
-        const createdNarration = await createNarrationScriptRevision(approvedDeliveryPlan.data.id, {
-          display_sections: quotedNarrationSections,
-          pronunciation_glossary: [],
-          normalization_version: "c12.7b-local-v1",
-        }, commandKey("studio-auto-narration-script"));
-        if (createdNarration.data.status !== "APPROVED") throw new Error("NARRATION_APPROVAL_REQUIRED");
-      }
+async function confirmStoryboardAndCreateDeliveryPlan() {
+  const projectId = selectedProjectId.value;
+  const brief = currentPlanningBrief.value;
+  const storyboard = currentStoryboard.value;
+  if (!projectId || !brief || !storyboard || !canConfirmStoryboard.value) return;
+  productionBusy.value = true;
+  productionError.value = "";
+  try {
+    const approvedStoryboard = storyboard.status === "READY_FOR_REVIEW"
+      ? (await approveStoryboardRevision(storyboard.id, commandKey("studio-storyboard-approve"))).data
+      : storyboard;
+    applyStoryboardRevision(approvedStoryboard);
+    const plan = (await createDeliveryPlanRevision(projectId, {
+      creative_brief_revision_id: brief.id,
+      storyboard_revision_id: approvedStoryboard.id,
+      duration_policy: deliverySettings.durationPolicy,
+      flexible_duration_percent: deliverySettings.durationPolicy === "EXACT" ? 0 : deliverySettings.flexibleDurationPercent,
+      caption_policy: captionPolicy.value,
+      lip_sync_requirement: deliverySettings.lipSyncRequirement,
+      voice_mode: deliverySettings.voiceMode,
+    }, commandKey("studio-delivery-create"))).data;
+    applyDeliveryPlan(plan);
+    storyboardReviewConfirmed.value = false;
+    deliveryReviewConfirmed.value = false;
+    if (plan.status === "PREFLIGHT_BLOCKED") {
+      productionError.value = plan.safe_summary;
+      return;
     }
+    planningMessage.value = "分镜已确认。请复核交付与音乐设置，再明确开始制作。";
+  } catch (error) {
+    productionError.value = safeErrorMessage(error, "分镜或交付设置暂时无法确认，请稍后重试。");
+  } finally {
+    productionBusy.value = false;
   }
+}
 
-  planningMessage.value = "AI 已开始制作视频。";
-  const production = await createProductionRun(projectId, {
-    storyboard_revision_id: approved.data.id,
-    delivery_plan_revision_id: approvedDeliveryPlan.data.id,
-    music_plan: {
-      mode: musicPlan.mode,
-      ...(musicPlan.mode === "MANUAL" && musicPlan.assetId ? { asset_id: musicPlan.assetId } : {}),
-      ...(musicPlan.styleHint.trim() ? { style_hint: musicPlan.styleHint.trim() } : {}),
-    },
-  }, commandKey("studio-auto-production"));
-  applyProductionRun(production.data);
-  await refreshCurrentProject();
+async function confirmDeliveryAndStartProduction() {
+  const projectId = selectedProjectId.value;
+  const storyboard = currentStoryboard.value;
+  const plan = currentDeliveryPlan.value;
+  if (!projectId || !storyboard || !plan || !canConfirmDelivery.value) return;
+  productionBusy.value = true;
+  productionError.value = "";
+  try {
+    const approvedPlan = plan.status === "AWAITING_APPROVAL"
+      ? (await approveDeliveryPlanRevision(plan.id, commandKey("studio-delivery-approve"))).data
+      : plan;
+    applyDeliveryPlan(approvedPlan);
+    if (approvedPlan.status !== "APPROVED") {
+      throw new Error("DELIVERY_PLAN_STATE_INVALID");
+    }
+    const production = await createProductionRun(projectId, {
+      storyboard_revision_id: storyboard.id,
+      delivery_plan_revision_id: approvedPlan.id,
+      music_plan: {
+        mode: musicPlan.mode,
+        ...(musicPlan.mode === "MANUAL" ? { asset_id: musicPlan.assetId } : {}),
+        ...(musicPlan.mode === "AUTO" && musicPlan.styleHint.trim() ? { style_hint: musicPlan.styleHint.trim() } : {}),
+      },
+    }, commandKey("studio-production-start"));
+    applyProductionRun(production.data);
+    deliveryReviewConfirmed.value = false;
+    planningMessage.value = "交付策略和音乐模式已按你的确认开始执行。";
+    await refreshCurrentProject();
+  } catch (error) {
+    productionError.value = safeErrorMessage(error, "当前交付设置暂时无法开始制作，请检查提示后重试。");
+  } finally {
+    productionBusy.value = false;
+  }
 }
 
 async function retryProductionSegment(sequence: number) {
@@ -1309,13 +1437,11 @@ async function generateVideo() {
   } catch (error) {
     const message = error instanceof Error && error.message === "PLANNING_TIMEOUT"
       ? "AI 正在整理这个故事，但暂时没有完成。请稍后刷新项目，或精简描述后生成新版本。"
-      : error instanceof Error && error.message === "NARRATION_APPROVAL_REQUIRED"
-        ? "已生成旁白草稿。请先试听并批准服务端生成的样音，再确认旁白时间轴，完成后才能开始视频制作。"
-        : safeErrorMessage(error, "视频暂时无法生成，请检查想法或稍后重试。");
+      : safeErrorMessage(error, "视频暂时无法生成，请检查想法或稍后重试。");
     planningError.value = message;
     creationError.value = message;
   } finally {
-    planningMessage.value = "";
+    if (planningError.value) planningMessage.value = "";
     planningBusy.value = false;
     creationBusy.value = false;
   }
@@ -1651,3 +1777,42 @@ onBeforeUnmount(() => {
   clearForNavigation();
 });
 </script>
+
+<style scoped>
+.delivery-review-card {
+  display: grid;
+  gap: 1rem;
+  padding: 1.25rem;
+  border: 1px solid var(--border-subtle, #d9dde5);
+  border-radius: 1rem;
+  background: var(--surface-elevated, #fff);
+}
+.delivery-review-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+.delivery-review-header h2,
+.delivery-review-header p,
+.storyboard-review-summary p,
+.storyboard-review-list p,
+.delivery-plan-summary p { margin: 0; }
+.section-eyebrow { font-size: .75rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.status-pill { white-space: nowrap; border-radius: 999px; padding: .35rem .7rem; background: #eef3ff; font-size: .8rem; }
+.storyboard-review-summary,
+.delivery-plan-summary { display: grid; gap: .35rem; padding: .9rem; border-radius: .75rem; background: #f7f8fb; }
+.delivery-plan-summary.blocked { background: #fff3f1; border: 1px solid #f0b3aa; }
+.storyboard-review-list { display: grid; gap: .65rem; margin: 0; padding: 0; list-style: none; }
+.storyboard-review-list li { display: grid; grid-template-columns: 2rem 1fr; gap: .7rem; align-items: start; }
+.storyboard-review-list li > span { display: grid; place-items: center; width: 1.75rem; height: 1.75rem; border-radius: 50%; background: #eef0f5; font-weight: 700; }
+.delivery-setting-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: .8rem; }
+.delivery-setting-grid label,
+.auto-music-intent { display: grid; gap: .35rem; }
+.delivery-setting-grid select,
+.delivery-setting-grid input,
+.auto-music-intent input { min-height: 2.6rem; padding: .55rem .7rem; border: 1px solid #cfd5df; border-radius: .6rem; background: #fff; }
+.explicit-confirmation { display: flex; gap: .65rem; align-items: flex-start; padding: .8rem; border-radius: .7rem; background: #fff9e8; }
+.explicit-confirmation input { margin-top: .2rem; }
+@media (max-width: 720px) { .delivery-review-header { flex-direction: column; } }
+</style>

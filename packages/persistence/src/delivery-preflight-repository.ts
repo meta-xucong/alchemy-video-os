@@ -9,7 +9,7 @@ import type {
   PreflightRevisionStatus,
   VoiceMode,
 } from "@alchemy-video/contracts";
-import { assertPreflightRevisionTransition, assertBudgetWithinApprovedLimit, createPrefixedId } from "@alchemy-video/domain";
+import { assertPreflightRevisionTransition, createPrefixedId } from "@alchemy-video/domain";
 
 import type { PlatformDatabase } from "./db.js";
 import { commandDeduplications, creativeBriefRevisions, deliveryPlanRevisions, outboxEvents, storyboardRevisions } from "./schema.js";
@@ -59,7 +59,6 @@ export type CreateDeliveryPlanRevisionInput = {
   captionPolicy: CaptionPolicy;
   lipSyncRequirement: LipSyncRequirement;
   voiceMode: VoiceMode;
-  budgetLimit: string;
   event: DeliveryPreflightEvent;
 };
 
@@ -305,11 +304,6 @@ export class InMemoryDeliveryPreflightStore implements DeliveryPreflightStore {
     const reasons: string[] = [];
     if (input.voiceMode !== "PLATFORM_GENERIC") reasons.push("VOICE_AUTHORIZATION_REQUIRED");
     if (input.lipSyncRequirement === "REQUIRED") reasons.push("CAPABILITY_NOT_CERTIFIED");
-    try {
-      assertBudgetWithinApprovedLimit({ estimatedAmount: "0", approvedLimit: input.budgetLimit });
-    } catch {
-      reasons.push("BUDGET_LIMIT_EXCEEDED");
-    }
     return reasons;
   }
 
@@ -563,7 +557,6 @@ export class DrizzleDeliveryPreflightStore implements DeliveryPreflightStore {
     const reasons: string[] = [];
     if (input.voiceMode !== "PLATFORM_GENERIC") reasons.push("VOICE_AUTHORIZATION_REQUIRED");
     if (input.lipSyncRequirement === "REQUIRED") reasons.push("CAPABILITY_NOT_CERTIFIED");
-    try { assertBudgetWithinApprovedLimit({ estimatedAmount: "0", approvedLimit: input.budgetLimit }); } catch { reasons.push("BUDGET_LIMIT_EXCEEDED"); }
     return reasons;
   }
 }

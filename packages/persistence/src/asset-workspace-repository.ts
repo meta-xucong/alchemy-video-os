@@ -85,15 +85,17 @@ export type ConfirmAssetInput = {
   /** Server-derived metadata from an internal importer; not a public command field. */
   metadata?: Record<string, unknown>;
   visualAnalysis?: {
-    role: "STYLE" | "SUBJECT" | "SCENE";
-    confidence: number;
-    summary?: string;
+    /** Objective observation required for new analyses. */
+    summary: string;
     objects?: Array<{
       name: string;
       description: string;
       relation: string;
-      prohibited_changes: string[];
+      prohibited_changes?: string[];
     }>;
+    /** Historical read compatibility only; new analyzers do not assign usage. */
+    role?: "STYLE" | "SUBJECT" | "SCENE";
+    confidence?: number;
   };
   visualAnalysisStatus?: "READY" | "UNAVAILABLE" | "FAILED";
   verifyUpload: (asset: ControlAsset) => Promise<boolean>;

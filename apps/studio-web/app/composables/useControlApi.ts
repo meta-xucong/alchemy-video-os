@@ -241,12 +241,12 @@ export type StoryboardShotSpec = {
   title: string;
   duration_seconds: number;
   narrative_goal: string;
-  start_state: string;
-  end_state: string;
-  transition_summary: string;
+  start_state?: string;
+  end_state?: string;
+  transition_summary?: string;
   reference_policy: "REFERENCE_SET" | "HANDOFF_FIRST_FRAME" | "TEXT_TRANSITION";
   depends_on_sequences: number[];
-  continuity_note: string;
+  continuity_note?: string;
   narrative_beat_sequences: number[];
 };
 export type StoryboardRevision = {
@@ -362,6 +362,7 @@ export type DeliveryPlanRevision = {
   updated_at: string;
 };
 export type DeliveryPlanRevisionResponse = { data: DeliveryPlanRevision; request_id: string };
+export type DeliveryPlanRevisionListResponse = { data: DeliveryPlanRevision[]; request_id: string };
 export type NarrationScriptRevision = {
   id: string;
   workspace_id: string;
@@ -526,15 +527,16 @@ export function useControlApi() {
       headers: commandHeaders(idempotencyKey),
       body: {},
     });
+  const deliveryPlanRevisions = (projectId: string) =>
+    $fetch<DeliveryPlanRevisionListResponse>(`/api/v1/projects/${projectId}/delivery-plan-revisions`);
   const createDeliveryPlanRevision = (projectId: string, input: {
     creative_brief_revision_id: string;
     storyboard_revision_id: string;
-    duration_policy?: "FLEXIBLE" | "EXACT";
-    flexible_duration_percent?: number;
-    caption_policy?: "REQUIRED" | "OPTIONAL" | "OFF";
-    lip_sync_requirement?: "OFF" | "PREFERRED" | "REQUIRED";
-    voice_mode?: "PLATFORM_GENERIC" | "AUTHORIZED_CLONE" | "USER_SOURCE";
-    budget_limit?: string;
+    duration_policy: "FLEXIBLE" | "EXACT";
+    flexible_duration_percent: number;
+    caption_policy: "REQUIRED" | "OPTIONAL" | "OFF";
+    lip_sync_requirement: "OFF" | "PREFERRED" | "REQUIRED";
+    voice_mode: "PLATFORM_GENERIC" | "AUTHORIZED_CLONE" | "USER_SOURCE";
   }, idempotencyKey: string) =>
     $fetch<DeliveryPlanRevisionResponse>(`/api/v1/projects/${projectId}/delivery-plan-revisions`, {
       method: "POST",
@@ -568,7 +570,7 @@ export function useControlApi() {
       body: {},
     });
 
-  const createProductionRun = (projectId: string, input: { storyboard_revision_id: string; delivery_plan_revision_id: string; music_plan?: { mode: "AUTO" | "MANUAL" | "OFF"; asset_id?: string; style_hint?: string } }, idempotencyKey: string) =>
+  const createProductionRun = (projectId: string, input: { storyboard_revision_id: string; delivery_plan_revision_id: string; music_plan: { mode: "AUTO" | "MANUAL" | "OFF"; asset_id?: string; style_hint?: string } }, idempotencyKey: string) =>
     $fetch<ProductionRunResponse>(`/api/v1/projects/${projectId}/production-runs`, {
       method: "POST",
       headers: commandHeaders(idempotencyKey),
@@ -610,6 +612,7 @@ export function useControlApi() {
     requestCreativePlan,
     storyboardRevisions,
     approveStoryboardRevision,
+    deliveryPlanRevisions,
     createDeliveryPlanRevision,
     approveDeliveryPlanRevision,
     narrationScriptRevisions,

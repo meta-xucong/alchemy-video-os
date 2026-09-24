@@ -1,6 +1,7 @@
 import { config } from "dotenv";
 
 import { createPrefixedId } from "@alchemy-video/domain";
+import { StructuralDocumentIndexAdapter } from "@alchemy-video/document-intelligence";
 import { DrizzleDocumentConversionRepository, DrizzleDocumentKnowledgeRepository, DrizzleTaskRunRepository, createDatabase } from "@alchemy-video/persistence";
 import { createS3StoragePort } from "@alchemy-video/storage-client";
 import { BullMqDocumentConversionQueue, createBullMqDocumentConversionWorker } from "@alchemy-video/task-queue";
@@ -66,7 +67,7 @@ const knowledgeExecutor = new DocumentKnowledgeExecutor(knowledgeStore, async ({
   const object = await storage.readObject({ objectKey: source.objectKey });
   if (!object || object.mimeType !== "text/markdown") return undefined;
   return { stream: object.stream, markdownSha256: source.markdownSha256 };
-});
+}, new StructuralDocumentIndexAdapter());
 const worker = createBullMqDocumentConversionWorker({
   redisUrl,
   autoStart: false,

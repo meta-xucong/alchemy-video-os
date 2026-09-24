@@ -11,8 +11,6 @@ dependencies = [
 [project.optional-dependencies]
 semantic = [
   "faster-whisper>=1.2,<2",
-  "torch>=2.0,<3",
-  "transformers>=4.40,<6",
 ]
 audio = [
   "piper-tts>=1.7,<2",

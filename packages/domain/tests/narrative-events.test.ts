@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { classifyNarrativeSentence, extractNarrativeSentences, extractVisualConstraints } from "../src/narrative-events.js";
-import { extractKeyVisualObjectLocks } from "../src/visual-object-locks.js";
+import { classifyNarrativeSentence, extractNarrativeSentences, extractVisualConstraints } from "../src/mock/narrative-events.js";
+import { extractKeyVisualObjectLocks } from "../src/mock/visual-object-locks.js";
 
 test("narrative extraction keeps actions while routing source guidance and exposition away from beats", () => {
   const sentences = extractNarrativeSentences([

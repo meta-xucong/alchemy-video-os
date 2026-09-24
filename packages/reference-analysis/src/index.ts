@@ -1,16 +1,12 @@
-import type { VisualReferenceRole } from "@alchemy-video/contracts";
-
 export type ReferenceVisionObject = {
   name: string;
   description: string;
   relation: string;
-  prohibited_changes: string[];
 };
 
 export type ReferenceVisionCandidate = {
-  role: Exclude<VisualReferenceRole, "HANDOFF">;
-  confidence: number;
-  summary?: string;
+  /** Objective description only; it never declares how the user intends to use the image. */
+  summary: string;
   objects?: ReferenceVisionObject[];
 };
 
@@ -31,20 +27,6 @@ export class ReferenceVisionAnalysisError extends Error {
   }
 }
 
-const roleMap: Record<string, ReferenceVisionCandidate["role"]> = {
-  SUBJECT: "SUBJECT",
-  PERSON: "SUBJECT",
-  CHARACTER: "SUBJECT",
-  PRODUCT: "SUBJECT",
-  SCENE: "SCENE",
-  ENVIRONMENT: "SCENE",
-  LOCATION: "SCENE",
-  BACKGROUND: "SCENE",
-  STYLE: "STYLE",
-  PALETTE: "STYLE",
-  WARDROBE: "STYLE",
-};
-
 const jsonFromContent = (value: unknown): unknown => {
   if (typeof value !== "string") return value;
   const normalized = value.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
@@ -56,28 +38,23 @@ const jsonFromContent = (value: unknown): unknown => {
 };
 
 const parseCandidate = (value: unknown): ReferenceVisionCandidate => {
-  if (!value || typeof value !== "object") throw new ReferenceVisionAnalysisError(false, "Visual analysis returned no candidate.");
-  const candidate = value as { role?: unknown; confidence?: unknown; summary?: unknown; objects?: unknown };
-  const role = typeof candidate.role === "string" ? roleMap[candidate.role.trim().toUpperCase()] : undefined;
-  const confidence = typeof candidate.confidence === "number" ? candidate.confidence : Number(candidate.confidence);
-  if (!role || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
-    throw new ReferenceVisionAnalysisError(false, "Visual analysis returned an invalid role candidate.");
-  }
+  if (!value || typeof value !== "object") throw new ReferenceVisionAnalysisError(false, "Visual analysis returned no objective observation.");
+  const candidate = value as { summary?: unknown; objects?: unknown };
+  const summary = typeof candidate.summary === "string" ? candidate.summary.trim().slice(0, 2_000) : "";
+  if (!summary) throw new ReferenceVisionAnalysisError(false, "Visual analysis returned no objective summary.");
   const objects = Array.isArray(candidate.objects)
     ? candidate.objects.flatMap((object) => {
       if (!object || typeof object !== "object") return [];
-      const value = object as Record<string, unknown>;
-      if (typeof value.name !== "string" || typeof value.description !== "string" || typeof value.relation !== "string") return [];
-      const prohibited = Array.isArray(value.prohibited_changes) ? value.prohibited_changes.filter((item): item is string => typeof item === "string").slice(0, 4) : [];
-      return [{ name: value.name.trim().slice(0, 80), description: value.description.trim().slice(0, 300), relation: value.relation.trim().slice(0, 200), prohibited_changes: prohibited.map((item) => item.slice(0, 240)) }];
+      const item = object as Record<string, unknown>;
+      if (typeof item.name !== "string" || typeof item.description !== "string" || typeof item.relation !== "string") return [];
+      return [{
+        name: item.name.trim().slice(0, 80),
+        description: item.description.trim().slice(0, 300),
+        relation: item.relation.trim().slice(0, 200),
+      }];
     }).filter((object) => object.name && object.description && object.relation).slice(0, 12)
     : undefined;
-  return {
-    role,
-    confidence,
-    ...(typeof candidate.summary === "string" && candidate.summary.trim() ? { summary: candidate.summary.trim().slice(0, 240) } : {}),
-    ...(objects && objects.length > 0 ? { objects } : {}),
-  };
+  return { summary, ...(objects && objects.length > 0 ? { objects } : {}) };
 };
 
 const endpointFor = (baseUrl: string) => {
@@ -123,12 +100,12 @@ export class OpenAiCompatibleReferenceVisionAnalyzer implements ReferenceVisionA
           messages: [
             {
               role: "system",
-              content: "你是参考素材视觉分析单元。只返回 JSON：{\"role\":\"SUBJECT|SCENE|STYLE\",\"confidence\":0到1,\"summary\":\"不超过240字\",\"objects\":[{\"name\":\"关键对象名称\",\"description\":\"外观和可辨识细节\",\"relation\":\"与人物或空间的关系\",\"prohibited_changes\":[\"不得替换或消失的变化\"]}]}。objects 只列最多12个清晰可辨识且对连续性重要的对象。不要按图片顺序猜测。",
+              content: "你是参考素材的客观视觉观察单元。只返回 JSON：{\"summary\":\"不超过2000字的可见内容描述\",\"objects\":[{\"name\":\"可见对象名称\",\"description\":\"可直接观察到的外观、颜色、材质与细节\",\"relation\":\"可直接观察到的空间或持有关系\"}]}。不要判断图片用途、SUBJECT/SCENE/STYLE 角色、用户意图、控制维度、创作重要性、产品功效或连续性策略；不要补充看不见的身份和关系。",
             },
             {
               role: "user",
               content: [
-                { type: "text", text: "识别这张参考图的主要用途。" },
+                { type: "text", text: "仅描述这张图中可以直接观察到的内容。" },
                 { type: "image_url", image_url: { url: `data:${input.mimeType};base64,${Buffer.from(input.bytes).toString("base64")}` } },
               ],
             },

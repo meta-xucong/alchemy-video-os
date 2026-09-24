@@ -28,6 +28,8 @@ import {
   type HandoffReviewResult,
   type HandoffReviewReasonCode,
   MediaRuntimeNarrationDurationFeedbackSchema,
+  SemanticDialogueProjectionSchema,
+  SemanticReferenceProjectionSchema,
   type MediaRuntimeNarrationDurationFeedback,
 } from "@alchemy-video/contracts";
 import {
@@ -37,8 +39,6 @@ import {
   assertProductionSegmentTransition,
   createPrefixedId,
   decideContinuityRepair,
-  inferVisualReferenceRoles,
-  parseVisualReferenceAnalysis,
 } from "@alchemy-video/domain";
 
 import type { PlatformDatabase } from "./db.js";
@@ -53,6 +53,7 @@ import {
   eventConsumptions,
   handoffReviews,
   outboxEvents,
+  projects,
   productionRuns,
   productionSegments,
   providerAttempts,
@@ -253,40 +254,91 @@ type MusicCandidate = {
 };
 
 /**
- * Keep the existing descriptive token match and duration fit unchanged.  The
- * score is a platform-owned thin selector around OpenMontage's explicit
- * music-mood intent; it is not an aesthetic recommendation model.
+ * PLATFORM_OWNED / USER_AUTHORIZED BGM matching.
+ *
+ * Tokenization, content matching, score weighting, existing-label preference,
+ * and the stable per-run hash tie-break are local product logic. They are not
+ * OpenMontage or Pixabay recommendation algorithms and must run only after an
+ * explicit AUTO selection. Provider/source adapters remain order-preserving.
+ */
+const nonDescriptiveMusicTokens = new Set(["unknown", "bgm", "music", "audio", "latest", "selected", "pixabay", "track"]);
+
+const musicMetadataTokens = (values: readonly unknown[]) => values
+  .flatMap((value) => Array.isArray(value) ? value.filter((tag): tag is string => typeof tag === "string") : [value])
+  .flatMap((value) => typeof value === "string"
+    ? value.toLowerCase().split(/[^\p{L}\p{N}]+/u)
+    : typeof value === "number" && Number.isFinite(value)
+      ? [String(value)]
+      : [])
+  .filter((token) => token.length > 1 && !nonDescriptiveMusicTokens.has(token));
+
+const hasExistingMusicLabels = (asset: MusicCandidate) => {
+  const metadata = asset.metadata ?? {};
+  return musicMetadataTokens([
+    metadata.genre,
+    metadata.style,
+    metadata.mood,
+    metadata.selection_hint,
+    metadata.bpm,
+    metadata.tags,
+  ]).length > 0;
+};
+
+const musicContentTokenMatchCount = (asset: MusicCandidate, briefText: string) => {
+  const metadata = asset.metadata ?? {};
+  const normalizedBrief = briefText.toLowerCase();
+  // A Pixabay search query is provenance, not a fact about the returned track.
+  return musicMetadataTokens([
+    metadata.source_title,
+    metadata.pixabay_title,
+    metadata.filename,
+    metadata.mood,
+    metadata.style,
+    metadata.genre,
+    metadata.selection_hint,
+    metadata.bpm,
+    metadata.tags,
+  ]).filter((token) => normalizedBrief.includes(token)).length;
+};
+
+export const hasMusicContentMatch = (asset: MusicCandidate, briefText: string) =>
+  musicContentTokenMatchCount(asset, briefText) > 0;
+
+/**
+ * Keep the existing token match and duration fit; use persisted source text
+ * as candidate facts without deriving labels or an aesthetic recommendation.
  */
 export const scoreMusicAsset = (asset: MusicCandidate, briefText: string, targetDurationMs: number) => {
-  const metadata = asset.metadata ?? {};
-  const tags = [metadata.mood, metadata.style, metadata.genre, metadata.selection_hint, metadata.bpm, metadata.filename]
-    .filter(Boolean).join(" ").toLowerCase();
-  const normalizedBrief = briefText.toLowerCase();
-  const tagMatches = tags.split(/[^\p{L}\p{N}]+/u).filter((tag) => tag.length > 1 && normalizedBrief.includes(tag)).length;
   const durationFit = asset.durationMs && asset.durationMs >= targetDurationMs ? 2 : 0;
-  return tagMatches * 10 + durationFit;
+  return musicContentTokenMatchCount(asset, briefText) * 10 + durationFit;
 };
 
 /**
- * Select one whole-video MUSIC track. Equal-score candidates use a stable
- * per-run hash so retries are idempotent while new production runs do not
- * always fall back to the newest row. This is the only platform-owned
- * variation rule; it never overrides an explicit score or changes track count.
+ * Select one whole-video MUSIC track. At the highest existing score, explicit
+ * labels precede unclassified candidates; remaining ties use a stable per-run
+ * hash so retries are idempotent without relying on creation time or randomness.
  */
 export const selectAutoMusicAsset = <T extends MusicCandidate>(input: {
   candidates: readonly T[];
   briefText: string;
   targetDurationMs: number;
   productionRunId: string;
+  selectedAssetId?: string;
 }): T | undefined => {
-  if (input.candidates.length === 0) return undefined;
-  const scored = input.candidates.map((asset) => ({ asset, score: scoreMusicAsset(asset, input.briefText, input.targetDurationMs) }));
+  if (input.selectedAssetId) return input.candidates.find((asset) => asset.id === input.selectedAssetId);
+  const matched = input.candidates.filter((asset) => hasMusicContentMatch(asset, input.briefText));
+  if (matched.length === 0) return undefined;
+  const scored = matched.map((asset) => ({ asset, score: scoreMusicAsset(asset, input.briefText, input.targetDurationMs) }));
   const highestScore = Math.max(...scored.map((item) => item.score));
-  const top = scored.filter((item) => item.score === highestScore).map((item) => item.asset).sort((left, right) => left.id.localeCompare(right.id));
-  if (top.length <= 1) return top[0];
-  const digest = createHash("sha256").update(input.productionRunId).digest("hex");
-  const offset = Number.parseInt(digest.slice(0, 8), 16) % top.length;
-  return top[offset];
+  const top = scored.filter((item) => item.score === highestScore);
+  const topWithLabels = top.filter((item) => hasExistingMusicLabels(item.asset));
+  const preferredTop = topWithLabels.length > 0 ? topWithLabels : top;
+  return preferredTop
+    .map((item) => ({
+      asset: item.asset,
+      digest: createHash("sha256").update(`${input.productionRunId}${item.asset.id}`).digest("hex"),
+    }))
+    .sort((left, right) => left.digest.localeCompare(right.digest))[0]?.asset;
 };
 
 export type ProductionTaskRunInput = Readonly<{
@@ -939,24 +991,6 @@ const handoffReviewCompletedEvent = (source: Extract<InternalEventEnvelope, { ev
   },
 });
 
-const transitionRepairEvent = (source: Extract<InternalEventEnvelope, { event_type: "handoff_review.requested" }>, input: {
-  eventType: "transition_repair.requested" | "transition_repair.succeeded";
-  now: Date;
-  transitionRepairId: string;
-  productionRunId: string;
-  boundarySequence: number;
-  strategy: "BLEND" | "BRIDGE";
-}) => InternalEventEnvelopeSchema.parse({
-  ...nextEventBase(source, input.now, { type: "transition_repair", id: input.transitionRepairId }, "media-worker"),
-  event_type: input.eventType,
-  data: {
-    production_run_id: input.productionRunId,
-    transition_repair_id: input.transitionRepairId,
-    boundary_sequence: input.boundarySequence,
-    strategy: input.strategy,
-  },
-});
-
 const videoVersionSucceededEvent = (source: Extract<InternalEventEnvelope, { event_type: "video_version.composition_requested" }>, input: {
   now: Date;
   videoVersionId: string;
@@ -1072,12 +1106,25 @@ const readAudioOwnerFact = (snapshot: unknown): AudioOwnerFact => {
     : { kind: "INVALID" };
 };
 
+export const readSemanticDialogueProjection = (snapshot: unknown) => {
+  if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) return undefined;
+  const parsed = SemanticDialogueProjectionSchema.safeParse(
+    (snapshot as Record<string, unknown>).semantic_dialogue_projection,
+  );
+  return parsed.success ? parsed.data : undefined;
+};
+
 /**
- * Read the authored provider text from the existing PromptPackage snapshot.
- * This is a private fact lookup for native speech QC; it does not infer text
- * from visual prose or add a second transcript contract.
+ * Read exact provider dialogue from the verified Semantic Director projection.
+ * Historical motion-plan cues remain read-only compatibility below; new
+ * PromptPackages must never derive speech from visual prose.
  */
 const readProviderTextFact = (snapshot: unknown): string | undefined => {
+  const semanticProjection = readSemanticDialogueProjection(snapshot);
+  if (semanticProjection) {
+    const exactText = semanticProjection.dialogues.map((dialogue) => dialogue.exact_text).join("\n");
+    return exactText || undefined;
+  }
   if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) return undefined;
   const motionPlan = (snapshot as { motion_plan?: unknown }).motion_plan;
   if (motionPlan === null || typeof motionPlan !== "object" || Array.isArray(motionPlan)) return undefined;
@@ -1130,6 +1177,13 @@ const visualReference = (asset: ReadyReferenceImageAsset, position: number, role
   role,
 });
 
+const readSemanticReferenceProjection = (referenceMap: Record<string, unknown>, sourcePrompt: string) => {
+  const parsed = SemanticReferenceProjectionSchema.safeParse(referenceMap.semantic_reference_projection);
+  if (!parsed.success) return undefined;
+  const sourceHash = createHash("sha256").update(sourcePrompt, "utf8").digest("hex");
+  return parsed.data.source_hash === sourceHash ? parsed.data : undefined;
+};
+
 const initialVisualInput = async (transaction: QueryExecutor, input: {
   workspaceId: string;
   projectId: string;
@@ -1137,10 +1191,11 @@ const initialVisualInput = async (transaction: QueryExecutor, input: {
   shotSpec: typeof storyboardShotSpecs.$inferSelect;
   sourceAssetIds: string[];
   sourcePrompt: string;
+  referenceMap: Record<string, unknown>;
   dependencySegments: Array<typeof productionSegments.$inferSelect>;
 }) => {
   if (input.shotSpec.referencePolicy === "TEXT_TRANSITION") {
-    return { kind: "READY" as const, references: [] as Array<{ assetId: string; role: "STYLE" | "FIRST_FRAME"; position: number }>, visualInput: { mode: "TEXT" as const, references: [] as [] } };
+    return { kind: "READY" as const, references: [] as Array<{ assetId: string; role: "STYLE" | "SUBJECT" | "FIRST_FRAME"; position: number }>, visualInput: { mode: "TEXT" as const, references: [] as [] } };
   }
   const sourceImages = (await readyReferenceImageAssets(transaction, {
     workspaceId: input.workspaceId,
@@ -1148,26 +1203,28 @@ const initialVisualInput = async (transaction: QueryExecutor, input: {
     assetIds: input.sourceAssetIds,
     origin: "USER_UPLOAD",
   })).slice(0, 7);
-  const sourceRoles = inferVisualReferenceRoles({
-    sourcePrompt: input.sourcePrompt,
-    count: sourceImages.length,
-    sourceImageNames: sourceImages.map((asset) => typeof asset.metadata?.filename === "string" ? asset.metadata.filename : undefined),
-    visionAnalyses: sourceImages.map((asset) => parseVisualReferenceAnalysis(asset.metadata.visual_analysis)),
-  });
-  const sourceRoleByAssetId = new Map(sourceImages.map((asset, index) => [asset.id, sourceRoles[index]]));
+  const sourceById = new Map(sourceImages.map((asset) => [asset.id, asset]));
+  const projection = readSemanticReferenceProjection(input.referenceMap, input.sourcePrompt);
+  const projected = projection?.references ?? [];
+  const sourcePositions = projected.map((item) => sourceImages.findIndex((asset) => asset.id === item.asset_id));
+  const projectionInvalid = sourcePositions.some((position) => position < 0)
+    || sourcePositions.some((position, index) => index > 0 && position <= sourcePositions[index - 1]!);
+  if (projectionInvalid) {
+    return { kind: "WAITING" as const, reasonCode: "REFERENCE_POLICY_UNSATISFIED" as const, safeSummary: "参考图语义计划与冻结素材顺序不一致，需要重新规划。" };
+  }
+  const selected = projected.map((item) => ({ asset: sourceById.get(item.asset_id)!, role: item.provider_role }));
+  const bindingRole = (role: "SUBJECT" | "SCENE" | "STYLE") => role === "SUBJECT" ? "SUBJECT" as const : "STYLE" as const;
+
   if (input.shotSpec.referencePolicy === "REFERENCE_SET") {
-    if (sourceImages.length === 0) {
-      return { kind: "WAITING" as const, reasonCode: "REFERENCE_POLICY_UNSATISFIED" as const, safeSummary: "等待可用的参考素材后继续制作。" };
-    }
-    if (sourceImages.some((asset) => sourceRoleByAssetId.get(asset.id) === undefined)) {
-      return { kind: "WAITING" as const, reasonCode: "REFERENCE_POLICY_UNSATISFIED" as const, safeSummary: "等待补充参考图用途说明或内容识别完成后继续制作。" };
+    if (!projection || selected.length === 0) {
+      return { kind: "WAITING" as const, reasonCode: "REFERENCE_POLICY_UNSATISFIED" as const, safeSummary: "等待已验证的参考图用途计划后继续制作。" };
     }
     return {
       kind: "READY" as const,
-      references: sourceImages.map((asset, position) => ({ assetId: asset.id, role: "STYLE" as const, position })),
+      references: selected.map(({ asset, role }, position) => ({ assetId: asset.id, role: bindingRole(role), position })),
       visualInput: {
         mode: "REFERENCE_SET" as const,
-        references: sourceImages.map((asset, position) => visualReference(asset, position, sourceRoleByAssetId.get(asset.id)!)),
+        references: selected.map(({ asset, role }, position) => visualReference(asset, position, role)),
       },
     };
   }
@@ -1187,12 +1244,10 @@ const initialVisualInput = async (transaction: QueryExecutor, input: {
   if (!handoffAsset) {
     return { kind: "WAITING" as const, reasonCode: "REFERENCE_POLICY_UNSATISFIED" as const, safeSummary: "等待前一段交接帧通过检查后继续制作。" };
   }
-  const ordered = [handoffAsset, ...sourceImages.filter((asset) => asset.id !== handoffAsset.id).slice(0, 6)];
-  const nonHandoffSourceImages = sourceImages.filter((asset) => asset.id !== handoffAsset.id).slice(0, 6);
-  if (nonHandoffSourceImages.some((asset) => sourceRoleByAssetId.get(asset.id) === undefined)) {
-    return { kind: "WAITING" as const, reasonCode: "REFERENCE_POLICY_UNSATISFIED" as const, safeSummary: "等待补充参考图用途说明或内容识别完成后继续制作。" };
+  if (sourceImages.length > 0 && !projection) {
+    return { kind: "WAITING" as const, reasonCode: "REFERENCE_POLICY_UNSATISFIED" as const, safeSummary: "等待已验证的参考图用途计划后继续制作。" };
   }
-  if (ordered.length === 1) {
+  if (selected.length === 0) {
     return {
       kind: "READY" as const,
       references: [{ assetId: handoffAsset.id, role: "FIRST_FRAME" as const, position: 0 }],
@@ -1208,18 +1263,18 @@ const initialVisualInput = async (transaction: QueryExecutor, input: {
       },
     };
   }
+  const userReferences = selected.slice(0, 6);
   return {
     kind: "READY" as const,
-    references: ordered.map((asset, position) => ({
-      assetId: asset.id,
-      role: position === 0 ? "FIRST_FRAME" as const : "STYLE" as const,
-      position,
-    })),
-        visualInput: {
+    references: [
+      { assetId: handoffAsset.id, role: "FIRST_FRAME" as const, position: 0 },
+      ...userReferences.map(({ asset, role }, index) => ({ assetId: asset.id, role: bindingRole(role), position: index + 1 })),
+    ],
+    visualInput: {
       mode: "REFERENCE_SET" as const,
       references: [
         visualReference(handoffAsset, 0, "HANDOFF"),
-        ...nonHandoffSourceImages.map((asset, index) => visualReference(asset, index + 1, sourceRoleByAssetId.get(asset.id)!)),
+        ...userReferences.map(({ asset, role }, index) => visualReference(asset, index + 1, role)),
       ],
     },
   };
@@ -1977,6 +2032,10 @@ export class DrizzleProductionRepository implements ProductionStore {
         ))
         .limit(1)
       : [];
+    const [project] = await this.db.select({ name: projects.name }).from(projects).where(and(
+      eq(projects.workspaceId, run.workspaceId),
+      eq(projects.id, run.projectId),
+    )).limit(1);
     const reviews = await this.db
       .select()
       .from(handoffReviews)
@@ -2012,7 +2071,8 @@ export class DrizzleProductionRepository implements ProductionStore {
     const sourceAudioTracks: NonNullable<MediaRuntimeCompositionPlan["audio_tracks"]> = [];
     const audioOwnerFacts: AudioOwnerFact[] = [];
     const musicIntentHints: string[] = [];
-  const approvedNarration = run.deliveryPlanRevisionId
+    const projectedDialogueTexts: string[] = [];
+    const approvedNarration = run.deliveryPlanRevisionId
       ? await findApprovedNarrationTimeline(this.db, run.workspaceId, run.projectId, run.deliveryPlanRevisionId)
       : undefined;
     const [deliveryPlan] = run.deliveryPlanRevisionId
@@ -2085,14 +2145,24 @@ export class DrizzleProductionRepository implements ProductionStore {
       if (typeof segmentBgmPrompt === "string" && segmentBgmPrompt.trim()) {
         musicIntentHints.push(segmentBgmPrompt.trim());
       }
-      const motionPlan = promptPackage?.capabilitySnapshot?.motion_plan;
+      const semanticDialogueProjection = readSemanticDialogueProjection(promptPackage?.capabilitySnapshot);
+      const semanticSegmentScript = semanticDialogueProjection?.dialogues
+        .map((dialogue) => dialogue.exact_text)
+        .join("\n") ?? "";
+      if (semanticSegmentScript) projectedDialogueTexts.push(semanticSegmentScript);
+
+      // Historical runs without a DeliveryPlan may still expose the old
+      // PromptPackage cue. New runs never use it as a semantic fallback.
+      const motionPlan = !run.deliveryPlanRevisionId
+        ? promptPackage?.capabilitySnapshot?.motion_plan
+        : undefined;
       const voicePerformance = motionPlan && typeof motionPlan === "object"
         ? (motionPlan as { voice_performance?: unknown }).voice_performance
         : undefined;
       const deliveryCues = voicePerformance && typeof voicePerformance === "object"
         ? (voicePerformance as { delivery_cues?: unknown }).delivery_cues
         : undefined;
-      const segmentScript = Array.isArray(deliveryCues)
+      const legacySegmentScript = Array.isArray(deliveryCues)
         ? deliveryCues
           .map((cue) => {
             if (!cue || typeof cue !== "object") return "";
@@ -2103,12 +2173,14 @@ export class DrizzleProductionRepository implements ProductionStore {
           .filter(Boolean)
           .join("")
         : "";
-      if (segmentScript && !approvedNarration && audioOwnerFact.kind === "KNOWN"
-        && audioOwnerFact.owner !== "NATIVE_PROVIDER" && audioOwnerFact.owner !== "LEGACY_PRESERVE") {
-        narrationSegments.push({ text: narrationTextForSynthesis(segmentScript), startMs: narrationCursorMs });
-      } else if (segmentScript && !approvedNarration && audioOwnerFact.kind === "ABSENT") {
-        // Historical snapshots retain their existing cue-derived behavior.
-        narrationSegments.push({ text: narrationTextForSynthesis(segmentScript), startMs: narrationCursorMs });
+      const segmentScript = semanticSegmentScript || legacySegmentScript;
+      if (semanticSegmentScript && !approvedNarration
+        && (audioOwnerFact.kind !== "KNOWN"
+          || (audioOwnerFact.owner !== "NATIVE_PROVIDER" && audioOwnerFact.owner !== "LEGACY_PRESERVE"))) {
+        unavailable("exact dialogue requires an approved platform narration timeline");
+      }
+      if (legacySegmentScript && !approvedNarration && audioOwnerFact.kind === "ABSENT") {
+        narrationSegments.push({ text: narrationTextForSynthesis(legacySegmentScript), startMs: narrationCursorMs });
       }
       sourceAudioTracks.push({
         track_id: `segment-${assembled.length + 1}`,
@@ -2270,7 +2342,22 @@ export class DrizzleProductionRepository implements ProductionStore {
       }
       bridgeDurations.push(repair.durationMs);
     }
-    const musicPlan = MusicPlanSchema.parse((run.budgetGuard as Record<string, unknown> | undefined)?.music_plan ?? {});
+    const musicPlan = MusicPlanSchema.parse(
+      (run.budgetGuard as Record<string, unknown> | undefined)?.music_plan ?? { mode: "OFF" },
+    );
+    const budgetGuard = run.budgetGuard && typeof run.budgetGuard === "object"
+      ? run.budgetGuard as Record<string, unknown>
+      : {};
+    const rawPixabayFallbackMusicAssetId = musicPlan.mode === "AUTO"
+      ? budgetGuard.pixabay_fallback_music_asset_id
+      : undefined;
+    if (rawPixabayFallbackMusicAssetId !== undefined
+      && (typeof rawPixabayFallbackMusicAssetId !== "string" || rawPixabayFallbackMusicAssetId.trim().length === 0)) {
+      unavailable("AUTO Pixabay fallback asset identity is invalid");
+    }
+    const pixabayFallbackMusicAssetId = typeof rawPixabayFallbackMusicAssetId === "string"
+      ? rawPixabayFallbackMusicAssetId
+      : undefined;
     const targetDurationMs = approvedNarration?.effectiveDurationMs
       ?? assembled.reduce((total, segment) => total + segment.sourceAsset.durationMs, 0);
     const musicCandidates = musicPlan.mode === "OFF" ? [] : await this.db.select().from(assets).where(and(
@@ -2284,84 +2371,92 @@ export class DrizzleProductionRepository implements ProductionStore {
     // A row that merely passed the workspace query must not be allowed to
     // direct Worker to another object's key or malformed audio bytes.
     const filteredMusicCandidates = musicCandidates.filter((asset) => isUsableMusicAsset(asset));
-    // Once an approved C12.7B snapshot exists, its canonical provider text is
-    // authoritative; never reintroduce an older brief transcript into the
-    // composition input or final-review comparison.
+    // New runs use only exact dialogue projected by the verified Semantic
+    // Director. Brief prose parsing is restricted to pre-DeliveryPlan history.
+    const projectedScriptText = projectedDialogueTexts.join("\n").trim() || undefined;
+    const legacyScriptText = !run.deliveryPlanRevisionId && brief?.sourceText
+      ? deriveTranscriptScript(brief.sourceText)
+      : undefined;
     const scriptText = approvedNarration || preserveProviderAudio
       ? undefined
-      : (brief?.sourceText ? deriveTranscriptScript(brief.sourceText) : undefined);
+      : projectedScriptText ?? legacyScriptText;
     const hasAuthoritativeNarration = !preserveProviderAudio && Boolean(approvedNarration || scriptText);
     if (approvedNarration) narrationSegments.push(...approvedNarration.narrationSegments);
-    // A canonical, explicitly labelled transcript is safe to synthesize as a
-    // single bounded cue when an older prompt snapshot has no delivery_cues.
-    // This never derives speech from visual description; it only prevents a
-    // continuous plan from reaching Worker with an empty narration request.
-    if (!approvedNarration && scriptText && narrationSegments.length === 0) {
-      narrationSegments.push(...buildCanonicalNarrationCue(brief?.sourceText ?? ""));
+    if (!approvedNarration && !preserveProviderAudio && legacyScriptText && narrationSegments.length === 0) {
+      narrationSegments.push({ text: narrationTextForSynthesis(legacyScriptText), startMs: 0 });
     }
-    // ALCHMED8 is reserved for a complete source-faithful AudioPlan.  Keep
-    // the legacy single full-track mapping, and add the source OpenMontage
-    // section-track mapping only when every PRIMARY section names an
-    // independently measured formal asset.
+    // New DeliveryPlan-backed runs always freeze one complete AudioPlan and
+    // therefore write the current ALCHMED8 envelope. Historical runs without
+    // a DeliveryPlan retain the legacy decoder/writer path for read/replay.
     const sectionNarrationAssets = approvedNarration?.narrationAssets ?? [];
-    const completeAudioPlanBase = approvedNarration
-      && (approvedNarration.narrationAsset || sectionNarrationAssets.length > 0)
+    const sourceTracksWithGain = sourceAudioTracks.map((track) => ({
+      ...track,
+      // OpenMontage audio_mixer._track_filters uses volume=1.0 when omitted;
+      // the equivalent explicit source default is 0 dB.
+      gain_db: track.gain_db ?? "0",
+    }));
+    const completeAudioPlanBase = run.deliveryPlanRevisionId
       && sourceAudioTracks.every((track) => typeof track.asset_id === "string")
-      ? {
-        version: 1 as const,
-        target_duration_ms: approvedNarration.effectiveDurationMs,
-        ...(approvedNarration.narrationAsset ? { narration_asset_id: approvedNarration.narrationAsset.id } : {}),
-        narration_sections: approvedNarration.narrationSections.map((section) => ({
-          section_id: section.sectionId,
-          start_ms: section.startMs,
-          end_ms: section.endMs,
-          visual_role: section.visualRole,
-          ...(section.narrationAssetVersionId ? { narration_asset_version_id: section.narrationAssetVersionId } : {}),
-        })),
-        stitch_policy: "CONTINUOUS_NARRATION" as const,
-        transcript_script: approvedNarration.narrationScriptText,
-        ...(approvedNarration.transcriptTimingAssetId ? { transcript_timing_asset_id: approvedNarration.transcriptTimingAssetId } : {}),
-        tracks: [
-          ...(approvedNarration.narrationAsset ? [{
-            track_id: "platform-narration",
-            ownership: "PLATFORM_NARRATION" as const,
-            asset_id: approvedNarration.narrationAsset.id,
-            start_ms: 0,
-            end_ms: approvedNarration.effectiveDurationMs,
-            // OpenMontage audio_mixer._track_filters uses volume=1.0 when
-            // the source edit decision omits volume; encode that source
-            // default as the equivalent, explicit 0 dB value.
-            gain_db: approvedNarration.narrationAsset.gainDb ?? "0",
-            duck_under_narration: false,
-            ...(approvedNarration.narrationAsset.fadeInMs !== undefined ? { fade_in_ms: approvedNarration.narrationAsset.fadeInMs } : {}),
-            ...(approvedNarration.narrationAsset.fadeOutMs !== undefined ? { fade_out_ms: approvedNarration.narrationAsset.fadeOutMs } : {}),
-          }] : sectionNarrationAssets.map((asset) => {
-            const section = approvedNarration.narrationSections.find((candidate) => candidate.sectionId === asset.sectionId);
-            if (!section || section.visualRole !== "PRIMARY" || section.narrationAssetVersionId !== asset.assetVersionId) {
-              throw new ProductionCompositionInputUnavailableError("approved section narration asset does not match its TimelinePlan window");
-            }
-            return {
-              track_id: `narration-${asset.id}`,
+      ? approvedNarration && (approvedNarration.narrationAsset || sectionNarrationAssets.length > 0)
+        ? {
+          version: 1 as const,
+          target_duration_ms: approvedNarration.effectiveDurationMs,
+          ...(approvedNarration.narrationAsset ? { narration_asset_id: approvedNarration.narrationAsset.id } : {}),
+          narration_sections: approvedNarration.narrationSections.map((section) => ({
+            section_id: section.sectionId,
+            start_ms: section.startMs,
+            end_ms: section.endMs,
+            visual_role: section.visualRole,
+            ...(section.narrationAssetVersionId ? { narration_asset_version_id: section.narrationAssetVersionId } : {}),
+          })),
+          stitch_policy: "CONTINUOUS_NARRATION" as const,
+          transcript_script: approvedNarration.narrationScriptText,
+          ...(approvedNarration.transcriptTimingAssetId ? { transcript_timing_asset_id: approvedNarration.transcriptTimingAssetId } : {}),
+          tracks: [
+            ...(approvedNarration.narrationAsset ? [{
+              track_id: "platform-narration",
               ownership: "PLATFORM_NARRATION" as const,
-              asset_id: asset.id,
-              start_ms: section.startMs,
-              end_ms: section.endMs,
-              gain_db: asset.gainDb ?? "0",
+              asset_id: approvedNarration.narrationAsset.id,
+              start_ms: 0,
+              end_ms: approvedNarration.effectiveDurationMs,
+              gain_db: approvedNarration.narrationAsset.gainDb ?? "0",
               duck_under_narration: false,
-              ...(asset.fadeInMs !== undefined ? { fade_in_ms: asset.fadeInMs } : {}),
-              ...(asset.fadeOutMs !== undefined ? { fade_out_ms: asset.fadeOutMs } : {}),
-            };
-          })),
-          ...sourceAudioTracks.map((track) => ({
-            ...track,
-            // The same upstream mapper default is 1.0 (0 dB); this is not a
-            // platform-selected loudness value or a guessed mix level.
-            gain_db: track.gain_db ?? "0",
-          })),
-        ].sort((left, right) => left.start_ms - right.start_ms || left.track_id.localeCompare(right.track_id)),
-      }
+              ...(approvedNarration.narrationAsset.fadeInMs !== undefined ? { fade_in_ms: approvedNarration.narrationAsset.fadeInMs } : {}),
+              ...(approvedNarration.narrationAsset.fadeOutMs !== undefined ? { fade_out_ms: approvedNarration.narrationAsset.fadeOutMs } : {}),
+            }] : sectionNarrationAssets.map((asset) => {
+              const section = approvedNarration.narrationSections.find((candidate) => candidate.sectionId === asset.sectionId);
+              if (!section || section.visualRole !== "PRIMARY" || section.narrationAssetVersionId !== asset.assetVersionId) {
+                throw new ProductionCompositionInputUnavailableError("approved section narration asset does not match its TimelinePlan window");
+              }
+              return {
+                track_id: `narration-${asset.id}`,
+                ownership: "PLATFORM_NARRATION" as const,
+                asset_id: asset.id,
+                start_ms: section.startMs,
+                end_ms: section.endMs,
+                gain_db: asset.gainDb ?? "0",
+                duck_under_narration: false,
+                ...(asset.fadeInMs !== undefined ? { fade_in_ms: asset.fadeInMs } : {}),
+                ...(asset.fadeOutMs !== undefined ? { fade_out_ms: asset.fadeOutMs } : {}),
+              };
+            })),
+            ...sourceTracksWithGain,
+          ].sort((left, right) => left.start_ms - right.start_ms || left.track_id.localeCompare(right.track_id)),
+        }
+        : {
+          version: 1 as const,
+          target_duration_ms: targetDurationMs,
+          narration_sections: [{
+            section_id: "no-platform-narration",
+            start_ms: 0,
+            end_ms: targetDurationMs,
+            visual_role: "HOLD" as const,
+          }],
+          stitch_policy: "LEGACY_PRESERVE" as const,
+          tracks: sourceTracksWithGain,
+        }
       : undefined;
-    const briefText = `${brief?.sourceText ?? ""} ${brief?.stylePreferences ?? ""} ${musicPlan.style_hint} ${musicIntentHints.join(" ")}`.toLowerCase();
+    const briefText = `${brief?.sourceText ?? ""} ${brief?.stylePreferences ?? ""} ${musicPlan.style_hint} ${project?.name ?? ""} ${musicIntentHints.join(" ")}`.toLowerCase();
     const autoMusicCandidates = musicPlan.mode === "AUTO"
       ? filteredMusicCandidates.filter((asset) => isUsableMusicAsset(asset, { minimumDurationMs: targetDurationMs }))
       : [];
@@ -2373,6 +2468,7 @@ export class DrizzleProductionRepository implements ProductionStore {
           briefText,
           targetDurationMs,
           productionRunId: run.id,
+          ...(pixabayFallbackMusicAssetId ? { selectedAssetId: pixabayFallbackMusicAssetId } : {}),
         });
         return selected ? [selected] : [];
       })();
@@ -2567,61 +2663,15 @@ export class DrizzleProductionRepository implements ProductionStore {
         retryable: input.evaluation.retryable,
         createdAt: timestamp(input.now),
       });
+      // A review recommendation is not an executed media repair. Persist the
+      // review and attention status only; no transition repair row, success
+      // event, duration, attempt, or accepted artifact may be fabricated.
       let currentRun = run;
-      if (decision.shouldCreateRepair && decision.strategy !== "PASS") {
-        const repairId = createPrefixedId("trp");
-        const [repair] = await transaction.insert(transitionRepairs).values({
-          id: repairId,
-          workspaceId: run.workspaceId,
-          projectId: run.projectId,
-          productionRunId: run.id,
-          boundarySequence: input.event.data.to_sequence,
-          strategy: decision.strategy,
-          status: "ACCEPTED",
-          taskRunId: null,
-          assetId: null,
-          durationMs: decision.durationMs,
-          attemptCount: 1,
-          createdAt: timestamp(input.now),
-          updatedAt: timestamp(input.now),
-        }).onConflictDoNothing().returning();
-        if (repair) {
-          await insertOutboxEvent(transaction, transitionRepairEvent(input.event, {
-            eventType: "transition_repair.requested",
-            now: input.now,
-            transitionRepairId: repair.id,
-            productionRunId: run.id,
-            boundarySequence: repair.boundarySequence,
-            strategy: repair.strategy,
-          }));
-          await insertOutboxEvent(transaction, transitionRepairEvent(input.event, {
-            eventType: "transition_repair.succeeded",
-            now: input.now,
-            transitionRepairId: repair.id,
-            productionRunId: run.id,
-            boundarySequence: repair.boundarySequence,
-            strategy: repair.strategy,
-          }));
-        }
-      }
-      const repairIncrement = decision.strategy === "BRIDGE" && decision.shouldCreateRepair ? 1 : 0;
-      if (repairIncrement > 0) {
-        const [updated] = await transaction.update(productionRuns)
-          .set({
-            continuityStatus: decision.continuityStatus,
-            autoRepairCount: Math.min(run.maxAutoRepairCount, run.autoRepairCount + repairIncrement),
-            updatedAt: timestamp(input.now),
-          })
-          .where(and(eq(productionRuns.workspaceId, run.workspaceId), eq(productionRuns.id, run.id)))
-          .returning();
-        if (updated) currentRun = updated;
-      } else {
-        const [updated] = await transaction.update(productionRuns)
-          .set({ continuityStatus: decision.continuityStatus, updatedAt: timestamp(input.now) })
-          .where(and(eq(productionRuns.workspaceId, run.workspaceId), eq(productionRuns.id, run.id)))
-          .returning();
-        if (updated) currentRun = updated;
-      }
+      const [updated] = await transaction.update(productionRuns)
+        .set({ continuityStatus: decision.continuityStatus, updatedAt: timestamp(input.now) })
+        .where(and(eq(productionRuns.workspaceId, run.workspaceId), eq(productionRuns.id, run.id)))
+        .returning();
+      if (updated) currentRun = updated;
       const completedReviews = reviewsBefore.length + 1;
       const expectedReviews = Math.max(0, run.totalShotCount - 1);
       const allReviewed = completedReviews >= expectedReviews;
@@ -2629,16 +2679,18 @@ export class DrizzleProductionRepository implements ProductionStore {
         const allReviews = [...reviewsBefore, {
           result: input.evaluation.result,
         } as typeof reviewsBefore[number]];
-        const needsAttention = allReviews.some((review) => review.result === "UNAVAILABLE" || review.result === "FAILED");
+        const allPassed = allReviews.every((review) => review.result === "PASS");
         const [finalRun] = await transaction.update(productionRuns)
-          .set({ continuityStatus: needsAttention ? "NEEDS_ATTENTION" : "GOOD", updatedAt: timestamp(input.now) })
+          .set({ continuityStatus: allPassed ? "GOOD" : "NEEDS_ATTENTION", updatedAt: timestamp(input.now) })
           .where(and(eq(productionRuns.workspaceId, run.workspaceId), eq(productionRuns.id, run.id)))
           .returning();
         if (finalRun) currentRun = finalRun;
-        await insertOutboxEvent(transaction, compositionRequestedEvent(input.event, {
-          now: input.now,
-          productionRunId: run.id,
-        }));
+        if (allPassed) {
+          await insertOutboxEvent(transaction, compositionRequestedEvent(input.event, {
+            now: input.now,
+            productionRunId: run.id,
+          }));
+        }
       }
       await insertOutboxEvent(transaction, handoffReviewCompletedEvent(input.event, {
         now: input.now,
@@ -3387,6 +3439,7 @@ export class DrizzleProductionRepository implements ProductionStore {
         shotSpec: spec,
         sourceAssetIds: brief.sourceAssetIds,
         sourcePrompt: brief.sourceText,
+        referenceMap: promptPackage.referenceMap,
         dependencySegments: segments,
       });
       if (visual.kind === "WAITING") {

@@ -17,7 +17,7 @@ export type HandoffEvaluatorPort = {
     fromTailFrame: Uint8Array;
     toHeadFrame: Uint8Array;
     continuityHints: {
-      characterCount: number;
+      characterCount?: number;
       sceneSummary: string;
       wardrobeSummary?: string;
       actionDirection?: string;
@@ -39,21 +39,18 @@ export const decideContinuityRepair = (input: {
   defaultBlendDurationMs?: number;
   bridgeDurationMs?: number;
 }): ContinuityDecision => {
-  const blendDurationMs = input.defaultBlendDurationMs ?? 600;
-  const bridgeDurationMs = Math.min(3_000, Math.max(1_000, input.bridgeDurationMs ?? 2_000));
-
+  // A semantic review may recommend a blend or bridge, but a recommendation
+  // is not a repair task or media artifact. Until a real executor persists an
+  // output and QC receipt, the platform must keep the run reviewable instead
+  // of inventing a duration and auto-accepting a transition.
   switch (input.evaluation.result) {
     case "PASS":
       return { strategy: "PASS", continuityStatus: "GOOD", durationMs: 0, shouldCreateRepair: false };
     case "BLEND":
-      return { strategy: "BLEND", continuityStatus: "GOOD", durationMs: blendDurationMs, shouldCreateRepair: true };
+      return { strategy: "BLEND", continuityStatus: "NEEDS_ATTENTION", durationMs: 0, shouldCreateRepair: false };
     case "BRIDGE_REQUIRED":
-      if (input.repairCount >= input.maxRepairCount) {
-        return { strategy: "PASS", continuityStatus: "NEEDS_ATTENTION", durationMs: 0, shouldCreateRepair: false };
-      }
-      return { strategy: "BRIDGE", continuityStatus: "AUTO_REPAIRING", durationMs: bridgeDurationMs, shouldCreateRepair: true };
+      return { strategy: "BRIDGE", continuityStatus: "NEEDS_ATTENTION", durationMs: 0, shouldCreateRepair: false };
     case "UNAVAILABLE":
-      return { strategy: "PASS", continuityStatus: "NEEDS_ATTENTION", durationMs: 0, shouldCreateRepair: false };
     case "FAILED":
       return { strategy: "PASS", continuityStatus: "NEEDS_ATTENTION", durationMs: 0, shouldCreateRepair: false };
   }

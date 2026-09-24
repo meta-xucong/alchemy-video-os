@@ -6748,7 +6748,7 @@
                 "narrative_goal": {
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 1000
+                  "maxLength": 4000
                 },
                 "visible_facts": {
                   "type": "array",
@@ -6898,7 +6898,7 @@
                 "narrative_goal": {
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 1000
+                  "maxLength": 4000
                 },
                 "start_state": {
                   "type": "string",
@@ -6986,12 +6986,8 @@
                 "title",
                 "duration_seconds",
                 "narrative_goal",
-                "start_state",
-                "end_state",
-                "transition_summary",
                 "reference_policy",
-                "depends_on_sequences",
-                "continuity_note"
+                "depends_on_sequences"
               ],
               "additionalProperties": false
             },
@@ -7127,7 +7123,7 @@
                     "narrative_goal": {
                       "type": "string",
                       "minLength": 1,
-                      "maxLength": 1000
+                      "maxLength": 4000
                     },
                     "start_state": {
                       "type": "string",
@@ -7215,12 +7211,8 @@
                     "title",
                     "duration_seconds",
                     "narrative_goal",
-                    "start_state",
-                    "end_state",
-                    "transition_summary",
                     "reference_policy",
-                    "depends_on_sequences",
-                    "continuity_note"
+                    "depends_on_sequences"
                   ],
                   "additionalProperties": false
                 },
@@ -7369,7 +7361,7 @@
                       "narrative_goal": {
                         "type": "string",
                         "minLength": 1,
-                        "maxLength": 1000
+                        "maxLength": 4000
                       },
                       "start_state": {
                         "type": "string",
@@ -7457,12 +7449,8 @@
                       "title",
                       "duration_seconds",
                       "narrative_goal",
-                      "start_state",
-                      "end_state",
-                      "transition_summary",
                       "reference_policy",
-                      "depends_on_sequences",
-                      "continuity_note"
+                      "depends_on_sequences"
                     ],
                     "additionalProperties": false
                   },
@@ -10812,14 +10800,12 @@
             "enum": [
               "FLEXIBLE",
               "EXACT"
-            ],
-            "default": "FLEXIBLE"
+            ]
           },
           "flexible_duration_percent": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 50,
-            "default": 20
+            "maximum": 50
           },
           "caption_policy": {
             "type": "string",
@@ -10827,8 +10813,7 @@
               "REQUIRED",
               "OPTIONAL",
               "OFF"
-            ],
-            "default": "REQUIRED"
+            ]
           },
           "lip_sync_requirement": {
             "type": "string",
@@ -10836,8 +10821,7 @@
               "OFF",
               "PREFERRED",
               "REQUIRED"
-            ],
-            "default": "OFF"
+            ]
           },
           "voice_mode": {
             "type": "string",
@@ -10845,18 +10829,17 @@
               "PLATFORM_GENERIC",
               "AUTHORIZED_CLONE",
               "USER_SOURCE"
-            ],
-            "default": "PLATFORM_GENERIC"
-          },
-          "budget_limit": {
-            "type": "string",
-            "pattern": "^(?:0|[1-9]\\d*)(?:\\.\\d{1,8})?$",
-            "default": "0"
+            ]
           }
         },
         "required": [
           "creative_brief_revision_id",
-          "storyboard_revision_id"
+          "storyboard_revision_id",
+          "duration_policy",
+          "flexible_duration_percent",
+          "caption_policy",
+          "lip_sync_requirement",
+          "voice_mode"
         ],
         "additionalProperties": false
       },
@@ -11048,8 +11031,7 @@
                   "AUTO",
                   "MANUAL",
                   "OFF"
-                ],
-                "default": "AUTO"
+                ]
               },
               "asset_id": {
                 "type": "string",
@@ -11062,13 +11044,16 @@
                 "default": ""
               }
             },
-            "additionalProperties": false,
-            "default": {}
+            "required": [
+              "mode"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
           "storyboard_revision_id",
-          "delivery_plan_revision_id"
+          "delivery_plan_revision_id",
+          "music_plan"
         ],
         "additionalProperties": false
       },
@@ -11650,7 +11635,7 @@
                           "narrative_goal": {
                             "type": "string",
                             "minLength": 1,
-                            "maxLength": 1000
+                            "maxLength": 4000
                           },
                           "start_state": {
                             "type": "string",
@@ -11738,12 +11723,8 @@
                           "title",
                           "duration_seconds",
                           "narrative_goal",
-                          "start_state",
-                          "end_state",
-                          "transition_summary",
                           "reference_policy",
-                          "depends_on_sequences",
-                          "continuity_note"
+                          "depends_on_sequences"
                         ],
                         "additionalProperties": false
                       },

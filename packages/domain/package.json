@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./mock-heuristics": {
+      "types": "./dist/mock/index.d.ts",
+      "import": "./dist/mock/index.js"
     }
   },
   "scripts": {

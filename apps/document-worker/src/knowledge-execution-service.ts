@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { createPrefixedId } from "@alchemy-video/domain";
-import { DeterministicDocumentUnderstandingAdapter, type DocumentUnderstandingPort } from "@alchemy-video/document-intelligence";
+import type { DocumentUnderstandingPort } from "@alchemy-video/document-intelligence";
 import type { DocumentKnowledgeExecutionStore } from "@alchemy-video/persistence";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -15,7 +15,7 @@ export class DocumentKnowledgeExecutor {
   constructor(
     private readonly store: DocumentKnowledgeExecutionStore,
     private readonly readMarkdown: (input: { workspaceId: string; knowledgeRevisionId: string; markdownAssetId?: string }) => Promise<KnowledgeMarkdownSource | undefined>,
-    private readonly analyzer: DocumentUnderstandingPort = new DeterministicDocumentUnderstandingAdapter(),
+    private readonly analyzer: DocumentUnderstandingPort,
   ) {}
 
   async execute(input: { workspaceId: string; knowledgeRevisionId: string }) {
