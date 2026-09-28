@@ -101,10 +101,10 @@ test("project shell exposes source-aligned Pixabay import and AUTO local-first f
   assert.doesNotMatch(`${page}\n${api}`, /searchFreeMusic|importFreeMusic|FREESOUND_API_KEY|AUDIO_EXTERNAL_CATALOG/);
 });
 
-test("Studio never re-parses authored narration before semantic approval", () => {
+test("Studio never re-parses authored narration during automatic production", () => {
   const page = read("app/pages/projects/[project_id].vue");
   assert.doesNotMatch(page, /quotedNarrationSections|extractQuotedNarration|labelledNarration/);
   assert.doesNotMatch(page, /口播文案\|旁白文案\|配音文案\|对白文案/);
   assert.doesNotMatch(page, /createNarrationScriptRevision|provider_text/);
-  assert.match(page, /分镜方案已生成，等待你确认后再进入交付设置/);
+  assert.match(page, /AI 正在确认分镜并开始制作视频/);
 });

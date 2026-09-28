@@ -5,7 +5,7 @@ import test from "node:test";
 const root = new URL("..", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 
-test("M2 composes public planning commands with a fresh key and stops at review", () => {
+test("M2 composes public planning commands and starts production after automatic internal approval", () => {
   const workspace = read("app/pages/projects/[project_id].vue");
 
   for (const component of ["StoryPlanningPanel", "ReferenceShelf", "GenerationPanel", "ProjectMaterials", "MediaPreviewDialog", "ProjectResultsPanel"]) {
@@ -29,15 +29,17 @@ test("M2 composes public planning commands with a fresh key and stops at review"
   assert.match(workspace, /await startAutomatedProduction\(current\.project\.id\)/);
   assert.match(workspace, /commandKey\("studio-auto-brief"\)/);
   assert.match(workspace, /commandKey\("studio-auto-plan"\)/);
-  const autoPlan = workspace.slice(
-    workspace.indexOf("async function startAutomatedProduction"),
-    workspace.indexOf("async function confirmStoryboardAndCreateDeliveryPlan"),
-  );
-  assert.doesNotMatch(autoPlan, /approveStoryboardRevision|approveDeliveryPlanRevision|createProductionRun|studio-auto-approve|studio-auto-production/);
-  assert.match(workspace, /async function confirmStoryboardAndCreateDeliveryPlan/);
-  assert.match(workspace, /async function confirmDeliveryAndStartProduction/);
-  assert.match(workspace, /storyboardReviewConfirmed/);
-  assert.match(workspace, /deliveryReviewConfirmed/);
+  const autoPlan = workspace.slice(workspace.indexOf("async function startAutomatedProduction"));
+  assert.match(autoPlan, /approveStoryboardRevision/);
+  assert.match(autoPlan, /approveDeliveryPlanRevision/);
+  assert.match(autoPlan, /createProductionRun/);
+  assert.match(autoPlan, /studio-auto-storyboard-approve/);
+  assert.match(autoPlan, /studio-auto-delivery-approve/);
+  assert.match(autoPlan, /studio-auto-production-start/);
+  assert.doesNotMatch(workspace, /人工确认门/);
+  assert.ok(autoPlan.indexOf("approveStoryboardRevision") < autoPlan.indexOf("createDeliveryPlanRevision"));
+  assert.ok(autoPlan.indexOf("createDeliveryPlanRevision") < autoPlan.indexOf("approveDeliveryPlanRevision"));
+  assert.ok(autoPlan.indexOf("approveDeliveryPlanRevision") < autoPlan.indexOf("createProductionRun"));
   assert.doesNotMatch(workspace, /await createGeneration\(shot\.id, commandKey\("studio-generation"\)\)/);
 });
 
@@ -222,14 +224,10 @@ test("Studio keeps one visible input and hides story planning orchestration", ()
   assert.match(generation, /开始生成视频/);
   assert.match(workspace, /async function startAutomatedProduction/);
   assert.match(workspace, /waitForAutoStoryboard/);
-  assert.match(workspace, /分镜方案已生成，等待你确认后再进入交付设置/);
-  const autoPlan = workspace.slice(
-    workspace.indexOf("async function startAutomatedProduction"),
-    workspace.indexOf("async function confirmStoryboardAndCreateDeliveryPlan"),
-  );
-  assert.doesNotMatch(autoPlan, /approveStoryboardRevision|approveDeliveryPlanRevision|createProductionRun/);
-  assert.match(workspace, /确认分镜并创建交付计划/);
-  assert.match(workspace, /确认交付并开始制作/);
+  assert.match(workspace, /AI 正在确认分镜并开始制作视频/);
+  const autoPlan = workspace.slice(workspace.indexOf("async function startAutomatedProduction"));
+  assert.match(autoPlan, /approveStoryboardRevision|approveDeliveryPlanRevision|createProductionRun/);
+  assert.doesNotMatch(workspace, /人工确认门|确认分镜并创建交付计划|确认交付并开始制作/);
 });
 
 test("Studio keeps composition preferences compact and uses one vertical creation flow", () => {
@@ -322,28 +320,24 @@ test("Studio production details keep the backend failure reason and use a stable
   assert.match(styles, /\.production-segment-reason\s*\{[\s\S]*overflow-wrap:\s*anywhere/);
 });
 
-test("Studio acknowledges planning and stops at explicit storyboard review", () => {
+test("Studio acknowledges planning and automatically advances through internal approval", () => {
   const workspace = read("app/pages/projects/[project_id].vue");
   const generation = read("app/components/studio/GenerationPanel.vue");
 
   assert.match(workspace, /planningMessage\.value = "AI 正在理解你的描述。"/);
   assert.match(workspace, /planningMessage\.value = "AI 正在准备视频内容。"/);
-  assert.match(workspace, /planningMessage\.value = "分镜方案已生成，等待你确认后再进入交付设置。"/);
+  assert.match(workspace, /planningMessage\.value = "AI 正在确认分镜并开始制作视频。"/);
   assert.match(workspace, /applyCreativeBriefRevision\(briefResponse\.data\);/);
   assert.match(workspace, /applyStoryboardRevision\(storyboard\);/);
-  const autoPlan = workspace.slice(
-    workspace.indexOf("async function startAutomatedProduction"),
-    workspace.indexOf("async function confirmStoryboardAndCreateDeliveryPlan"),
-  );
-  assert.doesNotMatch(autoPlan, /AI 已开始制作视频|applyProductionRun\(production\.data\)|createProductionRun/);
-  const explicitStart = workspace.slice(workspace.indexOf("async function confirmDeliveryAndStartProduction"), workspace.indexOf("async function retryProductionSegment"));
-  assert.match(explicitStart, /createProductionRun/);
-  assert.match(explicitStart, /applyProductionRun\(production\.data\)/);
-  assert.match(explicitStart, /deliveryReviewConfirmed\.value = false/);
+  const autoPlan = workspace.slice(workspace.indexOf("async function startAutomatedProduction"));
+  assert.match(autoPlan, /approveStoryboardRevision|approveDeliveryPlanRevision/);
+  assert.match(autoPlan, /applyProductionRun\(production\.data\)/);
+  assert.match(autoPlan, /createProductionRun/);
+  assert.doesNotMatch(workspace, /人工确认门|确认分镜并创建交付计划|确认交付并开始制作/);
   assert.match(generation, /generation-feedback/);
 });
 
-test("Studio does not parse narration or choose an audio owner before user approval", () => {
+test("Studio does not reparse narration or choose an audio owner during automatic production", () => {
   const workspace = read("app/pages/projects/[project_id].vue");
 
   assert.doesNotMatch(workspace, /quotedNarrationSections|extractQuotedNarration|labelledNarration/);
@@ -351,7 +345,7 @@ test("Studio does not parse narration or choose an audio owner before user appro
   assert.doesNotMatch(workspace, /providerNativeAudioAvailable|providerNativeAudioCapability/);
   assert.match(workspace, /const captionPolicy = ref<"OFF" \| "REQUIRED">\("OFF"\);/);
   assert.match(workspace, /字幕来自已检查的音频转写，文字需人工复核/);
-  assert.match(workspace, /分镜方案已生成，等待你确认后再进入交付设置/);
+  assert.match(workspace, /AI 正在确认分镜并开始制作视频/);
 });
 
 test("Studio labels local demo output and never treats it as an automatic playback action", () => {

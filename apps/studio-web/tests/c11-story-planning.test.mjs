@@ -26,7 +26,7 @@ test("C11 Studio uses only public story-planning commands and keeps project deta
   assert.doesNotMatch(api, /\b(?:provider|queue|outbox|object_key|veyra)\b/i);
 });
 
-test("C11 Studio prepares a reviewable storyboard without auto-approving or starting production", () => {
+test("C11 Studio prepares a storyboard and auto-approves it before starting production", () => {
   const workspace = read("app/pages/projects/[project_id].vue");
   const panel = read("app/components/studio/StoryPlanningPanel.vue");
   const source = `${workspace}\n${panel}`;
@@ -39,18 +39,10 @@ test("C11 Studio prepares a reviewable storyboard without auto-approving or star
   }
   assert.match(workspace, /waitForAutoStoryboard/);
   assert.match(workspace, /applyStoryboardRevision\(storyboard\);/);
-  assert.match(workspace, /分镜方案已生成，等待你确认后再进入交付设置/);
-  const autoPlan = workspace.slice(
-    workspace.indexOf("async function startAutomatedProduction"),
-    workspace.indexOf("async function confirmStoryboardAndCreateDeliveryPlan"),
-  );
-  assert.doesNotMatch(autoPlan, /approveStoryboardRevision|approveDeliveryPlanRevision|createProductionRun|studio-auto-approve|studio-auto-delivery|studio-auto-production/);
-  assert.match(workspace, /async function confirmStoryboardAndCreateDeliveryPlan/);
-  assert.match(workspace, /async function confirmDeliveryAndStartProduction/);
-  assert.match(workspace, /storyboardReviewConfirmed/);
-  assert.match(workspace, /deliveryReviewConfirmed/);
-  assert.match(workspace, /确认分镜并创建交付计划/);
-  assert.match(workspace, /确认交付并开始制作/);
+  assert.match(workspace, /AI 正在确认分镜并开始制作视频/);
+  const autoPlan = workspace.slice(workspace.indexOf("async function startAutomatedProduction"));
+  assert.match(autoPlan, /approveStoryboardRevision|approveDeliveryPlanRevision|createProductionRun/);
+  assert.doesNotMatch(workspace, /人工确认门|确认分镜并创建交付计划|确认交付并开始制作/);
   assert.doesNotMatch(panel, /createGeneration|TaskRun|Provider|模型|队列/);
 });
 

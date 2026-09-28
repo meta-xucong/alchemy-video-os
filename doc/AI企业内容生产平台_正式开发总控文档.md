@@ -2,13 +2,18 @@
 
 ## 0. 文档状态
 
+> **最新用户变更覆盖（2026-09-29）**：网页 Studio 的 storyboard/delivery-plan 人工确认门已撤销。
+> 用户点击开始生成后，沿用原有 approval endpoint 与事件事实，由 Studio 自动确认并立即创建
+> ProductionRun。本文及历史方案中“用户显式确认分镜/交付后才开始制作”的 UI 流程描述均标记为
+> `HISTORICAL/SUPERSEDED`；真实 Provider 拒绝、素材/字幕/旁白事实缺失和技术 fail-closed 门不变。
+
 | 项目 | 内容 |
 | --- | --- |
 | 文档性质 | 开发基线、阶段门禁和审计总控文档 |
 | 当前版本 | `0.5.6-semantic-model-gate-ready-for-audit` |
 | 当前阶段 | G01“反自造语义治理与单一语义所有权”已按范围限定收口为 `ACCEPTED`；当前唯一活动范围切换为 G02“Semantic Director 真实模型能力门与规划阻断收口”，状态为 `BLOCKED / NOT_READY_FOR_PROVIDER_TEST`。G02 的严格诊断、模型 profile、启动传递和 fail-closed 代码已实现，但尚无真实模型通过完整 `SemanticDirectorDecision v1` fixture，因此禁止提交视频 Provider。C12.4/C12.5 与 E12/R01 的既有阻断/待审计状态不变。 |
 | 当前允许范围 | 仅允许 G02 的模型 fixture 认证、脱敏诊断复核、旧项目重新规划准备和离线/本地回归。实现方可登记真实模型的精确输出能力，但不得自动换模型、修补非法 JSON、回退 deterministic planner、手工注入旧 projection 或绕过规划门。真实 Grok/Pixabay、VPS、媒体产物与人工质量继续使用独立门禁。 |
-| 当前禁止范围 | 未获单独授权的真实 Provider/TTS、Veyra、共享积分、网络、VPS、SSH、DNS、TLS 和生产部署继续禁止。Git 仅允许审计分支、验收 PR 和审计缺陷修复；独立验收前禁止 merge、tag 和发布。不得新增自然语言关键词表、语义正则、手工评分、行业特例、静默 fallback、自动批准、source 改写、未执行即成功或未检查即通过。公共契约、状态、事件、数据库或 wire 若确需改变，必须先落 ADR、兼容策略和测试，不得先改代码绕过。 |
+| 当前禁止范围 | 未获单独授权的真实 Provider/TTS、Veyra、共享积分、网络、VPS、SSH、DNS、TLS 和生产部署继续禁止。Git 仅允许审计分支、验收 PR 和审计缺陷修复；独立验收前禁止 merge、tag 和发布。不得新增自然语言关键词表、语义正则、手工评分、行业特例、静默 fallback、source 改写、未执行即成功或未检查即通过；网页 storyboard/delivery-plan 自动确认仅按 2026-09-29 用户覆盖执行，并且不能放行真实 Provider 或技术阻断。公共契约、状态、事件、数据库或 wire 若确需改变，必须先落 ADR、兼容策略和测试，不得先改代码绕过。 |
 | 当前执行方案 | G02 唯一现行方案为 `AI企业内容生产平台_SemanticDirector真实模型能力门与规划阻断收口开发文档.md` 与 ADR-0075。G01 的 `AI企业内容生产平台_反自造逻辑治理与源仓库收敛完整优化方案.md` 保留为已验收治理基线；两者冲突时，G02 只能收紧真实模型门，不得恢复 G01 禁止的自造语义或 fallback。 |
 | 语音路线专项参考 | `AI企业内容生产平台_原仓库语音路线与旁白质量迁移修复开发文档.md`；仅用于 native Provider/TTS owner、来源 selector、样音 gate、时长/混音/QC 的冲突裁定，不自动授权代码、状态或外部调用 |
 | 唯一长期架构参考 | `AI企业内容生产平台_代码实现与仓库整合详细方案.md` |

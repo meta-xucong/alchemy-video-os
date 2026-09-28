@@ -50,6 +50,13 @@
 
 ## 1. 当前目标和使用模式
 
+### 1.0 网页自动开始制作（2026-09-29）
+
+网页端不再向用户展示“人工确认门”。用户点击开始生成后，Studio 在同一条命令中完成已存在的
+Storyboard/Delivery Plan approval endpoint 调用，再创建 ProductionRun；这些调用仍写入原有审批事实和
+事件，只是由平台自动完成，不新增状态、协议或 Provider 语义。真实 Provider 的拒绝、资料缺失、
+字幕/旁白事实缺失和其它 fail-closed 阻断仍必须保留，不能被自动批准吞掉或改写成成功。
+
 目标是让同一份已批准脚本在网页中生成一版 Provider 原生音频成片；只有操作者明确选择替换音频时，才生成一版 Doubao TTS 对照成片。两版均必须沿同一画面、同一脚本、同一时间事实链执行，最后由技术检查和人工试听/观看共同判断。
 
 实际使用配置采用现有 Aiself Grok 的 `Sub2ApiVideoProvider` 适配器（`VIDEO_PROVIDER=sub2api`）和现有 Media Runtime Doubao 薄壳；不在平台内直连 xAI 或另造第二个视频协议。仓库默认和 CI 仍保持 `VIDEO_PROVIDER=mock`、`LOCAL_AUTH_MODE=dev`、`VEYRA_AUTH_ENABLED=false`，真实配置只能通过未入库的本机环境显式启用。本轮用户已授权使用 Aiself Grok 与 Doubao，当前操作 profile 为 Grok `grok-imagine-video-1.5`、Doubao `seed-tts-2.0`/`zh_female_meilinvyou_uranus_bigtts`；该授权不扩展到 Veyra、共享积分、VPS、SSH、DNS、TLS、部署或 Git。
