@@ -11,6 +11,11 @@ export type VideoProviderRuntimeProfile = Readonly<{
   ratio: string;
   inputMode: "mock" | "multi_modal_video";
   supportedVisualInputModes: readonly VisualInputMode[];
+  minDurationSeconds: number;
+  maxDurationSeconds: number;
+  maxReferenceImages: number;
+  supportedResolutions: readonly string[];
+  supportedRatios: readonly string[];
   pollIntervalMs: number;
   maxPollAttempts: number;
   /**
@@ -153,6 +158,11 @@ const profiles: Readonly<Record<VideoProviderRuntimeMode, VideoProviderRuntimePr
     ratio: "16:9",
     inputMode: "mock",
     supportedVisualInputModes: ["TEXT", "FIRST_FRAME", "REFERENCE_SET"] as const,
+    minDurationSeconds: 1,
+    maxDurationSeconds: 1,
+    maxReferenceImages: 7,
+    supportedResolutions: ["160x90"] as const,
+    supportedRatios: ["16:9"] as const,
     pollIntervalMs: 0,
     maxPollAttempts: 2,
   }),
@@ -165,6 +175,11 @@ const profiles: Readonly<Record<VideoProviderRuntimeMode, VideoProviderRuntimePr
     ratio: "16:9",
     inputMode: "multi_modal_video",
     supportedVisualInputModes: ["TEXT", "FIRST_FRAME", "REFERENCE_SET"] as const,
+    minDurationSeconds: 1,
+    maxDurationSeconds: 15,
+    maxReferenceImages: 7,
+    supportedResolutions: ["480p", "720p"] as const,
+    supportedRatios: ["16:9"] as const,
     pollIntervalMs: 5_000,
     maxPollAttempts: 120,
     providerPromptMaxUtf8Bytes: SUB2API_GROK_PROFILE_PROMPT_MAX_UTF8_BYTES,
@@ -203,18 +218,25 @@ export const createRuntimeVideoInputSnapshot = (input: Readonly<{
   if (!input.profile.supportedVisualInputModes.includes(visualInput.data.mode)) {
     throw new UnsupportedVideoGenerationInputError("The configured video capability does not support this image input.");
   }
+  if (visualInput.data.references.length > input.profile.maxReferenceImages) {
+    throw new UnsupportedVideoGenerationInputError("The saved reference images exceed this video profile capability.");
+  }
   const settings = input.settings ?? input.profile;
   if (input.profile.mode === "sub2api" && (
     !Number.isInteger(settings.duration)
-    || settings.duration < 1
-    || settings.duration > 15
-    || !["480p", "720p"].includes(settings.resolution)
-    || settings.ratio !== "16:9"
+    || settings.duration < input.profile.minDurationSeconds
+    || settings.duration > input.profile.maxDurationSeconds
+    || !input.profile.supportedResolutions.includes(settings.resolution)
+    || !input.profile.supportedRatios.includes(settings.ratio)
   )) {
     throw new UnsupportedVideoGenerationInputError("The requested video settings are not supported by this video profile.");
   }
   if (input.profile.mode === "mock" && (
-    settings.duration !== input.profile.duration
+    settings.duration < input.profile.minDurationSeconds
+    || settings.duration > input.profile.maxDurationSeconds
+    || settings.duration !== input.profile.duration
+    || !input.profile.supportedResolutions.includes(settings.resolution)
+    || !input.profile.supportedRatios.includes(settings.ratio)
     || settings.resolution !== input.profile.resolution
     || settings.ratio !== input.profile.ratio
   )) {

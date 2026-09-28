@@ -519,6 +519,8 @@ E11 逐符号映射：`compose-director.md:80-107` 为时长预算→TTS 原始�
 
 ## 2026-09-23 场景音乐意图与单曲 AUTO 选曲（待独立复审）
 
+> **历史记录 / SUPERSEDED（2026-09-28）**：本节及其后续返工条目记录的是已废止的本地候选评分、`bgm_prompt` 汇入和 tie-break 实现，不是当前授权。现行以《AI企业内容生产平台_项目级MusicPlan与原生音频所有权收敛开发文档.md》及本轮定向测试为准。
+
 - 固定来源：Huobao storyboard 的可选 `bgm_prompt`；Seedance 的显式声音/BGM owner 语义；OpenMontage 的整片单曲、时长覆盖和 Pixabay 候选路径。三者均未提供跨运行去重或轮换算法。
 - 用户授权的 `PLATFORM_OWNED` 能力：`packages/creative-planning/src/index.ts` → workflow PromptPackage 私有 `capabilitySnapshot.bgm_prompt` → `packages/persistence/src/production-repository.ts` 的 `musicMetadataTokens`、内容命中、duration-fit、标签优先、`scoreMusicAsset`、`selectAutoMusicAsset` 与 `sha256(production_run_id + asset_id)` 稳定 tie-break。整套本地匹配均不宣称为 OpenMontage、Pixabay、Huobao 或 Seedance 原生逻辑；新任务仅在用户显式选择 `AUTO` 时运行，缺失 mode 必须拒绝。
 - Pixabay 仍只在 AUTO 且无合格本地 MUSIC 候选时走既有单一路径；不新增多轨、BPM、随机、变速或补静音。
@@ -571,3 +573,41 @@ E11 逐符号映射：`compose-director.md:80-107` 为时长预算→TTS 原始�
 - Huobao `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 与 Seedance `ebc68d3c19a62fba0f9ba9d2805af1f711a82aa7` 均要求自然语言保留有序可见动作和明确终点；workflow-worker 仅补充源文前后变化不得丢失结果的导演提示，不新增视觉算法。
 - creative-planning 的 LLM 分段壳默认边界字段“本段开始/本段结束/按分段顺序承接”不再进入 provider prompt；source prompt 中用户明确写出的同名文字仍按 source-first 保留。该改动是现有编译器边界薄适配，不是上游新协议。
 - OpenMontage Pixabay 来源仍严格按 authored query、duration filter、first result；本次真实记录中的“武侠打斗纯音乐”与 query“高级护肤品纯音乐 BGM”不一致属于来源首条语义限制，平台不添加自造标题/情绪评分器。状态继续 `IMPLEMENTED_PENDING_AUDIT`。
+
+## 2026-09-28 项目级 MusicPlan 与原生音频所有权收敛（窄片审计回执）
+
+> **本节早期 AUTO 条款已被本轮用户授权覆盖**：其中“已移除本地 selector、多候选必须 MANUAL、`bgm_prompt` 不参与评分”仅保留为历史快照；现行 AUTO 多候选口径见下方同日追加条目。
+
+- 固定来源：OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 Music Plan、Audio Mixer/full-mix 与 Pixabay `duration filter → first result` 路径；Seedance `ebc68d3c19a62fba0f9ba9d2805af1f711a82aa7` 的显式声音维度/单 owner；Huobao `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 的 `generateAudio`/`referenceAudioUrls` Provider 输入语义及可选 `bgm_prompt` 事实字段。
+- 平台落点（历史快照）：`packages/persistence/src/production-repository.ts` 仅消费显式 `MusicPlan` 身份；该快照曾要求多本地曲目显式选择，并记录移除 selector；当前以同日追加的 selector 恢复条目为准。composition 仍只产生一条覆盖 `0..target_duration_ms` 的 MUSIC track。
+- 定向证据：`packages/persistence` `100 tests = 88 pass / 12 skip / 0 fail`，native-audio `19/19`；Control API `95 = 94 pass / 1 skip / 0 fail`，Pixabay AUTO fallback `8/8`；两包 typecheck 与 `git diff --check` 通过。全部 fixture/mock；没有真实 Provider、Pixabay、Veyra、网络或 VPS 证据。
+- 状态：本条仅为窄片辅助回执，保持 `IMPLEMENTED_PENDING_AUDIT`，不升级 E12/R01 或总体账本；工作区其他历史/用户改动不归因本窄片。
+
+## 2026-09-28 多首本地 MUSIC 的 AUTO selector 恢复（IMPLEMENTED_PENDING_AUDIT）
+
+- 用户最新授权覆盖本节前的“多候选必须 MANUAL / selector 已移除”旧口径，但仅恢复历史已有的本地 `PLATFORM_OWNED` selector；不把它登记为 OpenMontage、Pixabay、Huobao 或 Seedance 原生推荐能力。
+- `packages/persistence/src/production-repository.ts::selectAutoMusicAsset` 复用既有 brief/style、项目名、已持久化 `bgm_prompt` 原文与音乐描述性 metadata/tags/genre/style/mood/title；只选择一条满足既有 MUSIC 角色、对象完整性和目标时长的全片轨。无内容命中返回空并沿用既有 Pixabay 单路径，MANUAL/OFF 不进入 selector。
+- `pixabay_query`/搜索 query 只保留为来源 provenance，不作为返回曲目内容命中；selector 的既有 token `includes` 子串边界保持不变，本轮不新增分词或同义词算法。
+- 不新增 LLM 调用、公开字段、数据库/事件协议、随机选择、跨段 BGM、音频分离或变速；native/legacy provider-owned 音频与项目 MUSIC 仅在明确的 OpenMontage `_full_mix` AudioPlan、绝对 `start_ms` 保序和单一全片 MUSIC 轨条件下合成；其它不可表达形态仍 fail-closed。
+- 定向证据（早期计数，已由下方 2026-09-28 AUTO 预检条目 supersede）：Persistence selector/composition `29/29 pass`、Control API Pixabay fallback `8/8 pass`，0 skip/0 fail；全部 fixture/mock，未调用真实 Pixabay/Provider/Veyra/网络/VPS/Git。状态保持 `IMPLEMENTED_PENDING_AUDIT`。
+
+### 2026-09-28 本地真实 Provider AUTO BGM 验证（辅助证据）
+
+- 重启本地完整栈后，以 `VIDEO_PROVIDER=sub2api` 调用 Grok 真实生成，运行 `prd_01M3KFGYMNXYZ6KBCZBJCBT06P`（15 秒，480P 目标）成功；视频版本 `vvr_01M3KFKH9TSBPWTZ3F2TJW8V1M`、成片资产 `ast_01M3KFKA166NGZQYZ81YPEQR3V`。
+- `AUTO` 使用现有音乐描述标签命中 `freesound_769385_Calm-Corporate.mp3`（LiteSaturation）；QC `audio_summary.music_applied=true`，记录既有 tags、48kHz、`-12.4 LUFS`、`-1.5 dBTP`，未出现意外静音。
+- 该条只证明本地标签匹配、全片 MUSIC 轨和真实合成链路可运行，不替代人工听感或全平台验收；首次无内容命中的中文项目预检因本地 Pixabay Runtime 外部网络 503 阻断，未提交 Provider。状态仍 `IMPLEMENTED_PENDING_AUDIT`。
+
+### 2026-09-28 AUTO 预检读取持久化 `bgm_prompt`（IMPLEMENTED_PENDING_AUDIT）
+
+- 为避免 Control API 预检与组合阶段看到的音乐意图不一致，新增 `CreativePlanningStore.listStoryboardMusicIntentHints` 这一内部、可选、只读 projection；它不新增公开 DTO、数据库列、事件字段、HTTP 路径或网络调用。
+- InMemory 与 Drizzle 实现按 workspace/storyboard 过滤，按 shot sequence 返回每个 shot 最新 PromptPackage 的非空字符串 `capabilitySnapshot.bgm_prompt`；最新包没有 hint 时不回退旧包，空值/非字符串忽略。Control API 仅把这些原文追加到既有 `style_hint`、brief/style 和项目名后，继续调用既有 `hasMusicContentMatch`，不新增评分、同义词、翻译、随机或分段 BGM。
+- 证据：Control API AUTO focused `9/9`，全包 `95 pass / 1 skip / 0 fail`；Persistence creative-planning focused `10/10`，全包 `94 pass / 12 skip / 0 fail`；两包 typecheck 与 `git diff --check` 通过。Drizzle integration 因当前无 `DATABASE_URL` 保持环境门控 skip，未把 InMemory 证据冒充数据库行为证据；数据库层待具备该环境后复跑。
+- 状态仍 `IMPLEMENTED_PENDING_AUDIT`；本条不升级总体状态，不执行 Git/VPS，不改变 existing selector、Pixabay 单路径、全片单轨、角色隔离或 native-provider ownership fail-closed。
+
+### 2026-09-29 AUTO BGM 全片合成纠偏（本地真实 Provider 辅助证据）
+
+- 本轮只修正已存在的来源语义接线：Provider 原生音频继续作为 source/SFX，由 OpenMontage `_full_mix` 与项目 MUSIC 在同一 AudioPlan 中完成全片混音；平台不按分段拆出独立 BGM，也不覆盖或分离 native 音频。
+- 组合前对既有 AudioPlan tracks 按绝对 `start_ms`、`track_id` 保序，避免把全片 MUSIC 轨追加到 source tracks 尾部导致 `_full_mix` 拒绝乱序窗口。
+- AUTO 预检优先复用同一 `pixabay_query` 且已完成时长/对象校验的既有 Pixabay 资产；没有可复用资产时仍只走既有受控 Runtime 单路径，外部 403/503 保持 fail-closed，不增加第二 scraper 或旁路下载。
+- 证据：Control API Pixabay AUTO `10/10`；Persistence native-audio focused `19/19`；Persistence 全包 `94 pass / 12 skip / 0 fail`；Production Worker `78/78`；Control API/Persistence typecheck 通过。真实本地 `sub2api` Grok 30 秒/480P 运行 `prd_01M3MQ6935NTJQ6D18QZMH3YY`，3/3 分段 `ACCEPTED`，compose HTTP 200，运行 `SUCCEEDED`；成片 `vvr_01M3MQ51ZGERJ6H6VC1J3HQQ1T`，848×480、30.125 秒，H.264/AAC，`music_applied=true`，字幕关闭。
+- 质量边界：最终 QC 为 `NEEDS_ATTENTION` 仅因语义 evaluator 未配置且 true peak 为 `-1.4 dBTP`（目标约 `-1.5 dBTP`）；没有生成/下载/合成失败。该条仍是本地技术证据，不升级完整生产验收，不执行 Git/VPS。

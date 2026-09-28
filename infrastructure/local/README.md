@@ -20,8 +20,33 @@ VEYRA_AUTH_ENABLED=false
 infrastructure\local\start-full-local-stack.ps1 -VideoProvider sub2api
 ```
 
-该模式仍保持 `LOCAL_AUTH_MODE=dev`、`VEYRA_AUTH_ENABLED=false`，不会启用共享积分或部署。脚本会从当前进程环境或 `.env.local` 读取 `SUB2API_VIDEO_BASE_URL` / `SUB2API_VIDEO_API_KEY`，只注入给 Task Worker；Control API 与 Task Worker共享一次性 `REFERENCE_DELIVERY_SIGNING_KEY`，用于把已确认参考图通过短时 `/provider-input/<token>` HTTPS 链接交给上游。真实模式还必须提供固定的 `REFERENCE_DELIVERY_ORIGIN`（可通过 `-ReferenceDeliveryOrigin` 或 `.env.local` 设置）。随机 Cloudflare Quick Tunnel 只有显式传入 `-AllowEphemeralReferenceTunnel` 才会启用，因为 Aiself/Wokey 可能拒绝随机主机名；它只适合临时诊断，不是可靠的图生链路。
+该模式仍保持 `LOCAL_AUTH_MODE=dev`、`VEYRA_AUTH_ENABLED=false`，不会启用共享积分或部署。真实视频模式还必须显式配置 `SEMANTIC_PLANNER_ENABLED=true`、`SEMANTIC_PLANNER_BASE_URL`、`SEMANTIC_PLANNER_API_KEY`、`SEMANTIC_PLANNER_MODEL` 和一个精确的 `SEMANTIC_PLANNER_PROFILE_ID`。profile 必须在 Workflow Worker 的模型能力登记中通过完整 `SemanticDirectorDecision v1` fixture；参考图视觉分析配置绝不会作为规划器 fallback。当前已观察失败的 Claude、DeepSeek、Doubao Pro 与仅供参考图分析的 Doubao Lite profile 均登记为 `UNAVAILABLE`，因此在新的模型 fixture 通过前，真实 Provider 测试会在启动阶段 fail-closed。
+
+脚本会从当前进程环境或 `.env.local` 读取 `SUB2API_VIDEO_BASE_URL` / `SUB2API_VIDEO_API_KEY`，只注入给 Task Worker；Semantic Director 配置只注入 Workflow Worker，启动后还会从脱敏 ready 日志核对实际 profile/model。Control API 与 Task Worker共享一次性 `REFERENCE_DELIVERY_SIGNING_KEY`，用于把已确认参考图通过短时 `/provider-input/<token>` HTTPS 链接交给上游。真实模式还必须提供固定的 `REFERENCE_DELIVERY_ORIGIN`（可通过 `-ReferenceDeliveryOrigin` 或 `.env.local` 设置）。随机 Cloudflare Quick Tunnel 只有显式传入 `-AllowEphemeralReferenceTunnel` 才会启用，因为 Aiself/Wokey 可能拒绝随机主机名；它只适合临时诊断，不是可靠的图生链路。
 如果要启用参考图视觉分析，额外配置 `REFERENCE_VISION_BASE_URL`、`REFERENCE_VISION_API_KEY`、`REFERENCE_VISION_MODEL` 三项；脚本只把它们注入 Control API，服务端在上传确认或规划重试时按资产 ID 分析图片，绝不传给 Task Worker 或浏览器。三项缺失时不按位置猜测，参考图任务会等待用户说明或视觉分析配置。
+
+候选 Semantic Director 必须先通过独立认证命令；该命令只请求语义规划，不会创建视频任务或调用 Grok：
+
+```powershell
+$env:SEMANTIC_PLANNER_CERTIFY_LIVE = "true"
+$env:SEMANTIC_PLANNER_CERTIFY_ATTEMPTS = "3"
+$env:SEMANTIC_PLANNER_PROVIDER = "<exact-provider>"
+$env:SEMANTIC_PLANNER_RESPONSE_MODE = "JSON_SCHEMA"
+$env:SEMANTIC_PLANNER_MAX_INPUT_UTF8_BYTES = "<certified-input-byte-limit>"
+$env:SEMANTIC_PLANNER_CERTIFICATION_REPORT_PATH = "D:\\AI\\alchemy_video_OS\\.codex-longrun\\semantic-certifications\\candidate.semantic-director-certification.json"
+pnpm --filter @alchemy-video/workflow-worker certify:semantic-director -- --live
+```
+
+其余 `SEMANTIC_PLANNER_*` 值必须显式提供。输出只包含 hash/count 或脱敏错误分类；只有全部尝试通过时才会原子写入不含 key、endpoint、prompt 或响应正文的报告。`CANDIDATE_PASS` 不会自动改写模型 registry。
+
+为让测试同事在**非生产本机**继续实机链路，可在保持同一 model/profile/timeout/输入输出上限的前提下设置：
+
+```powershell
+$env:SEMANTIC_PLANNER_ALLOW_LOCAL_CERTIFICATION_REPORT = "true"
+$env:SEMANTIC_PLANNER_CERTIFICATION_REPORT_PATH = "D:\\AI\\alchemy_video_OS\\.codex-longrun\\semantic-certifications\\candidate.semantic-director-certification.json"
+```
+
+启动器要求绝对路径和现存报告，Workflow Worker 会再次校验报告版本、fixture hash、认证面 hash、连续尝试次数、计数、契约和 profile/model，并在 ready 日志标记 `certification_source=LOCAL_REPORT`。该入口只在显式 `NODE_ENV=development` 或 `NODE_ENV=test` 时允许；未设置、拼写错误或 `production` 均强制拒绝。VPS/生产仍必须经独立审计后登记正式 registry profile。
 
 ### 固定域名本地调试
 

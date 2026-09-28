@@ -936,7 +936,7 @@ function safeErrorMessage(error: unknown, fallback: string) {
     CREATIVE_PLAN_ACTIVE_CONFLICT: "AI 正在整理这份故事，请稍后查看进度。",
     CREATIVE_PLAN_STATE_INVALID: "当前故事还不能整理，请刷新后再试。",
     DELIVERY_PLAN_STATE_INVALID: "旁白脚本还未完成样音审批和时间轴确认，请完成审批后再开始制作。",
-    PLANNING_FAILED: "AI 暂时无法整理这份故事，请调整描述后重试。",
+    PLANNING_FAILED: "AI 语义规划未通过，尚未提交视频生成。请检查描述和参考素材后重试。",
     DOCUMENT_CONTEXT_INVALID: "项目资料整理完成后才能参与故事规划。",
     STORYBOARD_SPEC_INVALID: "AI 暂时无法拆解这份故事，请调整描述后重新生成。",
     PRODUCTION_RUN_ACTIVE_CONFLICT: "这个项目已有视频正在制作，请稍后查看。",
@@ -1437,7 +1437,7 @@ async function generateVideo() {
   } catch (error) {
     const message = error instanceof Error && error.message === "PLANNING_TIMEOUT"
       ? "AI 正在整理这个故事，但暂时没有完成。请稍后刷新项目，或精简描述后生成新版本。"
-      : safeErrorMessage(error, "视频暂时无法生成，请检查想法或稍后重试。");
+      : safeErrorMessage(error, "AI 语义规划暂时无法完成，尚未提交视频生成。请检查想法和参考素材后重试。");
     planningError.value = message;
     creationError.value = message;
   } finally {

@@ -13,6 +13,7 @@ export type PlanningDocumentContext = {
   conversionId: string;
   sourceAssetId: string;
   markdownAssetId: string;
+  markdownSha256: string;
   maxContentCharacters: number;
   content: string;
 };

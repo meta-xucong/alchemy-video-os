@@ -30,6 +30,10 @@ import {
   MediaRuntimeNarrationDurationFeedbackSchema,
   SemanticDialogueProjectionSchema,
   SemanticReferenceProjectionSchema,
+  VideoAudioOwnerSchema,
+  semanticPromptPackageIntegrityPayload,
+  type SemanticDialogueProjection,
+  type SemanticReferenceProjection,
   type MediaRuntimeNarrationDurationFeedback,
 } from "@alchemy-video/contracts";
 import {
@@ -37,6 +41,7 @@ import {
   assertProductionAcceptanceCount,
   assertProductionSegmentDependencies,
   assertProductionSegmentTransition,
+  canonicalJson,
   createPrefixedId,
   decideContinuityRepair,
 } from "@alchemy-video/domain";
@@ -208,7 +213,7 @@ const hasScopedAssetMetadata = (asset: ScopedAssetMetadata, input: {
 
 /**
  * Source-aligned music exclusion predicate shared by composition and the
- * Control API AUTO preflight.  Metadata is descriptive only: a track whose
+ * Control API AUTO preflight. Metadata is descriptive only: a track whose
  * name identifies speech, effects, or field recordings is not a music bed
  * unless it is explicitly labelled as music/background/instrumental.
  */
@@ -225,10 +230,6 @@ export const isLikelyMusicAsset = (asset: { metadata?: Record<string, unknown> |
 
 /**
  * A single composition candidate predicate.  The Control API uses this
- * against its workspace asset view before AUTO fallback; the Drizzle
- * composition path uses it after its role/status query.  Keeping the scope,
- * role, media facts, and source exclusion checks together prevents a second
- * selector from drifting from the Worker fact.
  */
 export const isUsableMusicAsset = (asset: ScopedAssetMetadata & {
   kind?: unknown;
@@ -254,12 +255,8 @@ type MusicCandidate = {
 };
 
 /**
- * PLATFORM_OWNED / USER_AUTHORIZED BGM matching.
- *
- * Tokenization, content matching, score weighting, existing-label preference,
- * and the stable per-run hash tie-break are local product logic. They are not
- * OpenMontage or Pixabay recommendation algorithms and must run only after an
- * explicit AUTO selection. Provider/source adapters remain order-preserving.
+ * PLATFORM_OWNED / USER_AUTHORIZED BGM matching. This is the existing local
+ * product extension; it is not claimed as OpenMontage/Pixabay logic.
  */
 const nonDescriptiveMusicTokens = new Set(["unknown", "bgm", "music", "audio", "latest", "selected", "pixabay", "track"]);
 
@@ -304,20 +301,13 @@ const musicContentTokenMatchCount = (asset: MusicCandidate, briefText: string) =
 export const hasMusicContentMatch = (asset: MusicCandidate, briefText: string) =>
   musicContentTokenMatchCount(asset, briefText) > 0;
 
-/**
- * Keep the existing token match and duration fit; use persisted source text
- * as candidate facts without deriving labels or an aesthetic recommendation.
- */
+/** Keep existing token matching and duration fit for explicit AUTO. */
 export const scoreMusicAsset = (asset: MusicCandidate, briefText: string, targetDurationMs: number) => {
   const durationFit = asset.durationMs && asset.durationMs >= targetDurationMs ? 2 : 0;
   return musicContentTokenMatchCount(asset, briefText) * 10 + durationFit;
 };
 
-/**
- * Select one whole-video MUSIC track. At the highest existing score, explicit
- * labels precede unclassified candidates; remaining ties use a stable per-run
- * hash so retries are idempotent without relying on creation time or randomness.
- */
+/** Select one whole-video MUSIC track; ties remain retry-stable. */
 export const selectAutoMusicAsset = <T extends MusicCandidate>(input: {
   candidates: readonly T[];
   briefText: string;
@@ -818,6 +808,24 @@ const insertOutboxEvent = async (executor: QueryExecutor, event: InternalEventEn
 const lockProductionRun = (executor: QueryExecutor, workspaceId: string, productionRunId: string) =>
   executor.execute(sql`select pg_advisory_xact_lock(hashtext(${workspaceId} || ':' || ${productionRunId}))`);
 
+const compositionRequestedEventExists = async (
+  executor: QueryExecutor,
+  input: { workspaceId: string; projectId: string; productionRunId: string },
+) => {
+  const [existing] = await executor
+    .select({ id: outboxEvents.id })
+    .from(outboxEvents)
+    .where(and(
+      eq(outboxEvents.workspaceId, input.workspaceId),
+      eq(outboxEvents.projectId, input.projectId),
+      eq(outboxEvents.aggregateType, "production_run"),
+      eq(outboxEvents.aggregateId, input.productionRunId),
+      eq(outboxEvents.eventType, "video_version.composition_requested"),
+    ))
+    .limit(1);
+  return Boolean(existing);
+};
+
 const lockProject = (executor: QueryExecutor, workspaceId: string, projectId: string) =>
   executor.execute(sql`select pg_advisory_xact_lock(hashtext(${workspaceId} || ':' || ${projectId}))`);
 
@@ -1106,12 +1114,33 @@ const readAudioOwnerFact = (snapshot: unknown): AudioOwnerFact => {
     : { kind: "INVALID" };
 };
 
-export const readSemanticDialogueProjection = (snapshot: unknown) => {
+const semanticPromptIdentity = (snapshot: unknown) => {
   if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) return undefined;
+  const record = snapshot as Record<string, unknown>;
+  const sourceHash = record.authored_source_hash;
+  const decisionHash = record.semantic_decision_hash;
+  const segmentId = record.semantic_segment_id;
+  if (record.prompt_source_kind !== "SEMANTIC_VISUAL_PROJECTION"
+    || typeof sourceHash !== "string"
+    || typeof decisionHash !== "string"
+    || typeof segmentId !== "string"
+    || !/^[a-f0-9]{64}$/u.test(sourceHash)
+    || !/^[a-f0-9]{64}$/u.test(decisionHash)
+    || !segmentId.trim()) return undefined;
+  return { sourceHash, decisionHash, segmentId };
+};
+
+export const readSemanticDialogueProjection = (snapshot: unknown) => {
+  const identity = semanticPromptIdentity(snapshot);
+  if (!identity || snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) return undefined;
   const parsed = SemanticDialogueProjectionSchema.safeParse(
     (snapshot as Record<string, unknown>).semantic_dialogue_projection,
   );
-  return parsed.success ? parsed.data : undefined;
+  if (!parsed.success
+    || parsed.data.source_hash !== identity.sourceHash
+    || parsed.data.decision_hash !== identity.decisionHash
+    || parsed.data.segment_id !== identity.segmentId) return undefined;
+  return parsed.data;
 };
 
 /**
@@ -1126,6 +1155,11 @@ const readProviderTextFact = (snapshot: unknown): string | undefined => {
     return exactText || undefined;
   }
   if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) return undefined;
+  const record = snapshot as Record<string, unknown>;
+  if (record.prompt_source_kind === "SEMANTIC_VISUAL_PROJECTION"
+    || Object.hasOwn(record, "semantic_dialogue_projection")) {
+    throw new ProductionCompositionInputUnavailableError("semantic dialogue projection is invalid");
+  }
   const motionPlan = (snapshot as { motion_plan?: unknown }).motion_plan;
   if (motionPlan === null || typeof motionPlan !== "object" || Array.isArray(motionPlan)) return undefined;
   const voicePerformance = (motionPlan as { voice_performance?: unknown }).voice_performance;
@@ -1177,11 +1211,131 @@ const visualReference = (asset: ReadyReferenceImageAsset, position: number, role
   role,
 });
 
-const readSemanticReferenceProjection = (referenceMap: Record<string, unknown>, sourcePrompt: string) => {
-  const parsed = SemanticReferenceProjectionSchema.safeParse(referenceMap.semantic_reference_projection);
-  if (!parsed.success) return undefined;
-  const sourceHash = createHash("sha256").update(sourcePrompt, "utf8").digest("hex");
-  return parsed.data.source_hash === sourceHash ? parsed.data : undefined;
+const semanticIntegrityHash = (value: unknown) =>
+  createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
+
+const semanticJsonRecord = (value: unknown): Record<string, unknown> | undefined =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+
+const semanticPromptPackageKind = (input: {
+  capabilitySnapshot: unknown;
+  referenceMap: unknown;
+  visualConstraints: unknown;
+}) => {
+  const capabilitySnapshot = semanticJsonRecord(input.capabilitySnapshot) ?? {};
+  const referenceMap = semanticJsonRecord(input.referenceMap) ?? {};
+  const visualConstraints = semanticJsonRecord(input.visualConstraints) ?? {};
+  const hasSemanticField = capabilitySnapshot.prompt_source_kind === "SEMANTIC_VISUAL_PROJECTION"
+    || Object.hasOwn(capabilitySnapshot, "semantic_dialogue_projection")
+    || Object.hasOwn(referenceMap, "semantic_reference_projection")
+    || Object.hasOwn(visualConstraints, "semantic_segment_id")
+    || Object.hasOwn(visualConstraints, "semantic_decision_hash");
+  return hasSemanticField ? "SEMANTIC" as const : "LEGACY" as const;
+};
+
+const readSemanticReferenceProjection = (input: {
+  referenceMap: Record<string, unknown>;
+  sourcePrompt?: string;
+  capabilitySnapshot: Record<string, unknown>;
+  visualConstraints: Record<string, unknown>;
+}): SemanticReferenceProjection | undefined => {
+  const identity = semanticPromptIdentity(input.capabilitySnapshot);
+  const parsed = SemanticReferenceProjectionSchema.safeParse(
+    input.referenceMap.semantic_reference_projection,
+  );
+  if (!identity || !parsed.success) return undefined;
+  const sourceHash = input.sourcePrompt === undefined
+    ? identity.sourceHash
+    : createHash("sha256").update(input.sourcePrompt, "utf8").digest("hex");
+  if (parsed.data.source_hash !== sourceHash
+    || parsed.data.source_hash !== identity.sourceHash
+    || parsed.data.decision_hash !== identity.decisionHash
+    || parsed.data.segment_id !== identity.segmentId
+    || input.visualConstraints.semantic_decision_hash !== identity.decisionHash
+    || input.visualConstraints.semantic_segment_id !== identity.segmentId) return undefined;
+  return parsed.data;
+};
+
+export const validateSemanticPromptPackage = (input: {
+  shotSpecId: string;
+  prompt: string;
+  sourcePrompt?: string;
+  referencePolicy: string;
+  capabilitySnapshot: unknown;
+  referenceMap: unknown;
+  visualConstraints: unknown;
+}): { kind: "LEGACY" } | {
+  kind: "VERIFIED";
+  dialogueProjection: SemanticDialogueProjection;
+  referenceProjection: SemanticReferenceProjection;
+} | { kind: "INVALID" } => {
+  if (semanticPromptPackageKind(input) === "LEGACY") return { kind: "LEGACY" };
+  const capabilitySnapshot = semanticJsonRecord(input.capabilitySnapshot);
+  const referenceMap = semanticJsonRecord(input.referenceMap);
+  const visualConstraints = semanticJsonRecord(input.visualConstraints);
+  if (!capabilitySnapshot || !referenceMap || !visualConstraints) return { kind: "INVALID" };
+  const normalizedInput = {
+    ...input,
+    capabilitySnapshot,
+    referenceMap,
+    visualConstraints,
+  };
+  const dialogueProjection = readSemanticDialogueProjection(capabilitySnapshot);
+  const referenceProjection = readSemanticReferenceProjection(normalizedInput);
+  const dialogueProjectionHash = capabilitySnapshot.semantic_dialogue_projection_hash;
+  const referenceProjectionHash = capabilitySnapshot.semantic_reference_projection_hash;
+  const packageIntegrityHash = capabilitySnapshot.semantic_prompt_package_integrity_hash;
+  const projectedSourcePrompt = capabilitySnapshot.source_prompt;
+  const generatedPromptParts = capabilitySnapshot.generated_prompt_parts;
+  const evidenceIds = visualConstraints.evidence_ids;
+  const audioOwner = VideoAudioOwnerSchema.safeParse(capabilitySnapshot.audio_owner);
+  const maxDurationSeconds = capabilitySnapshot.max_duration_seconds;
+  const maxReferenceImages = capabilitySnapshot.max_reference_images;
+  const bgmPrompt = capabilitySnapshot.bgm_prompt;
+  if (!dialogueProjection
+    || !referenceProjection
+    || typeof input.shotSpecId !== "string"
+    || !input.shotSpecId.trim()
+    || referenceMap.reference_policy !== input.referencePolicy
+    || typeof dialogueProjectionHash !== "string"
+    || typeof referenceProjectionHash !== "string"
+    || typeof packageIntegrityHash !== "string"
+    || !/^[a-f0-9]{64}$/u.test(dialogueProjectionHash)
+    || !/^[a-f0-9]{64}$/u.test(referenceProjectionHash)
+    || !/^[a-f0-9]{64}$/u.test(packageIntegrityHash)
+    || dialogueProjectionHash !== semanticIntegrityHash(dialogueProjection)
+    || referenceProjectionHash !== semanticIntegrityHash(referenceProjection)
+    || typeof projectedSourcePrompt !== "string"
+    || !Array.isArray(generatedPromptParts)
+    || generatedPromptParts.some((part) => typeof part !== "string")
+    || !Array.isArray(evidenceIds)
+    || evidenceIds.some((evidenceId) => typeof evidenceId !== "string")
+    || !audioOwner.success
+    || !Number.isSafeInteger(maxDurationSeconds)
+    || (maxDurationSeconds as number) < 1
+    || !Number.isSafeInteger(maxReferenceImages)
+    || (maxReferenceImages as number) < 0
+    || (bgmPrompt !== undefined && (typeof bgmPrompt !== "string" || !bgmPrompt.trim()))) {
+    return { kind: "INVALID" };
+  }
+  const expectedPackageIntegrityHash = semanticIntegrityHash(semanticPromptPackageIntegrityPayload({
+    shotSpecId: input.shotSpecId,
+    prompt: input.prompt,
+    referencePolicy: input.referencePolicy,
+    sourcePrompt: projectedSourcePrompt,
+    generatedPromptParts: generatedPromptParts as string[],
+    evidenceIds: evidenceIds as string[],
+    dialogueProjection,
+    referenceProjection,
+    audioOwner: audioOwner.data,
+    maxDurationSeconds: maxDurationSeconds as number,
+    maxReferenceImages: maxReferenceImages as number,
+    ...(typeof bgmPrompt === "string" ? { bgmPrompt } : {}),
+  }));
+  if (packageIntegrityHash !== expectedPackageIntegrityHash) return { kind: "INVALID" };
+  return { kind: "VERIFIED", dialogueProjection, referenceProjection };
 };
 
 const initialVisualInput = async (transaction: QueryExecutor, input: {
@@ -1192,6 +1346,7 @@ const initialVisualInput = async (transaction: QueryExecutor, input: {
   sourceAssetIds: string[];
   sourcePrompt: string;
   referenceMap: Record<string, unknown>;
+  semanticReferenceProjection?: SemanticReferenceProjection;
   dependencySegments: Array<typeof productionSegments.$inferSelect>;
 }) => {
   if (input.shotSpec.referencePolicy === "TEXT_TRANSITION") {
@@ -1204,7 +1359,7 @@ const initialVisualInput = async (transaction: QueryExecutor, input: {
     origin: "USER_UPLOAD",
   })).slice(0, 7);
   const sourceById = new Map(sourceImages.map((asset) => [asset.id, asset]));
-  const projection = readSemanticReferenceProjection(input.referenceMap, input.sourcePrompt);
+  const projection = input.semanticReferenceProjection;
   const projected = projection?.references ?? [];
   const sourcePositions = projected.map((item) => sourceImages.findIndex((asset) => asset.id === item.asset_id));
   const projectionInvalid = sourcePositions.some((position) => position < 0)
@@ -1621,7 +1776,13 @@ export class DrizzleProductionRepository implements ProductionStore {
         project_id: run.projectId,
       };
       await transaction.update(commandDeduplications).set({ responseSnapshot: { kind: "PRODUCTION_COMPOSITION_RETRY", productionRunId: run.id } }).where(retryCommandScope(input.scope, input.idempotencyKey));
-      await insertOutboxEvent(transaction, compositionRequestedEvent(source, { now: new Date(), productionRunId: run.id }));
+      if (!await compositionRequestedEventExists(transaction, {
+        workspaceId: run.workspaceId,
+        projectId: run.projectId,
+        productionRunId: run.id,
+      })) {
+        await insertOutboxEvent(transaction, compositionRequestedEvent(source, { now: new Date(), productionRunId: run.id }));
+      }
       const progress = await this.progressWithinTransaction(transaction, input.workspaceId, run.id);
       return progress ? { kind: "NEW", value: progress, status: 202 } : { kind: "NOT_FOUND" };
     });
@@ -1873,7 +2034,7 @@ export class DrizzleProductionRepository implements ProductionStore {
     let providerText: string | undefined;
     if (audioOwnerFact.kind === "KNOWN" && audioOwnerFact.owner === "NATIVE_PROVIDER") {
       const [promptPackage] = await this.db
-        .select({ capabilitySnapshot: promptPackages.capabilitySnapshot })
+        .select()
         .from(promptPackages)
         .where(and(
           eq(promptPackages.workspaceId, segment.workspaceId),
@@ -1882,7 +2043,41 @@ export class DrizzleProductionRepository implements ProductionStore {
         ))
         .orderBy(desc(promptPackages.createdAt))
         .limit(1);
-      providerText = readProviderTextFact(promptPackage?.capabilitySnapshot);
+      const [promptShotSpec] = await this.db
+        .select({ referencePolicy: storyboardShotSpecs.referencePolicy })
+        .from(storyboardShotSpecs)
+        .where(and(
+          eq(storyboardShotSpecs.workspaceId, segment.workspaceId),
+          eq(storyboardShotSpecs.projectId, segment.projectId),
+          eq(storyboardShotSpecs.id, segment.shotSpecId),
+        ))
+        .limit(1);
+      if (!promptPackage || !promptShotSpec) {
+        throw new ProductionCompositionInputUnavailableError("production segment prompt package is unavailable");
+      }
+      const semanticOwnedPrompt = semanticPromptPackageKind({
+        capabilitySnapshot: promptPackage.capabilitySnapshot,
+        referenceMap: promptPackage.referenceMap,
+        visualConstraints: promptPackage.visualConstraints,
+      }) === "SEMANTIC";
+      if (semanticOwnedPrompt) {
+        const semanticPackage = validateSemanticPromptPackage({
+          shotSpecId: promptPackage.shotSpecId,
+          prompt: promptPackage.prompt,
+          referencePolicy: promptShotSpec.referencePolicy,
+          capabilitySnapshot: promptPackage.capabilitySnapshot,
+          referenceMap: promptPackage.referenceMap,
+          visualConstraints: promptPackage.visualConstraints,
+        });
+        if (semanticPackage.kind !== "VERIFIED") {
+          throw new ProductionCompositionInputUnavailableError("semantic prompt package integrity is invalid");
+        }
+        providerText = semanticPackage.dialogueProjection.dialogues
+          .map((dialogue) => dialogue.exact_text)
+          .join("\n") || undefined;
+      } else {
+        providerText = readProviderTextFact(promptPackage.capabilitySnapshot);
+      }
     }
     const [sourceAsset] = await this.db
       .select()
@@ -2070,8 +2265,8 @@ export class DrizzleProductionRepository implements ProductionStore {
     const narrationSegments: NonNullable<ProductionCompositionInput["narrationSegments"]> = [];
     const sourceAudioTracks: NonNullable<MediaRuntimeCompositionPlan["audio_tracks"]> = [];
     const audioOwnerFacts: AudioOwnerFact[] = [];
-    const musicIntentHints: string[] = [];
     const projectedDialogueTexts: string[] = [];
+    const musicIntentHints: string[] = [];
     const approvedNarration = run.deliveryPlanRevisionId
       ? await findApprovedNarrationTimeline(this.db, run.workspaceId, run.projectId, run.deliveryPlanRevisionId)
       : undefined;
@@ -2132,7 +2327,7 @@ export class DrizzleProductionRepository implements ProductionStore {
         throw new ProductionCompositionInputUnavailableError("accepted segment asset metadata is incomplete");
       }
       const [promptPackage] = await this.db
-        .select({ capabilitySnapshot: promptPackages.capabilitySnapshot })
+        .select()
         .from(promptPackages)
         .where(and(
           eq(promptPackages.workspaceId, run.workspaceId),
@@ -2141,11 +2336,43 @@ export class DrizzleProductionRepository implements ProductionStore {
         ))
         .orderBy(desc(promptPackages.createdAt))
         .limit(1);
-      const segmentBgmPrompt = promptPackage?.capabilitySnapshot?.bgm_prompt;
-      if (typeof segmentBgmPrompt === "string" && segmentBgmPrompt.trim()) {
-        musicIntentHints.push(segmentBgmPrompt.trim());
+      const [promptShotSpec] = await this.db
+        .select({ referencePolicy: storyboardShotSpecs.referencePolicy })
+        .from(storyboardShotSpecs)
+        .where(and(
+          eq(storyboardShotSpecs.workspaceId, run.workspaceId),
+          eq(storyboardShotSpecs.projectId, run.projectId),
+          eq(storyboardShotSpecs.id, segment.shotSpecId),
+        ))
+        .limit(1);
+      if (!promptPackage || !promptShotSpec) {
+        unavailable("accepted segment prompt package is unavailable");
       }
-      const semanticDialogueProjection = readSemanticDialogueProjection(promptPackage?.capabilitySnapshot);
+      const capabilitySnapshot = semanticJsonRecord(promptPackage.capabilitySnapshot) ?? {};
+      const bgmPrompt = capabilitySnapshot.bgm_prompt;
+      if (typeof bgmPrompt === "string" && bgmPrompt.trim()) musicIntentHints.push(bgmPrompt.trim());
+      const semanticOwnedPrompt = semanticPromptPackageKind({
+        capabilitySnapshot: promptPackage.capabilitySnapshot,
+        referenceMap: promptPackage.referenceMap,
+        visualConstraints: promptPackage.visualConstraints,
+      }) === "SEMANTIC";
+      const semanticPackage = brief
+        ? validateSemanticPromptPackage({
+          shotSpecId: promptPackage.shotSpecId,
+          prompt: promptPackage.prompt,
+          sourcePrompt: brief.sourceText,
+          referencePolicy: promptShotSpec.referencePolicy,
+          capabilitySnapshot: promptPackage.capabilitySnapshot,
+          referenceMap: promptPackage.referenceMap,
+          visualConstraints: promptPackage.visualConstraints,
+        })
+        : { kind: "INVALID" as const };
+      if (semanticOwnedPrompt && semanticPackage.kind !== "VERIFIED") {
+        unavailable("semantic prompt package integrity is invalid");
+      }
+      const semanticDialogueProjection = semanticPackage.kind === "VERIFIED"
+        ? semanticPackage.dialogueProjection
+        : undefined;
       const semanticSegmentScript = semanticDialogueProjection?.dialogues
         .map((dialogue) => dialogue.exact_text)
         .join("\n") ?? "";
@@ -2153,8 +2380,8 @@ export class DrizzleProductionRepository implements ProductionStore {
 
       // Historical runs without a DeliveryPlan may still expose the old
       // PromptPackage cue. New runs never use it as a semantic fallback.
-      const motionPlan = !run.deliveryPlanRevisionId
-        ? promptPackage?.capabilitySnapshot?.motion_plan
+      const motionPlan = !run.deliveryPlanRevisionId && !semanticOwnedPrompt
+        ? capabilitySnapshot.motion_plan
         : undefined;
       const voicePerformance = motionPlan && typeof motionPlan === "object"
         ? (motionPlan as { voice_performance?: unknown }).voice_performance
@@ -2456,22 +2683,32 @@ export class DrizzleProductionRepository implements ProductionStore {
           tracks: sourceTracksWithGain,
         }
       : undefined;
-    const briefText = `${brief?.sourceText ?? ""} ${brief?.stylePreferences ?? ""} ${musicPlan.style_hint} ${project?.name ?? ""} ${musicIntentHints.join(" ")}`.toLowerCase();
-    const autoMusicCandidates = musicPlan.mode === "AUTO"
-      ? filteredMusicCandidates.filter((asset) => isUsableMusicAsset(asset, { minimumDurationMs: targetDurationMs }))
-      : [];
+    const briefText = [
+      brief?.sourceText,
+      brief?.stylePreferences,
+      musicPlan.style_hint,
+      project?.name,
+      ...musicIntentHints,
+    ]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .join(" ");
     const [musicAsset] = musicPlan.mode === "MANUAL"
-      ? filteredMusicCandidates.filter((asset) => asset.id === musicPlan.asset_id)
-      : (() => {
-        const selected = selectAutoMusicAsset({
-          candidates: autoMusicCandidates,
-          briefText,
-          targetDurationMs,
-          productionRunId: run.id,
-          ...(pixabayFallbackMusicAssetId ? { selectedAssetId: pixabayFallbackMusicAssetId } : {}),
-        });
-        return selected ? [selected] : [];
-      })();
+      ? filteredMusicCandidates.filter((asset) => asset.id === musicPlan.asset_id
+        && isUsableMusicAsset(asset, { minimumDurationMs: targetDurationMs }))
+      : musicPlan.mode === "AUTO"
+        ? (() => {
+          const candidates = filteredMusicCandidates.filter((asset) =>
+            isUsableMusicAsset(asset, { minimumDurationMs: targetDurationMs }));
+          const selected = selectAutoMusicAsset({
+            candidates,
+            briefText,
+            targetDurationMs,
+            productionRunId: run.id,
+            ...(pixabayFallbackMusicAssetId ? { selectedAssetId: pixabayFallbackMusicAssetId } : {}),
+          });
+          return selected ? [selected] : [];
+        })()
+        : [];
     if (musicPlan.mode === "MANUAL" && !musicAsset) {
       unavailable("the explicitly selected music asset is not available or failed scope validation");
     }
@@ -2481,8 +2718,13 @@ export class DrizzleProductionRepository implements ProductionStore {
       // omit music.  Candidates remain restricted to server-owned READY AUDIO
       // rows carrying audio_role=MUSIC above, so narration samples and user
       // source audio cannot satisfy this gate.
-      unavailable("AUTO music selection requires a READY AUDIO asset with audio_role=MUSIC");
+      unavailable("AUTO music requires an explicit source-backed MUSIC asset or a completed Pixabay import");
     }
+    // OpenMontage's source full_mix accepts preserved source audio as an SFX
+    // track alongside one project-level MUSIC track. Keep the provider-owned
+    // segment audio classified as LEGACY_PRESERVE; do not relabel it as
+    // dialogue or split it. The source mixer owns the resulting ducking and
+    // normalization graph, so no platform-side audio separation is needed.
     // A selected MUSIC asset must be represented by the same AudioPlan fact
     // that the Runtime consumes; a free-floating music_mix flag is not an
     // asset identity. OpenMontage's track filter defaults an omitted volume
@@ -2494,6 +2736,10 @@ export class DrizzleProductionRepository implements ProductionStore {
           const gainDb = resolveAudioTrackGainDb(musicAsset.metadata);
           return {
             ...completeAudioPlanBase,
+            // The source full_mix consumes absolute windows in input order.
+            // Keep the existing source-track order after adding the single
+            // project MUSIC window so the AudioPlan validator sees a stable
+            // nondecreasing timeline.
             tracks: [...completeAudioPlanBase.tracks, {
               track_id: "music",
               ownership: "MUSIC" as const,
@@ -2502,7 +2748,7 @@ export class DrizzleProductionRepository implements ProductionStore {
               end_ms: targetDurationMs,
               gain_db: gainDb,
               duck_under_narration: true,
-            }],
+            }].sort((left, right) => left.start_ms - right.start_ms || left.track_id.localeCompare(right.track_id)),
           };
         })()
         : completeAudioPlanBase
@@ -2625,6 +2871,9 @@ export class DrizzleProductionRepository implements ProductionStore {
     };
     now: Date;
   }) {
+    if (input.evaluation.result !== "UNAVAILABLE" && input.evaluation.result !== "FAILED") {
+      throw new Error("Only UNAVAILABLE or FAILED handoff audit facts may be written by the current production path.");
+    }
     return this.db.transaction(async (transaction) => {
       await lockProductionRun(transaction, input.event.workspace_id, input.event.data.production_run_id);
       const [run] = await transaction.select().from(productionRuns).where(and(
@@ -2685,7 +2934,15 @@ export class DrizzleProductionRepository implements ProductionStore {
           .where(and(eq(productionRuns.workspaceId, run.workspaceId), eq(productionRuns.id, run.id)))
           .returning();
         if (finalRun) currentRun = finalRun;
-        if (allPassed) {
+        // Composition is an orchestration fact after every boundary review is
+        // persisted.  An unavailable/failed review remains NEEDS_ATTENTION;
+        // findProductionCompositionInput maps that existing fact to a direct
+        // cut.  Never fabricate PASS or a transition repair here.
+        if (!await compositionRequestedEventExists(transaction, {
+          workspaceId: run.workspaceId,
+          projectId: run.projectId,
+          productionRunId: run.id,
+        })) {
           await insertOutboxEvent(transaction, compositionRequestedEvent(input.event, {
             now: input.now,
             productionRunId: run.id,
@@ -3089,7 +3346,12 @@ export class DrizzleProductionRepository implements ProductionStore {
           eq(handoffReviews.workspaceId, run.workspaceId),
           eq(handoffReviews.productionRunId, run.id),
         ));
-        if (reviews.length >= Math.max(0, run.totalShotCount - 1)) {
+        if (reviews.length >= Math.max(0, run.totalShotCount - 1)
+          && !await compositionRequestedEventExists(transaction, {
+            workspaceId: run.workspaceId,
+            projectId: run.projectId,
+            productionRunId: run.id,
+          })) {
           await insertOutboxEvent(transaction, compositionRequestedEvent(event, { now: input.now, productionRunId: run.id }));
         }
         return this.progressWithinTransaction(transaction, run.workspaceId, run.id);
@@ -3425,6 +3687,33 @@ export class DrizzleProductionRepository implements ProductionStore {
         firstBlockedSegment ??= { sequence: segment.sequence, reasonCode: "SEGMENT_NEEDS_ATTENTION", retryable: false };
         continue;
       }
+      const semanticPackage = validateSemanticPromptPackage({
+        shotSpecId: promptPackage.shotSpecId,
+        prompt: promptPackage.prompt,
+        sourcePrompt: brief.sourceText,
+        referencePolicy: spec.referencePolicy,
+        capabilitySnapshot: promptPackage.capabilitySnapshot,
+        referenceMap: promptPackage.referenceMap,
+        visualConstraints: promptPackage.visualConstraints,
+      });
+      if (semanticPackage.kind === "INVALID") {
+        await transaction.update(productionSegments).set({
+          status: "WAITING",
+          retryable: false,
+          safeSummary: "语义规划投影校验失败，需要重新规划。",
+          updatedAt: timestamp(input.now),
+        }).where(and(
+          eq(productionSegments.workspaceId, segment.workspaceId),
+          eq(productionSegments.id, segment.id),
+          inArray(productionSegments.status, ["PENDING", "WAITING"]),
+        ));
+        firstBlockedSegment ??= {
+          sequence: segment.sequence,
+          reasonCode: "SEGMENT_NEEDS_ATTENTION",
+          retryable: false,
+        };
+        continue;
+      }
       const motionPlanResult = promptPackage
         ? GenerationSegmentMotionPlanSchema.safeParse(promptPackage.capabilitySnapshot.motion_plan)
         : undefined;
@@ -3440,6 +3729,9 @@ export class DrizzleProductionRepository implements ProductionStore {
         sourceAssetIds: brief.sourceAssetIds,
         sourcePrompt: brief.sourceText,
         referenceMap: promptPackage.referenceMap,
+        ...(semanticPackage.kind === "VERIFIED"
+          ? { semanticReferenceProjection: semanticPackage.referenceProjection }
+          : {}),
         dependencySegments: segments,
       });
       if (visual.kind === "WAITING") {
@@ -3577,7 +3869,8 @@ export class DrizzleProductionRepository implements ProductionStore {
       segment.status === "FAILED" && !segment.taskRunId && !segment.retryable
     ));
     const unresolved = latestSegments.find((segment) => (
-      ["PENDING", "WAITING", "GENERATING", "CHECKING", "FAILED"].includes(segment.status) && !segment.taskRunId
+      (["PENDING", "WAITING", "GENERATING", "CHECKING"].includes(segment.status) && !segment.taskRunId)
+      || (segment.status === "FAILED" && (segment.retryable || !segment.taskRunId))
     ));
     if ((!hasPromptBudgetFailure && hasRunnableSegment) || !unresolved) return;
 

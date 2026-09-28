@@ -13,17 +13,12 @@ import {
   type SemanticDialogueProjection,
   type SemanticReferenceProjection,
 } from "@alchemy-video/contracts";
+import { canonicalJson } from "@alchemy-video/domain";
+export { extractDialogueLines, type SourceDialogueRecord } from "./source-dialogue.js";
 
 const sha256 = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 
-const stableJson = (value: unknown): string => {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
-};
-
-export const semanticValueHash = (value: unknown) => sha256(stableJson(value));
+export const semanticValueHash = (value: unknown) => sha256(canonicalJson(value));
 
 export type CanonicalSourceBundleInput = Readonly<{
   sourceText: string;
@@ -32,6 +27,7 @@ export type CanonicalSourceBundleInput = Readonly<{
   documents?: readonly Readonly<{
     documentId: string;
     conversionId: string;
+    markdownSha256: string;
     content: string;
   }>[];
   references?: readonly CanonicalReferenceSource[];
@@ -52,7 +48,8 @@ export const createCanonicalSourceBundle = (input: CanonicalSourceBundleInput): 
     documents: (input.documents ?? []).map((document) => ({
       document_id: document.documentId,
       conversion_id: document.conversionId,
-      markdown_sha256: sha256(document.content),
+      markdown_sha256: document.markdownSha256,
+      content_sha256: sha256(document.content),
       content: document.content,
     })),
     references: [...(input.references ?? [])],
@@ -76,6 +73,8 @@ export type SemanticDecisionVerificationErrorCode =
   | "EVIDENCE_ID_CONFLICT"
   | "DIALOGUE_EVIDENCE_INVALID"
   | "REFERENCE_ORDER_INVALID"
+  | "REFERENCE_COVERAGE_INVALID"
+  | "USER_DECISION_COVERAGE_INVALID"
   | "PROVIDER_CAPABILITY_INVALID"
   | "SEMANTIC_DECISION_BLOCKED";
 
@@ -83,7 +82,6 @@ export class SemanticDecisionVerificationError extends Error {
   constructor(
     readonly code: SemanticDecisionVerificationErrorCode,
     message: string,
-    readonly cause?: unknown,
   ) {
     super(message);
     this.name = "SemanticDecisionVerificationError";
@@ -93,21 +91,20 @@ export class SemanticDecisionVerificationError extends Error {
 const invalid = (
   code: SemanticDecisionVerificationErrorCode,
   message: string,
-  cause?: unknown,
 ): never => {
-  throw new SemanticDecisionVerificationError(code, message, cause);
+  throw new SemanticDecisionVerificationError(code, message);
 };
 
 const validateCanonicalBundle = (input: unknown): CanonicalSourceBundle => {
   const parsed = CanonicalSourceBundleSchema.safeParse(input);
-  if (!parsed.success) return invalid("CANONICAL_BUNDLE_INVALID", "Canonical source bundle schema validation failed.", parsed.error);
+  if (!parsed.success) return invalid("CANONICAL_BUNDLE_INVALID", "Canonical source bundle schema validation failed.");
   const bundle = parsed.data;
   if (sha256(bundle.source_text) !== bundle.source_hash) {
     return invalid("CANONICAL_BUNDLE_INVALID", "Canonical source hash does not match the frozen source text.");
   }
   for (const document of bundle.documents) {
-    if (sha256(document.content) !== document.markdown_sha256) {
-      return invalid("CANONICAL_BUNDLE_INVALID", "Canonical document hash does not match its frozen content.");
+    if (sha256(document.content) !== document.content_sha256) {
+      return invalid("CANONICAL_BUNDLE_INVALID", "Canonical bounded document content hash does not match its content.");
     }
   }
   for (const decision of bundle.user_decisions) {
@@ -124,7 +121,7 @@ const validateCanonicalBundle = (input: unknown): CanonicalSourceBundle => {
   return bundle;
 };
 
-const evidenceIdentity = (value: SemanticEvidenceRef) => stableJson(value);
+const evidenceIdentity = (value: SemanticEvidenceRef) => canonicalJson(value);
 
 const verifyEvidence = (
   evidence: SemanticEvidenceRef,
@@ -152,6 +149,7 @@ const verifyEvidence = (
       && item.conversion_id === evidence.conversion_id);
     if (!document
       || document.markdown_sha256 !== evidence.markdown_sha256
+      || document.content_sha256 !== evidence.content_sha256
       || !document.content.includes(evidence.quote)) {
       return invalid("DOCUMENT_EVIDENCE_INVALID", "Document evidence does not match a frozen document source.");
     }
@@ -161,6 +159,14 @@ const verifyEvidence = (
     const reference = bundle.references.find((item) => item.asset_id === evidence.asset_id);
     if (!reference || reference.asset_sha256 !== evidence.asset_sha256) {
       return invalid("REFERENCE_EVIDENCE_INVALID", "Reference evidence does not match a canonical reference asset.");
+    }
+    if (evidence.user_declared_usage !== undefined
+      && evidence.user_declared_usage !== reference.user_declared_usage) {
+      return invalid("REFERENCE_EVIDENCE_INVALID", "Reference usage evidence must equal the frozen user-declared usage exactly.");
+    }
+    if (evidence.observation !== undefined
+      && evidence.observation !== reference.objective_description) {
+      return invalid("REFERENCE_EVIDENCE_INVALID", "Reference observation must equal the frozen objective description exactly.");
     }
     return;
   }
@@ -196,7 +202,7 @@ export const verifySemanticDirectorProvenance = (
   const bundle = validateCanonicalBundle(bundleInput);
   const parsed = SemanticDirectorDecisionSchema.safeParse(decisionInput);
   if (!parsed.success) {
-    return invalid("SEMANTIC_DECISION_MALFORMED", "Semantic director response schema validation failed.", parsed.error);
+    return invalid("SEMANTIC_DECISION_MALFORMED", "Semantic director response schema validation failed.");
   }
   const decision = parsed.data;
   if (decision.source_hash !== bundle.source_hash
@@ -217,15 +223,32 @@ export const verifySemanticDirectorProvenance = (
   }
 
   const usageAssetIds = decision.reference_usages.map((usage) => usage.asset_id);
+  const canonicalReferenceIds = bundle.references.map((reference) => reference.asset_id);
   ensureCanonicalAssetOrder(usageAssetIds, bundle);
+  if (decision.execution_status === "READY"
+    && JSON.stringify(usageAssetIds) !== JSON.stringify(canonicalReferenceIds)) {
+    return invalid("REFERENCE_COVERAGE_INVALID", "An executable decision must cover every canonical reference exactly once and in order.");
+  }
   decision.reference_usages.forEach((usage) => {
     usage.evidence_refs.forEach((evidence) => verifyEvidence(evidence, bundle, evidenceIdentities));
-    if (!usage.evidence_refs.some((evidence) =>
-      evidence.kind === "REFERENCE_ASSET" && evidence.asset_id === usage.asset_id)) {
-      invalid("REFERENCE_EVIDENCE_INVALID", "Reference usage requires evidence for the same canonical asset.");
+    const canonicalReference = bundle.references.find((reference) => reference.asset_id === usage.asset_id);
+    const ownAssetEvidence = usage.evidence_refs.filter((evidence) =>
+      evidence.kind === "REFERENCE_ASSET" && evidence.asset_id === usage.asset_id);
+    if (!canonicalReference) {
+      return invalid("REFERENCE_EVIDENCE_INVALID", "Reference usage refers to an unknown canonical asset.");
+    }
+    if (ownAssetEvidence.length === 0) {
+      return invalid("REFERENCE_EVIDENCE_INVALID", "Reference usage requires evidence for the same canonical asset.");
+    }
+    if (canonicalReference.user_declared_usage !== undefined
+      && !ownAssetEvidence.some((evidence) => evidence.kind === "REFERENCE_ASSET"
+        && evidence.user_declared_usage === canonicalReference.user_declared_usage)) {
+      invalid("REFERENCE_EVIDENCE_INVALID", "Reference usage must cite the exact frozen user-declared purpose.");
     }
   });
 
+  const usageAssetIdSet = new Set(usageAssetIds);
+  const segmentReferenceIds = new Set<string>();
   decision.segments.forEach((segment) => {
     if (segment.duration_seconds < bundle.provider_capability.min_duration_seconds
       || segment.duration_seconds > bundle.provider_capability.max_duration_seconds) {
@@ -233,9 +256,36 @@ export const verifySemanticDirectorProvenance = (
     }
     segment.evidence_refs.forEach((evidence) => verifyEvidence(evidence, bundle, evidenceIdentities));
     ensureCanonicalAssetOrder(segment.reference_asset_ids, bundle);
+    for (const assetId of segment.reference_asset_ids) {
+      if (!usageAssetIdSet.has(assetId)) {
+        invalid("REFERENCE_COVERAGE_INVALID", "A segment reference has no provenance-checked usage decision.");
+      }
+      segmentReferenceIds.add(assetId);
+    }
   });
+  if (decision.execution_status === "READY"
+    && usageAssetIds.some((assetId) => !segmentReferenceIds.has(assetId))) {
+    return invalid("REFERENCE_COVERAGE_INVALID", "Every executable reference usage must be assigned to at least one segment.");
+  }
   decision.unresolved_items.forEach((item) =>
     item.evidence_refs.forEach((evidence) => verifyEvidence(evidence, bundle, evidenceIdentities)));
+
+  if (decision.execution_status === "READY") {
+    const evidenceRefs = [
+      ...decision.dialogues.map((dialogue) => dialogue.evidence),
+      ...decision.reference_usages.flatMap((usage) => usage.evidence_refs),
+      ...decision.segments.flatMap((segment) => segment.evidence_refs),
+      ...decision.unresolved_items.flatMap((item) => item.evidence_refs),
+    ];
+    for (const frozenDecision of bundle.user_decisions) {
+      if (!evidenceRefs.some((evidence) => evidence.kind === "USER_DECISION"
+        && evidence.decision_id === frozenDecision.decision_id
+        && evidence.field === frozenDecision.field
+        && evidence.value_hash === frozenDecision.value_hash)) {
+        return invalid("USER_DECISION_COVERAGE_INVALID", "An executable decision must cite every frozen user decision exactly.");
+      }
+    }
+  }
 
   return decision;
 };
@@ -312,6 +362,7 @@ export const projectSemanticReferences = (
     version: 1,
     source_hash: decision.source_hash,
     decision_hash: semanticValueHash(decision),
+    segment_id: segment.segment_id,
     references,
   });
 };
@@ -320,21 +371,63 @@ export interface SemanticDirectorPort {
   decide(bundle: CanonicalSourceBundle): Promise<unknown>;
 }
 
+export type SemanticDirectorVerificationDiagnostic = Readonly<{
+  stage: "SCHEMA" | "PROVENANCE" | "BLOCKED";
+  code: SemanticDecisionVerificationErrorCode;
+}>;
+
+export type SemanticDirectorVerificationDiagnosticSink = (
+  diagnostic: SemanticDirectorVerificationDiagnostic,
+) => void;
+
+const emitVerificationDiagnostic = (
+  sink: SemanticDirectorVerificationDiagnosticSink | undefined,
+  diagnostic: SemanticDirectorVerificationDiagnostic,
+) => {
+  if (!sink) return;
+  try {
+    sink(diagnostic);
+  } catch {
+    // Diagnostic transport must never change planning behavior.
+  }
+};
+
 /**
  * Wrap an LLM semantic director with deterministic provenance validation.
  * The name is intentionally narrow: successful validation is not a claim of
  * semantic entailment, source completeness, or rendered-media quality.
  */
 export class ProvenanceCheckedSemanticDirector {
-  constructor(private readonly director: SemanticDirectorPort) {}
+  constructor(
+    private readonly director: SemanticDirectorPort,
+    private readonly diagnosticSink?: SemanticDirectorVerificationDiagnosticSink,
+  ) {}
 
   async decide(bundleInput: unknown): Promise<SemanticDirectorDecision> {
     const bundle = validateCanonicalBundle(bundleInput);
     const rawDecision = await this.director.decide(bundle);
-    return verifySemanticDirectorProvenance(bundle, rawDecision);
+    try {
+      return verifySemanticDirectorProvenance(bundle, rawDecision);
+    } catch (error) {
+      if (error instanceof SemanticDecisionVerificationError) {
+        emitVerificationDiagnostic(this.diagnosticSink, {
+          stage: error.code === "SEMANTIC_DECISION_MALFORMED" ? "SCHEMA" : "PROVENANCE",
+          code: error.code,
+        });
+      }
+      throw error;
+    }
   }
 
   async requireExecutable(bundleInput: unknown): Promise<SemanticDirectorDecision> {
-    return requireExecutableSemanticDecision(await this.decide(bundleInput));
+    const decision = await this.decide(bundleInput);
+    try {
+      return requireExecutableSemanticDecision(decision);
+    } catch (error) {
+      if (error instanceof SemanticDecisionVerificationError) {
+        emitVerificationDiagnostic(this.diagnosticSink, { stage: "BLOCKED", code: error.code });
+      }
+      throw error;
+    }
   }
 }

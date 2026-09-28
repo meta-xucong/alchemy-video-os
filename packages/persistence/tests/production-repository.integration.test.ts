@@ -8,15 +8,21 @@ import {
   InternalEventEnvelopeSchema,
   InternalMediaRuntimeQueueMessageSchema,
   VideoGenerationInputSnapshotSchema,
+  semanticPromptPackageIntegrityPayload,
   type InternalEventEnvelope,
 } from "@alchemy-video/contracts";
-import { createPrefixedId, fingerprintRequest } from "@alchemy-video/domain";
+import { canonicalJson, createPrefixedId, fingerprintRequest } from "@alchemy-video/domain";
 
 import { DrizzleControlPlaneRepository } from "../src/control-plane-repository.js";
 import { DrizzleCreativePlanningRepository } from "../src/creative-planning-repository.js";
 import { createDatabase } from "../src/db.js";
 import { DrizzleAssetWorkspaceRepository } from "../src/asset-workspace-repository.js";
-import { DrizzleProductionRepository, narrationDurationFeedbackLogId, type ProductionTaskRunInputFactory } from "../src/production-repository.js";
+import {
+  DrizzleProductionRepository,
+  ProductionCompositionInputUnavailableError,
+  narrationDurationFeedbackLogId,
+  type ProductionTaskRunInputFactory,
+} from "../src/production-repository.js";
 import {
   assets,
   creativeBriefRevisions,
@@ -35,6 +41,9 @@ import {
   storyboardRevisions,
   storyboardShotSpecs,
 } from "../src/schema.js";
+
+const semanticHash = (value: unknown) =>
+  createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
 
 const eventMetadata = () => ({
   eventId: createPrefixedId("evt"),
@@ -258,6 +267,43 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
       "视觉补充第一项：车间灯光从冷到暖。",
       "视觉补充第二项：镜头停在交接动作。",
     ];
+    const secondSemanticSourceHash = createHash("sha256").update(briefSourceText, "utf8").digest("hex");
+    const secondSemanticDecisionHash = "d".repeat(64);
+    const secondSemanticSegmentId = "seg_c12_semantic_002";
+    const secondCompiledPrompt = [secondSourcePrompt, ...secondGeneratedPromptParts].join(" ");
+    const secondSemanticEvidenceIds = ["evd_c12_segment_002"];
+    const secondSemanticDialogueProjection = {
+      version: 1 as const,
+      source_hash: secondSemanticSourceHash,
+      decision_hash: secondSemanticDecisionHash,
+      segment_id: secondSemanticSegmentId,
+      dialogues: [],
+    };
+    const secondSemanticReferenceProjection = {
+      version: 1 as const,
+      source_hash: secondSemanticSourceHash,
+      decision_hash: secondSemanticDecisionHash,
+      segment_id: secondSemanticSegmentId,
+      references: [{
+        asset_id: sourceImageAssetId,
+        provider_role: "SUBJECT" as const,
+        usage: "用户参考图作为本段人物主体身份参考。",
+        evidence_ids: ["evd_c12_reference_001"],
+      }],
+    };
+    const secondSemanticPackageHash = semanticHash(semanticPromptPackageIntegrityPayload({
+      shotSpecId: secondShotSpecId,
+      prompt: secondCompiledPrompt,
+      referencePolicy: "HANDOFF_FIRST_FRAME",
+      sourcePrompt: secondSourcePrompt,
+      generatedPromptParts: secondGeneratedPromptParts,
+      evidenceIds: secondSemanticEvidenceIds,
+      dialogueProjection: secondSemanticDialogueProjection,
+      referenceProjection: secondSemanticReferenceProjection,
+      audioOwner: "LEGACY_PRESERVE",
+      maxDurationSeconds: 15,
+      maxReferenceImages: 7,
+    }));
     const completed = await planning.completeCreativePlan({
       workspaceId,
       creativeBriefRevisionId: briefId,
@@ -278,28 +324,36 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
           { id: secondShotSpecId, sequence: 2, title: "黎明交付", durationSeconds: 15, narrativeGoal: "兑现承诺", startState: "车间亮灯", endState: "客户收到成果", transitionSummary: "淡入黎明", referencePolicy: "HANDOFF_FIRST_FRAME", dependsOnSequences: [1], continuityNote: "使用前段交接帧承接画面" },
         ],
         promptPackages: [
-          { id: createPrefixedId("ppk"), shotSpecId: firstShotSpecId, compilerVersion: "c12-integration", prompt: [firstSourcePrompt, ...firstGeneratedPromptParts].join(" "), visualConstraints: {}, referenceMap: { reference_policy: "TEXT_TRANSITION" }, capabilitySnapshot: { max_duration_seconds: 15, source_prompt: firstSourcePrompt, generated_prompt_parts: firstGeneratedPromptParts } },
+          { id: createPrefixedId("ppk"), shotSpecId: firstShotSpecId, compilerVersion: "c12-integration", prompt: [firstSourcePrompt, ...firstGeneratedPromptParts].join(" "), visualConstraints: {}, referenceMap: { reference_policy: "TEXT_TRANSITION" }, capabilitySnapshot: { max_duration_seconds: 15, source_prompt: firstSourcePrompt, generated_prompt_parts: firstGeneratedPromptParts, audio_owner: "LEGACY_PRESERVE" } },
           {
             id: createPrefixedId("ppk"),
             shotSpecId: secondShotSpecId,
             compilerVersion: "c12-integration",
-            prompt: [secondSourcePrompt, ...secondGeneratedPromptParts].join(" "),
-            visualConstraints: {},
+            prompt: secondCompiledPrompt,
+            visualConstraints: {
+              semantic_segment_id: secondSemanticSegmentId,
+              semantic_decision_hash: secondSemanticDecisionHash,
+              evidence_ids: secondSemanticEvidenceIds,
+            },
             referenceMap: {
               reference_policy: "HANDOFF_FIRST_FRAME",
-              semantic_reference_projection: {
-                version: 1,
-                source_hash: createHash("sha256").update(briefSourceText, "utf8").digest("hex"),
-                decision_hash: "d".repeat(64),
-                references: [{
-                  asset_id: sourceImageAssetId,
-                  provider_role: "SUBJECT",
-                  usage: "用户参考图作为本段人物主体身份参考。",
-                  evidence_ids: ["evd_c12_reference_001"],
-                }],
-              },
+              semantic_reference_projection: secondSemanticReferenceProjection,
             },
-            capabilitySnapshot: { max_duration_seconds: 15, source_prompt: secondSourcePrompt, generated_prompt_parts: secondGeneratedPromptParts },
+            capabilitySnapshot: {
+              max_duration_seconds: 15,
+              max_reference_images: 7,
+              source_prompt: secondSourcePrompt,
+              generated_prompt_parts: secondGeneratedPromptParts,
+              audio_owner: "LEGACY_PRESERVE",
+              prompt_source_kind: "SEMANTIC_VISUAL_PROJECTION",
+              authored_source_hash: secondSemanticSourceHash,
+              semantic_decision_hash: secondSemanticDecisionHash,
+              semantic_segment_id: secondSemanticSegmentId,
+              semantic_dialogue_projection: secondSemanticDialogueProjection,
+              semantic_dialogue_projection_hash: semanticHash(secondSemanticDialogueProjection),
+              semantic_reference_projection_hash: semanticHash(secondSemanticReferenceProjection),
+              semantic_prompt_package_integrity_hash: secondSemanticPackageHash,
+            },
           },
         ],
       },
@@ -325,6 +379,52 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
       event: eventMetadata(),
     });
     assert.equal(approved.kind, "NEW");
+    assert.ok(persistedFirstPromptPackage);
+    if (!persistedFirstPromptPackage) return;
+
+    const originalFirstCapabilitySnapshot = persistedFirstPromptPackage.capabilitySnapshot;
+    await database.db.update(promptPackages).set({
+      capabilitySnapshot: {
+        ...originalFirstCapabilitySnapshot,
+        prompt_source_kind: "SEMANTIC_VISUAL_PROJECTION",
+      },
+    }).where(and(
+      eq(promptPackages.workspaceId, workspaceId),
+      eq(promptPackages.id, persistedFirstPromptPackage.id),
+    ));
+    const invalidProjectionRunId = createPrefixedId("prd");
+    assert.equal((await planning.createProductionRun({
+      scope: `${scope}:production:invalid-semantic-projection`,
+      idempotencyKey: "production-invalid-semantic-projection",
+      requestHash: fingerprintRequest({ storyboard_revision_id: completed.id, invalid_projection: true }),
+      workspaceId,
+      projectId,
+      productionRunId: invalidProjectionRunId,
+      storyboardRevisionId: completed.id,
+      musicPlan: { mode: "OFF" },
+      event: eventMetadata(),
+    })).kind, "NEW");
+    const invalidProjectionConfirmed = await readEvent(database.db, {
+      workspaceId,
+      eventType: "production_run.confirmed",
+      predicate: (value) => value.event_type === "production_run.confirmed"
+        && value.data.production_run_id === invalidProjectionRunId,
+    });
+    assert.equal(invalidProjectionConfirmed.event_type, "production_run.confirmed");
+    if (invalidProjectionConfirmed.event_type !== "production_run.confirmed") return;
+    await production.initializeProductionRun({ event: invalidProjectionConfirmed, now: new Date() });
+    const invalidProjectionProgress = await production.findProductionRunProgress(workspaceId, invalidProjectionRunId);
+    assert.equal(invalidProjectionProgress?.productionRun.status, "BLOCKED");
+    assert.equal(invalidProjectionProgress?.segments[0]?.status, "WAITING");
+    assert.equal(invalidProjectionProgress?.segments[0]?.retryable, false);
+    assert.equal(invalidProjectionProgress?.segments[0]?.taskRunId, undefined);
+    assert.equal(invalidProjectionProgress?.segments[0]?.safeSummary, "语义规划投影校验失败，需要重新规划。");
+    await database.db.update(promptPackages).set({
+      capabilitySnapshot: originalFirstCapabilitySnapshot,
+    }).where(and(
+      eq(promptPackages.workspaceId, workspaceId),
+      eq(promptPackages.id, persistedFirstPromptPackage.id),
+    ));
 
     const firstRunId = createPrefixedId("prd");
     const firstRun = await planning.createProductionRun({
@@ -484,6 +584,39 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     });
     assert.equal(secondQcEvent.event_type, "production_segment.qc_requested");
     if (secondQcEvent.event_type !== "production_segment.qc_requested") return;
+    assert.ok(secondTask);
+    assert.ok(persistedSecondPromptPackage);
+    if (!secondTask || !persistedSecondPromptPackage) return;
+    const originalSecondTaskSnapshot = secondTask.inputSnapshot;
+    await database.db.update(taskRuns).set({
+      inputSnapshot: { ...originalSecondTaskSnapshot, audio_owner: "NATIVE_PROVIDER" },
+    }).where(and(
+      eq(taskRuns.workspaceId, workspaceId),
+      eq(taskRuns.id, secondTask.id),
+    ));
+    await database.db.update(promptPackages).set({
+      prompt: `${secondCompiledPrompt} QC 前被手工替换`,
+    }).where(and(
+      eq(promptPackages.workspaceId, workspaceId),
+      eq(promptPackages.id, persistedSecondPromptPackage.id),
+    ));
+    await assert.rejects(
+      () => production.findProductionSegmentQcInput({ event: secondQcEvent }),
+      (error) => error instanceof ProductionCompositionInputUnavailableError
+        && /semantic prompt package integrity is invalid/u.test(error.message),
+    );
+    await database.db.update(promptPackages).set({ prompt: secondCompiledPrompt }).where(and(
+      eq(promptPackages.workspaceId, workspaceId),
+      eq(promptPackages.id, persistedSecondPromptPackage.id),
+    ));
+    const verifiedSecondQcInput = await production.findProductionSegmentQcInput({ event: secondQcEvent });
+    assert.equal(verifiedSecondQcInput?.productionSegmentId, secondQcEvent.data.production_segment_id);
+    await database.db.update(taskRuns).set({
+      inputSnapshot: originalSecondTaskSnapshot,
+    }).where(and(
+      eq(taskRuns.workspaceId, workspaceId),
+      eq(taskRuns.id, secondTask.id),
+    ));
     const secondHandoffAssetId = createPrefixedId("ast");
     await production.acceptProductionSegmentQc({
       event: secondQcEvent,
@@ -510,16 +643,21 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     await production.completeHandoffReview({
       event: reviewEvent,
       evaluation: {
-        result: "PASS",
-        reasonCodes: [],
-        safeSummary: "相邻片段边界检查通过。",
-        evaluatorVersion: "fixture-v1",
+        result: "UNAVAILABLE",
+        reasonCodes: ["EVALUATOR_UNAVAILABLE"],
+        safeSummary: "衔接检查不可用，保留需要注意并采用直切。",
+        evaluatorVersion: "unavailable",
         retryable: false,
       },
       now: new Date(),
     });
     assert.equal((await database.db.select().from(handoffReviews).where(and(eq(handoffReviews.workspaceId, workspaceId), eq(handoffReviews.productionRunId, firstRunId)))).length, 1);
     assert.equal((await database.db.select().from(transitionRepairs).where(and(eq(transitionRepairs.workspaceId, workspaceId), eq(transitionRepairs.productionRunId, firstRunId)))).length, 0);
+    const [reviewedRun] = await database.db.select({ continuityStatus: productionRuns.continuityStatus }).from(productionRuns).where(and(
+      eq(productionRuns.workspaceId, workspaceId),
+      eq(productionRuns.id, firstRunId),
+    ));
+    assert.equal(reviewedRun?.continuityStatus, "NEEDS_ATTENTION");
     const compositionEvent = await readEvent(database.db, {
       workspaceId,
       eventType: "video_version.composition_requested",
@@ -527,6 +665,32 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     });
     assert.equal(compositionEvent.event_type, "video_version.composition_requested");
     if (compositionEvent.event_type !== "video_version.composition_requested") return;
+    assert.equal((await database.db.select().from(outboxEvents).where(and(
+      eq(outboxEvents.workspaceId, workspaceId),
+      eq(outboxEvents.projectId, projectId),
+      eq(outboxEvents.aggregateType, "production_run"),
+      eq(outboxEvents.aggregateId, firstRunId),
+      eq(outboxEvents.eventType, "video_version.composition_requested"),
+    ))).length, 1);
+    assert.ok(persistedSecondPromptPackage);
+    if (!persistedSecondPromptPackage) return;
+    await database.db.update(promptPackages).set({
+      prompt: `${secondCompiledPrompt} 被手工替换`,
+    }).where(and(
+      eq(promptPackages.workspaceId, workspaceId),
+      eq(promptPackages.id, persistedSecondPromptPackage.id),
+    ));
+    await assert.rejects(
+      () => production.findProductionCompositionInput({ event: compositionEvent }),
+      (error) => error instanceof ProductionCompositionInputUnavailableError
+        && /semantic prompt package integrity is invalid/u.test(error.message),
+    );
+    await database.db.update(promptPackages).set({
+      prompt: secondCompiledPrompt,
+    }).where(and(
+      eq(promptPackages.workspaceId, workspaceId),
+      eq(promptPackages.id, persistedSecondPromptPackage.id),
+    ));
     const compositionInput = await production.findProductionCompositionInput({ event: compositionEvent });
     assert.deepEqual(compositionInput?.segments.map((segment) => segment.sequence), [1, 2]);
     assert.equal(compositionInput?.compositionPlan.target_duration_ms, 2_000);
@@ -557,6 +721,53 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
       eq(eventConsumptions.consumerName, "c12-pg-media"),
     ));
     assert.equal(firstQcConsumptions.length, 1);
+
+    // A retry with a fresh idempotency key must reuse the existing durable
+    // composition request for the run, rather than enqueueing a duplicate.
+    const firstRunSegments = await database.db.select().from(productionSegments)
+      .where(and(eq(productionSegments.workspaceId, workspaceId), eq(productionSegments.productionRunId, firstRunId)));
+    assert.equal(firstRunSegments.length, 2);
+    assert.ok(firstRunSegments.every((segment) => segment.taskRunId));
+    await database.db.update(productionRuns).set({ status: "FAILED" })
+      .where(and(eq(productionRuns.workspaceId, workspaceId), eq(productionRuns.id, firstRunId)));
+    await database.db.update(productionSegments).set({ status: "ACCEPTED", retryable: false })
+      .where(and(eq(productionSegments.workspaceId, workspaceId), eq(productionSegments.productionRunId, firstRunId)));
+    const retryCompositionEventCount = async () => (await database.db.select().from(outboxEvents).where(and(
+      eq(outboxEvents.workspaceId, workspaceId),
+      eq(outboxEvents.projectId, projectId),
+      eq(outboxEvents.aggregateType, "production_run"),
+      eq(outboxEvents.aggregateId, firstRunId),
+      eq(outboxEvents.eventType, "video_version.composition_requested"),
+    ))).length;
+    const beforeCompositionRetry = await retryCompositionEventCount();
+    const firstCompositionRetry = await production.retryProductionComposition({
+      scope: `${scope}:retry-composition-existing`,
+      idempotencyKey: "retry-composition-existing-1",
+      requestHash: fingerprintRequest({ retry: 1 }),
+      workspaceId,
+      productionRunId: firstRunId,
+      event: eventMetadata(),
+    });
+    assert.equal(firstCompositionRetry.kind, "NEW");
+    assert.equal(await retryCompositionEventCount(), beforeCompositionRetry);
+    await database.db.update(productionRuns).set({ status: "FAILED" })
+      .where(and(eq(productionRuns.workspaceId, workspaceId), eq(productionRuns.id, firstRunId)));
+    const secondCompositionRetry = await production.retryProductionComposition({
+      scope: `${scope}:retry-composition-existing`,
+      idempotencyKey: "retry-composition-existing-2",
+      requestHash: fingerprintRequest({ retry: 2 }),
+      workspaceId,
+      productionRunId: firstRunId,
+      event: eventMetadata(),
+    });
+    assert.equal(secondCompositionRetry.kind, "NEW");
+    assert.equal(await retryCompositionEventCount(), beforeCompositionRetry);
+
+    // The retry command deliberately reopens the run for composition review.
+    // Close that fixture before creating the independent failure run below so
+    // the active-production-run guard is not testing an unrelated conflict.
+    await database.db.update(productionRuns).set({ status: "SUCCEEDED" })
+      .where(and(eq(productionRuns.workspaceId, workspaceId), eq(productionRuns.id, firstRunId)));
 
     const failedRunId = createPrefixedId("prd");
     assert.equal((await planning.createProductionRun({

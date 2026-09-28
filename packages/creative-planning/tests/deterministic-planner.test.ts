@@ -1099,6 +1099,7 @@ test("document context constrains the public plan without replaying Markdown int
       conversionId: "dcv_story",
       sourceAssetId: "ast_source",
       markdownAssetId: "ast_markdown",
+      markdownSha256: "a".repeat(64),
       maxContentCharacters: 5_000,
       content: privateFact,
     }],

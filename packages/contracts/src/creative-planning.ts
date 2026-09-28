@@ -39,6 +39,37 @@ export const PRODUCTION_RUN_STATUSES = [
 ] as const;
 export const ProductionRunStatusSchema = z.enum(PRODUCTION_RUN_STATUSES);
 export const CreativeBriefTargetResolutionSchema = z.enum(["480p", "720p"]);
+export const CreativeBriefReferenceRoleSchema = z.enum(["SUBJECT", "SCENE", "STYLE"]);
+export const CreativeBriefReferenceRoleInputSchema = z.object({
+  asset_id: AssetIdSchema,
+  role: CreativeBriefReferenceRoleSchema,
+  usage: z.string().min(1).max(1_000).optional(),
+}).strict();
+
+const validateCreativeBriefReferenceRoles = <T extends {
+  source_asset_ids: string[];
+  source_asset_roles: Array<{ asset_id: string }>;
+}>(value: T, context: z.RefinementCtx) => {
+  const sourceIds = new Set(value.source_asset_ids);
+  const roleIds = new Set<string>();
+  for (const reference of value.source_asset_roles) {
+    if (!sourceIds.has(reference.asset_id)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["source_asset_roles"],
+        message: "Every declared reference role must target a selected source asset.",
+      });
+    }
+    if (roleIds.has(reference.asset_id)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["source_asset_roles"],
+        message: "Each selected source asset may have only one frozen reference role.",
+      });
+    }
+    roleIds.add(reference.asset_id);
+  }
+};
 
 export const DocumentContextReferenceSchema = z.object({
   document_id: z.string().min(1),
@@ -65,11 +96,12 @@ export const CreativeBriefRevisionSchema = z.object({
   target_resolution: CreativeBriefTargetResolutionSchema,
   style_preferences: z.string().max(1_000),
   source_asset_ids: z.array(AssetIdSchema).max(20),
+  source_asset_roles: z.array(CreativeBriefReferenceRoleInputSchema).max(20).default([]),
   document_contexts: z.array(DocumentContextReferenceSchema).max(4).default([]),
   status: CreativeRevisionStatusSchema,
   created_at: UtcTimestampSchema,
   updated_at: UtcTimestampSchema,
-}).strict();
+}).strict().superRefine(validateCreativeBriefReferenceRoles);
 
 export const ScriptBeatSchema = z.object({
   sequence: z.number().int().positive(),
@@ -319,7 +351,8 @@ export const CreateCreativeBriefRevisionCommandSchema = z.object({
   target_resolution: CreativeBriefTargetResolutionSchema.default("720p"),
   style_preferences: z.string().max(1_000).default(""),
   source_asset_ids: z.array(AssetIdSchema).max(20).default([]),
-}).strict();
+  source_asset_roles: z.array(CreativeBriefReferenceRoleInputSchema).max(20).default([]),
+}).strict().superRefine(validateCreativeBriefReferenceRoles);
 export const RequestCreativePlanCommandSchema = z.object({}).strict();
 export const ApproveStoryboardRevisionCommandSchema = z.object({}).strict();
 export const CreateProductionRunCommandSchema = z.object({
@@ -334,6 +367,8 @@ export type ReferencePolicy = z.infer<typeof ReferencePolicySchema>;
 export type ProductionRunStatus = z.infer<typeof ProductionRunStatusSchema>;
 export type ContinuityStatus = z.infer<typeof ContinuityStatusSchema>;
 export type CreativeBriefTargetResolution = z.infer<typeof CreativeBriefTargetResolutionSchema>;
+export type CreativeBriefReferenceRole = z.infer<typeof CreativeBriefReferenceRoleSchema>;
+export type CreativeBriefReferenceRoleInput = z.infer<typeof CreativeBriefReferenceRoleInputSchema>;
 export type DocumentContextReference = z.infer<typeof DocumentContextReferenceSchema>;
 export type CreativeBriefRevision = z.infer<typeof CreativeBriefRevisionSchema>;
 export type ScriptRevision = z.infer<typeof ScriptRevisionSchema>;

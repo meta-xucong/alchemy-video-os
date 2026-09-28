@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 
 import {
   AssetIdSchema,
@@ -6,7 +7,7 @@ import {
   DocumentIdSchema,
   Sha256Schema,
 } from "./primitives.js";
-import { VideoAudioOwnerSchema } from "./resources.js";
+import { VideoAudioOwnerSchema, type VideoAudioOwner } from "./resources.js";
 
 const internalId = (prefix: string) => z.string().regex(new RegExp(`^${prefix}_[A-Za-z0-9][A-Za-z0-9_-]{2,95}$`));
 
@@ -39,6 +40,7 @@ export const DocumentEvidenceRefSchema = z.object({
   document_id: DocumentIdSchema,
   conversion_id: DocumentConversionIdSchema,
   markdown_sha256: Sha256Schema,
+  content_sha256: Sha256Schema,
   locator: z.string().min(1).max(500),
   quote: z.string().min(1).max(5_000),
 }).strict();
@@ -48,6 +50,7 @@ export const ReferenceAssetEvidenceRefSchema = z.object({
   kind: z.literal("REFERENCE_ASSET"),
   asset_id: AssetIdSchema,
   asset_sha256: Sha256Schema,
+  user_declared_usage: z.string().min(1).max(1_000).optional(),
   observation: z.string().min(1).max(2_000).optional(),
 }).strict();
 
@@ -70,14 +73,18 @@ export const CanonicalDocumentSourceSchema = z.object({
   document_id: DocumentIdSchema,
   conversion_id: DocumentConversionIdSchema,
   markdown_sha256: Sha256Schema,
+  content_sha256: Sha256Schema,
   content: z.string().min(1).max(2_000_000),
 }).strict();
+
+export const CanonicalReferenceRoleSchema = z.enum(["SUBJECT", "SCENE", "STYLE"]);
 
 export const CanonicalReferenceSourceSchema = z.object({
   asset_id: AssetIdSchema,
   asset_sha256: Sha256Schema,
   mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]),
   position: z.number().int().min(0).max(6),
+  provider_role: CanonicalReferenceRoleSchema.optional(),
   user_declared_usage: z.string().min(1).max(1_000).optional(),
   objective_description: z.string().min(1).max(5_000).optional(),
 }).strict();
@@ -130,6 +137,16 @@ export const CanonicalSourceBundleSchema = z.object({
   if (new Set(decisionIds).size !== decisionIds.length) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["user_decisions"], message: "Canonical user decision identities must be unique." });
   }
+  if (value.style_preferences.trim()) {
+    const styleDecisions = value.user_decisions.filter((item) => item.field === "style_preferences");
+    if (styleDecisions.length !== 1 || styleDecisions[0]?.value !== value.style_preferences) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["style_preferences"],
+        message: "Non-empty style preferences require one exact frozen user decision.",
+      });
+    }
+  }
 });
 
 export const SemanticDialogueDecisionSchema = z.object({
@@ -174,6 +191,7 @@ export const SemanticReferenceProjectionSchema = z.object({
   version: z.literal(1),
   source_hash: Sha256Schema,
   decision_hash: Sha256Schema,
+  segment_id: SemanticSegmentIdSchema,
   references: z.array(z.object({
     asset_id: AssetIdSchema,
     provider_role: z.enum(["SUBJECT", "SCENE", "STYLE"]),
@@ -259,6 +277,21 @@ export const SemanticDirectorDecisionSchema = z.object({
   }
 });
 
+export const SEMANTIC_DIRECTOR_DECISION_CONTRACT_VERSION = "semantic-director-decision-v1" as const;
+
+/**
+ * Machine-readable structural contract sent to compatible Semantic Director
+ * models. Runtime provenance and cross-field checks remain authoritative.
+ */
+export const SemanticDirectorDecisionJsonSchema = zodToJsonSchema(
+  SemanticDirectorDecisionSchema,
+  {
+    name: "SemanticDirectorDecision",
+    target: "jsonSchema7",
+    $refStrategy: "root",
+  },
+);
+
 export type SourceTextSpan = z.infer<typeof SourceTextSpanSchema>;
 export type SemanticEvidenceRef = z.infer<typeof SemanticEvidenceRefSchema>;
 export type CanonicalDocumentSource = z.infer<typeof CanonicalDocumentSourceSchema>;
@@ -273,3 +306,41 @@ export type SemanticReferenceProjection = z.infer<typeof SemanticReferenceProjec
 export type SemanticUnresolvedItem = z.infer<typeof SemanticUnresolvedItemSchema>;
 export type SemanticSegmentDecision = z.infer<typeof SemanticSegmentDecisionSchema>;
 export type SemanticDirectorDecision = z.infer<typeof SemanticDirectorDecisionSchema>;
+
+export type SemanticPromptPackageIntegrityInput = Readonly<{
+  shotSpecId: string;
+  prompt: string;
+  referencePolicy: string;
+  sourcePrompt: string;
+  generatedPromptParts: readonly string[];
+  evidenceIds: readonly string[];
+  dialogueProjection: SemanticDialogueProjection;
+  referenceProjection: SemanticReferenceProjection;
+  audioOwner: VideoAudioOwner;
+  maxDurationSeconds: number;
+  maxReferenceImages: number;
+  bgmPrompt?: string;
+}>;
+
+/**
+ * Shared canonical payload for the internal Semantic Director PromptPackage
+ * digest. The hash itself stays server-owned; this helper only fixes which
+ * immutable fields both persistence and workflow must cover.
+ */
+export const semanticPromptPackageIntegrityPayload = (
+  input: SemanticPromptPackageIntegrityInput,
+) => ({
+  version: 1 as const,
+  shot_spec_id: input.shotSpecId,
+  prompt: input.prompt,
+  reference_policy: input.referencePolicy,
+  source_prompt: input.sourcePrompt,
+  generated_prompt_parts: [...input.generatedPromptParts],
+  evidence_ids: [...input.evidenceIds],
+  semantic_dialogue_projection: input.dialogueProjection,
+  semantic_reference_projection: input.referenceProjection,
+  audio_owner: input.audioOwner,
+  max_duration_seconds: input.maxDurationSeconds,
+  max_reference_images: input.maxReferenceImages,
+  ...(input.bgmPrompt ? { bgm_prompt: input.bgmPrompt } : {}),
+});

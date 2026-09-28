@@ -22,6 +22,29 @@ $StatePath = Join-Path $RuntimeRoot "full-stack-pids.json"
 $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 
 New-Item -ItemType Directory -Force -Path $RuntimeRoot, $LogRoot, $BackupRoot | Out-Null
+$script:ScopedLocalServiceEnvironmentNames = @(
+  "SEMANTIC_PLANNER_ENABLED",
+  "SEMANTIC_PLANNER_BASE_URL",
+  "SEMANTIC_PLANNER_API_KEY",
+  "SEMANTIC_PLANNER_MODEL",
+  "SEMANTIC_PLANNER_PROFILE_ID",
+  "SEMANTIC_PLANNER_TIMEOUT_MS",
+  "SEMANTIC_PLANNER_MAX_INPUT_UTF8_BYTES",
+  "SEMANTIC_PLANNER_MAX_TOKENS",
+  "SEMANTIC_PLANNER_ALLOW_LOCAL_CERTIFICATION_REPORT",
+  "SEMANTIC_PLANNER_CERTIFICATION_REPORT_PATH",
+  "REFERENCE_VISION_BASE_URL",
+  "REFERENCE_VISION_API_KEY",
+  "REFERENCE_VISION_MODEL",
+  "HANDOFF_EVALUATOR_BASE_URL",
+  "HANDOFF_EVALUATOR_API_KEY",
+  "HANDOFF_EVALUATOR_MODEL",
+  "SUB2API_VIDEO_BASE_URL",
+  "SUB2API_VIDEO_API_KEY",
+  "REFERENCE_DELIVERY_SIGNING_KEY",
+  "DOUBAO_SPEECH_API_KEY",
+  "DOUBAO_SPEECH_VOICE_TYPE"
+)
 $relayScriptSource = Join-Path $WorkspaceRoot "infrastructure\local\start-video-relay-tunnel.ps1"
 $relayScriptRuntime = Join-Path $RuntimeRoot "start-video-relay-tunnel.ps1"
 if (Test-Path -LiteralPath $relayScriptSource) {
@@ -74,6 +97,16 @@ function Stop-ManagedLocalProcesses {
   }
 }
 
+function Assert-NoUnmanagedLocalStackProcesses {
+  $stale = Get-CimInstance Win32_Process | Where-Object {
+    $_.CommandLine -and $_.CommandLine.Contains("--alchemy-local-stack=local-full-stack-")
+  }
+  if ($stale) {
+    $identities = @($stale | ForEach-Object { "PID $($_.ProcessId)" }) -join ", "
+    throw "Stale local-stack process(es) remain after managed shutdown: $identities. Refusing to start competing Workers."
+  }
+}
+
 function Assert-PortAvailable([int] $Port, [string] $Name) {
   $listeners = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue
   if ($listeners) {
@@ -96,6 +129,35 @@ function Wait-HttpOk([string] $Url, [string] $Name) {
     }
   } while ((Get-Date) -lt $deadline)
   throw "$Name did not become ready at $Url."
+}
+
+function Wait-FileContainsAll(
+  [string] $Path,
+  [string[]] $Patterns,
+  [string] $Name,
+  [int] $ProcessId = 0,
+  [string] $StderrPath = ""
+) {
+  $deadline = (Get-Date).AddSeconds(90)
+  do {
+    if ($ProcessId -gt 0 -and -not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
+      $stderr = if ($StderrPath -and (Test-Path -LiteralPath $StderrPath)) {
+        (Get-Content -LiteralPath $StderrPath -Tail 80) -join [Environment]::NewLine
+      } else { "" }
+      throw "$Name exited before confirming its runtime configuration. $stderr"
+    }
+    if (Test-Path -LiteralPath $Path) {
+      $text = Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue
+      if ($null -eq $text) { $text = "" }
+      $missing = @($Patterns | Where-Object { -not $text.Contains($_) })
+      if ($missing.Count -eq 0) {
+        Write-Host ("{0} configuration is visible in its runtime log." -f $Name)
+        return
+      }
+    }
+    Start-Sleep -Milliseconds 500
+  } while ((Get-Date) -lt $deadline)
+  throw "$Name did not confirm its expected runtime configuration in $Path."
 }
 
 function Wait-TcpOpen([string] $HostName, [int] $Port, [string] $Name) {
@@ -126,7 +188,7 @@ function Run-Pnpm([string] $Label, [string[]] $Arguments) {
   }
 }
 
-function Start-LocalService([string] $Name, [string] $FilePath, [string[]] $Arguments, [string] $WorkingDirectory) {
+function Start-LocalService([string] $Name, [string] $FilePath, [string[]] $Arguments, [string] $WorkingDirectory, [hashtable] $Environment = $null) {
   $safeName = $Name.ToLowerInvariant() -replace "[^a-z0-9]+", "-"
   $stdout = Join-Path $LogRoot "$safeName.out.log"
   $stderr = Join-Path $LogRoot "$safeName.err.log"
@@ -134,14 +196,37 @@ function Start-LocalService([string] $Name, [string] $FilePath, [string[]] $Argu
   if ([IO.Path]::GetFileName($FilePath) -ieq "node.exe") {
     $launchArguments += "--alchemy-local-stack=$script:CurrentBuildVersion"
   }
-  $process = Start-Process `
-    -FilePath $FilePath `
-    -ArgumentList $launchArguments `
-    -WorkingDirectory $WorkingDirectory `
-    -WindowStyle Hidden `
-    -RedirectStandardOutput $stdout `
-    -RedirectStandardError $stderr `
-    -PassThru
+  $startParameters = @{
+    FilePath = $FilePath
+    ArgumentList = $launchArguments
+    WorkingDirectory = $WorkingDirectory
+    WindowStyle = "Hidden"
+    RedirectStandardOutput = $stdout
+    RedirectStandardError = $stderr
+    PassThru = $true
+  }
+  $environmentNames = @($script:ScopedLocalServiceEnvironmentNames)
+  if ($Environment) { $environmentNames += @($Environment.Keys) }
+  $environmentNames = @($environmentNames | Sort-Object -Unique)
+  $previousEnvironment = @{}
+  foreach ($environmentName in $environmentNames) {
+    $previousEnvironment[$environmentName] = [Environment]::GetEnvironmentVariable($environmentName, "Process")
+    Remove-Item -LiteralPath ("Env:" + $environmentName) -ErrorAction SilentlyContinue
+  }
+  if ($Environment) {
+    foreach ($entry in $Environment.GetEnumerator()) {
+      Set-Item -Path ("Env:" + $entry.Key) -Value ([string] $entry.Value)
+    }
+  }
+  try {
+    $process = Start-Process @startParameters
+  } finally {
+    foreach ($environmentName in $environmentNames) {
+      $previousValue = $previousEnvironment[$environmentName]
+      if ($null -eq $previousValue) { Remove-Item -LiteralPath ("Env:" + $environmentName) -ErrorAction SilentlyContinue }
+      else { Set-Item -Path ("Env:" + $environmentName) -Value ([string] $previousValue) }
+    }
+  }
   Write-Host ("Started {0}: PID {1}" -f $Name, $process.Id)
   return [ordered]@{ name = $Name; pid = $process.Id; stdout = $stdout; stderr = $stderr }
 }
@@ -261,6 +346,7 @@ function Read-MinioEnvironment {
 
 Stop-ManagedLocalProcesses
 Start-Sleep -Milliseconds 700
+Assert-NoUnmanagedLocalStackProcesses
 Assert-PortAvailable -Port $StudioPort -Name "Studio"
 Assert-PortAvailable -Port $ControlApiPort -Name "Control API"
 Assert-PortAvailable -Port $MediaRuntimePort -Name "Media Runtime"
@@ -282,8 +368,6 @@ $minio = Read-MinioEnvironment
 $dotenv = Read-LocalEnvFile
 $sub2ApiVideoBaseUrl = ""
 $sub2ApiVideoApiKey = ""
-$previousSub2ApiVideoBaseUrl = [Environment]::GetEnvironmentVariable("SUB2API_VIDEO_BASE_URL", "Process")
-$previousSub2ApiVideoApiKey = [Environment]::GetEnvironmentVariable("SUB2API_VIDEO_API_KEY", "Process")
 $referenceVisionBaseUrl = Get-SecretConfigValue -DotEnv $dotenv -Name "REFERENCE_VISION_BASE_URL"
 $referenceVisionApiKey = Get-SecretConfigValue -DotEnv $dotenv -Name "REFERENCE_VISION_API_KEY"
 $referenceVisionModel = Get-SecretConfigValue -DotEnv $dotenv -Name "REFERENCE_VISION_MODEL"
@@ -291,19 +375,41 @@ $semanticPlannerEnabled = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_
 $semanticPlannerBaseUrl = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_PLANNER_BASE_URL"
 $semanticPlannerApiKey = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_PLANNER_API_KEY"
 $semanticPlannerModel = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_PLANNER_MODEL"
+$semanticPlannerProfileId = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_PLANNER_PROFILE_ID"
 $semanticPlannerTimeoutMs = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_PLANNER_TIMEOUT_MS"
+$semanticPlannerMaxInputUtf8Bytes = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_PLANNER_MAX_INPUT_UTF8_BYTES"
 $semanticPlannerMaxTokens = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_PLANNER_MAX_TOKENS"
+$semanticPlannerAllowLocalCertificationReport = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_PLANNER_ALLOW_LOCAL_CERTIFICATION_REPORT"
+$semanticPlannerCertificationReportPath = Get-SecretConfigValue -DotEnv $dotenv -Name "SEMANTIC_PLANNER_CERTIFICATION_REPORT_PATH"
 $configuredReferenceDeliveryOrigin = Get-SecretConfigValue -DotEnv $dotenv -Name "REFERENCE_DELIVERY_ORIGIN"
 if (($referenceVisionBaseUrl -or $referenceVisionApiKey -or $referenceVisionModel) -and (-not $referenceVisionBaseUrl -or -not $referenceVisionApiKey -or -not $referenceVisionModel)) {
   throw "Reference vision analysis requires REFERENCE_VISION_BASE_URL, REFERENCE_VISION_API_KEY, and REFERENCE_VISION_MODEL together."
 }
-if ($semanticPlannerEnabled.Trim().ToLowerInvariant() -eq "true") {
-  if (-not $semanticPlannerBaseUrl) { $semanticPlannerBaseUrl = $referenceVisionBaseUrl }
-  if (-not $semanticPlannerApiKey) { $semanticPlannerApiKey = $referenceVisionApiKey }
-  if (-not $semanticPlannerModel) { $semanticPlannerModel = $referenceVisionModel }
-  if (-not $semanticPlannerBaseUrl -or -not $semanticPlannerApiKey -or -not $semanticPlannerModel) {
-    throw "SEMANTIC_PLANNER_ENABLED=true requires SEMANTIC_PLANNER_BASE_URL, SEMANTIC_PLANNER_API_KEY, and SEMANTIC_PLANNER_MODEL, or a complete REFERENCE_VISION_* set."
+$semanticPlannerEnabledValue = $semanticPlannerEnabled.Trim().ToLowerInvariant()
+$semanticPlannerAllowLocalCertificationReportValue = $semanticPlannerAllowLocalCertificationReport.Trim().ToLowerInvariant()
+if ($VideoProvider -eq "mock") {
+  if ($semanticPlannerEnabledValue -eq "true") {
+    Write-Host "Ignoring Semantic Director settings because VIDEO_PROVIDER=mock uses the isolated deterministic fixture path."
   }
+  $semanticPlannerEnabledValue = "false"
+  $semanticPlannerAllowLocalCertificationReportValue = "false"
+  $semanticPlannerCertificationReportPath = ""
+} elseif ($semanticPlannerEnabledValue -ne "true") {
+  throw "VIDEO_PROVIDER=sub2api requires SEMANTIC_PLANNER_ENABLED=true and an explicitly certified Semantic Director profile before any Provider test."
+} elseif (-not $semanticPlannerBaseUrl -or -not $semanticPlannerApiKey -or -not $semanticPlannerModel -or -not $semanticPlannerProfileId) {
+  throw "SEMANTIC_PLANNER_ENABLED=true requires explicit SEMANTIC_PLANNER_BASE_URL, SEMANTIC_PLANNER_API_KEY, SEMANTIC_PLANNER_MODEL, and SEMANTIC_PLANNER_PROFILE_ID. Reference-vision credentials are not a semantic-planner fallback."
+}
+if ($semanticPlannerAllowLocalCertificationReportValue -notin @("", "false", "true")) {
+  throw "SEMANTIC_PLANNER_ALLOW_LOCAL_CERTIFICATION_REPORT must be true or false."
+}
+if ($semanticPlannerCertificationReportPath -and $semanticPlannerAllowLocalCertificationReportValue -ne "true") {
+  throw "SEMANTIC_PLANNER_CERTIFICATION_REPORT_PATH requires SEMANTIC_PLANNER_ALLOW_LOCAL_CERTIFICATION_REPORT=true."
+}
+if ($semanticPlannerAllowLocalCertificationReportValue -eq "true") {
+  if ((-not $semanticPlannerCertificationReportPath) -or (-not ([IO.Path]::IsPathRooted($semanticPlannerCertificationReportPath))) -or (-not (Test-Path -LiteralPath $semanticPlannerCertificationReportPath -PathType Leaf))) {
+    throw "Local Semantic Director certification requires an existing absolute report path."
+  }
+  $semanticPlannerCertificationReportPath = [IO.Path]::GetFullPath($semanticPlannerCertificationReportPath)
 }
 if ($VideoProvider -eq "sub2api") {
   $sub2ApiVideoBaseUrl = Get-SecretConfigValue -DotEnv $dotenv -Name "SUB2API_VIDEO_BASE_URL"
@@ -316,10 +422,6 @@ if ($VideoProvider -eq "sub2api") {
     throw "SUB2API_VIDEO_BASE_URL must be HTTPS for real provider mode."
   }
 }
-# Keep video credentials out of the parent environment while non-provider
-# services start. They are injected only around the Task Worker launch below.
-[Environment]::SetEnvironmentVariable("SUB2API_VIDEO_BASE_URL", $null, "Process")
-[Environment]::SetEnvironmentVariable("SUB2API_VIDEO_API_KEY", $null, "Process")
 $queuePrefix = "alchemy-video-local-full"
 $databaseUrl = "postgresql://video_local:video_local@127.0.0.1:15432/video_local"
 $controlApiOrigin = "http://127.0.0.1:$ControlApiPort"
@@ -398,7 +500,6 @@ if ($VideoProvider -eq "sub2api") {
 
 if ($VideoProvider -eq "sub2api") {
   $localEnvironment.REFERENCE_DELIVERY_ORIGIN = if ($ReferenceDeliveryOrigin) { $ReferenceDeliveryOrigin.Trim() } else { $configuredReferenceDeliveryOrigin.Trim() }
-  $localEnvironment.REFERENCE_DELIVERY_SIGNING_KEY = $referenceDeliverySigningKey
 }
 
 foreach ($entry in $localEnvironment.GetEnumerator()) {
@@ -427,27 +528,18 @@ if (-not $SkipBuild) {
 
 Run-Pnpm -Label "Applying local database migrations" -Arguments @("--filter", "@alchemy-video/persistence", "db:migrate")
 
-if ($referenceDeliverySigningKey) {
-  [Environment]::SetEnvironmentVariable("REFERENCE_DELIVERY_SIGNING_KEY", $referenceDeliverySigningKey, "Process")
-}
-$referenceVisionInjected = $false
-if ($referenceVisionBaseUrl) {
-  [Environment]::SetEnvironmentVariable("REFERENCE_VISION_BASE_URL", $referenceVisionBaseUrl, "Process")
-  [Environment]::SetEnvironmentVariable("REFERENCE_VISION_API_KEY", $referenceVisionApiKey, "Process")
-  [Environment]::SetEnvironmentVariable("REFERENCE_VISION_MODEL", $referenceVisionModel, "Process")
-  $referenceVisionInjected = $true
-}
 $services = @()
-$services += Start-LocalService -Name "Control API" -FilePath $NodeExe -Arguments @("--import", "tsx", "src/index.ts") -WorkingDirectory (Join-Path $WorkspaceRoot "apps\control-api")
-Wait-HttpOk -Url "$controlApiOrigin/api/v1/health" -Name "Control API"
+$controlApiEnvironment = @{}
 if ($referenceDeliverySigningKey) {
-  [Environment]::SetEnvironmentVariable("REFERENCE_DELIVERY_SIGNING_KEY", $null, "Process")
+  $controlApiEnvironment.REFERENCE_DELIVERY_SIGNING_KEY = $referenceDeliverySigningKey
 }
-if ($referenceVisionInjected) {
-  [Environment]::SetEnvironmentVariable("REFERENCE_VISION_BASE_URL", $null, "Process")
-  [Environment]::SetEnvironmentVariable("REFERENCE_VISION_API_KEY", $null, "Process")
-  [Environment]::SetEnvironmentVariable("REFERENCE_VISION_MODEL", $null, "Process")
+if ($referenceVisionBaseUrl) {
+  $controlApiEnvironment.REFERENCE_VISION_BASE_URL = $referenceVisionBaseUrl
+  $controlApiEnvironment.REFERENCE_VISION_API_KEY = $referenceVisionApiKey
+  $controlApiEnvironment.REFERENCE_VISION_MODEL = $referenceVisionModel
 }
+$services += Start-LocalService -Name "Control API" -FilePath $NodeExe -Arguments @("--import", "tsx", "src/index.ts") -WorkingDirectory (Join-Path $WorkspaceRoot "apps\control-api") -Environment $controlApiEnvironment
+Wait-HttpOk -Url "$controlApiOrigin/api/v1/health" -Name "Control API"
 
 $referenceDeliveryPublicOrigin = ""
 if ($VideoProvider -eq "sub2api") {
@@ -475,63 +567,65 @@ Wait-TcpOpen -HostName "127.0.0.1" -Port $DocumentRuntimePort -Name "Document Ru
 # process; do not add a Worker-wide provider default or persist the secret.
 $doubaoSpeechApiKey = Get-SecretConfigValue -DotEnv $dotenv -Name "DOUBAO_SPEECH_API_KEY"
 $doubaoSpeechVoiceType = Get-SecretConfigValue -DotEnv $dotenv -Name "DOUBAO_SPEECH_VOICE_TYPE"
-$previousDoubaoSpeechApiKey = [Environment]::GetEnvironmentVariable("DOUBAO_SPEECH_API_KEY", "Process")
-$previousDoubaoSpeechVoiceType = [Environment]::GetEnvironmentVariable("DOUBAO_SPEECH_VOICE_TYPE", "Process")
-try {
-  if ($doubaoSpeechApiKey) { $env:DOUBAO_SPEECH_API_KEY = $doubaoSpeechApiKey }
-  if ($doubaoSpeechVoiceType) { $env:DOUBAO_SPEECH_VOICE_TYPE = $doubaoSpeechVoiceType }
-  $services += Start-LocalService -Name "Media Runtime" -FilePath $PythonExe -Arguments @("-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", [string] $MediaRuntimePort) -WorkingDirectory (Join-Path $WorkspaceRoot "services\media-runtime")
-  Wait-TcpOpen -HostName "127.0.0.1" -Port $MediaRuntimePort -Name "Media Runtime"
-} finally {
-  if ($null -eq $previousDoubaoSpeechApiKey) { Remove-Item -LiteralPath "Env:DOUBAO_SPEECH_API_KEY" -ErrorAction SilentlyContinue } else { $env:DOUBAO_SPEECH_API_KEY = $previousDoubaoSpeechApiKey }
-  if ($null -eq $previousDoubaoSpeechVoiceType) { Remove-Item -LiteralPath "Env:DOUBAO_SPEECH_VOICE_TYPE" -ErrorAction SilentlyContinue } else { $env:DOUBAO_SPEECH_VOICE_TYPE = $previousDoubaoSpeechVoiceType }
-}
+$mediaRuntimeEnvironment = @{}
+if ($doubaoSpeechApiKey) { $mediaRuntimeEnvironment.DOUBAO_SPEECH_API_KEY = $doubaoSpeechApiKey }
+if ($doubaoSpeechVoiceType) { $mediaRuntimeEnvironment.DOUBAO_SPEECH_VOICE_TYPE = $doubaoSpeechVoiceType }
+$services += Start-LocalService -Name "Media Runtime" -FilePath $PythonExe -Arguments @("-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", [string] $MediaRuntimePort) -WorkingDirectory (Join-Path $WorkspaceRoot "services\media-runtime") -Environment $mediaRuntimeEnvironment
+Wait-TcpOpen -HostName "127.0.0.1" -Port $MediaRuntimePort -Name "Media Runtime"
 
 $services += Start-LocalService -Name "Document Worker" -FilePath $NodeExe -Arguments @("--import", "tsx", "src/index.ts") -WorkingDirectory (Join-Path $WorkspaceRoot "apps\document-worker")
-$previousSemanticPlannerValues = [ordered]@{
-  SEMANTIC_PLANNER_ENABLED = [Environment]::GetEnvironmentVariable("SEMANTIC_PLANNER_ENABLED", "Process")
-  SEMANTIC_PLANNER_BASE_URL = [Environment]::GetEnvironmentVariable("SEMANTIC_PLANNER_BASE_URL", "Process")
-  SEMANTIC_PLANNER_API_KEY = [Environment]::GetEnvironmentVariable("SEMANTIC_PLANNER_API_KEY", "Process")
-  SEMANTIC_PLANNER_MODEL = [Environment]::GetEnvironmentVariable("SEMANTIC_PLANNER_MODEL", "Process")
-  SEMANTIC_PLANNER_TIMEOUT_MS = [Environment]::GetEnvironmentVariable("SEMANTIC_PLANNER_TIMEOUT_MS", "Process")
-  SEMANTIC_PLANNER_MAX_TOKENS = [Environment]::GetEnvironmentVariable("SEMANTIC_PLANNER_MAX_TOKENS", "Process")
+$workflowEnvironment = @{
+  SEMANTIC_PLANNER_ENABLED = if ($semanticPlannerEnabledValue -eq "true") { "true" } else { "false" }
 }
-try {
-  if ($semanticPlannerEnabled.Trim().ToLowerInvariant() -eq "true") {
-    [Environment]::SetEnvironmentVariable("SEMANTIC_PLANNER_ENABLED", "true", "Process")
-    [Environment]::SetEnvironmentVariable("SEMANTIC_PLANNER_BASE_URL", $semanticPlannerBaseUrl, "Process")
-    [Environment]::SetEnvironmentVariable("SEMANTIC_PLANNER_API_KEY", $semanticPlannerApiKey, "Process")
-    [Environment]::SetEnvironmentVariable("SEMANTIC_PLANNER_MODEL", $semanticPlannerModel, "Process")
-    if ($semanticPlannerTimeoutMs) { [Environment]::SetEnvironmentVariable("SEMANTIC_PLANNER_TIMEOUT_MS", $semanticPlannerTimeoutMs, "Process") }
-    if ($semanticPlannerMaxTokens) { [Environment]::SetEnvironmentVariable("SEMANTIC_PLANNER_MAX_TOKENS", $semanticPlannerMaxTokens, "Process") }
-  } else {
-    [Environment]::SetEnvironmentVariable("SEMANTIC_PLANNER_ENABLED", "false", "Process")
-  }
-  $services += Start-LocalService -Name "Workflow Worker" -FilePath $NodeExe -Arguments @("--import", "tsx", "src/index.ts") -WorkingDirectory (Join-Path $WorkspaceRoot "apps\workflow-worker")
-} finally {
-  foreach ($entry in $previousSemanticPlannerValues.GetEnumerator()) {
-    if ($null -eq $entry.Value) {
-      [Environment]::SetEnvironmentVariable($entry.Key, $null, "Process")
-    } else {
-      [Environment]::SetEnvironmentVariable($entry.Key, [string] $entry.Value, "Process")
-    }
+if ($semanticPlannerEnabledValue -eq "true") {
+  $workflowEnvironment.SEMANTIC_PLANNER_BASE_URL = $semanticPlannerBaseUrl
+  $workflowEnvironment.SEMANTIC_PLANNER_API_KEY = $semanticPlannerApiKey
+  $workflowEnvironment.SEMANTIC_PLANNER_MODEL = $semanticPlannerModel
+  $workflowEnvironment.SEMANTIC_PLANNER_PROFILE_ID = $semanticPlannerProfileId
+  if ($semanticPlannerTimeoutMs) { $workflowEnvironment.SEMANTIC_PLANNER_TIMEOUT_MS = $semanticPlannerTimeoutMs }
+  if ($semanticPlannerMaxInputUtf8Bytes) { $workflowEnvironment.SEMANTIC_PLANNER_MAX_INPUT_UTF8_BYTES = $semanticPlannerMaxInputUtf8Bytes }
+  if ($semanticPlannerMaxTokens) { $workflowEnvironment.SEMANTIC_PLANNER_MAX_TOKENS = $semanticPlannerMaxTokens }
+  if ($semanticPlannerAllowLocalCertificationReportValue -eq "true") {
+    # Local certification reports are deliberately accepted only in an
+    # explicit non-production runtime. Scope NODE_ENV to the Workflow Worker;
+    # do not widen the rest of the local stack or any deployment profile.
+    $workflowEnvironment.NODE_ENV = "development"
+    $workflowEnvironment.SEMANTIC_PLANNER_ALLOW_LOCAL_CERTIFICATION_REPORT = "true"
+    $workflowEnvironment.SEMANTIC_PLANNER_CERTIFICATION_REPORT_PATH = $semanticPlannerCertificationReportPath
   }
 }
-try {
-  if ($VideoProvider -eq "sub2api") {
-    [Environment]::SetEnvironmentVariable("REFERENCE_DELIVERY_SIGNING_KEY", $referenceDeliverySigningKey, "Process")
-    [Environment]::SetEnvironmentVariable("SUB2API_VIDEO_BASE_URL", $sub2ApiVideoBaseUrl, "Process")
-    [Environment]::SetEnvironmentVariable("SUB2API_VIDEO_API_KEY", $sub2ApiVideoApiKey, "Process")
-  }
-  $services += Start-LocalService -Name "Task Worker" -FilePath $NodeExe -Arguments @("--import", "tsx", "src/index.ts") -WorkingDirectory (Join-Path $WorkspaceRoot "apps\task-worker")
-} finally {
-  if ($VideoProvider -eq "sub2api") {
-    [Environment]::SetEnvironmentVariable("REFERENCE_DELIVERY_SIGNING_KEY", $null, "Process")
-  }
-  [Environment]::SetEnvironmentVariable("SUB2API_VIDEO_BASE_URL", $null, "Process")
-  [Environment]::SetEnvironmentVariable("SUB2API_VIDEO_API_KEY", $null, "Process")
+$workflowService = Start-LocalService -Name "Workflow Worker" -FilePath $NodeExe -Arguments @("--import", "tsx", "src/index.ts") -WorkingDirectory (Join-Path $WorkspaceRoot "apps\workflow-worker") -Environment $workflowEnvironment
+$services += $workflowService
+if ($semanticPlannerEnabledValue -eq "true") {
+  $semanticPlannerCertificationSource = if ($semanticPlannerAllowLocalCertificationReportValue -eq "true") { "LOCAL_REPORT" } else { "REGISTRY" }
+  Wait-FileContainsAll -Path $workflowService.stdout -Name "Workflow Worker" -ProcessId $workflowService.pid -StderrPath $workflowService.stderr -Patterns @(
+    ('"runtime_mode":"' + $VideoProvider + '"'),
+    ('"profile_id":"' + $semanticPlannerProfileId + '"'),
+    ('"model":"' + $semanticPlannerModel + '"'),
+    ('"certification_source":"' + $semanticPlannerCertificationSource + '"')
+  )
+} else {
+  Wait-FileContainsAll -Path $workflowService.stdout -Name "Workflow Worker" -ProcessId $workflowService.pid -StderrPath $workflowService.stderr -Patterns @('"runtime_mode":"mock"')
 }
-$services += Start-LocalService -Name "Production Worker" -FilePath $NodeExe -Arguments @("--import", "tsx", "src/index.ts") -WorkingDirectory (Join-Path $WorkspaceRoot "apps\production-worker")
+$taskWorkerEnvironment = @{}
+if ($VideoProvider -eq "sub2api") {
+  $taskWorkerEnvironment.REFERENCE_DELIVERY_SIGNING_KEY = $referenceDeliverySigningKey
+  $taskWorkerEnvironment.SUB2API_VIDEO_BASE_URL = $sub2ApiVideoBaseUrl
+  $taskWorkerEnvironment.SUB2API_VIDEO_API_KEY = $sub2ApiVideoApiKey
+  $sub2ApiVideoDebug = Get-SecretConfigValue -DotEnv $dotenv -Name "SUB2API_VIDEO_DEBUG"
+  if ($sub2ApiVideoDebug) { $taskWorkerEnvironment.SUB2API_VIDEO_DEBUG = $sub2ApiVideoDebug }
+}
+$services += Start-LocalService -Name "Task Worker" -FilePath $NodeExe -Arguments @("--import", "tsx", "src/index.ts") -WorkingDirectory (Join-Path $WorkspaceRoot "apps\task-worker") -Environment $taskWorkerEnvironment
+# Reuse the explicitly configured multimodal vision endpoint only for the
+# Production Worker continuity evaluator. Keep its credentials scoped to that
+# process; they are not a default for video, planning, or Media Runtime.
+$productionWorkerEnvironment = @{}
+if ($referenceVisionBaseUrl) {
+  $productionWorkerEnvironment.HANDOFF_EVALUATOR_BASE_URL = $referenceVisionBaseUrl
+  $productionWorkerEnvironment.HANDOFF_EVALUATOR_API_KEY = $referenceVisionApiKey
+  $productionWorkerEnvironment.HANDOFF_EVALUATOR_MODEL = $referenceVisionModel
+}
+$services += Start-LocalService -Name "Production Worker" -FilePath $NodeExe -Arguments @("--import", "tsx", "src/index.ts") -WorkingDirectory (Join-Path $WorkspaceRoot "apps\production-worker") -Environment $productionWorkerEnvironment
 Start-Sleep -Seconds 2
 
 foreach ($service in $services) {
@@ -545,19 +639,6 @@ foreach ($service in $services) {
 $services += Start-LocalService -Name "Studio Web" -FilePath $NodeExe -Arguments @("scripts\serve-local.mjs") -WorkingDirectory (Join-Path $WorkspaceRoot "apps\studio-web")
 Wait-HttpOk -Url "$studioOrigin/projects" -Name "Studio"
 Wait-HttpOk -Url "$studioOrigin/api/v1/health" -Name "Studio API proxy"
-
-# Restore any caller-provided values only after every child process has been
-# started, so no non-Task Worker inherits the video credentials.
-if ($null -eq $previousSub2ApiVideoBaseUrl) {
-  [Environment]::SetEnvironmentVariable("SUB2API_VIDEO_BASE_URL", $null, "Process")
-} else {
-  [Environment]::SetEnvironmentVariable("SUB2API_VIDEO_BASE_URL", $previousSub2ApiVideoBaseUrl, "Process")
-}
-if ($null -eq $previousSub2ApiVideoApiKey) {
-  [Environment]::SetEnvironmentVariable("SUB2API_VIDEO_API_KEY", $null, "Process")
-} else {
-  [Environment]::SetEnvironmentVariable("SUB2API_VIDEO_API_KEY", $previousSub2ApiVideoApiKey, "Process")
-}
 
 $state = [ordered]@{
   started_at = (Get-Date).ToString("o")
@@ -574,6 +655,9 @@ $state = [ordered]@{
     effective_prompt_max_utf8_bytes = if ($VideoProvider -eq "sub2api") { 4096 } else { [int] $localEnvironment.VIDEO_PROMPT_MAX_UTF8_BYTES }
     veyra_auth = $localEnvironment.VEYRA_AUTH_ENABLED
     reference_delivery_origin = $referenceDeliveryPublicOrigin
+    semantic_planner_enabled = ($semanticPlannerEnabledValue -eq "true")
+    semantic_planner_profile_id = if ($semanticPlannerEnabledValue -eq "true") { $semanticPlannerProfileId } else { "" }
+    semantic_planner_model = if ($semanticPlannerEnabledValue -eq "true") { $semanticPlannerModel } else { "" }
   }
   services = $services
   logs = $LogRoot

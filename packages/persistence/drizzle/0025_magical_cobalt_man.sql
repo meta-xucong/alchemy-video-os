@@ -1,0 +1,1 @@
+ALTER TABLE "creative_brief_revisions" ADD COLUMN "source_asset_roles" jsonb DEFAULT '[]'::jsonb NOT NULL;

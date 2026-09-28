@@ -12,4 +12,5 @@ export * from "./primitives.js";
 export * from "./production.js";
 export * from "./resources.js";
 export * from "./semantic-provenance.js";
+export * from "./semantic-raw-plan.js";
 export * from "./specifications.js";

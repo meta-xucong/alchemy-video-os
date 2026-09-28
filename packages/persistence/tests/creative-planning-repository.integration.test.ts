@@ -9,7 +9,7 @@ import { createPrefixedId, fingerprintRequest } from "@alchemy-video/domain";
 import { DrizzleControlPlaneRepository } from "../src/control-plane-repository.js";
 import { DrizzleCreativePlanningRepository } from "../src/creative-planning-repository.js";
 import { createDatabase } from "../src/db.js";
-import { eventConsumptions, outboxEvents, taskRuns } from "../src/schema.js";
+import { eventConsumptions, outboxEvents, promptPackages, taskRuns } from "../src/schema.js";
 
 const event = () => ({
   eventId: createPrefixedId("evt"),
@@ -98,12 +98,85 @@ test("C11 Drizzle planning persists the durable review path without creating exe
     const claim = await planning.claimCreativePlanningEvent({
       message,
       consumerName: "c11-pg-consumer",
-      workerId: "c11-pg-worker",
+      workerId: "c11-pg-worker-first",
       now: new Date(),
       leaseMs: 1_000,
     });
     assert.equal(claim.kind, "CLAIMED");
+    const busy = await planning.claimCreativePlanningEvent({
+      message,
+      consumerName: "c11-pg-consumer",
+      workerId: "c11-pg-worker-second",
+      now: new Date(),
+      leaseMs: 1_000,
+    });
+    assert.equal(busy.kind, "BUSY");
 
+    const terminalConsumer = "c11-pg-consumer-terminal";
+    const terminalClaim = await planning.claimCreativePlanningEvent({
+      message,
+      consumerName: terminalConsumer,
+      workerId: "c11-pg-worker-terminal",
+      now: new Date(),
+      leaseMs: 1_000,
+    });
+    assert.equal(terminalClaim.kind, "CLAIMED");
+    await planning.releaseCreativePlanningEvent({
+      eventId: message.event_id,
+      workspaceId,
+      consumerName: terminalConsumer,
+      workerId: "c11-pg-worker-terminal",
+      reason: "DIRECTOR_TIMEOUT",
+      deadLetter: false,
+      now: new Date(),
+    });
+    await planning.releaseCreativePlanningEvent({
+      eventId: message.event_id,
+      workspaceId,
+      consumerName: terminalConsumer,
+      workerId: "c11-pg-worker-terminal",
+      reason: "DIRECTOR_TIMEOUT_EXHAUSTED",
+      deadLetter: true,
+      now: new Date(),
+    });
+    const [terminalConsumption] = await database.db
+      .select({ deadLetteredAt: eventConsumptions.deadLetteredAt, lastError: eventConsumptions.lastError })
+      .from(eventConsumptions)
+      .where(and(
+        eq(eventConsumptions.workspaceId, workspaceId),
+        eq(eventConsumptions.eventId, message.event_id),
+        eq(eventConsumptions.consumerName, terminalConsumer),
+      ));
+    assert.ok(terminalConsumption?.deadLetteredAt);
+    assert.equal(terminalConsumption?.lastError, "DIRECTOR_TIMEOUT_EXHAUSTED");
+    assert.equal((await planning.claimCreativePlanningEvent({
+      message,
+      consumerName: terminalConsumer,
+      workerId: "c11-pg-worker-after-terminal",
+      now: new Date(),
+      leaseMs: 1_000,
+    })).kind, "DUPLICATE");
+
+    await planning.releaseCreativePlanningEvent({
+      eventId: message.event_id,
+      workspaceId,
+      consumerName: "c11-pg-consumer",
+      workerId: "c11-pg-worker-first",
+      reason: "DIRECTOR_TIMEOUT",
+      deadLetter: false,
+      now: new Date(),
+    });
+    const reclaimed = await planning.claimCreativePlanningEvent({
+      message,
+      consumerName: "c11-pg-consumer",
+      workerId: "c11-pg-worker-second",
+      now: new Date(),
+      leaseMs: 1_000,
+    });
+    assert.equal(reclaimed.kind, "CLAIMED");
+
+    const shotOneId = createPrefixedId("ssp");
+    const shotTwoId = createPrefixedId("ssp");
     const completed = await planning.completeCreativePlan({
       workspaceId,
       creativeBriefRevisionId: briefId,
@@ -120,25 +193,43 @@ test("C11 Drizzle planning persists the durable review path without creating exe
         continuityLevel: "STANDARD",
         continuityNote: "通过明确转场承接两段叙事。",
         shotSpecs: [
-          { id: createPrefixedId("ssp"), sequence: 1, title: "雨夜抵达", durationSeconds: 15, narrativeGoal: "建立压力", startState: "雨夜街道", endState: "进入车间", transitionSummary: "车间亮灯", referencePolicy: "TEXT_TRANSITION", dependsOnSequences: [], continuityNote: "建立开场状态" },
-          { id: createPrefixedId("ssp"), sequence: 2, title: "黎明交付", durationSeconds: 15, narrativeGoal: "兑现承诺", startState: "车间亮灯", endState: "客户收到成果", transitionSummary: "淡入黎明", referencePolicy: "TEXT_TRANSITION", dependsOnSequences: [1], continuityNote: "承接前段动作" },
+          { id: shotOneId, sequence: 1, title: "雨夜抵达", durationSeconds: 15, narrativeGoal: "建立压力", startState: "雨夜街道", endState: "进入车间", transitionSummary: "车间亮灯", referencePolicy: "TEXT_TRANSITION", dependsOnSequences: [], continuityNote: "建立开场状态" },
+          { id: shotTwoId, sequence: 2, title: "黎明交付", durationSeconds: 15, narrativeGoal: "兑现承诺", startState: "车间亮灯", endState: "客户收到成果", transitionSummary: "淡入黎明", referencePolicy: "TEXT_TRANSITION", dependsOnSequences: [1], continuityNote: "承接前段动作" },
+        ],
+        promptPackages: [
+          { id: createPrefixedId("ppk"), shotSpecId: shotOneId, compilerVersion: "integration", prompt: "雨夜抵达", visualConstraints: {}, referenceMap: {}, capabilitySnapshot: { bgm_prompt: "ambient beauty" } },
+          { id: createPrefixedId("ppk"), shotSpecId: shotTwoId, compilerVersion: "integration", prompt: "黎明交付", visualConstraints: {}, referenceMap: {}, capabilitySnapshot: { bgm_prompt: "warm piano" } },
         ],
       },
       event: event(),
     });
     assert.ok(completed);
     if (!completed) return;
+    assert.deepEqual(await planning.listStoryboardMusicIntentHints(workspaceId, completed.id), ["ambient beauty", "warm piano"]);
+    await database.db.insert(promptPackages).values({
+      id: createPrefixedId("ppk"),
+      workspaceId,
+      projectId,
+      shotSpecId: shotOneId,
+      compilerVersion: "integration-newer",
+      prompt: "雨夜抵达（最新）",
+      visualConstraints: {},
+      referenceMap: {},
+      capabilitySnapshot: {},
+      createdAt: new Date(Date.now() + 1_000),
+    });
+    assert.deepEqual(await planning.listStoryboardMusicIntentHints(workspaceId, completed.id), ["warm piano"]);
     await planning.completeCreativePlanningEvent({
       eventId: message.event_id,
       workspaceId,
       consumerName: "c11-pg-consumer",
-      workerId: "c11-pg-worker",
+      workerId: "c11-pg-worker-second",
       now: new Date(),
     });
     const duplicate = await planning.claimCreativePlanningEvent({
       message,
       consumerName: "c11-pg-consumer",
-      workerId: "c11-pg-worker",
+      workerId: "c11-pg-worker-second",
       now: new Date(),
       leaseMs: 1_000,
     });

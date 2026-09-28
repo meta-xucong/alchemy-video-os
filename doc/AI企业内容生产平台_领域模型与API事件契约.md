@@ -181,8 +181,9 @@ Asset、源 TaskRun、派生类型 `HANDOFF_FRAME`、验收时间和产生它的
 本地 C12 的 QC 是确定性的技术质量门：视频必须通过已有的 MIME、字节数、SHA-256 与 `ffprobe`
 校验；交接帧必须为可解码 IMAGE；最终成片必须可解码、总时长大于零且来源段顺序完整。若输入
 片段含有音轨，合成后的最终成片必须保留可解码音轨，不能以静音输出替代。相邻段尚未通过语义级
-首尾衔接验收时，Media Runtime 必须在合成时加入受限的画面与音频淡变转场；转场不构成对人物、
-服装、场景或逐帧连续性的保证。`QcReport` 只保存安全摘要和
+首尾衔接验收时，只有已有明确且可表达的 `BLEND`/`BRIDGE` composition plan 才能使用受限的画面与音频淡变转场；
+`UNAVAILABLE`/`FAILED` 必须直切并保持 `NEEDS_ATTENTION`，不能凭空添加淡变或把缺少语义判定变成通过。
+转场不构成对人物、服装、场景或逐帧连续性的保证。`QcReport` 只保存安全摘要和
 `PASS | NEEDS_ATTENTION | FAILED`，原始工具输出、临时路径和命令行不得进入数据库公开 DTO、
 事件或日志。
 
@@ -234,8 +235,9 @@ Compose 私网内使用固定的 `media-runtime` 或 `control-media-runtime` 服
   语义判断，也不能读取路径、URL、对象 key 或 Provider 字段。
 - 合成请求为固定二进制 envelope，最多 12 个有序 MP4 段；长度字段在累计上限内验证，Runtime 自行
   分配临时文件名并在响应前清理。C12.1 的 `composition_plan` 只声明主片段、已接受自动转场、重叠/
-  裁切与受限转场，不接受任意 ffmpeg 参数。对 `BLEND` 或 `UNAVAILABLE` 边界，Runtime 使用固定时长的
-  淡变，并以末帧/末段延展保持规划总时长；若来源含音轨，同时执行音频淡变。它不解释客户端提供的
+  裁切与受限转场，不接受任意 ffmpeg 参数。仅对已接受的 `BLEND` 或 `BRIDGE` 边界，Runtime 才能按
+  composition plan 使用受限淡变/桥接，并以既有计划保持规划总时长；`UNAVAILABLE`/`FAILED` 必须直切并保持
+  `NEEDS_ATTENTION`，不得添加淡变。若来源含音轨，受限转场才可同时执行音频淡变。它不解释客户端提供的
   文件名或目录。
 - Runtime 只可使用部署时明确配置的 ffmpeg/ffprobe 可执行文件；工具原始输出、临时路径、输入媒体
   和命令行不得进入数据库、outbox、SSE、公开 DTO 或日志。
@@ -608,7 +610,7 @@ C09-A 固定 Veyra HTTP 归一化：`402 -> CREDIT_INSUFFICIENT`、`409 -> CREDI
 - C11 `PlanningModelPort` 仅能在 Workflow Worker 内由持久化规划事件调用，使用确定性 local fixture；规划、审批或制作确认不得调用 `VideoProviderPort`。
 - C12 确认后只调度依赖满足的段；第 N 段失败只阻塞其依赖后续段，N 之前已接受段不重做，段重试不重提已有 provider_request_id。
 - C12 HandoffAsset、基础 QC 和最终 VideoVersion 都必须同工作区、同项目且可追溯；篡改来源、跨项目 Asset、对象 key/路径泄露和无法解码的媒体均被拒绝。
-- C12 多段合成必须保留存在于全部来源段的音轨，并在未通过语义衔接验收的边界生成受限画面/音频淡变；回归必须证明合成成片具有可解码音轨、规划时长不因转场缩短，且 Runtime 不公开命令行或临时路径。
+- C12 多段合成必须保留存在于全部来源段的音轨；只有已有明确 `BLEND`/`BRIDGE` composition plan 的边界才生成受限画面/音频淡变，`UNAVAILABLE`/`FAILED` 保持 `NEEDS_ATTENTION` 并直切。回归必须证明合成成片具有可解码音轨、规划时长不因转场缩短，且 Runtime 不公开命令行或临时路径。
 - C12.1 HandoffReview 只能评估同项目、已通过技术 QC 的相邻主片段；PASS、BLEND、BRIDGE_REQUIRED、UNAVAILABLE 与失败均需持久化安全结论。一个边界最多一次自动 BRIDGE，重复事件/重启不得重复创建本地修复或增加 Provider 提交；修复失败不得删除已接受片段或历史 VideoVersion。
 - C12.1 的 composition plan 必须显式记录自动转场/重叠/裁切并满足目标时长容差；自动转场不改变公开主片段数。公开 ProductionRun/SSE 只可投影连续性阶段、修复次数和安全中文摘要。
 - 新 CreativeBriefRevision 的来源资格必须拒绝 `DERIVED` handoff/poster/thumbnail 等派生图；Studio 重新载入历史 brief 时也必须剔除这类资产，不能把旧交接帧重新提交给 Provider。

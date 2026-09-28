@@ -30,6 +30,7 @@
 | C12.2 | OpenMontage 终检与真实成片质量门禁 | `NOT_ACTIVE_IN_THIS_SCOPE` | C12.1 | 2026-08-23 |  | 历史 `READY_FOR_AUDIT` 技术终检证据保留于下方快照；本轮不活动，语义 evaluator/transcriber 仍明确不可用 |
 | C12.4/C12.5 | 连续旁白、音频编排与口播时长 | `IMPLEMENTED_PENDING_AUDIT` | C12.1/C12.7B | 2026-08-30 |  | S01/E02、E03/HB-STORYBOARD-TIMING 8–15 秒、E04/Piper pace、E05 `_full_mix`/ALCHMED8、E06 approved full narration 窗口与 cue-only、E07 uniform transition/xfade、E08 segmented/HyperFrames、E09 source-expressed transcript/subtitle/FFmpeg fallback、E10 approval/formal asset/TimelinePlan identity-window、E11/S08 measured-duration feedback 均为已独立审计的窄切片 `ACCEPTED`；混合/连续非 cut、完整 section windows、Studio/REQUIRED 字幕、中文口音、自动重规划和其它硬门仍 `BLOCKED/DEFERRED`；E12 实测仍阻断总体硬门未收口 |
 | G01 | 反自造语义治理与单一语义所有权 | `ACCEPTED`（范围限定） | C11/C12 | 2026-09-24 | 2026-09-24 | 独立审计确认本地治理与代码边界、历史安全处置、证据分层和验收交接均符合；不证明视觉语义正确或 source 完整覆盖；真实 LLM/Provider、VPS、成片语义 QC、人工质量、生产历史盘点和外部凭据轮换仍为发布前外部门 |
+| G02 | Semantic Director 真实模型能力门与规划阻断 | `BLOCKED / NOT_READY_FOR_PROVIDER_TEST` | G01 | 2026-09-25 |  | 严格 profile、JSON Schema、脱敏诊断、启动传递和旧 Worker 阻断已实现并通过定向门；尚无真实模型通过完整 fixture，护肤品旧项目尚未重新规划，禁止 Grok submit |
 | C13 | 发布前审计和部署准备 | `PENDING` | C09/C12/C12.1 |  |  |  |
 
 ### 2.1 当前窄范围审计账本（2026-09-10）
@@ -2763,6 +2764,8 @@ Exit Gate：`ACCEPTED`（仅本窄范围）。Compose 拓扑、固定内部 URL 
 
 ## 2026-09-23 场景音乐意图与单曲 AUTO 选曲（IMPLEMENTED_PENDING_AUDIT）
 
+> **历史记录 / SUPERSEDED（2026-09-28）**：本条只保留旧选择器的审计轨迹；当前不再认可 `bgm_prompt`/候选评分/tie-break，现行边界见项目级 MusicPlan 收敛文档。
+
 - 审计对象：`doc/AI企业内容生产平台_场景音乐意图与单曲自动选曲最小适配开发文档.md` 及其允许范围内的规划、workflow、persistence 变更；不覆盖此前已存在的其它 planner/LLM 改动，也不将其冒充本条证据。
 - 来源对账：Huobao 仅提供可选 `bgm_prompt`，Seedance 提供显式声音意图，OpenMontage 提供整片单曲与 Pixabay 候选语义；平台同分 tie-break 明确标注 `PLATFORM_OWNED`。
 - 最新修正：删除误入仓库的本地真实凭据启动脚本；同分候选改为逐候选 `sha256(production_run_id + asset_id)`，不使用时间或随机数。
@@ -3059,3 +3062,69 @@ Exit Gate：`ACCEPTED`（仅本窄范围）。Compose 拓扑、固定内部 URL 
 - 合并边界：允许合并 PR #2；不授权 tag、发布、VPS/生产部署、真实 Provider 调用或关闭 E12/R01、C12.4/C12.5 阻断。
 - 未闭合外部门：真实 LLM/Provider/Pixabay、VPS/生产配置、生产 ALCHMED 历史盘点、真实多模态 QC、人工质量和外部凭据轮换证明。
 - 证据：当前 `f9843562d2b9ca56db94373c7e7b5407b8e08753` docs-only 修正；历史完整基础设施 `783/0/0`、独立当前复跑 `763/20/0`、Media Runtime `152 + 7 subtests`、typecheck/build、secret scan 和 diff check 均已登记。
+
+## G02 Semantic Director 真实模型能力门与规划阻断收口（2026-09-25）
+
+状态：`BLOCKED / NOT_READY_FOR_PROVIDER_TEST`
+
+### 事件判断
+
+- 护肤品商业宣传片失败于 Semantic Director 请求/输出/严格校验阶段；没有进入 Grok/KIE submit、视频下载、ffprobe 或合成。
+- 本轮没有新的 Provider 扣费。旧成功视频只作为旧版本基线。
+- 旧 storyboard 缺少 `semantic_reference_projection`，不得手工改数据库补齐；必须由新规划 revision 产生。
+
+### 已实施代码
+
+- 新增精确 Semantic Director model profile registry；已观察失败模型全部登记为 `UNAVAILABLE`。
+- `SemanticDirectorDecisionSchema` 导出机器可读 JSON Schema；请求同时携带契约版本、schema 和 CanonicalSourceBundle。
+- 按 profile 选择 `JSON_SCHEMA / JSON_OBJECT / PROMPT_ONLY`，不再对所有模型强发同一种 `response_format`。
+- 继续拒绝 Markdown、数组根、空内容、半截 JSON、错误 Content-Type、错误 envelope、schema 和 provenance 失败；没有自动修复。
+- 新增脱敏 `semantic_director.diagnostic`；诊断不含 endpoint、key、prompt、原始响应或用户正文。
+- `SEMANTIC_PLANNER_*` 与 `REFERENCE_VISION_*` 分离；真实模式要求显式认证 profile。
+- Workflow ready 日志公开安全 profile/model；本地启动器核对实际子进程配置并拒绝残留 Worker。
+
+### 当前定向证据
+
+- Workflow Worker：`83 passed / 0 skipped / 0 failed`；
+- Contracts：`50 passed / 0 skipped / 0 failed`；
+- Creative Planning：`112 passed / 0 skipped / 0 failed`；
+- Studio Web：`46 passed / 0 skipped / 0 failed`；
+- `pnpm typecheck`：18 个 workspace 全部通过；
+- `pnpm build`：全仓通过，仅有既有 Nuxt `DEP0155` warning；
+- `pnpm contracts:generate`：通过，公开合同文件无内容漂移；
+- Media Runtime：Python compile 通过，`152 passed / 0 failed`，另 `7 subtests passed`；
+- PowerShell AST parse 通过；
+- deploy Compose config 通过；
+- 使用独立临时 PostgreSQL 数据库、Redis DB 15 和随机 MinIO bucket 的最终完整隔离复跑：`831 passed / 0 skipped / 0 failed`；
+- 复跑后随机 bucket 已删除、Redis DB 15 `DBSIZE=0`、临时数据库数量为 0，现有项目数据未被使用；
+- `git diff --check` 通过。
+
+以上证明严格边界和启动配置行为，不证明任一真实模型可用。
+
+### 未闭合门禁
+
+1. 至少一个真实模型通过固定完整 `SemanticDirectorDecision v1` fixture；
+2. 使用认证 profile 重新规划护肤品项目；
+3. 新 storyboard/PromptPackage 持久化成功；
+4. `semantic_reference_projection` 与真实资产逐项一致；
+5. DeliveryPlan 经用户确认；
+6. BGM OFF 下完成 30 秒、480P 的独立 Provider 测试；
+7. 两段下载、ffprobe、合成和播放通过；
+8. AUTO BGM/Pixabay 另行测试。
+
+Exit Gate：当前只能提交代码审计，不能进入 Provider 测试。详细边界见 `AI企业内容生产平台_SemanticDirector真实模型能力门与规划阻断收口开发文档.md` 与 ADR-0075。
+
+### G02 开发侧最终收口审计（2026-09-25）
+
+- 开发侧结论：`READY_FOR_AUDIT / MODEL_CERTIFICATION_PENDING`；业务链继续 `BLOCKED / NOT_READY_FOR_PROVIDER_TEST`。
+- 额外修复：本地认证报告的 `NODE_ENV=development` 只注入 Workflow Worker；修复 Windows PowerShell 5.1 对路径守卫表达式的解析失败；Document Runtime loopback 测试改为有界 30 秒 readiness、1 秒探测超时、提前退出诊断与可靠回收。
+- 最终隔离全仓：`831 passed / 0 skipped / 0 failed`。测试使用随机临时 PostgreSQL 数据库、Redis DB 15 和随机 MinIO bucket；结束后数据库计数 0、Redis `DBSIZE=0`、bucket 不存在。
+- 该结论只接受开发实现、模拟/基础设施集成和 fail-closed 边界，不认证任何真实模型，不授权 Grok/KIE submit，不代表真实成片或人工质量通过。
+
+### C12.1 衔接与合成纠偏 A 方案实现复核（2026-09-28）
+
+- 用户已选择 A：`UNAVAILABLE/FAILED -> direct cut + NEEDS_ATTENTION`。ADR-0076、领域/API 契约、C12.1 设计和衔接纠偏方案已完成文字对账；旧的淡变表述保留为历史设计，不再覆盖现行语义。
+- 代码范围：`packages/persistence/src/production-repository.ts`、`apps/production-worker/src/index.ts` 及定向仓储/Worker 测试；生产路径不装配 evaluator，不新增视觉评分、阈值、TransitionRepair 或 Provider 协议。composition requested 事件按 workspace/project/run/event_type 事实去重，失败和重试复用同一事实。
+- 定向证据：Persistence `107/107`（本地 PostgreSQL 实际运行，0 skip）；Production Worker `78/78`；Media Runtime `141 passed + 7 subtests`；相关 typecheck 与 `git diff --check` 通过。
+- 真实产物证据：使用已成功生成的 Grok 片段，通过新 A 路径重试合成；`VideoVersion=vvr_01M3K3PN2JBH07EMXG6ATJEDD5` 为 `SUCCEEDED`，`30.125s`，`848x480`，H.264/AAC，下载对象可解码；公开 `continuity_status=NEEDS_ATTENTION`，符合不可用衔接检查不伪造通过的规则。
+- 独立纠察结论：实现语义和运行证据 `PASS`；本条仅提交 `READY_FOR_AUDIT` 候选，不升级为 `ACCEPTED`。人工审美、复杂转场、BGM/TTS、VPS、计费及其它章节硬门不属于本条证据。

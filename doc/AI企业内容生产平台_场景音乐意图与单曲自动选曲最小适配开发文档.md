@@ -1,5 +1,7 @@
 # AI 企业内容生产平台：场景音乐意图与单曲 AUTO 选曲最小适配开发文档
 
+> **历史快照 / 局部条款 SUPERSEDED（2026-09-28）**：本文件早期“多候选必须 MANUAL、禁止 `bgm_prompt`/本地 selector”的口径已被用户授权的历史 selector 恢复所覆盖。现行规则以《AI企业内容生产平台_项目级MusicPlan与原生音频所有权收敛开发文档.md》及本文件 10.12 为准：AUTO 可由既有 `PLATFORM_OWNED` selector 在多首本地候选中选择一条全片 MUSIC；复用 brief/style、项目名、`bgm_prompt` 原文和既有描述性 metadata/tags/genre/style/mood/title，不新增 LLM、随机、多轨或分段 BGM。`pixabay_query` 只保留为来源 provenance，不作为曲目内容命中证据。其余来源边界、Pixabay 单路径、MANUAL/OFF 和 fail-closed 规则继续有效。
+
 版本：`0.1.0`
 
 状态：`IMPLEMENTED_PENDING_AUDIT`
@@ -108,10 +110,10 @@ AUTO 当前只把 `mood/style/genre/selection_hint/bpm/metadata.filename` 送入
 
 ### 10.3 冻结行为
 
-1. 既有匹配文本可消费 `pixabay_query`、`source_title`、`pixabay_title`、`filename`、`metadata.filename`、字符串字段 `genre/style/mood/selection_hint/bpm` 及 `tags` 字符串数组；保留当前 token match 机制，不对空值或占位 `unknown` 造标签。
-2. 原 score 完全相同的候选中，具有至少一个非空、非 `unknown` 的现有分类字段（`tags/genre/style/mood/selection_hint/bpm`）者优先于没有此类字段者；`pixabay_query`、标题和文件名只提供可匹配原文，不单独伪装成已分类标签。
+1. 既有匹配文本可消费 `source_title`、`pixabay_title`、`filename`、`metadata.filename`、字符串字段 `genre/style/mood/selection_hint/bpm` 及 `tags` 字符串数组；`pixabay_query` 只保留来源 provenance，不进入内容命中；保留当前 token match 机制，不对空值或占位 `unknown` 造标签。
+2. 原 score 完全相同的候选中，具有至少一个非空、非 `unknown` 的现有分类字段（`tags/genre/style/mood/selection_hint/bpm`）者优先于没有此类字段者；标题和文件名只提供可匹配原文，不单独伪装成已分类标签；`pixabay_query` 不参与内容命中。
 3. 同一分类层级仍按原逐候选 SHA-256 稳定排序；同一 run 重试保持稳定。`READY + AUDIO + audio_role=MUSIC` 隔离、workspace scope、已有资产对象完整性、目标时长覆盖与原 token score 均不变。
-4. Pixabay 导入继续通过已有 Control API/Runtime 路径；确认写入已有 query/title/filename metadata。只补验证，不增加抓取、重试或 fallback 行为。
+4. Pixabay 导入继续通过已有 Control API/Runtime 路径；确认写入已有 query/title/filename metadata。**历史冻结条款（已 superseded）：本条早期“只补验证，不增加 fallback”已由 10.8/10.12 的现行单次 fallback 条款覆盖**；当前仍不增加抓取、重试或多曲 fallback，仅在“本地无内容命中”时沿用已有单次 Pixabay fallback。
 
 ### 10.4 本轮允许文件与定向验收
 
@@ -160,7 +162,7 @@ AUTO 当前只把 `mood/style/genre/selection_hint/bpm/metadata.filename` 送入
 #### 来源边界与实现口径
 
 - OpenMontage 固定 commit `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/pixabay_music.py::PixabayMusic.execute` 只支持 Pixabay 查询、时长筛选和筛后首条结果；来源没有语义推荐、按内容命中本地资产或跨运行选择算法。
-- 平台本地匹配只复用 `production-repository.ts` 已有描述性候选 metadata 字段、`musicMetadataTokens` 泛词过滤及 token-match 规则；`pixabay_query` 仅作为来源查询审计 metadata 保留，不是返回曲目的内容事实，也不参与命中。去掉“零内容命中仍返回 SHA winner”的分支。Control API 预检调用同一匹配 helper，并只使用现有可见 authored `music_plan.style_hint`、brief `stylePreferences` 与项目名；组合阶段仍消费已有 `musicIntentHints`。预检暂时读不到 PromptPackage 私有 sidecar，因此不得复制或新造读取通道。
+- 平台本地匹配只复用 `production-repository.ts` 已有描述性候选 metadata 字段、`musicMetadataTokens` 泛词过滤及 token-match 规则；`pixabay_query` 仅作为来源查询审计 metadata 保留，不是返回曲目的内容事实，也不参与命中。去掉“零内容命中仍返回 SHA winner”的分支。Control API 预检调用同一匹配 helper，并只使用现有可见 authored `music_plan.style_hint`、brief `stylePreferences` 与项目名；组合阶段仍消费已有 `musicIntentHints`。**早期“预检暂时读不到 PromptPackage 私有 sidecar”的描述已由 10.13 supersede；当前仅通过既有内部只读 projection 读取最新 `bgm_prompt`，不新增公开字段、schema 或网络路径。**
 - Pixabay query 仍从已有 authored `style_hint`、brief `stylePreferences` 或项目名中取一个原文值；不拼接或扩写关键词。导入后继续执行既有角色/MIME/SHA/幂等/时长验证；不因没有内容命中另选本地候选或随机取歌。
 
 #### 定向验收与证据边界
@@ -194,3 +196,19 @@ AUTO 当前只把 `mood/style/genre/selection_hint/bpm/metadata.filename` 送入
 - Provider prompt 边界修正仅去除 LLM 分段壳写入的 `本段开始`、`本段结束`、`按分段顺序承接` 三个默认字段，避免平台内部占位文本成为模型台词；源文本中用户明确写出的同名文字仍保留在 `source_prompt`。
 - 自然语言导演规则补充：当源文本本身描述涂抹前后变化时，visual_prompt 必须保留源文已有的起始状态、动作和可见终点（例如泛红逐渐减轻、更均匀平整），不得只保留动作或擅自添加疗效。此为对 Huobao/Seedance “可见有序动作+明确终点”的薄适配，不是视觉效果算法。
 - 本节只记录最小边界修正；不得据此宣称 Pixabay 已具备语义选曲或 Provider 必然生成疗效画面。仍需以真实产物与人工质量复核判断实际听感和画面呈现。
+
+### 10.12 多首本地 MUSIC 的 AUTO 单曲匹配恢复（2026-09-28；IMPLEMENTED_PENDING_AUDIT；现行）
+
+- OpenMontage 只规定生成前显式 Music Plan 与成片级单曲混音；其没有本地曲库的语义评分算法。本节恢复的是既有、用户明确授权的 `PLATFORM_OWNED` 薄壳选择器，不宣称为上游原生算法。
+- AUTO 在 Control API 只负责确认工作区存在符合既有角色、对象完整性和目标时长的候选；不再因多首候选返回 409。最终由 Persistence 沿用历史 `selectAutoMusicAsset`，消费 brief/style、项目名和已持久化 `bgm_prompt` 原文，以及音乐资产已有描述性 metadata/tags/genre/style/mood/title 字段，选择一条覆盖全片的 MUSIC track。`pixabay_query` 只保留来源 provenance，不作为曲目内容命中。该选择器是用户授权的 `PLATFORM_OWNED` 薄壳，不宣称为固定上游推荐算法。
+- 其中 `pixabay_query`/搜索 query 仅记录来源搜索 provenance，不构成曲目内容命中；无其它已有内容 metadata 命中时，AUTO 继续走既有单次 Pixabay fallback。
+- MANUAL/OFF、Pixabay fallback、角色隔离、时长覆盖、幂等和 native-provider ownership fail-closed 语义不变；不产生 per-segment BGM、不新增第二曲库、随机或音频分离算法。
+- 本节的匹配/评分/哈希 tie-break 明确属于平台扩展；固定来源只证明“显式 Music Plan、单曲覆盖全片和 Audio Mixer”，不能把本地选择器写成 OpenMontage/Pixabay 逻辑。
+- selector 的历史 token `includes` 子串匹配边界保持不变；本轮不改算法、不引入同义词或额外分词规则。
+
+### 10.13 AUTO 预检与已持久化音乐意图对账收口（2026-09-28；IMPLEMENTED_PENDING_AUDIT）
+
+- Control API 的 AUTO 预检现在通过既有 `CreativePlanningStore` 的**内部可选只读 projection**读取 storyboard 对应 shot 的最新 `PromptPackage.capabilitySnapshot.bgm_prompt`；不增加公开 DTO、数据库列、事件字段、HTTP 路径或新的网络调用。
+- InMemory 与 Drizzle 实现均按 workspace/storyboard 过滤，按 shot sequence 输出；每个 shot 只采用最新 PromptPackage，最新包没有非空字符串 hint 时不回退旧包，空值和非字符串值忽略。Control API 仅把这些原文 hint 追加到既有 `style_hint`/brief/style/项目名文本，再调用原有 `hasMusicContentMatch`；没有新增评分、同义词、翻译、随机或分段 BGM。
+- 行为证据：Control API AUTO focused `9/9`、全包 `95 pass / 1 skip / 0 fail`；Persistence creative-planning focused `10/10`、全包 `94 pass / 12 skip / 0 fail`；两包 typecheck 与 `git diff --check` 通过。Drizzle integration 在无 `DATABASE_URL` 时保持环境门控 skip，未把 InMemory 证据冒充数据库行为证据。
+- 本节只收口 preflight 与持久化意图事实的一致性；不改变既有 local-first selector、单次 Pixabay fallback、MUSIC 角色隔离、全片单轨、native-provider ownership fail-closed 或 MANUAL/OFF 语义。状态仍为 `IMPLEMENTED_PENDING_AUDIT`，不升级总体账本，不执行 Git/VPS。

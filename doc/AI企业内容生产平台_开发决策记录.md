@@ -1150,3 +1150,37 @@ ADR-0069 只解决 Aiself 自有参考图交付链路的可达性与可审计性
 | 范围 | 仅覆盖反自造语义治理与单一语义所有权的本地实现和 Git 审计交付；不表示平台生产可用，不关闭 E12/R01 或 C12.4/C12.5。 |
 | 外部门 | 真实 LLM/Provider/Pixabay、VPS/生产配置、生产 ALCHMED 历史数据盘点、真实成片多模态 QC、人工质量和外部凭据轮换仍为发布前阻断。 |
 | 合并/部署 | 允许将 Draft PR #2 转为 Ready 并合并；禁止 tag、发布、VPS/生产部署或未授权真实调用。 |
+
+## ADR-0075：Semantic Director 真实模型能力门、严格输出适配与 Provider 前置阻断
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `IMPLEMENTED / BLOCKED_PENDING_MODEL_CERTIFICATION` |
+| 日期 | 2026-09-25 |
+| 上下文 | 护肤品商业宣传片在 Provider submit 前失败。真实模型分别出现上游拒绝、超时、空内容和严格 schema 不通过；旧 storyboard 也没有新的 `semantic_reference_projection`。此前所有 OpenAI-compatible 模型统一发送 `response_format=json_object`，启动脚本还可能把 reference-vision 配置错误复用给 Semantic Director。 |
+| 核心决策 | 继续保持 `SemanticDirectorDecision v1`、exact dialogue、UTF-16 span、reference provenance 和 fail-closed；不得自动修 JSON、补字段、换模型或回退 deterministic planner。真实模型必须绑定精确、fixture 认证的 profile，profile 固定 model、输出模式、超时、最大输出和契约版本。 |
+| 输出模式 | 只支持经 profile 明确认证的 `JSON_SCHEMA`、`JSON_OBJECT` 或 `PROMPT_ONLY`。无论模式如何，响应必须是单个纯 JSON 对象，并继续通过 Zod 与 provenance 校验。 |
+| 可诊断性 | 内部 `semantic_director.diagnostic` 只记录 provider/model/profile、HTTP status、Content-Type、字节数、耗时、空响应、失败阶段和校验 code；禁止 API key、endpoint、完整 prompt、原始响应和用户正文。 |
+| 环境边界 | `SEMANTIC_PLANNER_*` 与 `REFERENCE_VISION_*` 完全分离。真实视频启动要求 `SEMANTIC_PLANNER_ENABLED=true` 和显式 `SEMANTIC_PLANNER_PROFILE_ID`；Worker ready 日志须证明实际 profile/model，启动前拒绝残留 local-stack Worker。 |
+| 旧项目 | 不修改旧 storyboard/PromptPackage，不手工注入 projection。只有认证模型重新规划并产生新的严格 decision、storyboard、PromptPackage 和 projection 后，才能进入 DeliveryPlan。 |
+| Provider/计费 | 在 `READY_FOR_PROVIDER_TEST` 前不得调用 Grok/KIE，不得产生视频 Provider 费用；规划失败继续作为 planning failure，不映射为 Provider unavailable。 |
+| 当前状态 | 开发侧实现为 `READY_FOR_AUDIT / MODEL_CERTIFICATION_PENDING`；Claude Sonnet 5、DeepSeek v4 Pro、Doubao Seed 2.0 Pro 及 reference-vision Lite profile 全部明确 `UNAVAILABLE`，尚无真实 `CERTIFIED` profile，因此业务链仍为 G02=`BLOCKED / NOT_READY_FOR_PROVIDER_TEST`。 |
+| 本地证据 | Workflow `83/83`、Contracts `50/50`、Creative Planning `112/112`、Studio `46/46`、Document Worker `12/12`；18 workspace typecheck、全仓 build、contracts generate 无漂移、Media Runtime `152 + 7 subtests`、Windows PowerShell 5.1/Compose/diff/static gate 通过。独立临时 PostgreSQL、Redis DB 15、随机 MinIO bucket 的完整隔离根级回归 `831/0/0`，随后随机 bucket、Redis DB 15 和临时数据库均清理。 |
+| 详细方案 | `AI企业内容生产平台_SemanticDirector真实模型能力门与规划阻断收口开发文档.md` |
+
+## ADR-0076：C12.1 评估不可用时的直切与审计事实边界
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `IMPLEMENTED_PENDING_AUDIT`（仅语义对账与最小编排修复；不表示真实视觉评估器或最终成片质量已验收） |
+| 日期 | 2026-09-28 |
+| 决策 | 选择 A：`UNAVAILABLE/FAILED -> 直切 + NEEDS_ATTENTION`。`HandoffReview` 是现有领域/API 契约允许的平台审计薄壳；本轮只写唯一的 `UNAVAILABLE`/`FAILED` 安全事实。`PASS`、`BLEND`、`BRIDGE_REQUIRED` 只兼容读取已有历史记录，本轮不创建或判定，不创建 `TransitionRepair`，不调用视觉 LLM evaluator。 |
+| 来源依据 | Huobao `ffmpeg-merge.ts` 的有序 concat、OpenMontage `video_stitch` 的明确 `cut` operation 与 `video-stitching.md` 的安全边界，支持“没有已验证转场计划即不凭空添加转场”；Seedance long-video 的 native extension/intentional cut 只在已认证 Provider profile 下适用。三份来源均不提供 HandoffEvaluator 或统一 all-PASS 门控。 |
+| 状态机 | 所有相邻 review 事件完成并持久化后，才可发出唯一 `video_version.composition_requested`。`UNAVAILABLE/FAILED` 保持 `continuity_status=NEEDS_ATTENTION`，由既有 composition input 编译为 direct-cut transition；不得改写为语义 `PASS/GOOD`。 |
+| 幂等 | `completeHandoffReview` 和 `handoff_review.requested` failure branch 在既有 `lockProductionRun` 事务内，按 `workspace_id/project_id/aggregate_type=production_run/aggregate_id=run.id/event_type=video_version.composition_requested` 查询 `outbox_events`，同一 ProductionRun 只插入一个 composition event；不新增 schema、公开字段或协议。 |
+| Runtime 边界 | `services/media-runtime/runtime.py:_openmontage_transition_plan` 已对 mixed transition/duration 做 source `video_stitch` fail-closed；不新增 per-boundary 算法。缺段、跨项目资产、无法表达的混合转场继续拒绝合成。 |
+| 兼容/禁用 | 保留 `handoff-evaluator.ts` 与历史数据库结果的读取兼容，但 production worker 不再装配 evaluator。无 evaluator 时不提取边界帧、不调用视觉模型，直接以已有 requested event 写 `UNAVAILABLE`；契约/状态迁移和公开投影不得伪造 PASS。 |
+| 验收证据 | 必须覆盖唯一 composition event、重复回放、`NEEDS_ATTENTION`、缺段拒绝、mixed transition/duration fail-closed、无 evaluator 不提帧/不调用、历史 PASS/BLEND/BRIDGE 只读兼容、Worker 重启和 Provider request ID 不重复。真实 Provider/VPS/人工语义质量不是本 ADR 的自动通过条件。 |
+| 回滚 | 保留历史 review/repair/VideoVersion；若定向测试未通过，关闭本编排入口并保持 `BLOCKED`，不得恢复 all-PASS 伪通过或新增 evaluator/repair 算法。 |
+
+ADR-0076 只解决领域/API 契约中“未通过语义时淡变”与 C12.1 既有“UNAVAILABLE/FAILED 直切”文字冲突的唯一选择；它不授权扩展来源能力，也不把平台审计薄壳宣称为原仓库实现。

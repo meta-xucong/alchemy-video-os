@@ -3414,6 +3414,29 @@ components:
             type: string
             pattern: ^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
           maxItems: 20
+        source_asset_roles:
+          type: array
+          items:
+            type: object
+            properties:
+              asset_id:
+                $ref: "#/definitions/CreativeBriefRevision/properties/source_asset_ids/items"
+              role:
+                type: string
+                enum:
+                  - SUBJECT
+                  - SCENE
+                  - STYLE
+              usage:
+                type: string
+                minLength: 1
+                maxLength: 1000
+            required:
+              - asset_id
+              - role
+            additionalProperties: false
+          maxItems: 20
+          default: &a3 []
         document_contexts:
           type: array
           items:
@@ -3441,7 +3464,7 @@ components:
               - max_content_characters
             additionalProperties: false
           maxItems: 4
-          default: &a3 []
+          default: &a4 []
         status:
           type: string
           enum:
@@ -3511,6 +3534,30 @@ components:
                 type: string
                 pattern: ^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
               maxItems: 20
+            source_asset_roles:
+              type: array
+              items:
+                type: object
+                properties:
+                  asset_id:
+                    $ref: "#/definitions/CreativeBriefRevisionSuccess/properties/data/properties/so\
+                      urce_asset_ids/items"
+                  role:
+                    type: string
+                    enum:
+                      - SUBJECT
+                      - SCENE
+                      - STYLE
+                  usage:
+                    type: string
+                    minLength: 1
+                    maxLength: 1000
+                required:
+                  - asset_id
+                  - role
+                additionalProperties: false
+              maxItems: 20
+              default: *a3
             document_contexts:
               type: array
               items:
@@ -3540,7 +3587,7 @@ components:
                   - max_content_characters
                 additionalProperties: false
               maxItems: 4
-              default: *a3
+              default: *a4
             status:
               type: string
               enum:
@@ -3658,7 +3705,7 @@ components:
             minLength: 1
             maxLength: 160
           maxItems: 20
-          default: &a4 []
+          default: &a5 []
         approved_at:
           type: string
           pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$
@@ -3770,7 +3817,7 @@ components:
                 minLength: 1
                 maxLength: 160
               maxItems: 20
-              default: *a4
+              default: *a5
             approved_at:
               type: string
               pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$
@@ -3893,7 +3940,7 @@ components:
                   minLength: 1
                   maxLength: 160
                 maxItems: 20
-                default: *a4
+                default: *a5
               approved_at:
                 type: string
                 pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$
@@ -4015,7 +4062,7 @@ components:
                     - reason
                   additionalProperties: false
                 maxItems: 100
-                default: &a5 []
+                default: &a6 []
               delivery:
                 type: object
                 properties:
@@ -4040,7 +4087,7 @@ components:
                       minLength: 1
                       maxLength: 120
                     maxItems: 20
-                    default: &a6 []
+                    default: &a7 []
                   pause_before_ms:
                     type: integer
                     minimum: 0
@@ -4052,7 +4099,7 @@ components:
                     maximum: 10000
                     default: 0
                 additionalProperties: false
-                default: &a7 {}
+                default: &a8 {}
             required:
               - id
               - display_text
@@ -4075,7 +4122,7 @@ components:
             minLength: 1
             maxLength: 240
           maxItems: 50
-          default: &a8 []
+          default: &a9 []
         created_at:
           type: string
           format: date-time
@@ -4184,7 +4231,7 @@ components:
                         - reason
                       additionalProperties: false
                     maxItems: 100
-                    default: *a5
+                    default: *a6
                   delivery:
                     type: object
                     properties:
@@ -4209,7 +4256,7 @@ components:
                           minLength: 1
                           maxLength: 120
                         maxItems: 20
-                        default: *a6
+                        default: *a7
                       pause_before_ms:
                         type: integer
                         minimum: 0
@@ -4221,7 +4268,7 @@ components:
                         maximum: 10000
                         default: 0
                     additionalProperties: false
-                    default: *a7
+                    default: *a8
                 required:
                   - id
                   - display_text
@@ -4244,7 +4291,7 @@ components:
                 minLength: 1
                 maxLength: 240
               maxItems: 50
-              default: *a8
+              default: *a9
             created_at:
               type: string
               format: date-time
@@ -4362,7 +4409,7 @@ components:
                           - reason
                         additionalProperties: false
                       maxItems: 100
-                      default: *a5
+                      default: *a6
                     delivery:
                       type: object
                       properties:
@@ -4387,7 +4434,7 @@ components:
                             minLength: 1
                             maxLength: 120
                           maxItems: 20
-                          default: *a6
+                          default: *a7
                         pause_before_ms:
                           type: integer
                           minimum: 0
@@ -4399,7 +4446,7 @@ components:
                           maximum: 10000
                           default: 0
                       additionalProperties: false
-                      default: *a7
+                      default: *a8
                   required:
                     - id
                     - display_text
@@ -4422,7 +4469,7 @@ components:
                   minLength: 1
                   maxLength: 240
                 maxItems: 50
-                default: *a8
+                default: *a9
               created_at:
                 type: string
                 format: date-time
@@ -4604,7 +4651,7 @@ components:
             minLength: 1
             maxLength: 240
           maxItems: 50
-          default: &a9 []
+          default: &a10 []
         created_at:
           type: string
           format: date-time
@@ -4725,7 +4772,7 @@ components:
                 minLength: 1
                 maxLength: 240
               maxItems: 50
-              default: *a9
+              default: *a10
             created_at:
               type: string
               format: date-time
@@ -4942,7 +4989,7 @@ components:
                   exclusiveMinimum: true
                   minimum: 0
                 maxItems: 60
-                default: &a10 []
+                default: &a11 []
               scene_id:
                 type: string
                 minLength: 1
@@ -5121,7 +5168,7 @@ components:
                       exclusiveMinimum: true
                       minimum: 0
                     maxItems: 60
-                    default: *a10
+                    default: *a11
                   scene_id:
                     type: string
                     minLength: 1
@@ -5310,7 +5357,7 @@ components:
                         exclusiveMinimum: true
                         minimum: 0
                       maxItems: 60
-                      default: *a10
+                      default: *a11
                     scene_id:
                       type: string
                       minLength: 1
@@ -7924,6 +7971,30 @@ components:
             pattern: ^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$
           maxItems: 20
           default: []
+        source_asset_roles:
+          type: array
+          items:
+            type: object
+            properties:
+              asset_id:
+                $ref: "#/definitions/CreateCreativeBriefRevisionCommand/properties/source_asset\
+                  _ids/items"
+              role:
+                type: string
+                enum:
+                  - SUBJECT
+                  - SCENE
+                  - STYLE
+              usage:
+                type: string
+                minLength: 1
+                maxLength: 1000
+            required:
+              - asset_id
+              - role
+            additionalProperties: false
+          maxItems: 20
+          default: []
       required:
         - source_text
         - target_duration_seconds
@@ -8492,6 +8563,30 @@ components:
                       $ref: "#/definitions/ProjectDetailSuccess/properties/data/properties/shots/item\
                         s/properties/selected_asset_id"
                     maxItems: 20
+                  source_asset_roles:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        asset_id:
+                          $ref: "#/definitions/ProjectDetailSuccess/properties/data/properties/shots/item\
+                            s/properties/selected_asset_id"
+                        role:
+                          type: string
+                          enum:
+                            - SUBJECT
+                            - SCENE
+                            - STYLE
+                        usage:
+                          type: string
+                          minLength: 1
+                          maxLength: 1000
+                      required:
+                        - asset_id
+                        - role
+                      additionalProperties: false
+                    maxItems: 20
+                    default: *a3
                   document_contexts:
                     type: array
                     items:
@@ -8521,7 +8616,7 @@ components:
                         - max_content_characters
                       additionalProperties: false
                     maxItems: 4
-                    default: *a3
+                    default: *a4
                   status:
                     type: string
                     enum:
@@ -8657,7 +8752,7 @@ components:
                             exclusiveMinimum: true
                             minimum: 0
                           maxItems: 60
-                          default: *a10
+                          default: *a11
                         scene_id:
                           type: string
                           minLength: 1

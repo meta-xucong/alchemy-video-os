@@ -31,6 +31,11 @@ test("runtime profiles keep the Mock default and encode the certified SUB2API vi
     ratio: "16:9",
     inputMode: "mock",
     supportedVisualInputModes: ["TEXT", "FIRST_FRAME", "REFERENCE_SET"],
+    minDurationSeconds: 1,
+    maxDurationSeconds: 1,
+    maxReferenceImages: 7,
+    supportedResolutions: ["160x90"],
+    supportedRatios: ["16:9"],
     pollIntervalMs: 0,
     maxPollAttempts: 2,
   });
@@ -42,6 +47,11 @@ test("runtime profiles keep the Mock default and encode the certified SUB2API vi
   assert.equal(real.resolution, "720p");
   assert.equal(real.ratio, "16:9");
   assert.deepEqual(real.supportedVisualInputModes, ["TEXT", "FIRST_FRAME", "REFERENCE_SET"]);
+  assert.equal(real.minDurationSeconds, 1);
+  assert.equal(real.maxDurationSeconds, 15);
+  assert.equal(real.maxReferenceImages, 7);
+  assert.deepEqual(real.supportedResolutions, ["480p", "720p"]);
+  assert.deepEqual(real.supportedRatios, ["16:9"]);
   assert.equal(real.maxPollAttempts, 120);
   assert.equal(real.providerPromptMaxUtf8Bytes, SUB2API_GROK_PROFILE_PROMPT_MAX_UTF8_BYTES);
   assert.equal(real.audioOwner, "NATIVE_PROVIDER");
@@ -94,6 +104,32 @@ test("real snapshots accept only the declared runtime parameter range", () => {
     visualInput: { mode: "TEXT", references: [] },
     profile,
     settings: { duration: 16, resolution: "720p", ratio: "16:9" },
+  }), UnsupportedVideoGenerationInputError);
+  const narrowerProfile = {
+    ...profile,
+    minDurationSeconds: 4,
+    maxDurationSeconds: 10,
+    maxReferenceImages: 0,
+    supportedResolutions: ["480p"],
+    supportedRatios: ["1:1"],
+  };
+  assert.throws(() => createRuntimeVideoInputSnapshot({
+    prompt: "Profile-specific duration limit.",
+    visualInput: { mode: "TEXT", references: [] },
+    profile: narrowerProfile,
+    settings: { duration: 11, resolution: "480p", ratio: "1:1" },
+  }), UnsupportedVideoGenerationInputError);
+  assert.throws(() => createRuntimeVideoInputSnapshot({
+    prompt: "Profile-specific reference limit.",
+    visualInput: { mode: "FIRST_FRAME", references: [reference] },
+    profile: narrowerProfile,
+    settings: { duration: 5, resolution: "480p", ratio: "1:1" },
+  }), UnsupportedVideoGenerationInputError);
+  assert.throws(() => createRuntimeVideoInputSnapshot({
+    prompt: "Profile-specific resolution and ratio.",
+    visualInput: { mode: "TEXT", references: [] },
+    profile: narrowerProfile,
+    settings: { duration: 5, resolution: "720p", ratio: "16:9" },
   }), UnsupportedVideoGenerationInputError);
 });
 

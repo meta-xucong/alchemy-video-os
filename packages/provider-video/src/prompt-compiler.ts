@@ -107,7 +107,14 @@ const configuredSettings = (generationSettings: Record<string, unknown>, profile
   const duration = values.duration_seconds;
   const resolution = values.resolution;
   const ratio = values.ratio;
-  if (typeof duration !== "number" || !Number.isInteger(duration) || duration < 1 || duration > 15 || (resolution !== "480p" && resolution !== "720p") || ratio !== "16:9") {
+  if (typeof duration !== "number"
+    || !Number.isInteger(duration)
+    || duration < profile.minDurationSeconds
+    || duration > profile.maxDurationSeconds
+    || typeof resolution !== "string"
+    || !profile.supportedResolutions.includes(resolution)
+    || typeof ratio !== "string"
+    || !profile.supportedRatios.includes(ratio)) {
     throw new VideoPromptCompilationError("The saved video settings are not supported by this video profile.");
   }
   return { duration, resolution, ratio };

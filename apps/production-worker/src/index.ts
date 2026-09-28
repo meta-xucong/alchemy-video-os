@@ -108,7 +108,13 @@ const relayTimer = setInterval(() => {
   });
 }, 250);
 await Promise.all([relay.runOnce(), mediaRelay.runOnce()]);
-console.info(JSON.stringify({ event: "production_worker.ready", worker_id: workerId, provider_mode: process.env.VIDEO_PROVIDER ?? "default", provider_model: process.env.VIDEO_PROVIDER === "mock" ? "mock-video-v1" : "grok-imagine-video-1.5", recovered_runs: recoveredRuns.length }));
+console.info(JSON.stringify({
+  event: "production_worker.ready",
+  worker_id: workerId,
+  provider_mode: process.env.VIDEO_PROVIDER ?? "default",
+  provider_model: process.env.VIDEO_PROVIDER === "mock" ? "mock-video-v1" : "grok-imagine-video-1.5",
+  recovered_runs: recoveredRuns.length,
+}));
 
 let shuttingDown = false;
 const shutdown = async () => {

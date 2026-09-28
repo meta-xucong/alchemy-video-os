@@ -4,6 +4,8 @@ import test from "node:test";
 
 import {
   CanonicalSourceBundleSchema,
+  SEMANTIC_DIRECTOR_DECISION_CONTRACT_VERSION,
+  SemanticDirectorDecisionJsonSchema,
   SemanticDirectorDecisionSchema,
   SourceTextSpanSchema,
 } from "../src/index.js";
@@ -30,7 +32,8 @@ const bundle = {
   documents: [{
     document_id: "doc_source_001",
     conversion_id: "dcv_source_001",
-    markdown_sha256: sha("品牌资料"),
+    markdown_sha256: sha("# 品牌资料\n品牌名称为星港。\n完整资产后续内容。"),
+    content_sha256: sha("# 品牌资料\n品牌名称为星港。"),
     content: "# 品牌资料\n品牌名称为星港。",
   }],
   references: [{
@@ -40,12 +43,20 @@ const bundle = {
     position: 0,
     objective_description: "一座旧式铁路站台。",
   }],
-  user_decisions: [{
-    decision_id: "dec_caption_001",
-    field: "caption_policy",
-    value: "OFF",
-    value_hash: sha(JSON.stringify("OFF")),
-  }],
+  user_decisions: [
+    {
+      decision_id: "dec_caption_001",
+      field: "caption_policy",
+      value: "OFF",
+      value_hash: sha(JSON.stringify("OFF")),
+    },
+    {
+      decision_id: "dec_style_preferences_001",
+      field: "style_preferences",
+      value: "克制、写实",
+      value_hash: sha(JSON.stringify("克制、写实")),
+    },
+  ],
   provider_capability: {
     profile_id: "sub2api-grok-video",
     min_duration_seconds: 1,
@@ -94,8 +105,14 @@ const decision = {
 test("canonical source bundle preserves source, document, reference, decision, and provider facts without creative defaults", () => {
   const parsed = CanonicalSourceBundleSchema.parse(bundle);
   assert.equal(parsed.source_text, sourceText);
+  assert.notEqual(parsed.documents[0]?.markdown_sha256, parsed.documents[0]?.content_sha256);
   assert.equal(parsed.references[0]?.position, 0);
   assert.equal(parsed.user_decisions[0]?.value, "OFF");
+  assert.equal(parsed.user_decisions[1]?.value, "克制、写实");
+  assert.throws(() => CanonicalSourceBundleSchema.parse({
+    ...bundle,
+    user_decisions: bundle.user_decisions.slice(0, 1),
+  }));
   assert.equal(Object.hasOwn(parsed, "camera"), false);
   assert.equal(Object.hasOwn(parsed, "scene_category"), false);
 });
@@ -170,4 +187,22 @@ test("blocked semantic decisions may omit segments but must explain a blocking u
     ...blocked,
     unresolved_items: [],
   }));
+});
+test("semantic director exports one machine-readable strict output contract", () => {
+  assert.equal(SEMANTIC_DIRECTOR_DECISION_CONTRACT_VERSION, "semantic-director-decision-v1");
+  const serialized = JSON.stringify(SemanticDirectorDecisionJsonSchema);
+  for (const requiredField of [
+    "source_hash",
+    "target_duration_seconds",
+    "execution_status",
+    "dialogues",
+    "reference_usages",
+    "segments",
+    "unresolved_items",
+  ]) {
+    assert.match(serialized, new RegExp(`\\"${requiredField}\\"`));
+  }
+  assert.match(serialized, /additionalProperties/);
+  assert.equal(serialized.includes("PLATFORM_OWNED_"), false);
+  assert.equal(serialized.includes("default"), false);
 });

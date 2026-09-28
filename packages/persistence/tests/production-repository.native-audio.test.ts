@@ -1,22 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
-import { InternalEventEnvelopeSchema, type VideoAudioOwner } from "@alchemy-video/contracts";
+import {
+  InternalEventEnvelopeSchema,
+  type VideoAudioOwner,
+} from "@alchemy-video/contracts";
 import type { PlatformDatabase } from "../src/db.js";
-import { DrizzleProductionRepository, isUsableMusicAsset } from "../src/production-repository.js";
-
+import {
+  DrizzleProductionRepository,
+  isUsableMusicAsset,
+} from "../src/production-repository.js";
 const drizzleName = Symbol.for("drizzle:Name");
 const timestamp = "2026-09-01T00:00:00.000Z";
-
 type RowMap = Record<string, unknown[]>;
-type RowSequences = Record<string, unknown[][]>;
-
-/**
- * A read-only Drizzle-shaped fixture.  It deliberately ignores SQL
- * predicates: the repository still supplies workspace/project predicates, but
- * this fixture keeps the behavior test local and deterministic.
- */
-const fakeDatabase = (rows: RowMap, sequences: RowSequences = {}): PlatformDatabase => {
+type RowSequences = Record<
+  string,
+  unknown[][]
+>; /** * A read-only Drizzle-shaped fixture.  It deliberately ignores SQL * predicates: the repository still supplies workspace/project predicates, but * this fixture keeps the behavior test local and deterministic. */
+const fakeDatabase = (
+  rows: RowMap,
+  sequences: RowSequences = {},
+): PlatformDatabase => {
   const calls = new Map<string, number>();
   const nextRows = (tableName: string) => {
     const sequence = sequences[tableName];
@@ -31,11 +34,17 @@ const fakeDatabase = (rows: RowMap, sequences: RowSequences = {}): PlatformDatab
         from(table: Record<symbol, unknown>) {
           const tableName = table[drizzleName] as string;
           const query = {
-            where() { return query; },
-            orderBy() { return query; },
+            where() {
+              return query;
+            },
+            orderBy() {
+              return query;
+            },
             limit: async () => nextRows(tableName).slice(0, 1),
-            then: (resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) =>
-              Promise.resolve(nextRows(tableName)).then(resolve, reject),
+            then: (
+              resolve: (value: unknown[]) => unknown,
+              reject: (reason: unknown) => unknown,
+            ) => Promise.resolve(nextRows(tableName)).then(resolve, reject),
           };
           return query;
         },
@@ -44,7 +53,6 @@ const fakeDatabase = (rows: RowMap, sequences: RowSequences = {}): PlatformDatab
   };
   return db as unknown as PlatformDatabase;
 };
-
 const ids = {
   workspaceId: "ws_native_audio_fixture",
   projectId: "prj_native_audio_fixture",
@@ -61,28 +69,31 @@ const ids = {
   narrationAssetVersionId: "nav_native_audio_fixture",
   narrationAssetId: "ast_native_narration_fixture",
 };
-
 const sourceObjectKey = `${ids.workspaceId}/${ids.projectId}/${ids.sourceAssetId}/generated.mp4`;
 const narrationObjectKey = `${ids.workspaceId}/${ids.projectId}/${ids.narrationAssetId}/narration.wav`;
 const sha256 = "a".repeat(64);
-
-const compositionEvent = () => InternalEventEnvelopeSchema.parse({
-  contract_version: "1.0",
-  message_id: "msg_native_audio_fixture",
-  event_id: "evt_native_audio_fixture",
-  event_type: "video_version.composition_requested",
-  occurred_at: timestamp,
-  trace_id: "trc_native_audio_fixture",
-  correlation_id: "cor_native_audio_fixture",
-  idempotency_key: "native-audio-composition-fixture",
-  producer: "persistence-test",
-  workspace_id: ids.workspaceId,
-  project_id: ids.projectId,
-  aggregate: { type: "production_run", id: ids.productionRunId },
-  data: { production_run_id: ids.productionRunId },
-  version: 1,
-}) as Extract<import("@alchemy-video/contracts").InternalEventEnvelope, { event_type: "video_version.composition_requested" }>;
-
+const compositionEvent = () =>
+  InternalEventEnvelopeSchema.parse({
+    contract_version: "1.0",
+    message_id: "msg_native_audio_fixture",
+    event_id: "evt_native_audio_fixture",
+    event_type: "video_version.composition_requested",
+    occurred_at: timestamp,
+    trace_id: "trc_native_audio_fixture",
+    correlation_id: "cor_native_audio_fixture",
+    idempotency_key: "native-audio-composition-fixture",
+    producer: "persistence-test",
+    workspace_id: ids.workspaceId,
+    project_id: ids.projectId,
+    aggregate: { type: "production_run", id: ids.productionRunId },
+    data: { production_run_id: ids.productionRunId },
+    version: 1,
+  }) as Extract<
+    import("@alchemy-video/contracts").InternalEventEnvelope,
+    {
+      event_type: "video_version.composition_requested";
+    }
+  >;
 const productionRun = (overrides: Record<string, unknown> = {}) => ({
   id: ids.productionRunId,
   workspaceId: ids.workspaceId,
@@ -95,7 +106,6 @@ const productionRun = (overrides: Record<string, unknown> = {}) => ({
   budgetGuard: { music_plan: { mode: "OFF" } },
   ...overrides,
 });
-
 const sourceAsset = (overrides: Record<string, unknown> = {}) => ({
   id: ids.sourceAssetId,
   workspaceId: ids.workspaceId,
@@ -104,14 +114,16 @@ const sourceAsset = (overrides: Record<string, unknown> = {}) => ({
   kind: "VIDEO",
   objectKey: sourceObjectKey,
   sha256,
-  byteSize: 1_024,
+  byteSize: 1024,
   mimeType: "video/mp4",
-  durationMs: 1_000,
+  durationMs: 1000,
   metadata: {},
   ...overrides,
 });
-
-const taskRun = (owner: VideoAudioOwner, overrides: Record<string, unknown> = {}) => ({
+const taskRun = (
+  owner: VideoAudioOwner,
+  overrides: Record<string, unknown> = {},
+) => ({
   id: ids.taskRunId,
   workspaceId: ids.workspaceId,
   projectId: ids.projectId,
@@ -129,54 +141,91 @@ const taskRun = (owner: VideoAudioOwner, overrides: Record<string, unknown> = {}
   },
   ...overrides,
 });
-
-const baseRows = (owner: VideoAudioOwner, overrides: { run?: Record<string, unknown>; task?: Record<string, unknown>; assets?: unknown[] } = {}): RowMap => ({
+const baseRows = (
+  owner: VideoAudioOwner,
+  overrides: {
+    run?: Record<string, unknown>;
+    task?: Record<string, unknown>;
+    assets?: unknown[];
+  } = {},
+): RowMap => ({
   production_runs: [productionRun(overrides.run)],
-  storyboard_revisions: [{ workspaceId: ids.workspaceId, projectId: ids.projectId, id: ids.storyboardRevisionId, scriptRevisionId: ids.scriptRevisionId }],
-  script_revisions: [{ workspaceId: ids.workspaceId, projectId: ids.projectId, id: ids.scriptRevisionId, creativeBriefRevisionId: ids.briefRevisionId }],
-  creative_brief_revisions: [{ workspaceId: ids.workspaceId, projectId: ids.projectId, id: ids.briefRevisionId, sourceText: "旁白文案：源对白", stylePreferences: "" }],
+  storyboard_revisions: [
+    {
+      workspaceId: ids.workspaceId,
+      projectId: ids.projectId,
+      id: ids.storyboardRevisionId,
+      scriptRevisionId: ids.scriptRevisionId,
+    },
+  ],
+  script_revisions: [
+    {
+      workspaceId: ids.workspaceId,
+      projectId: ids.projectId,
+      id: ids.scriptRevisionId,
+      creativeBriefRevisionId: ids.briefRevisionId,
+    },
+  ],
+  creative_brief_revisions: [
+    {
+      workspaceId: ids.workspaceId,
+      projectId: ids.projectId,
+      id: ids.briefRevisionId,
+      sourceText: "旁白文案：源对白",
+      stylePreferences: "",
+    },
+  ],
   handoff_reviews: [],
   transition_repairs: [],
-  production_segments: [{
-    id: ids.segmentId,
-    workspaceId: ids.workspaceId,
-    projectId: ids.projectId,
-    productionRunId: ids.productionRunId,
-    shotSpecId: ids.shotSpecId,
-    sequence: 1,
-    status: "ACCEPTED",
-    taskRunId: ids.taskRunId,
-  }],
+  production_segments: [
+    {
+      id: ids.segmentId,
+      workspaceId: ids.workspaceId,
+      projectId: ids.projectId,
+      productionRunId: ids.productionRunId,
+      shotSpecId: ids.shotSpecId,
+      sequence: 1,
+      status: "ACCEPTED",
+      taskRunId: ids.taskRunId,
+    },
+  ],
+  storyboard_shot_specs: [
+    {
+      id: ids.shotSpecId,
+      workspaceId: ids.workspaceId,
+      projectId: ids.projectId,
+      referencePolicy: "TEXT_TRANSITION",
+    },
+  ],
   task_runs: [taskRun(owner, overrides.task)],
   assets: overrides.assets ?? [sourceAsset()],
-  prompt_packages: [{
-    workspaceId: ids.workspaceId,
-    projectId: ids.projectId,
-    shotSpecId: ids.shotSpecId,
-    capabilitySnapshot: {
-      motion_plan: {
-        voice_performance: {
-          delivery_cues: [{ provider_text: "源对白" }],
+  prompt_packages: [
+    {
+      workspaceId: ids.workspaceId,
+      projectId: ids.projectId,
+      shotSpecId: ids.shotSpecId,
+      capabilitySnapshot: {
+        motion_plan: {
+          voice_performance: { delivery_cues: [{ provider_text: "源对白" }] },
         },
       },
     },
-  }],
+  ],
 });
-
-const handoffReviewRow = (fromSequence: number, toSequence: number, result: string) => ({
-  fromSequence,
-  toSequence,
-  result,
-});
-
-const transitionRepairRow = (boundarySequence: number, strategy: string, durationMs = 2_000) => ({
-  boundarySequence,
-  strategy,
-  status: "ACCEPTED",
-  durationMs,
-});
-
-const twoSegmentCompositionDatabase = (reviews: unknown[], repairs: unknown[] = []) => {
+const handoffReviewRow = (
+  fromSequence: number,
+  toSequence: number,
+  result: string,
+) => ({ fromSequence, toSequence, result });
+const transitionRepairRow = (
+  boundarySequence: number,
+  strategy: string,
+  durationMs = 2000,
+) => ({ boundarySequence, strategy, status: "ACCEPTED", durationMs });
+const twoSegmentCompositionDatabase = (
+  reviews: unknown[],
+  repairs: unknown[] = [],
+) => {
   const secondSourceAssetId = "ast_native_video_fixture_two";
   const secondTaskRunId = "tsk_native_audio_fixture_two";
   const secondSegmentId = "pse_native_audio_fixture_two";
@@ -193,126 +242,197 @@ const twoSegmentCompositionDatabase = (reviews: unknown[], repairs: unknown[] = 
   const firstSegment = rows.production_segments[0] as Record<string, unknown>;
   const firstTask = rows.task_runs[0] as Record<string, unknown>;
   const firstPrompt = rows.prompt_packages[0] as Record<string, unknown>;
-  const secondTask = { ...firstTask, id: secondTaskRunId, resultAssetId: secondSourceAssetId };
+  const firstShotSpec = rows.storyboard_shot_specs[0] as Record<
+    string,
+    unknown
+  >;
+  const secondTask = {
+    ...firstTask,
+    id: secondTaskRunId,
+    resultAssetId: secondSourceAssetId,
+  };
   const secondPrompt = { ...firstPrompt, shotSpecId: secondShotSpecId };
+  const secondShotSpec = { ...firstShotSpec, id: secondShotSpecId };
   rows.handoff_reviews = reviews;
   rows.transition_repairs = repairs;
   rows.production_segments = [
     firstSegment,
-    { ...firstSegment, id: secondSegmentId, shotSpecId: secondShotSpecId, sequence: 2, taskRunId: secondTaskRunId },
+    {
+      ...firstSegment,
+      id: secondSegmentId,
+      shotSpecId: secondShotSpecId,
+      sequence: 2,
+      taskRunId: secondTaskRunId,
+    },
   ];
   rows.task_runs = [firstTask, secondTask];
   rows.prompt_packages = [firstPrompt, secondPrompt];
+  rows.storyboard_shot_specs = [firstShotSpec, secondShotSpec];
   return fakeDatabase(rows, {
     assets: [[firstSource], [secondSource]],
     task_runs: [[firstTask], [secondTask]],
     prompt_packages: [[firstPrompt], [secondPrompt]],
+    storyboard_shot_specs: [[firstShotSpec], [secondShotSpec]],
   });
 };
-
 const approvedNarrationRows = () => ({
-  timeline_plans: [{
-    id: "tlp_native_audio_fixture",
-    workspaceId: ids.workspaceId,
-    projectId: ids.projectId,
-    deliveryPlanRevisionId: ids.deliveryPlanRevisionId,
-    narrationScriptRevisionId: ids.narrationScriptRevisionId,
-    narrationAssetVersionId: ids.narrationAssetVersionId,
-    effectiveDurationMs: 1_000,
-    narrationSections: [{ section_id: "sec_1", start_ms: 0, end_ms: 1_000, visual_role: "PRIMARY" }],
-    visualSegments: [{ sequence: 1, start_ms: 0, end_ms: 1_000, provider_duration_seconds: 1 }],
-    status: "READY",
-    decisionReasons: [],
-    createdAt: timestamp,
-  }],
-  narration_script_revisions: [{
-    id: ids.narrationScriptRevisionId,
-    workspaceId: ids.workspaceId,
-    projectId: ids.projectId,
-    deliveryPlanRevisionId: ids.deliveryPlanRevisionId,
-    status: "APPROVED",
-    sourceScriptHash: sha256,
-    displaySections: [{ id: "sec_1", text: "批准旁白" }],
-    spokenSections: [{
-      id: "sec_1",
-      display_text: "批准旁白",
-      provider_text: "批准旁白",
-      pronunciation_guides: [],
-      delivery: { pace: "NATURAL", energy: "NEUTRAL", emphasis: [], pause_before_ms: 0, pause_after_ms: 0 },
-    }],
-    language: "zh-CN",
-    normalizationVersion: "c12.7b-local-v1",
-    decisionReasons: [],
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  }],
-  narration_asset_versions: [{
-    id: ids.narrationAssetVersionId,
-    workspaceId: ids.workspaceId,
-    projectId: ids.projectId,
-    narrationScriptRevisionId: ids.narrationScriptRevisionId,
-    assetId: ids.narrationAssetId,
-    provider: "piper",
-    voiceId: "zh-CN",
-    providerSettings: {},
-    durationMs: 1_000,
-    sampleApproved: false,
-    wordTimestampsAssetId: null,
-    canonicalTranscriptCheck: { status: "CHECKED", transcript_asset_id: null, matches: true, accuracy: 1, issues: [] },
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  }],
+  timeline_plans: [
+    {
+      id: "tlp_native_audio_fixture",
+      workspaceId: ids.workspaceId,
+      projectId: ids.projectId,
+      deliveryPlanRevisionId: ids.deliveryPlanRevisionId,
+      narrationScriptRevisionId: ids.narrationScriptRevisionId,
+      narrationAssetVersionId: ids.narrationAssetVersionId,
+      effectiveDurationMs: 1000,
+      narrationSections: [
+        {
+          section_id: "sec_1",
+          start_ms: 0,
+          end_ms: 1000,
+          visual_role: "PRIMARY",
+        },
+      ],
+      visualSegments: [
+        {
+          sequence: 1,
+          start_ms: 0,
+          end_ms: 1000,
+          provider_duration_seconds: 1,
+        },
+      ],
+      status: "READY",
+      decisionReasons: [],
+      createdAt: timestamp,
+    },
+  ],
+  narration_script_revisions: [
+    {
+      id: ids.narrationScriptRevisionId,
+      workspaceId: ids.workspaceId,
+      projectId: ids.projectId,
+      deliveryPlanRevisionId: ids.deliveryPlanRevisionId,
+      status: "APPROVED",
+      sourceScriptHash: sha256,
+      displaySections: [{ id: "sec_1", text: "批准旁白" }],
+      spokenSections: [
+        {
+          id: "sec_1",
+          display_text: "批准旁白",
+          provider_text: "批准旁白",
+          pronunciation_guides: [],
+          delivery: {
+            pace: "NATURAL",
+            energy: "NEUTRAL",
+            emphasis: [],
+            pause_before_ms: 0,
+            pause_after_ms: 0,
+          },
+        },
+      ],
+      language: "zh-CN",
+      normalizationVersion: "c12.7b-local-v1",
+      decisionReasons: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+  ],
+  narration_asset_versions: [
+    {
+      id: ids.narrationAssetVersionId,
+      workspaceId: ids.workspaceId,
+      projectId: ids.projectId,
+      narrationScriptRevisionId: ids.narrationScriptRevisionId,
+      assetId: ids.narrationAssetId,
+      provider: "piper",
+      voiceId: "zh-CN",
+      providerSettings: {},
+      durationMs: 1000,
+      sampleApproved: false,
+      wordTimestampsAssetId: null,
+      canonicalTranscriptCheck: {
+        status: "CHECKED",
+        transcript_asset_id: null,
+        matches: true,
+        accuracy: 1,
+        issues: [],
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+  ],
   outbox_events: [],
   delivery_plan_revisions: [{ captionPolicy: "OFF" }],
 });
-
 test("accepted native-owner composition preserves the source audio boundary without narration work", async () => {
-  const repository = new DrizzleProductionRepository(fakeDatabase(baseRows("NATIVE_PROVIDER")));
-  const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
-
+  const repository = new DrizzleProductionRepository(
+    fakeDatabase(baseRows("NATIVE_PROVIDER")),
+  );
+  const result = await repository.findProductionCompositionInput({
+    event: compositionEvent(),
+  });
   assert.ok(result);
   assert.deepEqual(result.narrationSegments ?? [], []);
   assert.equal(result.scriptText, undefined);
   assert.equal(result.compositionPlan?.audio_policy, "LEGACY_PRESERVE");
   assert.equal(result.compositionPlan?.audio_plan, undefined);
-  assert.equal((result.compositionPlan?.audio_tracks ?? []).some((track) => track.ownership === "PLATFORM_NARRATION"), false);
+  assert.equal(
+    (result.compositionPlan?.audio_tracks ?? []).some(
+      (track) => track.ownership === "PLATFORM_NARRATION",
+    ),
+    false,
+  );
   assert.equal(result.compositionPlan?.music_mix.enabled, false);
-  // LEGACY_PRESERVE is the source track-preservation instruction.  The
-  // repository does not emit a platform narration track for native audio, so
-  // no TTS input can be assembled from this fixture.
 });
 
-test("new DeliveryPlan-backed native composition freezes a complete legacy-preserve AudioPlan", async () => {
-  const repository = new DrizzleProductionRepository(fakeDatabase(baseRows("NATIVE_PROVIDER", {
-    run: { deliveryPlanRevisionId: ids.deliveryPlanRevisionId },
-  })));
-  const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
+// LEGACY_PRESERVE is the source track-preservation instruction.  The  // repository does not emit a platform narration track for native audio, so  // no TTS input can be assembled from this fixture.});
 
+test("new DeliveryPlan-backed native composition freezes a complete legacy-preserve AudioPlan", async () => {
+  const repository = new DrizzleProductionRepository(
+    fakeDatabase(
+      baseRows("NATIVE_PROVIDER", {
+        run: { deliveryPlanRevisionId: ids.deliveryPlanRevisionId },
+      }),
+    ),
+  );
+  const result = await repository.findProductionCompositionInput({
+    event: compositionEvent(),
+  });
   assert.ok(result);
   assert.equal(result.compositionPlan?.audio_policy, "LEGACY_PRESERVE");
   assert.equal(result.compositionPlan?.audio_tracks, undefined);
   assert.equal(result.compositionPlan?.audio_plan?.version, 1);
-  assert.equal(result.compositionPlan?.audio_plan?.stitch_policy, "LEGACY_PRESERVE");
-  assert.deepEqual(result.compositionPlan?.audio_plan?.narration_sections, [{
-    section_id: "no-platform-narration",
-    start_ms: 0,
-    end_ms: 1_000,
-    visual_role: "HOLD",
-  }]);
-  assert.deepEqual(result.compositionPlan?.audio_plan?.tracks.map((track) => ({
-    track_id: track.track_id,
-    ownership: track.ownership,
-    asset_id: track.asset_id,
-    gain_db: track.gain_db,
-  })), [{
-    track_id: "segment-1",
-    ownership: "LEGACY_PRESERVE",
-    asset_id: ids.sourceAssetId,
-    gain_db: "0",
-  }]);
+  assert.equal(
+    result.compositionPlan?.audio_plan?.stitch_policy,
+    "LEGACY_PRESERVE",
+  );
+  assert.deepEqual(result.compositionPlan?.audio_plan?.narration_sections, [
+    {
+      section_id: "no-platform-narration",
+      start_ms: 0,
+      end_ms: 1_000,
+      visual_role: "HOLD",
+    },
+  ]);
+  assert.deepEqual(
+    result.compositionPlan?.audio_plan?.tracks.map((track) => ({
+      track_id: track.track_id,
+      ownership: track.ownership,
+      asset_id: track.asset_id,
+      gain_db: track.gain_db,
+    })),
+    [
+      {
+        track_id: "segment-1",
+        ownership: "LEGACY_PRESERVE",
+        asset_id: ids.sourceAssetId,
+        gain_db: "0",
+      },
+    ],
+  );
 });
 
-test("AUTO composition consumes only a MUSIC asset whose measured duration covers the target", async () => {
+test("AUTO composition selects a matching local MUSIC asset as one full-track bed", async () => {
   const musicAsset = {
     ...sourceAsset(),
     id: "ast_native_music_fixture",
@@ -322,32 +442,31 @@ test("AUTO composition consumes only a MUSIC asset whose measured duration cover
     durationMs: 42_000,
     metadata: { audio_role: "MUSIC", source_title: "源对白 background music" },
   };
-  const repository = new DrizzleProductionRepository(fakeDatabase({
-    ...baseRows("NATIVE_PROVIDER", {
-      run: { budgetGuard: { music_plan: { mode: "AUTO" } } },
-      assets: [sourceAsset(), musicAsset],
-    }),
-  }, { assets: [[sourceAsset()], [musicAsset]] }));
-
+  const repository = new DrizzleProductionRepository(
+    fakeDatabase(
+      {
+        ...baseRows("TTS", {
+          run: { budgetGuard: { music_plan: { mode: "AUTO" } } },
+          assets: [sourceAsset(), musicAsset],
+        }),
+      },
+      { assets: [[sourceAsset()], [musicAsset]] },
+    ),
+  );
   const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
-
-  assert.ok(result);
-  assert.equal(result.musicAsset?.id, musicAsset.id);
-  assert.deepEqual(result.compositionPlan?.music_mix, {
-    enabled: true,
-    volume: 0.08,
-    fade_in_ms: 1_500,
-    fade_out_ms: 2_500,
-    ducking_enabled: true,
-    ducking_reduction_db: 18,
-    target_lufs: -14,
-    true_peak_db: -1.5,
-    voice_enhance: true,
-    music_eq_cut_db: 3,
-  });
-  assert.deepEqual(result.compositionPlan?.music_segments_ms, [{ start_ms: 0, end_ms: 1_000 }]);
-  assert.equal(isUsableMusicAsset({ ...musicAsset }, { minimumDurationMs: 1_000 }), true);
-  assert.equal(isUsableMusicAsset({ ...musicAsset, durationMs: 500 }, { minimumDurationMs: 1_000 }), false);
+  assert.equal(result?.musicAsset?.id, musicAsset.id);
+  assert.deepEqual(result?.compositionPlan?.music_segments_ms, [{ start_ms: 0, end_ms: 1_000 }]);
+  assert.equal(
+    isUsableMusicAsset({ ...musicAsset }, { minimumDurationMs: 1_000 }),
+    true,
+  );
+  assert.equal(
+    isUsableMusicAsset(
+      { ...musicAsset, durationMs: 500 },
+      { minimumDurationMs: 1_000 },
+    ),
+    false,
+  );
 });
 
 test("AUTO composition does not treat a Pixabay query matching the project name as track content", async () => {
@@ -358,20 +477,64 @@ test("AUTO composition does not treat a Pixabay query matching the project name 
     objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_project_query_music/music.mp3`,
     mimeType: "audio/mpeg",
     durationMs: 42_000,
-    metadata: { audio_role: "MUSIC", pixabay_query: "Product launch", source_title: "upbeat energetic instrumental" },
+    metadata: {
+      audio_role: "MUSIC",
+      pixabay_query: "Product launch",
+      source_title: "upbeat energetic instrumental",
+    },
   };
-  const repository = new DrizzleProductionRepository(fakeDatabase({
-    ...baseRows("NATIVE_PROVIDER", {
-      run: { budgetGuard: { music_plan: { mode: "AUTO" } } },
-      assets: [sourceAsset(), musicAsset],
-    }),
-    projects: [{ workspaceId: ids.workspaceId, id: ids.projectId, name: "Product launch" }],
-  }, { assets: [[sourceAsset()], [musicAsset]] }));
-
+  const repository = new DrizzleProductionRepository(
+    fakeDatabase(
+      {
+        ...baseRows("TTS", {
+          run: { budgetGuard: { music_plan: { mode: "AUTO" } } },
+          assets: [sourceAsset(), musicAsset],
+        }),
+        projects: [
+          {
+            workspaceId: ids.workspaceId,
+            id: ids.projectId,
+            name: "Product launch",
+          },
+        ],
+      },
+      { assets: [[sourceAsset()], [musicAsset]] },
+    ),
+  );
   await assert.rejects(
     repository.findProductionCompositionInput({ event: compositionEvent() }),
-    /AUTO music selection requires a READY AUDIO asset with audio_role=MUSIC/,
+    /AUTO music requires an explicit source-backed MUSIC asset or a completed Pixabay import/,
   );
+});
+
+test("project MUSIC composes with preserved native provider audio through the source full_mix path", async () => {
+  const musicAsset = {
+    ...sourceAsset(),
+    id: "ast_native_music_owner_conflict",
+    kind: "AUDIO" as const,
+    objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_music_owner_conflict/music.mp3`,
+    mimeType: "audio/mpeg",
+    durationMs: 42_000,
+    metadata: { audio_role: "MUSIC", source_title: "fixture global music" },
+  };
+  const repository = new DrizzleProductionRepository(
+    fakeDatabase({
+      ...baseRows("NATIVE_PROVIDER", {
+        run: {
+          budgetGuard: {
+            music_plan: { mode: "AUTO" },
+            pixabay_fallback_music_asset_id: musicAsset.id,
+          },
+        },
+        assets: [sourceAsset(), musicAsset],
+      }),
+    }, { assets: [[sourceAsset()], [musicAsset]] }),
+  );
+  const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
+  assert.ok(result);
+  assert.equal(result.compositionPlan?.audio_policy, "LEGACY_PRESERVE");
+  assert.equal(result.compositionPlan?.music_mix.enabled, true);
+  assert.deepEqual(result.compositionPlan?.music_segments_ms, [{ start_ms: 0, end_ms: 1_000 }]);
 });
 
 test("AUTO composition consumes the preselected Pixabay fallback identity without a content match", async () => {
@@ -382,76 +545,121 @@ test("AUTO composition consumes the preselected Pixabay fallback identity withou
     objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_pixabay_fallback/music.mp3`,
     mimeType: "audio/mpeg",
     durationMs: 42_000,
-    metadata: { audio_role: "MUSIC", pixabay_query: "Product launch", source_title: "upbeat coastal guitar" },
+    metadata: {
+      audio_role: "MUSIC",
+      pixabay_query: "Product launch",
+      source_title: "upbeat coastal guitar",
+    },
   };
-  const repository = new DrizzleProductionRepository(fakeDatabase({
-    ...baseRows("NATIVE_PROVIDER", {
-      run: { budgetGuard: { music_plan: { mode: "AUTO" }, pixabay_fallback_music_asset_id: pixabayAsset.id } },
-      assets: [sourceAsset(), pixabayAsset],
-    }),
-    projects: [{ workspaceId: ids.workspaceId, id: ids.projectId, name: "Product launch" }],
-  }, { assets: [[sourceAsset()], [pixabayAsset]] }));
-
-  const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
-
+  const repository = new DrizzleProductionRepository(
+    fakeDatabase(
+      {
+        ...baseRows("TTS", {
+          run: {
+            deliveryPlanRevisionId: ids.deliveryPlanRevisionId,
+            budgetGuard: {
+              music_plan: { mode: "AUTO" },
+              pixabay_fallback_music_asset_id: pixabayAsset.id,
+            },
+          },
+          assets: [sourceAsset(), pixabayAsset],
+        }),
+        projects: [
+          {
+            workspaceId: ids.workspaceId,
+            id: ids.projectId,
+            name: "Product launch",
+          },
+        ],
+      },
+      { assets: [[sourceAsset()], [pixabayAsset]] },
+    ),
+  );
+  const result = await repository.findProductionCompositionInput({
+    event: compositionEvent(),
+  });
   assert.ok(result);
   assert.equal(result.musicAsset?.id, pixabayAsset.id);
   assert.equal(result.compositionPlan?.music_mix.enabled, true);
+  const trackWindows = result.compositionPlan?.audio_plan?.tracks.map((track) => track.start_ms) ?? [];
+  assert.deepEqual(trackWindows, [...trackWindows].sort((left, right) => left - right));
 });
 
-test("AUTO composition consumes the persisted per-segment bgm_prompt as a matching hint", async () => {
-  const warmMusic = {
+test("MANUAL composition consumes only the explicitly selected MUSIC asset as one full-track bed", async () => {
+  const manualMusicAsset = {
     ...sourceAsset(),
-    id: "ast_native_music_warm",
+    id: "ast_native_manual_music",
     kind: "AUDIO" as const,
-    objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_music_warm/music.mp3`,
+    objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_manual_music/music.mp3`,
     mimeType: "audio/mpeg",
     durationMs: 42_000,
-    metadata: { audio_role: "MUSIC", mood: "warm" },
+    metadata: {
+      audio_role: "MUSIC",
+      source_title: "Explicit manual music",
+    },
   };
-  const coolMusic = {
+  const repository = new DrizzleProductionRepository(
+    fakeDatabase(
+      {
+        ...baseRows("TTS", {
+          run: {
+            deliveryPlanRevisionId: ids.deliveryPlanRevisionId,
+            budgetGuard: {
+              music_plan: {
+                mode: "MANUAL",
+                asset_id: manualMusicAsset.id,
+              },
+            },
+          },
+          assets: [sourceAsset(), manualMusicAsset],
+        }),
+      },
+      { assets: [[sourceAsset()], [manualMusicAsset]] },
+    ),
+  );
+  const result = await repository.findProductionCompositionInput({
+    event: compositionEvent(),
+  });
+  assert.ok(result);
+  assert.equal(result.musicAsset?.id, manualMusicAsset.id);
+  assert.deepEqual(result.compositionPlan?.music_segments_ms, [
+    { start_ms: 0, end_ms: 1_000 },
+  ]);
+  assert.deepEqual(
+    result.compositionPlan?.audio_plan?.tracks
+      .filter((track) => track.ownership === "MUSIC")
+      .map((track) => ({
+        asset_id: track.asset_id,
+        start_ms: track.start_ms,
+        end_ms: track.end_ms,
+      })),
+    [{ asset_id: manualMusicAsset.id, start_ms: 0, end_ms: 1_000 }],
+  );
+});
+
+test("AUTO consumes persisted bgm_prompt as an existing music matching hint", async () => {
+  const musicAsset = {
     ...sourceAsset(),
-    id: "ast_native_music_cool",
+    id: "ast_native_music_prompt_ignored",
     kind: "AUDIO" as const,
-    objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_music_cool/music.mp3`,
+    objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_music_prompt_ignored/music.mp3`,
     mimeType: "audio/mpeg",
     durationMs: 42_000,
     metadata: { audio_role: "MUSIC", mood: "cool" },
   };
-  const rows = baseRows("NATIVE_PROVIDER", {
-    run: { budgetGuard: { music_plan: { mode: "AUTO" } } },
-    assets: [sourceAsset(), warmMusic, coolMusic],
+  const rows = baseRows("TTS", {
+    run: {
+      budgetGuard: { music_plan: { mode: "AUTO" } },
+    },
+    assets: [sourceAsset(), musicAsset],
   });
   const promptPackage = rows.prompt_packages[0] as Record<string, unknown>;
   promptPackage.capabilitySnapshot = { bgm_prompt: "cool" };
-  const repository = new DrizzleProductionRepository(fakeDatabase(rows, {
-    assets: [[sourceAsset()], [warmMusic, coolMusic]],
-  }));
-  const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
-  assert.equal(result?.musicAsset?.id, coolMusic.id);
-});
-
-test("AUTO composition fails closed when a duration-qualified MUSIC asset has no content hit", async () => {
-  const unrelatedMusic = {
-    ...sourceAsset(),
-    id: "ast_native_unrelated_music_fixture",
-    kind: "AUDIO" as const,
-    objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_unrelated_music_fixture/music.mp3`,
-    mimeType: "audio/mpeg",
-    durationMs: 42_000,
-    metadata: { audio_role: "MUSIC", source_title: "upbeat energetic instrumental" },
-  };
-  const repository = new DrizzleProductionRepository(fakeDatabase({
-    ...baseRows("NATIVE_PROVIDER", {
-      run: { budgetGuard: { music_plan: { mode: "AUTO" } } },
-      assets: [sourceAsset(), unrelatedMusic],
-    }),
-  }, { assets: [[sourceAsset()], [unrelatedMusic]] }));
-
-  await assert.rejects(
-    repository.findProductionCompositionInput({ event: compositionEvent() }),
-    /AUTO music selection requires a READY AUDIO asset with audio_role=MUSIC/,
+  const repository = new DrizzleProductionRepository(
+    fakeDatabase(rows, { assets: [[sourceAsset()], [musicAsset]] }),
   );
+  const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
+  assert.equal(result?.musicAsset?.id, musicAsset.id);
 });
 
 test("AUTO composition fails closed instead of padding a short MUSIC asset with silence", async () => {
@@ -462,60 +670,85 @@ test("AUTO composition fails closed instead of padding a short MUSIC asset with 
     objectKey: `${ids.workspaceId}/${ids.projectId}/ast_native_short_music_fixture/music.mp3`,
     mimeType: "audio/mpeg",
     durationMs: 500,
-    metadata: { audio_role: "MUSIC", source_title: "Fixture short background music" },
+    metadata: {
+      audio_role: "MUSIC",
+      source_title: "Fixture short background music",
+    },
   };
-  const repository = new DrizzleProductionRepository(fakeDatabase({
-    ...baseRows("NATIVE_PROVIDER", {
-      run: { budgetGuard: { music_plan: { mode: "AUTO" }, pixabay_fallback_music_asset_id: shortMusicAsset.id } },
-      assets: [sourceAsset(), shortMusicAsset],
-    }),
-  }, { assets: [[sourceAsset()], [shortMusicAsset]] }));
-
+  const repository = new DrizzleProductionRepository(
+    fakeDatabase(
+      {
+        ...baseRows("NATIVE_PROVIDER", {
+          run: {
+            budgetGuard: {
+              music_plan: { mode: "AUTO" },
+              pixabay_fallback_music_asset_id: shortMusicAsset.id,
+            },
+          },
+          assets: [sourceAsset(), shortMusicAsset],
+        }),
+      },
+      { assets: [[sourceAsset()], [shortMusicAsset]] },
+    ),
+  );
   await assert.rejects(
     repository.findProductionCompositionInput({ event: compositionEvent() }),
-    /AUTO music selection requires a READY AUDIO asset with audio_role=MUSIC/,
+    /AUTO music requires an explicit source-backed MUSIC asset or a completed Pixabay import/,
   );
 });
 
 test("native-owner composition rejects an approved platform narration timeline before assembly", async () => {
   const approved = approvedNarrationRows();
-  const repository = new DrizzleProductionRepository(fakeDatabase({
-    ...baseRows("NATIVE_PROVIDER", {
-      run: { deliveryPlanRevisionId: ids.deliveryPlanRevisionId },
-      assets: [approved.narration_asset_versions[0] ? {
-        id: ids.narrationAssetId,
-        workspaceId: ids.workspaceId,
-        projectId: ids.projectId,
-        status: "READY",
-        kind: "AUDIO",
-        objectKey: narrationObjectKey,
-        sha256,
-        byteSize: 512,
-        mimeType: "audio/wav",
-        durationMs: 1_000,
-        metadata: {},
-      } : sourceAsset(), sourceAsset()],
-    }),
-    ...approved,
-  }, {
-    assets: [
-      [approved.narration_asset_versions[0] ? {
-        id: ids.narrationAssetId,
-        workspaceId: ids.workspaceId,
-        projectId: ids.projectId,
-        status: "READY",
-        kind: "AUDIO",
-        objectKey: narrationObjectKey,
-        sha256,
-        byteSize: 512,
-        mimeType: "audio/wav",
-        durationMs: 1_000,
-        metadata: {},
-      } : sourceAsset()],
-      [sourceAsset()],
-    ],
-  }));
-
+  const repository = new DrizzleProductionRepository(
+    fakeDatabase(
+      {
+        ...baseRows("NATIVE_PROVIDER", {
+          run: { deliveryPlanRevisionId: ids.deliveryPlanRevisionId },
+          assets: [
+            approved.narration_asset_versions[0]
+              ? {
+                  id: ids.narrationAssetId,
+                  workspaceId: ids.workspaceId,
+                  projectId: ids.projectId,
+                  status: "READY",
+                  kind: "AUDIO",
+                  objectKey: narrationObjectKey,
+                  sha256,
+                  byteSize: 512,
+                  mimeType: "audio/wav",
+                  durationMs: 1_000,
+                  metadata: {},
+                }
+              : sourceAsset(),
+            sourceAsset(),
+          ],
+        }),
+        ...approved,
+      },
+      {
+        assets: [
+          [
+            approved.narration_asset_versions[0]
+              ? {
+                  id: ids.narrationAssetId,
+                  workspaceId: ids.workspaceId,
+                  projectId: ids.projectId,
+                  status: "READY",
+                  kind: "AUDIO",
+                  objectKey: narrationObjectKey,
+                  sha256,
+                  byteSize: 512,
+                  mimeType: "audio/wav",
+                  durationMs: 1_000,
+                  metadata: {},
+                }
+              : sourceAsset(),
+          ],
+          [sourceAsset()],
+        ],
+      },
+    ),
+  );
   await assert.rejects(
     repository.findProductionCompositionInput({ event: compositionEvent() }),
     /provider-owned segment audio conflicts with an approved platform narration timeline/,
@@ -523,16 +756,23 @@ test("native-owner composition rejects an approved platform narration timeline b
 });
 
 test("TTS-owner composition emits a platform narration cue and keeps provider dialogue explicit", async () => {
-  const repository = new DrizzleProductionRepository(fakeDatabase(baseRows("TTS")));
-  const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
-
+  const repository = new DrizzleProductionRepository(
+    fakeDatabase(baseRows("TTS")),
+  );
+  const result = await repository.findProductionCompositionInput({
+    event: compositionEvent(),
+  });
   assert.ok(result);
   assert.equal(result.scriptText, "源对白");
   assert.deepEqual(result.narrationSegments, [{ text: "源对白", startMs: 0 }]);
   assert.equal(result.compositionPlan?.audio_policy, "CONTINUOUS_NARRATION");
   const tracks = result.compositionPlan?.audio_tracks ?? [];
-  const narrationTrack = tracks.find((track) => track.ownership === "PLATFORM_NARRATION");
-  const providerDialogueTrack = tracks.find((track) => track.ownership === "PROVIDER_DIALOGUE");
+  const narrationTrack = tracks.find(
+    (track) => track.ownership === "PLATFORM_NARRATION",
+  );
+  const providerDialogueTrack = tracks.find(
+    (track) => track.ownership === "PROVIDER_DIALOGUE",
+  );
   assert.equal(narrationTrack?.start_ms, 0);
   assert.equal(narrationTrack?.end_ms, 1_000);
   assert.equal(narrationTrack?.duck_under_narration, false);
@@ -545,13 +785,15 @@ test("TTS-owner composition consumes an approved independent section asset at it
   const approved = approvedNarrationRows();
   const timeline = approved.timeline_plans[0] as Record<string, unknown>;
   timeline.narrationAssetVersionId = null;
-  timeline.narrationSections = [{
-    section_id: "sec_1",
-    start_ms: 0,
-    end_ms: 1_000,
-    visual_role: "PRIMARY",
-    narration_asset_version_id: ids.narrationAssetVersionId,
-  }];
+  timeline.narrationSections = [
+    {
+      section_id: "sec_1",
+      start_ms: 0,
+      end_ms: 1_000,
+      visual_role: "PRIMARY",
+      narration_asset_version_id: ids.narrationAssetVersionId,
+    },
+  ];
   const formalAsset = {
     id: ids.narrationAssetId,
     workspaceId: ids.workspaceId,
@@ -563,42 +805,57 @@ test("TTS-owner composition consumes an approved independent section asset at it
     byteSize: 512,
     mimeType: "audio/wav",
     durationMs: 1_000,
-    metadata: { audio_gain_db: "-1.5", audio_fade_in_ms: 20, audio_fade_out_ms: 30 },
+    metadata: {
+      audio_gain_db: "-1.5",
+      audio_fade_in_ms: 20,
+      audio_fade_out_ms: 30,
+    },
   };
-  const repository = new DrizzleProductionRepository(fakeDatabase({
-    ...baseRows("TTS", {
-      run: { deliveryPlanRevisionId: ids.deliveryPlanRevisionId },
-      assets: [sourceAsset(), formalAsset],
-    }),
-    ...approved,
-  }, {
-    assets: [[formalAsset], [sourceAsset()], [formalAsset, sourceAsset()]],
-  }));
-
-  const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
-
+  const repository = new DrizzleProductionRepository(
+    fakeDatabase(
+      {
+        ...baseRows("TTS", {
+          run: { deliveryPlanRevisionId: ids.deliveryPlanRevisionId },
+          assets: [sourceAsset(), formalAsset],
+        }),
+        ...approved,
+      },
+      {
+        assets: [[formalAsset], [sourceAsset()], [formalAsset, sourceAsset()]],
+      },
+    ),
+  );
+  const result = await repository.findProductionCompositionInput({
+    event: compositionEvent(),
+  });
   assert.ok(result);
   assert.equal(result.narrationAsset, undefined);
   assert.equal(result.narrationAssets?.length, 1);
-  assert.equal(result.narrationAssets?.[0]?.assetVersionId, ids.narrationAssetVersionId);
+  assert.equal(
+    result.narrationAssets?.[0]?.assetVersionId,
+    ids.narrationAssetVersionId,
+  );
   assert.equal(result.narrationAssets?.[0]?.id, ids.narrationAssetId);
-  const narrationTrack = (result.compositionPlan?.audio_plan?.tracks ?? [])
-    .find((track) => track.ownership === "PLATFORM_NARRATION");
+  const narrationTrack = (
+    result.compositionPlan?.audio_plan?.tracks ?? []
+  ).find((track) => track.ownership === "PLATFORM_NARRATION");
   assert.equal(narrationTrack?.asset_id, ids.narrationAssetId);
   assert.equal(narrationTrack?.start_ms, 0);
   assert.equal(narrationTrack?.end_ms, 1_000);
   assert.equal(narrationTrack?.gain_db, "-1.5");
   assert.equal(narrationTrack?.fade_in_ms, 20);
   assert.equal(narrationTrack?.fade_out_ms, 30);
-  assert.deepEqual(result.narrationSegments, [{
-    text: "批准旁白",
-    startMs: 0,
-    pronunciationGuides: [],
-    pauseBeforeMs: 0,
-    pauseAfterMs: 0,
-    pace: "NATURAL",
-    energy: "NEUTRAL",
-  }]);
+  assert.deepEqual(result.narrationSegments, [
+    {
+      text: "批准旁白",
+      startMs: 0,
+      pronunciationGuides: [],
+      pauseBeforeMs: 0,
+      pauseAfterMs: 0,
+      pace: "NATURAL",
+      energy: "NEUTRAL",
+    },
+  ]);
 });
 
 test("reference audio and narration samples are not promoted and source prose is not reparsed into TTS", async () => {
@@ -611,7 +868,10 @@ test("reference audio and narration samples are not promoted and source prose is
     kind: "AUDIO" as const,
     objectKey: `${ids.workspaceId}/${ids.projectId}/${sampleAssetId}/sample.mp3`,
     mimeType: "audio/mpeg",
-    metadata: { audio_role: "NARRATION_SAMPLE", source_kind: "reference_audio" },
+    metadata: {
+      audio_role: "NARRATION_SAMPLE",
+      source_kind: "reference_audio",
+    },
   };
   const referenceAudioAsset = {
     ...sourceAsset(),
@@ -619,23 +879,29 @@ test("reference audio and narration samples are not promoted and source prose is
     kind: "AUDIO" as const,
     objectKey: `${ids.workspaceId}/${ids.projectId}/${referenceAudioAssetId}/reference.mp3`,
     mimeType: "audio/mpeg",
-    metadata: { audio_role: "USER_SOURCE_AUDIO", source_kind: "reference_audio" },
+    metadata: {
+      audio_role: "USER_SOURCE_AUDIO",
+      source_kind: "reference_audio",
+    },
   };
   const sampleVersion = {
     ...approved.narration_asset_versions[0],
     sampleApproved: true,
     assetId: sampleAssetId,
   };
-  const repository = new DrizzleProductionRepository(fakeDatabase({
-    ...baseRows("TTS", {
-      run: { deliveryPlanRevisionId: ids.deliveryPlanRevisionId },
-      assets: [sourceAsset(), sampleAsset, referenceAudioAsset],
+  const repository = new DrizzleProductionRepository(
+    fakeDatabase({
+      ...baseRows("TTS", {
+        run: { deliveryPlanRevisionId: ids.deliveryPlanRevisionId },
+        assets: [sourceAsset(), sampleAsset, referenceAudioAsset],
+      }),
+      ...approved,
+      narration_asset_versions: [sampleVersion],
     }),
-    ...approved,
-    narration_asset_versions: [sampleVersion],
-  }));
-  const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
-
+  );
+  const result = await repository.findProductionCompositionInput({
+    event: compositionEvent(),
+  });
   assert.ok(result);
   assert.equal(result.narrationAsset, undefined);
   assert.equal(result.narrationAssets, undefined);
@@ -647,10 +913,9 @@ test("reference audio and narration samples are not promoted and source prose is
 });
 
 test("composition rejects a misaligned handoff review instead of defaulting the boundary to PASS", async () => {
-  const repository = new DrizzleProductionRepository(twoSegmentCompositionDatabase([
-    handoffReviewRow(2, 3, "PASS"),
-  ]));
-
+  const repository = new DrizzleProductionRepository(
+    twoSegmentCompositionDatabase([handoffReviewRow(2, 3, "PASS")]),
+  );
   await assert.rejects(
     repository.findProductionCompositionInput({ event: compositionEvent() }),
     /handoff reviews are not complete/,
@@ -658,10 +923,9 @@ test("composition rejects a misaligned handoff review instead of defaulting the 
 });
 
 test("composition rejects an unknown handoff result instead of defaulting the boundary to PASS", async () => {
-  const repository = new DrizzleProductionRepository(twoSegmentCompositionDatabase([
-    handoffReviewRow(1, 2, "UNKNOWN"),
-  ]));
-
+  const repository = new DrizzleProductionRepository(
+    twoSegmentCompositionDatabase([handoffReviewRow(1, 2, "UNKNOWN")]),
+  );
   await assert.rejects(
     repository.findProductionCompositionInput({ event: compositionEvent() }),
     /handoff reviews are not complete/,
@@ -669,10 +933,9 @@ test("composition rejects an unknown handoff result instead of defaulting the bo
 });
 
 test("composition rejects BRIDGE_REQUIRED without an accepted matching BRIDGE repair", async () => {
-  const repository = new DrizzleProductionRepository(twoSegmentCompositionDatabase([
-    handoffReviewRow(1, 2, "BRIDGE_REQUIRED"),
-  ]));
-
+  const repository = new DrizzleProductionRepository(
+    twoSegmentCompositionDatabase([handoffReviewRow(1, 2, "BRIDGE_REQUIRED")]),
+  );
   await assert.rejects(
     repository.findProductionCompositionInput({ event: compositionEvent() }),
     /accepted BRIDGE repair is missing or does not match handoff review/,
@@ -680,12 +943,15 @@ test("composition rejects BRIDGE_REQUIRED without an accepted matching BRIDGE re
 });
 
 test("composition maps an accepted BRIDGE repair only to its reviewed boundary", async () => {
-  const repository = new DrizzleProductionRepository(twoSegmentCompositionDatabase(
-    [handoffReviewRow(1, 2, "BRIDGE_REQUIRED")],
-    [transitionRepairRow(2, "BRIDGE")],
-  ));
-  const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
-
+  const repository = new DrizzleProductionRepository(
+    twoSegmentCompositionDatabase(
+      [handoffReviewRow(1, 2, "BRIDGE_REQUIRED")],
+      [transitionRepairRow(2, "BRIDGE")],
+    ),
+  );
+  const result = await repository.findProductionCompositionInput({
+    event: compositionEvent(),
+  });
   assert.ok(result);
   assert.deepEqual(result.compositionPlan?.transitions, ["BRIDGE"]);
   assert.deepEqual(result.compositionPlan?.bridge_durations_ms, [2_000]);
@@ -693,11 +959,12 @@ test("composition maps an accepted BRIDGE repair only to its reviewed boundary",
 
 test("composition keeps an unavailable or failed handoff as a direct cut needing attention", async () => {
   for (const resultCode of ["UNAVAILABLE", "FAILED"] as const) {
-    const repository = new DrizzleProductionRepository(twoSegmentCompositionDatabase([
-      handoffReviewRow(1, 2, resultCode),
-    ]));
-    const result = await repository.findProductionCompositionInput({ event: compositionEvent() });
-
+    const repository = new DrizzleProductionRepository(
+      twoSegmentCompositionDatabase([handoffReviewRow(1, 2, resultCode)]),
+    );
+    const result = await repository.findProductionCompositionInput({
+      event: compositionEvent(),
+    });
     assert.ok(result);
     assert.deepEqual(result.compositionPlan?.transitions, ["PASS"]);
   }
@@ -705,11 +972,12 @@ test("composition keeps an unavailable or failed handoff as a direct cut needing
 
 test("composition rejects a repair attached to an unavailable or failed handoff", async () => {
   for (const resultCode of ["UNAVAILABLE", "FAILED"] as const) {
-    const repository = new DrizzleProductionRepository(twoSegmentCompositionDatabase(
-      [handoffReviewRow(1, 2, resultCode)],
-      [transitionRepairRow(2, "BRIDGE")],
-    ));
-
+    const repository = new DrizzleProductionRepository(
+      twoSegmentCompositionDatabase(
+        [handoffReviewRow(1, 2, resultCode)],
+        [transitionRepairRow(2, "BRIDGE")],
+      ),
+    );
     await assert.rejects(
       repository.findProductionCompositionInput({ event: compositionEvent() }),
       /transition repair does not match handoff review/,

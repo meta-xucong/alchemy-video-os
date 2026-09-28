@@ -87,6 +87,11 @@ export const serializeCreativeBriefRevision = (brief: ControlCreativeBriefRevisi
   target_resolution: brief.targetResolution,
   style_preferences: brief.stylePreferences,
   source_asset_ids: brief.sourceAssetIds,
+  source_asset_roles: (brief.sourceAssetRoles ?? []).map((reference) => ({
+    asset_id: reference.assetId,
+    role: reference.role,
+    ...(reference.usage ? { usage: reference.usage } : {}),
+  })),
   document_contexts: brief.documentContexts.map((context) => ({
     document_id: context.documentId,
     conversion_id: context.conversionId,

@@ -4,11 +4,13 @@ import {
   type Sub2ApiTransport,
   type Sub2ApiTransportRequest,
   type Sub2ApiTransportResponse,
+  sanitizeSub2ApiErrorSummary,
 } from "@alchemy-video/provider-video";
 
 export type WorkerProviderEnvironment = Readonly<{
   SUB2API_VIDEO_BASE_URL?: string;
   SUB2API_VIDEO_API_KEY?: string;
+  SUB2API_VIDEO_DEBUG?: string;
 }>;
 
 export type WorkerFetchResponse = Readonly<{
@@ -45,6 +47,27 @@ const responseHeaders = (response: WorkerFetchResponse) => {
   const headers: Record<string, string> = {};
   response.headers.forEach((value, key) => { headers[key] = value; });
   return headers;
+};
+
+const safeResponseFieldNames = (payload: unknown) => {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return [];
+  const record = payload as Record<string, unknown>;
+  const names = new Set(Object.keys(record));
+  for (const child of [record.data, record.error]) {
+    if (child !== null && typeof child === "object" && !Array.isArray(child)) {
+      for (const key of Object.keys(child as Record<string, unknown>)) names.add(key);
+    }
+  }
+  return [...names].filter((key) => /^[a-zA-Z0-9_]{1,40}$/.test(key)).sort();
+};
+
+const debugTransport = (
+  environment: WorkerProviderEnvironment,
+  event: string,
+  fields: Readonly<Record<string, unknown>>,
+) => {
+  if (environment.SUB2API_VIDEO_DEBUG?.trim().toLowerCase() !== "true") return;
+  console.warn(JSON.stringify({ event, ...fields }));
 };
 
 const safeTarget = (baseUrl: URL, path: string) => {
@@ -91,9 +114,19 @@ export const createSub2ApiHttpsTransport = (input: Readonly<{
           headers,
           ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
         });
-      } catch {
+      } catch (error) {
+        debugTransport(input.environment, "sub2api.transport.fetch_failed", {
+          method: request.method,
+          path: request.path,
+          error_name: error instanceof Error ? error.name : "unknown",
+        });
         throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", true, "PROVIDER", "The video service is temporarily unavailable.");
       }
+      debugTransport(input.environment, "sub2api.transport.response", {
+        method: request.method,
+        path: request.path,
+        status: response.status,
+      });
       if (request.path.endsWith("/content")) {
         return { status: response.status, headers: responseHeaders(response), stream: response.body ?? undefined };
       }
@@ -118,6 +151,15 @@ export const createSub2ApiHttpsTransport = (input: Readonly<{
           );
         }
         throw new VideoProviderProtocolError("SUB2API returned an invalid JSON response.");
+      }
+      if (response.status >= 400) {
+        debugTransport(input.environment, "sub2api.transport.http_failure", {
+          method: request.method,
+          path: request.path,
+          status: response.status,
+          response_fields: safeResponseFieldNames(json),
+          error_summary: sanitizeSub2ApiErrorSummary(json),
+        });
       }
       return { status: response.status, headers: responseHeaders(response), json };
     },

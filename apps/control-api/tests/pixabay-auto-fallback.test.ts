@@ -20,7 +20,7 @@ const post = (app: ReturnType<typeof createApp>, path: string, idempotencyKey: s
     body: JSON.stringify(body),
   });
 
-const createScenario = async (mode: "AUTO" | "MANUAL" | "OFF", input: { withPixabay: boolean; seedMusic: boolean; seedMusicDurationSeconds?: number; seedMusicTitle?: string; seedMusicQuery?: string; pixabayTrackTitle?: string; pixabayDurationSeconds?: number }) => {
+const createScenario = async (mode: "AUTO" | "MANUAL" | "OFF", input: { withPixabay: boolean; seedMusic: boolean; seedMusicDurationSeconds?: number; seedMusicTitle?: string; seedMusicQuery?: string; seedMusicProvider?: string; musicIntentHint?: string; pixabayTrackTitle?: string; pixabayDurationSeconds?: number }) => {
   const store = createInMemoryControlPlaneStore();
   const assetStore = createInMemoryAssetWorkspaceStore(store);
   const taskStore = createInMemoryTaskRunStore(assetStore);
@@ -68,6 +68,11 @@ const createScenario = async (mode: "AUTO" | "MANUAL" | "OFF", input: { withPixa
         updatedAt: new Date().toISOString(),
       };
     },
+    ...(input.musicIntentHint ? {
+      async listStoryboardMusicIntentHints() {
+        return [input.musicIntentHint];
+      },
+    } : {}),
     async createProductionRun(input: { idempotencyKey: string; productionRunId: string; workspaceId: string; projectId: string; storyboardRevisionId: string; deliveryPlanRevisionId?: string; pixabayFallbackMusicAssetId?: string }) {
       runCreationInputs.push({
         ...(input.pixabayFallbackMusicAssetId ? { pixabayFallbackMusicAssetId: input.pixabayFallbackMusicAssetId } : {}),
@@ -141,7 +146,7 @@ const createScenario = async (mode: "AUTO" | "MANUAL" | "OFF", input: { withPixa
           calls += 1;
           assert.equal(command.query, "calm corporate");
           assert.equal(command.min_duration, 30);
-          assert.equal(command.max_duration, 300);
+          assert.equal(command.max_duration, 120);
           return {
             bytes,
             mimeType: "audio/mpeg" as const,
@@ -176,6 +181,7 @@ const createScenario = async (mode: "AUTO" | "MANUAL" | "OFF", input: { withPixa
       metadata: {
         source_title: input.seedMusicTitle ?? "Fixture background music",
         ...(input.seedMusicQuery ? { pixabay_query: input.seedMusicQuery } : {}),
+        ...(input.seedMusicProvider ? { audio_provider: input.seedMusicProvider } : {}),
       },
     });
     assert.equal(created.kind, "NEW");
@@ -208,7 +214,7 @@ const createScenario = async (mode: "AUTO" | "MANUAL" | "OFF", input: { withPixa
   return { app, assetStore, projectId, path, command, first, firstBody, runCreationInputs, get calls() { return calls; } };
 };
 
-test("AUTO accepts one Pixabay import when the returned track title matches authored intent and replay is idempotent", async () => {
+test("AUTO imports one source-backed Pixabay track and reuses it on idempotent replay", async () => {
   const scenario = await createScenario("AUTO", { withPixabay: true, seedMusic: false });
   assert.equal(scenario.first.status, 202);
   assert.equal(scenario.calls, 1);
@@ -228,18 +234,44 @@ test("AUTO accepts one Pixabay import when the returned track title matches auth
   assert.equal((await readJson(replay)).data.id, scenario.firstBody.data.id);
   assert.equal((await scenario.assetStore.listWorkspaceMusicAssets("ws_dev_default")).length, 1);
   assert.equal(scenario.runCreationInputs.length, 2);
-  assert.equal(scenario.runCreationInputs[1]?.pixabayFallbackMusicAssetId, undefined);
+  assert.equal(scenario.runCreationInputs[1]?.pixabayFallbackMusicAssetId, assets[0]?.id);
   assert.equal(scenario.calls, 1);
 });
 
-test("AUTO uses an existing usable MUSIC asset without invoking Pixabay", async () => {
+test("AUTO keeps the existing local MUSIC library and does not call Pixabay", async () => {
   const scenario = await createScenario("AUTO", { withPixabay: true, seedMusic: true, seedMusicTitle: "calm corporate music" });
   assert.equal(scenario.first.status, 202);
   assert.equal(scenario.calls, 0);
   assert.equal((await scenario.assetStore.listWorkspaceMusicAssets("ws_dev_default")).length, 1);
 });
 
-test("AUTO accepts a usable first Pixabay result when only pixabay_query matches authored intent", async () => {
+test("AUTO reuses one duration-qualified Pixabay import with the exact source query", async () => {
+  const scenario = await createScenario("AUTO", {
+    withPixabay: true,
+    seedMusic: true,
+    seedMusicTitle: "BGM",
+    seedMusicQuery: "calm corporate",
+    seedMusicProvider: "pixabay_music",
+  });
+  assert.equal(scenario.first.status, 202);
+  assert.equal(scenario.calls, 0);
+  const assets = await scenario.assetStore.listWorkspaceMusicAssets("ws_dev_default");
+  assert.equal(assets.length, 1);
+  assert.equal(scenario.runCreationInputs[0]?.pixabayFallbackMusicAssetId, assets[0]?.id);
+});
+
+test("AUTO uses persisted storyboard music intent before deciding to call Pixabay", async () => {
+  const scenario = await createScenario("AUTO", {
+    withPixabay: true,
+    seedMusic: true,
+    seedMusicTitle: "ambient beauty instrumental",
+    musicIntentHint: "ambient beauty",
+  });
+  assert.equal(scenario.first.status, 202);
+  assert.equal(scenario.calls, 0);
+});
+
+test("AUTO accepts the first source-backed Pixabay result without title scoring", async () => {
   const scenario = await createScenario("AUTO", {
     withPixabay: true,
     seedMusic: false,
@@ -261,7 +293,7 @@ test("AUTO accepts a usable first Pixabay result when only pixabay_query matches
   assert.equal(scenario.runCreationInputs[1]?.pixabayFallbackMusicAssetId, assets[0]?.id);
 });
 
-test("AUTO falls back when a duration-qualified local candidate has only a matching pixabay_query", async () => {
+test("AUTO falls back to Pixabay when a local source has only query provenance and no content match", async () => {
   const scenario = await createScenario("AUTO", {
     withPixabay: true,
     seedMusic: true,
@@ -272,14 +304,12 @@ test("AUTO falls back when a duration-qualified local candidate has only a match
   assert.equal(scenario.calls, 1);
   const assets = await scenario.assetStore.listWorkspaceMusicAssets("ws_dev_default");
   assert.equal(assets.length, 2);
-  assert.equal(assets.some((asset) => asset.metadata.audio_provider === "pixabay_music"), true);
   const localQueryOnly = assets.find((asset) => asset.metadata.audio_provider !== "pixabay_music");
   assert.equal(localQueryOnly?.metadata.pixabay_query, "calm corporate");
   assert.equal(localQueryOnly?.metadata.source_title, "upbeat energetic instrumental");
-  const replay = await post(scenario.app, scenario.path, "pixabay-auto-run-AUTO", scenario.command);
-  assert.equal(replay.status, 202);
-  assert.equal((await readJson(replay)).data.id, scenario.firstBody.data.id);
-  assert.equal(scenario.calls, 1);
+  const imported = assets.find((asset) => asset.metadata.audio_provider === "pixabay_music");
+  assert.equal(imported?.metadata.pixabay_query, "calm corporate");
+  assert.equal(scenario.runCreationInputs[0]?.pixabayFallbackMusicAssetId, imported?.id);
 });
 
 test("AUTO treats a short local MUSIC asset as unsuitable and fills from Pixabay", async () => {

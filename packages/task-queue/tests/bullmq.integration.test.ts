@@ -2,12 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BullMqCreativePlanningQueue,
   BullMqInternalEventQueue,
+  clearCreativePlanningQueues,
   clearInternalEventQueues,
+  createBullMqCreativePlanningWorker,
   createBullMqInternalEventWorker,
   type DeadLetterQueueJob,
 } from "../src/index.js";
-import { InternalTaskRunQueueMessageSchema, type InternalTaskRunQueueMessage } from "@alchemy-video/contracts";
+import {
+  InternalCreativePlanningQueueMessageSchema,
+  InternalTaskRunQueueMessageSchema,
+  type InternalCreativePlanningQueueMessage,
+  type InternalTaskRunQueueMessage,
+} from "@alchemy-video/contracts";
 
 const waitFor = async (predicate: () => boolean, timeoutMs = 10_000) => {
   const deadline = Date.now() + timeoutMs;
@@ -69,4 +77,90 @@ test("BullMQ retries a durable internal event and sends the final failure to the
     await queue.close();
     await clearInternalEventQueues({ redisUrl, queueName, deadLetterQueueName });
   }
+});
+
+class PlanningQueueFailure extends Error {
+  constructor(
+    readonly retryable: boolean,
+    readonly safeReason: string,
+  ) {
+    super("private planning failure detail");
+    this.name = "PlanningQueueFailure";
+  }
+}
+
+const creativePlanningMessage = (suffix: string): InternalCreativePlanningQueueMessage =>
+  InternalCreativePlanningQueueMessageSchema.parse({
+    contract_version: "1.0",
+    event_id: `evt_c11_queue_${suffix}`,
+    workspace_id: `ws_c11_queue_${suffix}`,
+    project_id: `prj_c11_queue_${suffix}`,
+    creative_brief_revision_id: `cbr_c11_queue_${suffix}`,
+    correlation_id: `cor_c11_queue_${suffix}`,
+  });
+
+const exerciseCreativePlanningFailure = async (input: {
+  retryable: boolean;
+  expectedAttempts: number;
+  safeReason: string;
+}) => {
+  const redisUrl = process.env.REDIS_URL;
+  if (!redisUrl) return;
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const queueName = `alchemy-video-c11-queue-${suffix}`;
+  const deadLetterQueueName = `${queueName}-dead-letter`;
+  const message = creativePlanningMessage(suffix);
+  let attempts = 0;
+  let terminalCalls = 0;
+  let terminal: Record<string, unknown> | undefined;
+  const queue = new BullMqCreativePlanningQueue(redisUrl, { queueName });
+  const worker = createBullMqCreativePlanningWorker({
+    redisUrl,
+    queueName,
+    deadLetterQueueName,
+    processor: async () => {
+      attempts += 1;
+      throw new PlanningQueueFailure(input.retryable, input.safeReason);
+    },
+    isRetryableFailure: (error) => error instanceof PlanningQueueFailure && error.retryable,
+    onTerminalFailure: async (failure) => {
+      terminalCalls += 1;
+      terminal = failure as unknown as Record<string, unknown>;
+    },
+  });
+  try {
+    await worker.waitUntilReady();
+    await queue.enqueue(message);
+    await waitFor(() => terminal !== undefined);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(attempts, input.expectedAttempts);
+    assert.equal(terminalCalls, 1);
+    assert.equal(terminal?.attempts, input.expectedAttempts);
+    assert.equal(terminal?.reason, input.safeReason);
+    assert.equal(terminal?.event_id, message.event_id);
+  } finally {
+    await worker.close();
+    await queue.close();
+    await clearCreativePlanningQueues({ redisUrl, queueName, deadLetterQueueName });
+  }
+};
+
+test("Creative planning queue retries a retryable director failure three real times", {
+  skip: !process.env.REDIS_URL,
+}, async () => {
+  await exerciseCreativePlanningFailure({
+    retryable: true,
+    expectedAttempts: 3,
+    safeReason: "DIRECTOR_TIMEOUT",
+  });
+});
+
+test("Creative planning queue terminates a deterministic failure after one delivery", {
+  skip: !process.env.REDIS_URL,
+}, async () => {
+  await exerciseCreativePlanningFailure({
+    retryable: false,
+    expectedAttempts: 1,
+    safeReason: "SEMANTIC_DECISION_MALFORMED",
+  });
 });
