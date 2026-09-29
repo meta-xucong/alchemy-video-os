@@ -257,7 +257,8 @@ test("C09-C creates real-provider I2V and R2V snapshots only from saved Shot bin
   assert.equal(referenceSnapshot?.inputSnapshot.visual_input?.mode, "REFERENCE_SET");
   assert.deepEqual(referenceSnapshot?.inputSnapshot.reference_asset_ids, referenceAssetIds);
   assert.deepEqual(referenceSnapshot?.inputSnapshot.visual_input?.references.map((reference) => reference.role), ["SUBJECT", "STYLE"]);
-  assert.match(referenceSnapshot?.inputSnapshot.prompt ?? "", /do not substitute a generic environment/);
+  assert.match(referenceSnapshot?.inputSnapshot.prompt ?? "", /Reference images \(input order\): image 1 = SUBJECT; image 2 = STYLE/);
+  assert.match(referenceSnapshot?.inputSnapshot.prompt ?? "", /Preserve the supplied reference roles and order/);
   assert.equal(JSON.stringify(referenceSet).includes("reference_images"), false);
 });
 

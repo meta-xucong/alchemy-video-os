@@ -2231,25 +2231,34 @@ export class DrizzleProductionRepository implements ProductionStore {
       eq(projects.workspaceId, run.workspaceId),
       eq(projects.id, run.projectId),
     )).limit(1);
-    const reviews = await this.db
-      .select()
-      .from(handoffReviews)
-      .where(and(
-        eq(handoffReviews.workspaceId, run.workspaceId),
-        eq(handoffReviews.projectId, run.projectId),
-        eq(handoffReviews.productionRunId, run.id),
-      ));
-    const expectedReviewCount = Math.max(0, run.totalShotCount - 1);
+    // DeliveryPlan-backed runs use the source Huobao/OpenMontage hard-cut
+    // path.  Handoff vision evaluation and transition repairs are historical
+    // ALCHMED1-7 facts only; they must not gate a new run or invent BLEND/
+    // BRIDGE semantics that the source stitch operation cannot express.
+    const legacyTransitionPath = !run.deliveryPlanRevisionId;
+    const reviews = legacyTransitionPath
+      ? await this.db
+        .select()
+        .from(handoffReviews)
+        .where(and(
+          eq(handoffReviews.workspaceId, run.workspaceId),
+          eq(handoffReviews.projectId, run.projectId),
+          eq(handoffReviews.productionRunId, run.id),
+        ))
+      : [];
+    const expectedReviewCount = legacyTransitionPath ? Math.max(0, run.totalShotCount - 1) : 0;
     if (reviews.length !== expectedReviewCount) unavailable("handoff reviews are not complete");
-    const repairs = await this.db
-      .select()
-      .from(transitionRepairs)
-      .where(and(
-        eq(transitionRepairs.workspaceId, run.workspaceId),
-        eq(transitionRepairs.projectId, run.projectId),
-        eq(transitionRepairs.productionRunId, run.id),
-        eq(transitionRepairs.status, "ACCEPTED"),
-      ));
+    const repairs = legacyTransitionPath
+      ? await this.db
+        .select()
+        .from(transitionRepairs)
+        .where(and(
+          eq(transitionRepairs.workspaceId, run.workspaceId),
+          eq(transitionRepairs.projectId, run.projectId),
+          eq(transitionRepairs.productionRunId, run.id),
+          eq(transitionRepairs.status, "ACCEPTED"),
+        ))
+      : [];
     const segments = await this.db
       .select()
       .from(productionSegments)
@@ -2527,7 +2536,9 @@ export class DrizzleProductionRepository implements ProductionStore {
       }
       repairByBoundary.set(repair.boundarySequence, repair);
     }
-    const transitions: Array<"PASS" | "BLEND" | "BRIDGE"> = [];
+    const transitions: Array<"PASS" | "BLEND" | "BRIDGE"> = run.deliveryPlanRevisionId
+      ? Array.from({ length: Math.max(0, run.totalShotCount - 1) }, () => "PASS" as const)
+      : [];
     for (let index = 0; index < expectedReviewCount; index += 1) {
       const boundary = index + 1;
       const toSequence = boundary + 1;
@@ -3098,7 +3109,11 @@ export class DrizzleProductionRepository implements ProductionStore {
             eq(productionSegments.status, "ACCEPTED"),
           ))
           .orderBy(asc(productionSegments.sequence));
-        if (acceptedSegments.length <= 1) {
+        // New DeliveryPlan runs use the source hard-cut stitch path directly.
+        // Do not send them through the historical handoff vision evaluator or
+        // fabricate BLEND/BRIDGE transition repairs. Legacy runs retain the
+        // existing review flow for compatibility.
+        if (acceptedSegments.length <= 1 || currentRun.deliveryPlanRevisionId) {
           await insertOutboxEvent(transaction, compositionRequestedEvent(input.event, { now: input.now, productionRunId: currentRun.id }));
         } else {
           const [checkingRun] = await transaction.update(productionRuns)

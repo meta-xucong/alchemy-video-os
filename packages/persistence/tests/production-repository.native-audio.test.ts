@@ -225,6 +225,7 @@ const transitionRepairRow = (
 const twoSegmentCompositionDatabase = (
   reviews: unknown[],
   repairs: unknown[] = [],
+  runOverrides: Record<string, unknown> = {},
 ) => {
   const secondSourceAssetId = "ast_native_video_fixture_two";
   const secondTaskRunId = "tsk_native_audio_fixture_two";
@@ -236,7 +237,7 @@ const twoSegmentCompositionDatabase = (
     objectKey: `${ids.workspaceId}/${ids.projectId}/${secondSourceAssetId}/generated.mp4`,
   });
   const rows = baseRows("NATIVE_PROVIDER", {
-    run: { acceptedShotCount: 2, totalShotCount: 2 },
+    run: { acceptedShotCount: 2, totalShotCount: 2, ...runOverrides },
     assets: [firstSource, secondSource],
   });
   const firstSegment = rows.production_segments[0] as Record<string, unknown>;
@@ -955,6 +956,22 @@ test("composition maps an accepted BRIDGE repair only to its reviewed boundary",
   assert.ok(result);
   assert.deepEqual(result.compositionPlan?.transitions, ["BRIDGE"]);
   assert.deepEqual(result.compositionPlan?.bridge_durations_ms, [2_000]);
+});
+
+test("new DeliveryPlan composition ignores legacy handoff transitions and emits source cuts", async () => {
+  const repository = new DrizzleProductionRepository(
+    twoSegmentCompositionDatabase(
+      [handoffReviewRow(1, 2, "BRIDGE_REQUIRED")],
+      [transitionRepairRow(2, "BRIDGE")],
+      { deliveryPlanRevisionId: ids.deliveryPlanRevisionId },
+    ),
+  );
+  const result = await repository.findProductionCompositionInput({
+    event: compositionEvent(),
+  });
+  assert.ok(result);
+  assert.deepEqual(result.compositionPlan?.transitions, ["PASS"]);
+  assert.deepEqual(result.compositionPlan?.bridge_durations_ms, []);
 });
 
 test("composition keeps an unavailable or failed handoff as a direct cut needing attention", async () => {

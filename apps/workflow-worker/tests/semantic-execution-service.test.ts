@@ -164,7 +164,7 @@ test("real semantic executor persists exact dialogue, canonical references, and 
   const promptPackage = captured!.promptPackages?.[0];
   assert.ok(promptPackage);
   assert.match(promptPackage!.prompt, /Character says: "我回来了。"/);
-  assert.match(promptPackage!.prompt, /image 1 = scene reference/);
+  assert.match(promptPackage!.prompt, /Reference images \(input order\): image 1 = SCENE/);
   assert.doesNotMatch(promptPackage!.prompt, /PLATFORM_OWNED_|__MOCK_UNSPECIFIED_|Motion timeline|PROP CONTINUITY CONTRACT/);
   assert.equal(Object.hasOwn(promptPackage!.capabilitySnapshot, "motion_plan"), false);
   assert.equal(promptPackage!.capabilitySnapshot.prompt_source_kind, "SEMANTIC_VISUAL_PROJECTION");

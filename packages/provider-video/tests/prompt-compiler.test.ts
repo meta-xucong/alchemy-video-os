@@ -48,12 +48,9 @@ test("the compiler makes scene and subject reference semantics explicit to the p
     referenceRoles: ["SUBJECT", "SCENE"],
   });
 
-  assert.match(compiled.prompt, /scene\/location anchor/);
-  assert.match(compiled.prompt, /subject identity/);
-  assert.match(compiled.prompt, /do not substitute a generic environment/);
-  assert.match(compiled.prompt, /Provider input order is semantic: image 1 = subject reference, image 2 = scene reference/);
-  assert.ok(compiled.prompt.indexOf("image 1 = subject reference") < compiled.prompt.indexOf("image 2 = scene reference"));
-  assert.match(compiled.prompt, /Do not infer roles from the original upload order/);
+  assert.match(compiled.prompt, /Reference images \(input order\): image 1 = SUBJECT; image 2 = SCENE/);
+  assert.ok(compiled.prompt.indexOf("image 1 = SUBJECT") < compiled.prompt.indexOf("image 2 = SCENE"));
+  assert.match(compiled.prompt, /Preserve the supplied reference roles and order/);
 });
 
 test("the compiler never infers object locks from authored source prose", () => {
@@ -66,10 +63,10 @@ test("the compiler never infers object locks from authored source prose", () => 
 
   assert.equal(compiled.generatedPromptParts.some((part) => part.includes("关键对象")), false);
   assert.doesNotMatch(compiled.prompt, /已验证关键对象约束/);
-  assert.match(compiled.prompt, /Reference image roles/);
+  assert.match(compiled.prompt, /Reference images \(input order\)/);
 });
 
-test("the compiler emits object continuity only from an explicit verified lock", () => {
+test("the compiler does not invent an object-continuity wrapper", () => {
   const sourcePrompt = "她左手拿着手机，随后从左手换到右手。";
   const withoutLock = compileVideoPrompt({
     sourcePrompt,
@@ -92,27 +89,19 @@ test("the compiler emits object continuity only from an explicit verified lock",
       transfer: { from: "LEFT_HAND", to: "RIGHT_HAND" },
     }],
   });
-  assert.match(compiled.prompt, /已验证关键对象约束/);
-  assert.match(compiled.prompt, /明确换手/);
-  assert.match(compiled.prompt, /释放，再双手接触交接，最后由右手持有/);
-  assert.match(compiled.prompt, /不得替换为其它物体/);
+  assert.doesNotMatch(compiled.prompt, /已验证关键对象约束|明确换手|不得替换为其它物体/);
+  assert.equal(compiled.generatedPromptParts.some((part) => part.includes("关键对象")), false);
 });
 
-test("the compiler preserves explicit dialogue as a visible performance while platform narration owns final audio", () => {
+test("the compiler leaves non-native narration to the AudioPlan owner", () => {
   const compiled = compileVideoPrompt({
     sourcePrompt: "她走近镜头，开口问到：“真巧，你什么时候来的？”",
     generationSettings: {},
     profile: legacyNarrationProfile,
     dialogueLines: ["真巧，你什么时候来的？"],
   });
-  assert.match(compiled.prompt, /Dialogue visual contract/);
+  assert.doesNotMatch(compiled.prompt, /Dialogue visual contract|platform narration supplies the final audible speech/);
   assert.match(compiled.prompt, /真巧，你什么时候来的/);
-  assert.match(compiled.prompt, /mouth movement, and lip-sync reference/);
-  assert.match(compiled.prompt, /platform narration supplies the final audible speech/);
-  assert.match(compiled.prompt, /natural consistent pace/);
-  assert.match(compiled.prompt, /SILENCE\/AMBIENT-ONLY/);
-  assert.match(compiled.prompt, /do not continue an additional talking performance/);
-  assert.match(compiled.prompt, /Do not slow, stretch, repeat, or add filler words/);
 });
 
 test("the native provider owner emits the source dialogue syntax for native audio", () => {
