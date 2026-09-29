@@ -4,6 +4,8 @@ import test from "node:test";
 import { InternalCreativePlanningQueueMessageSchema } from "@alchemy-video/contracts";
 import type { ControlCreativeBriefRevision, ControlStoryboardRevision } from "@alchemy-video/persistence";
 
+import { CreativePlanningProcessingError } from "../src/creative-planning-failure.js";
+import { SemanticDirectorClientError } from "../src/semantic-director-client.js";
 import { CreativePlanningEventConsumer, CreativePlanningOutboxRelay, createCreativePlanningQueueMessage } from "../src/service.js";
 
 const requestedEvent = {
@@ -113,7 +115,29 @@ test("Creative planning consumer completes a claimed plan without creating a vid
   assert.equal(completed[0]?.eventId, requestedEvent.event_id);
 });
 
-test("Creative planning consumer records a safe planning failure before dead-letter release", async () => {
+test("Creative planning consumer releases a retryable model failure before the next delivery", async () => {
+  const releases: Array<Record<string, unknown>> = [];
+  const consumer = new CreativePlanningEventConsumer({
+    async claimCreativePlanningEvent() { return { kind: "CLAIMED" as const, brief }; },
+    async completeCreativePlanningEvent() { throw new Error("complete should not run"); },
+    async releaseCreativePlanningEvent(input) { releases.push(input as unknown as Record<string, unknown>); },
+    async failCreativePlan() { throw new Error("failure transition should not run before exhaustion"); },
+  }, {
+    async execute() {
+      throw new SemanticDirectorClientError("DIRECTOR_TIMEOUT", "private timeout detail", true);
+    },
+  }, { consumerName: "c11-planning-service", workerId: "c11-worker", leaseMs: 100 });
+
+  await assert.rejects(consumer.process(queueMessage()),
+    (error) => error instanceof CreativePlanningProcessingError
+      && error.code === "DIRECTOR_TIMEOUT"
+      && error.retryable);
+  assert.equal(releases.length, 1);
+  assert.equal(releases[0]?.deadLetter, false);
+  assert.equal(releases[0]?.reason, "DIRECTOR_TIMEOUT");
+});
+
+test("Creative planning consumer keeps a deterministic failure leased until one terminal dead-letter transition", async () => {
   const failures: Array<Record<string, unknown>> = [];
   const releases: Array<Record<string, unknown>> = [];
   const consumer = new CreativePlanningEventConsumer({
@@ -122,15 +146,21 @@ test("Creative planning consumer records a safe planning failure before dead-let
     async releaseCreativePlanningEvent(input) { releases.push(input as unknown as Record<string, unknown>); },
     async failCreativePlan(input) { failures.push(input as unknown as Record<string, unknown>); return brief; },
   }, {
-    async execute() { throw new Error("controlled planner failure"); },
+    async execute() {
+      throw new SemanticDirectorClientError("DIRECTOR_CONTENT_FORMAT_INVALID", "private response detail", false);
+    },
   }, { consumerName: "c11-planning-service", workerId: "c11-worker", leaseMs: 100 });
 
-  await assert.rejects(consumer.process(queueMessage()), /controlled planner failure/);
+  await assert.rejects(consumer.process(queueMessage()),
+    (error) => error instanceof CreativePlanningProcessingError
+      && error.code === "DIRECTOR_CONTENT_FORMAT_INVALID"
+      && !error.retryable);
+  assert.equal(releases.length, 0);
   await consumer.deadLetter({
     eventId: requestedEvent.event_id,
     workspaceId: requestedEvent.workspace_id,
     creativeBriefRevisionId: brief.id,
-    reason: "controlled retry exhaustion",
+    reason: "DIRECTOR_CONTENT_FORMAT_INVALID",
   });
   assert.equal(failures[0]?.workspaceId, requestedEvent.workspace_id);
   assert.equal(failures[0]?.creativeBriefRevisionId, brief.id);

@@ -176,6 +176,13 @@
       "when": 1788960619106,
       "tag": "0024_romantic_reaper",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1790447496320,
+      "tag": "0025_magical_cobalt_man",
+      "breakpoints": true
     }
   ]
 }

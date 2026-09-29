@@ -3,6 +3,11 @@ import { createPrefixedId } from "@alchemy-video/domain";
 import type { ControlCreativeBriefRevision, CreativePlanningEvent, CreativePlanningStore, OutboxRelayStore, PersistedOutboxEvent } from "@alchemy-video/persistence";
 import type { CreativePlanningQueuePort } from "@alchemy-video/task-queue";
 
+import {
+  CreativePlanningProcessingError,
+  normalizeCreativePlanningFailure,
+} from "./creative-planning-failure.js";
+
 type CreativePlanningExecutorPort = {
   execute(input: {
     brief: ControlCreativeBriefRevision;
@@ -86,28 +91,70 @@ export class CreativePlanningEventConsumer {
       now: new Date(),
     });
     if (claim.kind === "RETRY" || claim.kind === "BUSY") {
-      throw new Error(`Creative planning event ${message.event_id} requires another delivery attempt.`);
+      throw new CreativePlanningProcessingError("PLANNING_EVENT_NOT_READY", true);
     }
     if (claim.kind === "DUPLICATE") return claim.kind;
     if (claim.kind !== "CLAIMED") return claim.kind;
-    const completed = await this.executor.execute({
-      brief: claim.brief,
-      event: {
-        eventId: createPrefixedId("evt"),
-        messageId: createPrefixedId("msg"),
-        traceId: createPrefixedId("trc"),
-        correlationId: message.correlation_id,
-      },
-    });
-    if (!completed) throw new Error("Creative planning completion did not persist a storyboard revision.");
-    await this.store.completeCreativePlanningEvent({
-      eventId: message.event_id,
-      workspaceId: message.workspace_id,
-      consumerName: this.input.consumerName,
-      workerId: this.input.workerId,
-      now: new Date(),
-    });
-    return claim.kind;
+    try {
+      const completed = await this.executor.execute({
+        brief: claim.brief,
+        event: {
+          eventId: createPrefixedId("evt"),
+          messageId: createPrefixedId("msg"),
+          traceId: createPrefixedId("trc"),
+          correlationId: message.correlation_id,
+        },
+      });
+      if (!completed) {
+        throw new CreativePlanningProcessingError("PLANNING_COMPLETION_MISSING", false);
+      }
+      await this.store.completeCreativePlanningEvent({
+        eventId: message.event_id,
+        workspaceId: message.workspace_id,
+        consumerName: this.input.consumerName,
+        workerId: this.input.workerId,
+        now: new Date(),
+      });
+      return claim.kind;
+    } catch (error) {
+      const failure = normalizeCreativePlanningFailure(error);
+      const safeDiagnostics = error && typeof error === "object"
+        ? (error as { issues?: unknown; code?: unknown }).issues
+        : undefined;
+      console.error(JSON.stringify({
+        event: "creative_planning.execution_failed",
+        failure_code: failure.safeReason,
+        retryable: failure.retryable,
+        error_name: error instanceof Error ? error.name : typeof error,
+        error_constructor: error && typeof error === "object" && "constructor" in error
+          ? String((error as { constructor?: { name?: unknown } }).constructor?.name ?? "unknown")
+          : undefined,
+        error_code: error && typeof error === "object" && "code" in error
+          ? String((error as { code?: unknown }).code ?? "unknown")
+          : undefined,
+        validation_issue_codes: Array.isArray(safeDiagnostics)
+          ? safeDiagnostics.map((issue) => issue && typeof issue === "object" && "code" in issue
+            ? String((issue as { code?: unknown }).code ?? "unknown")
+            : "unknown").slice(0, 20)
+          : undefined,
+      }));
+      if (failure.retryable) {
+        try {
+          await this.store.releaseCreativePlanningEvent({
+            eventId: message.event_id,
+            workspaceId: message.workspace_id,
+            consumerName: this.input.consumerName,
+            workerId: this.input.workerId,
+            reason: failure.safeReason,
+            deadLetter: false,
+            now: new Date(),
+          });
+        } catch {
+          throw new CreativePlanningProcessingError("PLANNING_EVENT_RELEASE_FAILED", true);
+        }
+      }
+      throw failure;
+    }
   }
 
   async deadLetter(input: { eventId: string; workspaceId: string; creativeBriefRevisionId: string; reason: string }) {

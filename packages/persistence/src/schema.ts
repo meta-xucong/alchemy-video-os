@@ -39,6 +39,7 @@ import {
   type DurationPolicy,
   type VoiceAuthorizationStatus,
   type VoiceMode,
+  type CreativeBriefReferenceRole,
   type CreativeBriefTargetResolution,
 } from "@alchemy-video/contracts";
 
@@ -157,6 +158,7 @@ export const creativeBriefRevisions = pgTable(
     targetResolution: varchar("target_resolution", { length: 4 }).$type<CreativeBriefTargetResolution>().default("720p").notNull(),
     stylePreferences: text("style_preferences").default("").notNull(),
     sourceAssetIds: jsonb("source_asset_ids").$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
+    sourceAssetRoles: jsonb("source_asset_roles").$type<Array<{ asset_id: string; role: CreativeBriefReferenceRole; usage?: string }>>().default(sql`'[]'::jsonb`).notNull(),
     status: creativeRevisionStatus().default("DRAFT").notNull(),
     error: jsonb().$type<Record<string, unknown>>(),
     createdAt: createdAt(),

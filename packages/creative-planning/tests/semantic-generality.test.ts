@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
+  SemanticDecisionVerificationError,
   createCanonicalSourceBundle,
   projectSemanticReferences,
   verifySemanticDirectorProvenance,
@@ -119,6 +120,7 @@ test("reference purpose follows complete intent rather than visible subject matt
     kind: "REFERENCE_ASSET" as const,
     asset_id: "ast_counterintuitive_reference_001",
     asset_sha256: digest,
+    user_declared_usage: "只用于冷色灯光和颗粒质感",
     observation: "画面中可见一名人物站在室内。",
   };
   const decision = {
@@ -144,6 +146,14 @@ test("reference purpose follows complete intent rather than visible subject matt
     }],
     unresolved_items: [],
   };
+  const { user_declared_usage: _omittedUsage, ...assetWithoutUserPurpose } = assetRef;
+  const missingFrozenPurpose = structuredClone(decision);
+  missingFrozenPurpose.reference_usages[0]!.evidence_refs = [assetWithoutUserPurpose, sourceRef];
+  assert.throws(
+    () => verifySemanticDirectorProvenance(bundle, missingFrozenPurpose),
+    (error) => error instanceof SemanticDecisionVerificationError
+      && error.code === "REFERENCE_EVIDENCE_INVALID",
+  );
   const verified = verifySemanticDirectorProvenance(bundle, decision);
   const projection = projectSemanticReferences(verified, "seg_style_reference_001");
   assert.equal(projection.references[0]?.provider_role, "STYLE");
@@ -158,6 +168,11 @@ test("mixed-language dialogue remains exact and ordered without local prose pars
     sourceText: source,
     stylePreferences: "natural documentary",
     targetDurationSeconds: 8,
+    userDecisions: [{
+      decisionId: "dec_mixed_style_001",
+      field: "style_preferences",
+      value: "natural documentary",
+    }],
     providerCapability,
   });
   const dialogues = [
@@ -184,7 +199,16 @@ test("mixed-language dialogue remains exact and ordered without local prose pars
       sequence: 1,
       duration_seconds: 8,
       visual_decision: "Mara greets the viewer, then continues in Chinese.",
-      evidence_refs: [sourceEvidence(bundle, "evd_mixed_segment_001", source)],
+      evidence_refs: [
+        sourceEvidence(bundle, "evd_mixed_segment_001", source),
+        {
+          evidence_id: "evd_mixed_style_001",
+          kind: "USER_DECISION",
+          decision_id: "dec_mixed_style_001",
+          field: "style_preferences",
+          value_hash: bundle.user_decisions[0]!.value_hash,
+        },
+      ],
       dialogue_ids: dialogues.map((dialogue) => dialogue.dialogue_id),
       reference_asset_ids: [],
     }],
@@ -208,7 +232,13 @@ test("document prompt-injection text remains inert data while exact factual evid
     documents: [{
       documentId: "doc_industrial_001",
       conversionId: "dcv_industrial_001",
+      markdownSha256: sha(`${documentContent}\n完整冻结资产后续内容。`),
       content: documentContent,
+    }],
+    userDecisions: [{
+      decisionId: "dec_motor_style_001",
+      field: "style_preferences",
+      value: "technical documentation",
     }],
     providerCapability,
   });
@@ -219,6 +249,7 @@ test("document prompt-injection text remains inert data while exact factual evid
     document_id: document.document_id,
     conversion_id: document.conversion_id,
     markdown_sha256: document.markdown_sha256,
+    content_sha256: document.content_sha256,
     locator: "电机规格",
     quote: "电机额定扭矩为 18 N·m。",
   };
@@ -237,6 +268,13 @@ test("document prompt-injection text remains inert data while exact factual evid
       evidence_refs: [
         sourceEvidence(bundle, "evd_motor_source_001", source),
         documentEvidence,
+        {
+          evidence_id: "evd_motor_style_001",
+          kind: "USER_DECISION",
+          decision_id: "dec_motor_style_001",
+          field: "style_preferences",
+          value_hash: bundle.user_decisions[0]!.value_hash,
+        },
       ],
       dialogue_ids: [],
       reference_asset_ids: [],

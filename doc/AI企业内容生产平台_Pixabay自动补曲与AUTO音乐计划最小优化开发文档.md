@@ -1,5 +1,7 @@
 # AI 企业内容生产平台：Pixabay 自动补曲与 AUTO 音乐计划最小优化开发文档
 
+> **历史快照 / SUPERSEDED（2026-09-28）**：本文件早期关于“现有音乐选择器”、候选评分或 `bgm_prompt` 参与 AUTO 的文字不再授权当前实现。现行项目级 Music Plan 与原生音频所有权规则以《AI企业内容生产平台_项目级MusicPlan与原生音频所有权收敛开发文档.md》为准；本文件仅保留 Pixabay 单一路径的历史来源和导入事实。
+
 版本：`0.2.1`
 
 状态：`IMPLEMENTED / PENDING_AUDIT`

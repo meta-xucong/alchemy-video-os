@@ -1695,6 +1695,11 @@ export function createApp(options: CreateAppOptions = {}) {
       targetResolution: command.target_resolution,
       stylePreferences: command.style_preferences,
       sourceAssetIds: command.source_asset_ids,
+      sourceAssetRoles: command.source_asset_roles.map((reference) => ({
+        assetId: reference.asset_id,
+        role: reference.role,
+        ...(reference.usage ? { usage: reference.usage } : {}),
+      })),
       event: {
         eventId: createPrefixedId("evt"),
         messageId: createPrefixedId("msg"),
@@ -2133,10 +2138,11 @@ export function createApp(options: CreateAppOptions = {}) {
     const billing = fixedBillingPolicy ? undefined : await createFrozenVideoBilling(identity);
     let pixabayFallbackMusicAssetId: string | undefined;
 
-    // AUTO is local-first.  A duration-qualified MUSIC asset is still not a
-    // local choice unless the shared source token matcher finds a content hit.
-    // With no hit, keep the existing single server-side Pixabay import path.
-    // MANUAL and OFF never enter this branch.
+    // OpenMontage requires the Music Plan to surface available sources and
+    // record an explicit choice. AUTO remains local-first; the existing
+    // persistence selector chooses one whole-video track from the measured
+    // library candidates. A single already-imported Pixabay asset is reusable
+    // as the source-backed result of an idempotent retry.
     if (command.music_plan.mode === "AUTO") {
       const deliveryPlan = await deliveryPreflightStore.findDeliveryPlanRevision(identity.workspaceId, command.delivery_plan_revision_id);
       if (!deliveryPlan || deliveryPlan.projectId !== projectId) throw notFound("Delivery plan not found.");
@@ -2152,25 +2158,46 @@ export function createApp(options: CreateAppOptions = {}) {
       // suitable AUTO candidate; it must not suppress the existing Pixabay
       // fallback and leave an `apad` silence tail in the final mix.
       const brief = await planningStore.findCreativeBriefRevision(identity.workspaceId, deliveryPlan.creativeBriefRevisionId);
-      const musicIntentText = [command.music_plan.style_hint, brief?.stylePreferences, projectDetail.project.name]
-        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-        .join(" ");
       const existingMusic = (await assetStore.listWorkspaceMusicAssets(identity.workspaceId))
         .filter((asset) => isUsableMusicAsset(asset, { minimumDurationMs: minimumMusicDurationMs }));
-      if (!existingMusic.some((asset) => hasMusicContentMatch(asset, musicIntentText))) {
-        if (!pixabayMusicEnabled || !pixabayMusic) {
-          throw new ControlApiError(503, "PROVIDER_UNAVAILABLE", "AUTO music needs a configured Pixabay Music capability when no duration-qualified local MUSIC asset matches authored content.", true);
+      const musicIntentHints = planningStore.listStoryboardMusicIntentHints
+        ? await planningStore.listStoryboardMusicIntentHints(identity.workspaceId, storyboard.id)
+        : [];
+      const musicBriefText = [command.music_plan.style_hint, brief?.stylePreferences, projectDetail.project.name, ...musicIntentHints]
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .join(" ");
+      const matchingMusic = existingMusic.filter((asset) => hasMusicContentMatch(asset, musicBriefText));
+      const pixabayQuery = firstValidPixabayQuery([
+        command.music_plan.style_hint,
+        brief?.stylePreferences,
+        projectDetail.project.name,
+      ]);
+      // A previously imported Pixabay result is a source-backed selection,
+      // even when its returned title has no descriptive labels. Reuse only an
+      // exact query match and only one candidate; this closes an idempotent
+      // retry without turning provenance into a content-ranking signal.
+      const reusablePixabay = pixabayQuery
+        ? existingMusic.filter((asset) => asset.metadata?.audio_provider === "pixabay_music"
+          && asset.metadata?.pixabay_query === pixabayQuery)
+        : [];
+      if (reusablePixabay.length === 1) {
+        pixabayFallbackMusicAssetId = reusablePixabay[0]!.id;
+      } else if (matchingMusic.length > 0) {
+        const importedPixabay = matchingMusic.filter((asset) => asset.metadata?.audio_provider === "pixabay_music");
+        if (existingMusic.length === 1 && importedPixabay.length === 1) {
+          pixabayFallbackMusicAssetId = importedPixabay[0]!.id;
         }
-        const query = firstValidPixabayQuery([
-          command.music_plan.style_hint,
-          brief?.stylePreferences,
-          projectDetail.project.name,
-        ]);
+      }
+      if (!pixabayFallbackMusicAssetId && matchingMusic.length === 0) {
+        if (!pixabayMusicEnabled || !pixabayMusic) {
+          throw new ControlApiError(503, "PROVIDER_UNAVAILABLE", "AUTO music needs a configured Pixabay Music capability when no duration-qualified local MUSIC asset is available.", true);
+        }
+        const query = pixabayQuery;
         if (!query) throw validationError("AUTO music needs a non-empty style hint, creative preference, or project name before Pixabay can be searched.");
         const sourceCommand = PixabayMusicImportCommandSchema.safeParse({
           query,
           min_duration: targetDurationSeconds,
-          max_duration: 300,
+          max_duration: 120,
         });
         if (!sourceCommand.success) throw validationError("AUTO music search parameters are invalid.");
         const productionScope = `${identity.userId}:POST:/api/v1/projects/${projectId}/production-runs`;

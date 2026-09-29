@@ -1,4 +1,4 @@
-import { Queue, Worker, type ConnectionOptions, type Job } from "bullmq";
+import { Queue, UnrecoverableError, Worker, type ConnectionOptions, type Job } from "bullmq";
 
 import {
   InternalCreativePlanningQueueMessageSchema,
@@ -83,6 +83,15 @@ const queueOptions = {
 
 const safeReason = (reason: unknown) =>
   (reason instanceof Error ? reason.message : String(reason)).replace(/[\r\n]+/g, " ").slice(0, 500);
+
+const safeCreativePlanningReason = (reason: unknown) => {
+  if (reason && typeof reason === "object" && !Array.isArray(reason)) {
+    const value = (reason as { safeReason?: unknown }).safeReason;
+    if (typeof value === "string" && /^[A-Z0-9_]{1,160}$/u.test(value)) return value;
+  }
+  const message = safeReason(reason);
+  return /^[A-Z0-9_]{1,160}$/u.test(message) ? message : "PLANNING_EXECUTION_UNAVAILABLE";
+};
 
 export class BullMqInternalEventQueue implements InternalEventQueuePort {
   private readonly queue: Queue<InternalEventQueueJob>;
@@ -337,6 +346,7 @@ export type CreativePlanningQueueWorkerOptions = {
     attempts: number;
     reason: string;
   }) => Promise<void>;
+  isRetryableFailure?: (error: unknown) => boolean;
   concurrency?: number;
   queueName?: string;
   deadLetterQueueName?: string;
@@ -373,12 +383,22 @@ export const createBullMqCreativePlanningWorker = (input: CreativePlanningQueueW
   }>(deadLetterQueueName, { connection });
   const worker = new Worker<InternalCreativePlanningQueueMessage>(
     queueName,
-    async (job) => input.processor(InternalCreativePlanningQueueMessageSchema.parse(job.data)),
+    async (job) => {
+      try {
+        await input.processor(InternalCreativePlanningQueueMessageSchema.parse(job.data));
+      } catch (error) {
+        if (input.isRetryableFailure && !input.isRetryableFailure(error)) {
+          throw new UnrecoverableError(safeCreativePlanningReason(error));
+        }
+        throw error;
+      }
+    },
     { connection, concurrency: input.concurrency ?? 1, autorun: input.autoStart ?? true },
   );
 
   worker.on("failed", (job: Job<InternalCreativePlanningQueueMessage> | undefined, error) => {
-    if (!job || job.attemptsMade < (job.opts.attempts ?? 1)) return;
+    const unrecoverable = error instanceof UnrecoverableError || error.name === "UnrecoverableError";
+    if (!job || (!unrecoverable && job.attemptsMade < (job.opts.attempts ?? 1))) return;
     const message = InternalCreativePlanningQueueMessageSchema.safeParse(job.data);
     if (!message.success) {
       console.error(JSON.stringify({ event: "creative_planning_queue.invalid_message", attempts: job.attemptsMade, reason: "schema_validation_failed" }));
@@ -389,7 +409,7 @@ export const createBullMqCreativePlanningWorker = (input: CreativePlanningQueueW
       workspace_id: message.data.workspace_id,
       creative_brief_revision_id: message.data.creative_brief_revision_id,
       attempts: job.attemptsMade,
-      reason: safeReason(error),
+      reason: safeCreativePlanningReason(error),
     };
     void Promise.all([
       input.onTerminalFailure(payload),

@@ -2,12 +2,17 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { InMemoryStoragePort } from "@alchemy-video/storage-client";
+import { InMemoryStoragePort, type StoragePort } from "@alchemy-video/storage-client";
 
-import { BoundedDocumentContextReader } from "../src/document-context-reader.js";
+import {
+  BoundedDocumentContextReader,
+  DocumentContextReadError,
+} from "../src/document-context-reader.js";
 
 const markdownBytes = (content: string) => new TextEncoder().encode(content);
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+const documentFailure = (code: DocumentContextReadError["code"]) =>
+  (error: unknown) => error instanceof DocumentContextReadError && error.code === code;
 
 const context = (bytes: Uint8Array) => ({
   documentId: "doc_story",
@@ -32,6 +37,34 @@ test("BoundedDocumentContextReader keeps only the frozen Markdown budget", async
   assert.equal(contexts.length, 1);
   assert.equal(contexts[0]?.content.length, 5_000);
   assert.equal(contexts[0]?.markdownAssetId, "ast_markdown");
+  assert.equal(contexts[0]?.markdownSha256, context(bytes).markdownSha256);
+});
+
+test("BoundedDocumentContextReader truncates without splitting a UTF-16 pair and releases the stream lock", async () => {
+  const bytes = markdownBytes("abcd😀tail");
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(bytes); },
+    cancel() { cancelled = true; },
+  });
+  const storage: StoragePort = {
+    async inspectObject() {
+      return { mimeType: "text/markdown", byteSize: bytes.byteLength, sha256: sha256(bytes) };
+    },
+    async readObject() {
+      return { mimeType: "text/markdown", byteSize: bytes.byteLength, stream };
+    },
+    async createUploadUrl() { throw new Error("not used"); },
+    async putObject() { throw new Error("not used"); },
+    async createDownloadUrl() { throw new Error("not used"); },
+  };
+
+  const [result] = await new BoundedDocumentContextReader(storage).read([
+    { ...context(bytes), maxContentCharacters: 5 },
+  ]);
+  assert.equal(result?.content, "abcd");
+  assert.equal(cancelled, true);
+  assert.equal(stream.locked, false);
 });
 
 test("BoundedDocumentContextReader rejects missing or non-Markdown frozen objects", async () => {
@@ -42,7 +75,10 @@ test("BoundedDocumentContextReader rejects missing or non-Markdown frozen object
     mimeType: "text/plain",
     bytes,
   });
-  await assert.rejects(() => new BoundedDocumentContextReader(storage).read([context(bytes)]), /Frozen Markdown context is unavailable/);
+  await assert.rejects(
+    () => new BoundedDocumentContextReader(storage).read([context(bytes)]),
+    documentFailure("DOCUMENT_CONTEXT_OBJECT_INVALID"),
+  );
 });
 
 test("BoundedDocumentContextReader rejects a Markdown object whose frozen SHA-256 no longer matches", async () => {
@@ -53,7 +89,10 @@ test("BoundedDocumentContextReader rejects a Markdown object whose frozen SHA-25
     mimeType: "text/markdown",
     bytes: markdownBytes("被替换的资料内容。"),
   });
-  await assert.rejects(() => new BoundedDocumentContextReader(storage).read([context(frozenBytes)]), /Frozen Markdown context is unavailable/);
+  await assert.rejects(
+    () => new BoundedDocumentContextReader(storage).read([context(frozenBytes)]),
+    documentFailure("DOCUMENT_CONTEXT_OBJECT_INVALID"),
+  );
 });
 
 test("BoundedDocumentContextReader rejects invalid frozen budgets before reading storage", async () => {
@@ -61,6 +100,32 @@ test("BoundedDocumentContextReader rejects invalid frozen budgets before reading
   const bytes = markdownBytes("品牌资料");
   await assert.rejects(
     () => new BoundedDocumentContextReader(storage).read([{ ...context(bytes), maxContentCharacters: 5_001 }]),
-    /Frozen Markdown context reference is invalid/,
+    documentFailure("DOCUMENT_CONTEXT_REFERENCE_INVALID"),
+  );
+});
+
+test("BoundedDocumentContextReader classifies invalid UTF-8 and empty Markdown as deterministic failures", async () => {
+  const invalidUtf8Storage = new InMemoryStoragePort();
+  const invalidUtf8 = new Uint8Array([0xc3, 0x28]);
+  await invalidUtf8Storage.putObject({
+    objectKey: context(invalidUtf8).markdownObjectKey,
+    mimeType: "text/markdown",
+    bytes: invalidUtf8,
+  });
+  await assert.rejects(
+    () => new BoundedDocumentContextReader(invalidUtf8Storage).read([context(invalidUtf8)]),
+    documentFailure("DOCUMENT_CONTEXT_ENCODING_INVALID"),
+  );
+
+  const emptyStorage = new InMemoryStoragePort();
+  const empty = markdownBytes("   \n\t  ");
+  await emptyStorage.putObject({
+    objectKey: context(empty).markdownObjectKey,
+    mimeType: "text/markdown",
+    bytes: empty,
+  });
+  await assert.rejects(
+    () => new BoundedDocumentContextReader(emptyStorage).read([context(empty)]),
+    documentFailure("DOCUMENT_CONTEXT_EMPTY"),
   );
 });

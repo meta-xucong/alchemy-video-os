@@ -2,15 +2,150 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
+import { semanticPromptPackageIntegrityPayload } from "@alchemy-video/contracts";
+import { canonicalJson } from "@alchemy-video/domain";
+
 import {
   isUsableMusicAsset,
-  hasMusicContentMatch,
+  selectAutoMusicAsset,
   measuredVisualSegmentMatchesRequest,
   resolveAudioOwnerForComposition,
   resolveAudioTrackGainDb,
-  scoreMusicAsset,
-  selectAutoMusicAsset,
+  validateSemanticPromptPackage,
 } from "../src/production-repository.js";
+
+const semanticHash = (value: unknown) =>
+  createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
+
+const semanticPromptPackageFixture = () => {
+  const sourcePrompt = "用户原始故事文本。";
+  const sourceHash = createHash("sha256").update(sourcePrompt, "utf8").digest("hex");
+  const decisionHash = "d".repeat(64);
+  const segmentId = "seg_semantic_projection_001";
+  const shotSpecId = "ssp_semantic_projection_001";
+  const prompt = "经过编译的语义视频提示。";
+  const projectedSourcePrompt = "银白样本瓶保持真实结构。";
+  const generatedPromptParts = ["镜头保持冷白实验室照明。"];
+  const evidenceIds = ["evd_semantic_projection_001"];
+  const dialogueProjection = {
+    version: 1 as const,
+    source_hash: sourceHash,
+    decision_hash: decisionHash,
+    segment_id: segmentId,
+    dialogues: [],
+  };
+  const referenceProjection = {
+    version: 1 as const,
+    source_hash: sourceHash,
+    decision_hash: decisionHash,
+    segment_id: segmentId,
+    references: [],
+  };
+  const capabilitySnapshot: Record<string, unknown> = {
+    prompt_source_kind: "SEMANTIC_VISUAL_PROJECTION",
+    authored_source_hash: sourceHash,
+    semantic_decision_hash: decisionHash,
+    semantic_segment_id: segmentId,
+    semantic_dialogue_projection: dialogueProjection,
+    semantic_dialogue_projection_hash: semanticHash(dialogueProjection),
+    semantic_reference_projection_hash: semanticHash(referenceProjection),
+    source_prompt: projectedSourcePrompt,
+    generated_prompt_parts: generatedPromptParts,
+    audio_owner: "NATIVE_PROVIDER",
+    max_duration_seconds: 15,
+    max_reference_images: 7,
+  };
+  capabilitySnapshot.semantic_prompt_package_integrity_hash = semanticHash(
+    semanticPromptPackageIntegrityPayload({
+      shotSpecId,
+      prompt,
+      referencePolicy: "REFERENCE_SET",
+      sourcePrompt: projectedSourcePrompt,
+      generatedPromptParts,
+      evidenceIds,
+      dialogueProjection,
+      referenceProjection,
+      audioOwner: "NATIVE_PROVIDER",
+      maxDurationSeconds: 15,
+      maxReferenceImages: 7,
+    }),
+  );
+  return {
+    shotSpecId,
+    prompt,
+    sourcePrompt,
+    referencePolicy: "REFERENCE_SET",
+    capabilitySnapshot,
+    referenceMap: {
+      reference_policy: "REFERENCE_SET",
+      semantic_reference_projection: referenceProjection,
+    },
+    visualConstraints: {
+      semantic_decision_hash: decisionHash,
+      semantic_segment_id: segmentId,
+      evidence_ids: evidenceIds,
+    },
+  };
+};
+
+test("semantic PromptPackage projections must share one source, decision, segment, and policy identity", () => {
+  const valid = semanticPromptPackageFixture();
+  assert.equal(validateSemanticPromptPackage(valid).kind, "VERIFIED");
+
+  const referenceDecisionSwap = semanticPromptPackageFixture();
+  referenceDecisionSwap.referenceMap.semantic_reference_projection.decision_hash = "e".repeat(64);
+  assert.equal(validateSemanticPromptPackage(referenceDecisionSwap).kind, "INVALID");
+
+  const dialogueSegmentSwap = semanticPromptPackageFixture();
+  (dialogueSegmentSwap.capabilitySnapshot.semantic_dialogue_projection as { segment_id: string }).segment_id = "seg_swapped_002";
+  assert.equal(validateSemanticPromptPackage(dialogueSegmentSwap).kind, "INVALID");
+
+  const compiledPromptSwap = semanticPromptPackageFixture();
+  compiledPromptSwap.prompt = "被手工替换的 Provider 提示。";
+  assert.equal(validateSemanticPromptPackage(compiledPromptSwap).kind, "INVALID");
+
+  const shotSpecSwap = semanticPromptPackageFixture();
+  shotSpecSwap.shotSpecId = "ssp_cross_shot_replacement_002";
+  assert.equal(validateSemanticPromptPackage(shotSpecSwap).kind, "INVALID");
+
+  const policySwap = semanticPromptPackageFixture();
+  policySwap.referenceMap.reference_policy = "TEXT_TRANSITION";
+  assert.equal(validateSemanticPromptPackage(policySwap).kind, "INVALID");
+
+  const partialSemanticMarker = semanticPromptPackageFixture();
+  delete partialSemanticMarker.capabilitySnapshot.semantic_dialogue_projection;
+  assert.equal(validateSemanticPromptPackage(partialSemanticMarker).kind, "INVALID");
+
+  assert.equal(validateSemanticPromptPackage({
+    shotSpecId: "ssp_legacy_prompt_001",
+    prompt: "legacy prompt",
+    sourcePrompt: "legacy",
+    referencePolicy: "TEXT_TRANSITION",
+    capabilitySnapshot: {},
+    referenceMap: { reference_policy: "TEXT_TRANSITION" },
+    visualConstraints: {},
+  }).kind, "LEGACY");
+
+  assert.equal(validateSemanticPromptPackage({
+    shotSpecId: "ssp_historical_missing_sidecars_001",
+    prompt: "historical prompt",
+    sourcePrompt: "historical source",
+    referencePolicy: "TEXT_TRANSITION",
+    capabilitySnapshot: undefined,
+    referenceMap: undefined,
+    visualConstraints: undefined,
+  }).kind, "LEGACY");
+
+  assert.equal(validateSemanticPromptPackage({
+    shotSpecId: "ssp_partial_semantic_sidecar_001",
+    prompt: "partial semantic prompt",
+    sourcePrompt: "partial semantic source",
+    referencePolicy: "REFERENCE_SET",
+    capabilitySnapshot: { prompt_source_kind: "SEMANTIC_VISUAL_PROJECTION" },
+    referenceMap: undefined,
+    visualConstraints: undefined,
+  }).kind, "INVALID");
+});
 
 test("measured provider video may exceed its request ceiling by the shared encoder tolerance", () => {
   assert.equal(measuredVisualSegmentMatchesRequest({ measuredDurationMs: 15_042, providerDurationSeconds: 15 }), true);
@@ -43,120 +178,6 @@ test("provider-owned composition audio requires one explicit owner across accept
   ]), /mixed or unknown audio owners/);
 });
 
-const musicCandidates = [
-  { id: "ast_music_a", createdAt: "2026-09-01T00:00:00.000Z", durationMs: 60_000, metadata: { audio_role: "MUSIC", mood: "warm" } },
-  { id: "ast_music_b", createdAt: "2026-09-02T00:00:00.000Z", durationMs: 60_000, metadata: { audio_role: "MUSIC", mood: "warm" } },
-] as const;
-
-test("AUTO music intent raises a matching metadata score without changing duration semantics", () => {
-  assert.equal(scoreMusicAsset(musicCandidates[0], "warm piano", 30_000), 12);
-  assert.equal(scoreMusicAsset(musicCandidates[0], "unmatched", 30_000), 2);
-});
-
-test("AUTO music matching ignores Pixabay query metadata but reads returned titles and tags", () => {
-  const base = { id: "ast_music_source", createdAt: "2026-09-01T00:00:00.000Z", durationMs: 60_000 };
-  const queryOnly = { ...base, metadata: { pixabay_query: "forest ambience" } };
-  assert.equal(scoreMusicAsset(queryOnly, "forest", 30_000), 2);
-  assert.equal(hasMusicContentMatch(queryOnly, "forest"), false);
-  assert.equal(scoreMusicAsset({ ...base, metadata: { pixabay_title: "quiet piano" } }, "piano", 30_000), 12);
-  assert.equal(scoreMusicAsset({ ...base, metadata: { source_title: "warm guitar" } }, "guitar", 30_000), 12);
-  assert.equal(scoreMusicAsset({ ...base, metadata: { tags: ["cinematic", "ambient"] } }, "ambient", 30_000), 12);
-  assert.equal(scoreMusicAsset({
-    ...base,
-    metadata: {
-      mood: "Unknown",
-      pixabay_query: "Unknown",
-      pixabay_title: "Unknown",
-      source_title: "Unknown",
-      filename: "pixabay_music_Unknown.mp3",
-    },
-  }, "unknown", 30_000), 2);
-});
-
-test("AUTO music ignores file and transport tokens but matches descriptive content tags", () => {
-  const base = { createdAt: "2026-09-01T00:00:00.000Z", durationMs: 60_000 };
-  assert.equal(scoreMusicAsset({
-    ...base,
-    id: "ast_music_generic_filename",
-    metadata: { filename: "latest-selected-bgm.mp3" },
-  }, "BGM latest selected track music audio pixabay", 30_000), 2);
-  assert.equal(scoreMusicAsset({
-    ...base,
-    id: "ast_music_content_tags",
-    metadata: { tags: ["instrumental", "ambient", "beauty"] },
-  }, "instrumental ambient beauty", 30_000), 32);
-});
-
-test("AUTO music transport words do not make an otherwise unclassified candidate win same-score preference", () => {
-  const base = { createdAt: "2026-09-01T00:00:00.000Z", durationMs: 60_000 };
-  const transportTags = {
-    ...base,
-    id: "ast_music_transport_tags",
-    metadata: { tags: ["bgm", "music", "audio", "latest", "selected", "pixabay", "track"] },
-  };
-  const unclassified = { ...base, id: "ast_music_unclassified", metadata: { mood: "Unknown" } };
-  const productionRunId = "prd_filename_generic_4";
-  const stableFirstId = [transportTags, unclassified]
-    .map((asset) => ({
-      id: asset.id,
-      digest: createHash("sha256").update(`${productionRunId}${asset.id}`).digest("hex"),
-    }))
-    .sort((left, right) => left.digest.localeCompare(right.digest))[0]?.id;
-  assert.equal(stableFirstId, unclassified.id);
-  assert.equal(hasMusicContentMatch(transportTags, "BGM music audio latest selected Pixabay track"), false);
-  assert.equal(selectAutoMusicAsset({
-    candidates: [transportTags, unclassified],
-    briefText: "BGM music audio latest selected Pixabay track",
-    targetDurationMs: 30_000,
-    productionRunId,
-  }), undefined);
-  assert.equal(stableFirstId, unclassified.id);
-});
-
-test("AUTO music ignores non-string tag array values for matching and label preference", () => {
-  const base = { createdAt: "2026-09-01T00:00:00.000Z", durationMs: 60_000 };
-  const nonStringTags = {
-    ...base,
-    id: "ast_music_invalid_tags",
-    metadata: { tags: [123, { mood: "ambient" }] },
-  };
-  assert.equal(scoreMusicAsset(nonStringTags, "123 ambient", 30_000), 2);
-
-  const unclassified = {
-    ...base,
-    id: "ast_music_unclassified",
-    metadata: { mood: "Unknown" },
-  };
-  const productionRunId = "prd_tag_types_a";
-  const stableFirstId = [nonStringTags, unclassified]
-    .map((asset) => ({
-      id: asset.id,
-      digest: createHash("sha256").update(`${productionRunId}${asset.id}`).digest("hex"),
-    }))
-    .sort((left, right) => left.digest.localeCompare(right.digest))[0]?.id;
-  assert.equal(stableFirstId, unclassified.id);
-  assert.equal(selectAutoMusicAsset({
-    candidates: [nonStringTags, unclassified],
-    briefText: "unmatched",
-    targetDurationMs: 30_000,
-    productionRunId,
-  }), undefined);
-  assert.equal(stableFirstId, unclassified.id);
-});
-
-test("AUTO music prefers an existing descriptive label over an unclassified candidate at the same score", () => {
-  const selected = selectAutoMusicAsset({
-    candidates: [
-      { id: "ast_music_unclassified", createdAt: "2026-09-02T00:00:00.000Z", durationMs: 60_000, metadata: { mood: "Unknown", source_title: "cinematic", filename: "pixabay_music_Unknown.mp3" } },
-      { id: "ast_music_labelled", createdAt: "2026-09-01T00:00:00.000Z", durationMs: 60_000, metadata: { tags: ["cinematic"] } },
-    ],
-    briefText: "cinematic",
-    targetDurationMs: 30_000,
-    productionRunId: "prd_music_labels",
-  });
-  assert.equal(selected?.id, "ast_music_labelled");
-});
-
 test("AUTO music preserves MUSIC role isolation and target-duration coverage", () => {
   const candidate = (audioRole: string | undefined, durationMs: number | null) => ({
     id: "ast_music_scoped",
@@ -179,29 +200,74 @@ test("AUTO music preserves MUSIC role isolation and target-duration coverage", (
   assert.equal(isUsableMusicAsset(candidate(undefined, 60_000), { minimumDurationMs: 30_000 }), false);
 });
 
-test("AUTO music tie-break orders equal candidates by each run-and-asset SHA-256", () => {
-  const expectedId = (productionRunId: string) => musicCandidates
-    .map((asset) => ({
-      asset,
-      digest: createHash("sha256").update(`${productionRunId}${asset.id}`).digest("hex"),
-    }))
-    .sort((left, right) => left.digest.localeCompare(right.digest))[0]?.asset.id;
-  const first = selectAutoMusicAsset({ candidates: musicCandidates, briefText: "warm", targetDurationMs: 30_000, productionRunId: "prd_run_a" });
-  const retry = selectAutoMusicAsset({ candidates: [...musicCandidates].reverse(), briefText: "warm", targetDurationMs: 30_000, productionRunId: "prd_run_a" });
-  const second = selectAutoMusicAsset({ candidates: musicCandidates, briefText: "warm", targetDurationMs: 30_000, productionRunId: "prd_run_c" });
-  assert.ok(first);
-  assert.equal(first.id, expectedId("prd_run_a"));
-  assert.equal(retry?.id, first.id);
-  assert.equal(second?.id, expectedId("prd_run_c"));
-  assert.notEqual(second?.id, first.id);
+test("AUTO music selects one matching candidate from a multi-track library and is retry-stable", () => {
+  const candidates = [
+    { id: "ast_music_warm", createdAt: "2026-01-01", durationMs: 42_000, metadata: { mood: "warm", audio_role: "MUSIC" } },
+    { id: "ast_music_calm", createdAt: "2026-01-02", durationMs: 42_000, metadata: { mood: "calm", audio_role: "MUSIC" } },
+  ];
+  const input = { candidates, briefText: "calm corporate", targetDurationMs: 30_000, productionRunId: "prd_music_multi" };
+  assert.equal(selectAutoMusicAsset(input)?.id, "ast_music_calm");
+  assert.equal(selectAutoMusicAsset(input)?.id, "ast_music_calm");
 });
 
-test("AUTO music keeps a higher intent match ahead of tie rotation", () => {
-  const selected = selectAutoMusicAsset({
-    candidates: [...musicCandidates, { id: "ast_music_c", createdAt: "2026-09-03T00:00:00.000Z", durationMs: 60_000, metadata: { mood: "warm", style: "piano" } }],
-    briefText: "warm piano",
+test("AUTO selector keeps equal-score candidates stable for one production run", () => {
+  const candidates = [
+    { id: "ast_music_equal_a", createdAt: "2026-01-01", durationMs: 42_000, metadata: { mood: "calm", audio_role: "MUSIC" } },
+    { id: "ast_music_equal_b", createdAt: "2026-01-02", durationMs: 42_000, metadata: { mood: "calm", audio_role: "MUSIC" } },
+  ];
+  const input = { candidates, briefText: "calm", targetDurationMs: 30_000, productionRunId: "prd_music_equal" };
+  const first = selectAutoMusicAsset(input);
+  assert.ok(first);
+  assert.equal(selectAutoMusicAsset(input)?.id, first.id);
+});
+
+test("AUTO selector fails closed when no existing music metadata matches the authored brief", () => {
+  const candidates = [
+    { id: "ast_music_unlabelled", createdAt: "2026-01-01", durationMs: 42_000, metadata: { audio_role: "MUSIC" } },
+  ];
+  assert.equal(selectAutoMusicAsset({
+    candidates,
+    briefText: "calm corporate",
     targetDurationMs: 30_000,
-    productionRunId: "prd_run_b",
+    productionRunId: "prd_music_unmatched",
+  }), undefined);
+});
+
+test("AUTO selector receives only duration-qualified candidates", () => {
+  const candidate = (id: string, durationMs: number) => ({
+    id,
+    workspaceId: "ws_music_duration",
+    projectId: "prj_music_duration",
+    kind: "AUDIO",
+    status: "READY",
+    objectKey: `ws_music_duration/prj_music_duration/${id}/music.mp3`,
+    sha256: "a".repeat(64),
+    byteSize: 100,
+    mimeType: "audio/mpeg",
+    durationMs,
+    createdAt: "2026-01-01",
+    metadata: { audio_role: "MUSIC", mood: "calm" },
   });
-  assert.equal(selected?.id, "ast_music_c");
+  const short = candidate("ast_music_short", 10_000);
+  const long = candidate("ast_music_long", 42_000);
+  assert.equal(isUsableMusicAsset(short, { minimumDurationMs: 30_000 }), false);
+  assert.equal(isUsableMusicAsset(long, { minimumDurationMs: 30_000 }), true);
+  assert.equal(selectAutoMusicAsset({
+    candidates: [long],
+    briefText: "calm",
+    targetDurationMs: 30_000,
+    productionRunId: "prd_music_duration",
+  })?.id, "ast_music_long");
+});
+
+test("AUTO selector does not treat generic music tokens as authored content", () => {
+  const candidates = [
+    { id: "ast_music_generic", createdAt: "2026-01-01", durationMs: 42_000, metadata: { audio_role: "MUSIC", mood: "bgm", tags: ["music"] } },
+  ];
+  assert.equal(selectAutoMusicAsset({
+    candidates,
+    briefText: "bgm music",
+    targetDurationMs: 30_000,
+    productionRunId: "prd_music_generic",
+  }), undefined);
 });

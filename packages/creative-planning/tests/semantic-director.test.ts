@@ -27,13 +27,17 @@ const bundle = createCanonicalSourceBundle({
   documents: [{
     documentId: "doc_brand_001",
     conversionId: "dcv_brand_001",
+    markdownSha256: sha("# 品牌资料\n品牌名称为星港。\n完整资产后续内容。"),
     content: "# 品牌资料\n品牌名称为星港。",
   }],
   references: [
-    { asset_id: "ast_reference_001", asset_sha256: sha("image-1"), mime_type: "image/png", position: 0 },
+    { asset_id: "ast_reference_001", asset_sha256: sha("image-1"), mime_type: "image/png", position: 0, objective_description: "旧式站台结构与冷色顶灯。" },
     { asset_id: "ast_reference_002", asset_sha256: sha("image-2"), mime_type: "image/png", position: 1 },
   ],
-  userDecisions: [{ decisionId: "dec_caption_001", field: "caption_policy", value: "OFF" }],
+  userDecisions: [
+    { decisionId: "dec_caption_001", field: "caption_policy", value: "OFF" },
+    { decisionId: "dec_style_preferences_001", field: "style_preferences", value: "克制、写实" },
+  ],
   providerCapability: {
     profile_id: "sub2api-grok-video",
     min_duration_seconds: 1,
@@ -51,11 +55,28 @@ const sourceEvidence = (id: string, start: number, quote: string) => ({
   span: { start, end: start + quote.length, quote },
 });
 
-const referenceEvidence = (id: string, assetId: string, digest: string) => ({
+const referenceEvidence = (id: string, assetId: string, digest: string, observation?: string) => ({
   evidence_id: id,
   kind: "REFERENCE_ASSET" as const,
   asset_id: assetId,
   asset_sha256: digest,
+  ...(observation ? { observation } : {}),
+});
+
+const userDecisionEvidence = () => ({
+  evidence_id: "evd_caption_policy_001",
+  kind: "USER_DECISION" as const,
+  decision_id: "dec_caption_001",
+  field: "caption_policy",
+  value_hash: semanticValueHash("OFF"),
+});
+
+const styleDecisionEvidence = () => ({
+  evidence_id: "evd_style_preferences_001",
+  kind: "USER_DECISION" as const,
+  decision_id: "dec_style_preferences_001",
+  field: "style_preferences",
+  value_hash: semanticValueHash("克制、写实"),
 });
 
 const readyDecision = () => ({
@@ -68,27 +89,41 @@ const readyDecision = () => ({
     exact_text: dialogueText,
     evidence: sourceEvidence("evd_dialogue_001", dialogueStart, dialogueText),
   }],
-  reference_usages: [{
-    asset_id: "ast_reference_001",
-    provider_role: "SCENE" as const,
-    usage: "保持旧式站台结构。",
-    evidence_refs: [referenceEvidence("evd_reference_001", "ast_reference_001", sha("image-1"))],
-  }],
+  reference_usages: [
+    {
+      asset_id: "ast_reference_001",
+      provider_role: "SCENE" as const,
+      usage: "保持旧式站台结构。",
+      evidence_refs: [referenceEvidence("evd_reference_001", "ast_reference_001", sha("image-1"))],
+    },
+    {
+      asset_id: "ast_reference_002",
+      provider_role: "STYLE" as const,
+      usage: "保持第二张参考图的照明风格。",
+      evidence_refs: [referenceEvidence("evd_reference_002", "ast_reference_002", sha("image-2"))],
+    },
+  ],
   segments: [{
     segment_id: "seg_station_001",
     sequence: 1,
     duration_seconds: 10,
     visual_decision: "两人隔着站台灯光相望。",
-    evidence_refs: [sourceEvidence("evd_segment_001", visualStart, visualQuote)],
+    evidence_refs: [
+      sourceEvidence("evd_segment_001", visualStart, visualQuote),
+      userDecisionEvidence(),
+      styleDecisionEvidence(),
+    ],
     dialogue_ids: ["dlg_return_001"],
-    reference_asset_ids: ["ast_reference_001"],
+    reference_asset_ids: ["ast_reference_001", "ast_reference_002"],
   }],
   unresolved_items: [],
 });
 
 test("canonical bundle builder hashes source, documents, and user decisions without interpreting them", () => {
   assert.equal(bundle.source_hash, sha(sourceText));
-  assert.equal(bundle.documents[0]?.markdown_sha256, sha(bundle.documents[0]!.content));
+  assert.equal(bundle.documents[0]?.markdown_sha256, sha("# 品牌资料\n品牌名称为星港。\n完整资产后续内容。"));
+  assert.equal(bundle.documents[0]?.content_sha256, sha(bundle.documents[0]!.content));
+  assert.notEqual(bundle.documents[0]?.markdown_sha256, bundle.documents[0]?.content_sha256);
   assert.equal(bundle.user_decisions[0]?.value_hash, semanticValueHash("OFF"));
   assert.deepEqual(bundle.references.map((item) => item.position), [0, 1]);
 });
@@ -121,6 +156,7 @@ test("verifier rejects source, document, reference, and user-decision evidence m
     document_id: bundle.documents[0]!.document_id,
     conversion_id: bundle.documents[0]!.conversion_id,
     markdown_sha256: bundle.documents[0]!.markdown_sha256,
+    content_sha256: bundle.documents[0]!.content_sha256,
     locator: "不存在的段落",
     quote: "资料中没有这句话",
   }];
@@ -168,6 +204,49 @@ test("verifier preserves canonical reference order and provider duration bounds"
     (error) => error instanceof SemanticDecisionVerificationError && error.code === "PROVIDER_CAPABILITY_INVALID");
 });
 
+test("executable decisions cannot omit or orphan canonical references", () => {
+  const missingUsage = readyDecision();
+  missingUsage.reference_usages.pop();
+  assert.throws(() => verifySemanticDirectorProvenance(bundle, missingUsage),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "REFERENCE_COVERAGE_INVALID");
+
+  const orphanedUsage = readyDecision();
+  orphanedUsage.segments[0]!.reference_asset_ids = ["ast_reference_001"];
+  assert.throws(() => verifySemanticDirectorProvenance(bundle, orphanedUsage),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "REFERENCE_COVERAGE_INVALID");
+
+  const usageWithoutOwnAssetEvidence = readyDecision();
+  usageWithoutOwnAssetEvidence.reference_usages[0]!.evidence_refs = [
+    sourceEvidence("evd_reference_prose_only_001", visualStart, visualQuote),
+  ];
+  assert.throws(() => verifySemanticDirectorProvenance(bundle, usageWithoutOwnAssetEvidence),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "REFERENCE_EVIDENCE_INVALID");
+});
+
+test("an executable decision must cite every frozen user decision", () => {
+  const uncitedDecision = readyDecision();
+  uncitedDecision.segments[0]!.evidence_refs = [
+    sourceEvidence("evd_segment_001", visualStart, visualQuote),
+  ];
+  assert.throws(() => verifySemanticDirectorProvenance(bundle, uncitedDecision),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "USER_DECISION_COVERAGE_INVALID");
+});
+
+test("reference observations must equal the frozen objective description", () => {
+  const fabricatedObservation = readyDecision();
+  fabricatedObservation.reference_usages[0]!.evidence_refs = [
+    referenceEvidence("evd_reference_001", "ast_reference_001", sha("image-1"), "凭空添加的人脸与功效说明。"),
+  ];
+  assert.throws(() => verifySemanticDirectorProvenance(bundle, fabricatedObservation),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "REFERENCE_EVIDENCE_INVALID");
+
+  const exactObservation = readyDecision();
+  exactObservation.reference_usages[0]!.evidence_refs = [
+    referenceEvidence("evd_reference_001", "ast_reference_001", sha("image-1"), "旧式站台结构与冷色顶灯。"),
+  ];
+  assert.equal(verifySemanticDirectorProvenance(bundle, exactObservation).execution_status, "READY");
+});
+
 test("blocked decisions remain inspectable but cannot enter execution", () => {
   const blocked = verifySemanticDirectorProvenance(bundle, {
     version: 1,
@@ -211,6 +290,7 @@ test("projects only the provenance-checked segment reference order and Provider 
   const verified = verifySemanticDirectorProvenance(bundle, readyDecision());
   const projection = projectSemanticReferences(verified, "seg_station_001");
   assert.equal(projection.source_hash, bundle.source_hash);
+  assert.equal(projection.segment_id, "seg_station_001");
   assert.equal(projection.references[0]?.asset_id, "ast_reference_001");
   assert.equal(projection.references[0]?.provider_role, "SCENE");
   assert.deepEqual(projection.references[0]?.evidence_ids, ["evd_reference_001"]);

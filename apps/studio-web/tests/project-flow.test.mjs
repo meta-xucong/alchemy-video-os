@@ -5,7 +5,7 @@ import test from "node:test";
 const root = new URL("..", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
 
-test("M2 composes public planning commands with a fresh key and stops at review", () => {
+test("M2 composes public planning commands and starts production after automatic internal approval", () => {
   const workspace = read("app/pages/projects/[project_id].vue");
 
   for (const component of ["StoryPlanningPanel", "ReferenceShelf", "GenerationPanel", "ProjectMaterials", "MediaPreviewDialog", "ProjectResultsPanel"]) {
@@ -29,15 +29,17 @@ test("M2 composes public planning commands with a fresh key and stops at review"
   assert.match(workspace, /await startAutomatedProduction\(current\.project\.id\)/);
   assert.match(workspace, /commandKey\("studio-auto-brief"\)/);
   assert.match(workspace, /commandKey\("studio-auto-plan"\)/);
-  const autoPlan = workspace.slice(
-    workspace.indexOf("async function startAutomatedProduction"),
-    workspace.indexOf("async function confirmStoryboardAndCreateDeliveryPlan"),
-  );
-  assert.doesNotMatch(autoPlan, /approveStoryboardRevision|approveDeliveryPlanRevision|createProductionRun|studio-auto-approve|studio-auto-production/);
-  assert.match(workspace, /async function confirmStoryboardAndCreateDeliveryPlan/);
-  assert.match(workspace, /async function confirmDeliveryAndStartProduction/);
-  assert.match(workspace, /storyboardReviewConfirmed/);
-  assert.match(workspace, /deliveryReviewConfirmed/);
+  const autoPlan = workspace.slice(workspace.indexOf("async function startAutomatedProduction"));
+  assert.match(autoPlan, /approveStoryboardRevision/);
+  assert.match(autoPlan, /approveDeliveryPlanRevision/);
+  assert.match(autoPlan, /createProductionRun/);
+  assert.match(autoPlan, /studio-auto-storyboard-approve/);
+  assert.match(autoPlan, /studio-auto-delivery-approve/);
+  assert.match(autoPlan, /studio-auto-production-start/);
+  assert.doesNotMatch(workspace, /人工确认门/);
+  assert.ok(autoPlan.indexOf("approveStoryboardRevision") < autoPlan.indexOf("createDeliveryPlanRevision"));
+  assert.ok(autoPlan.indexOf("createDeliveryPlanRevision") < autoPlan.indexOf("approveDeliveryPlanRevision"));
+  assert.ok(autoPlan.indexOf("approveDeliveryPlanRevision") < autoPlan.indexOf("createProductionRun"));
   assert.doesNotMatch(workspace, /await createGeneration\(shot\.id, commandKey\("studio-generation"\)\)/);
 });
 
@@ -222,14 +224,10 @@ test("Studio keeps one visible input and hides story planning orchestration", ()
   assert.match(generation, /开始生成视频/);
   assert.match(workspace, /async function startAutomatedProduction/);
   assert.match(workspace, /waitForAutoStoryboard/);
-  assert.match(workspace, /分镜方案已生成，等待你确认后再进入交付设置/);
-  const autoPlan = workspace.slice(
-    workspace.indexOf("async function startAutomatedProduction"),
-    workspace.indexOf("async function confirmStoryboardAndCreateDeliveryPlan"),
-  );
-  assert.doesNotMatch(autoPlan, /approveStoryboardRevision|approveDeliveryPlanRevision|createProductionRun/);
-  assert.match(workspace, /确认分镜并创建交付计划/);
-  assert.match(workspace, /确认交付并开始制作/);
+  assert.match(workspace, /AI 正在确认分镜并开始制作视频/);
+  const autoPlan = workspace.slice(workspace.indexOf("async function startAutomatedProduction"));
+  assert.match(autoPlan, /approveStoryboardRevision|approveDeliveryPlanRevision|createProductionRun/);
+  assert.doesNotMatch(workspace, /人工确认门|确认分镜并创建交付计划|确认交付并开始制作/);
 });
 
 test("Studio keeps composition preferences compact and uses one vertical creation flow", () => {
@@ -322,28 +320,24 @@ test("Studio production details keep the backend failure reason and use a stable
   assert.match(styles, /\.production-segment-reason\s*\{[\s\S]*overflow-wrap:\s*anywhere/);
 });
 
-test("Studio acknowledges planning and stops at explicit storyboard review", () => {
+test("Studio acknowledges planning and automatically advances through internal approval", () => {
   const workspace = read("app/pages/projects/[project_id].vue");
   const generation = read("app/components/studio/GenerationPanel.vue");
 
   assert.match(workspace, /planningMessage\.value = "AI 正在理解你的描述。"/);
   assert.match(workspace, /planningMessage\.value = "AI 正在准备视频内容。"/);
-  assert.match(workspace, /planningMessage\.value = "分镜方案已生成，等待你确认后再进入交付设置。"/);
+  assert.match(workspace, /planningMessage\.value = "AI 正在确认分镜并开始制作视频。"/);
   assert.match(workspace, /applyCreativeBriefRevision\(briefResponse\.data\);/);
   assert.match(workspace, /applyStoryboardRevision\(storyboard\);/);
-  const autoPlan = workspace.slice(
-    workspace.indexOf("async function startAutomatedProduction"),
-    workspace.indexOf("async function confirmStoryboardAndCreateDeliveryPlan"),
-  );
-  assert.doesNotMatch(autoPlan, /AI 已开始制作视频|applyProductionRun\(production\.data\)|createProductionRun/);
-  const explicitStart = workspace.slice(workspace.indexOf("async function confirmDeliveryAndStartProduction"), workspace.indexOf("async function retryProductionSegment"));
-  assert.match(explicitStart, /createProductionRun/);
-  assert.match(explicitStart, /applyProductionRun\(production\.data\)/);
-  assert.match(explicitStart, /deliveryReviewConfirmed\.value = false/);
+  const autoPlan = workspace.slice(workspace.indexOf("async function startAutomatedProduction"));
+  assert.match(autoPlan, /approveStoryboardRevision|approveDeliveryPlanRevision/);
+  assert.match(autoPlan, /applyProductionRun\(production\.data\)/);
+  assert.match(autoPlan, /createProductionRun/);
+  assert.doesNotMatch(workspace, /人工确认门|确认分镜并创建交付计划|确认交付并开始制作/);
   assert.match(generation, /generation-feedback/);
 });
 
-test("Studio does not parse narration or choose an audio owner before user approval", () => {
+test("Studio does not reparse narration or choose an audio owner during automatic production", () => {
   const workspace = read("app/pages/projects/[project_id].vue");
 
   assert.doesNotMatch(workspace, /quotedNarrationSections|extractQuotedNarration|labelledNarration/);
@@ -351,7 +345,7 @@ test("Studio does not parse narration or choose an audio owner before user appro
   assert.doesNotMatch(workspace, /providerNativeAudioAvailable|providerNativeAudioCapability/);
   assert.match(workspace, /const captionPolicy = ref<"OFF" \| "REQUIRED">\("OFF"\);/);
   assert.match(workspace, /字幕来自已检查的音频转写，文字需人工复核/);
-  assert.match(workspace, /分镜方案已生成，等待你确认后再进入交付设置/);
+  assert.match(workspace, /AI 正在确认分镜并开始制作视频/);
 });
 
 test("Studio labels local demo output and never treats it as an automatic playback action", () => {
@@ -373,16 +367,18 @@ test("Studio labels local demo output and never treats it as an automatic playba
 test("Local real-provider credentials are scoped to the Task Worker", () => {
   const localRunner = read("../../infrastructure/local/start-full-local-stack.ps1");
   const environmentBlock = localRunner.match(/\$localEnvironment = \[ordered\]@\{[\s\S]*?\n\}/u)?.[0] ?? "";
-  const taskWorkerBlock = localRunner.match(/try \{[\s\S]*?\$services \+= Start-LocalService -Name "Task Worker"[\s\S]*?\n\} finally \{[\s\S]*?\n\}/u)?.[0] ?? "";
+  const taskWorkerBlock = localRunner.match(/\$taskWorkerEnvironment = @\{\}[\s\S]*?Start-LocalService -Name "Task Worker"[^\n]*/u)?.[0] ?? "";
+  const taskWorkerStart = localRunner.indexOf('$services += Start-LocalService -Name "Task Worker"');
   const productionWorkerStart = localRunner.indexOf('$services += Start-LocalService -Name "Production Worker"');
-  const taskWorkerEnd = localRunner.indexOf("\n$services += Start-LocalService -Name \"Production Worker\"");
 
   assert.doesNotMatch(environmentBlock, /SUB2API_VIDEO_(?:BASE_URL|API_KEY)/u);
-  assert.match(localRunner, /SetEnvironmentVariable\("SUB2API_VIDEO_BASE_URL", \$null, "Process"\)/u);
-  assert.match(localRunner, /SetEnvironmentVariable\("SUB2API_VIDEO_API_KEY", \$null, "Process"\)/u);
-  assert.match(taskWorkerBlock, /SetEnvironmentVariable\("SUB2API_VIDEO_BASE_URL", \$sub2ApiVideoBaseUrl, "Process"\)/u);
-  assert.match(taskWorkerBlock, /SetEnvironmentVariable\("SUB2API_VIDEO_API_KEY", \$sub2ApiVideoApiKey, "Process"\)/u);
-  assert.ok(taskWorkerEnd > -1 && productionWorkerStart === taskWorkerEnd + 1, "Production Worker must start after Task Worker cleanup.");
+  assert.match(localRunner, /\$script:ScopedLocalServiceEnvironmentNames[\s\S]*?"SUB2API_VIDEO_BASE_URL"[\s\S]*?"SUB2API_VIDEO_API_KEY"/u);
+  assert.match(localRunner, /foreach \(\$environmentName in \$environmentNames\)[\s\S]*?Remove-Item -LiteralPath \("Env:" \+ \$environmentName\)/u);
+  assert.match(taskWorkerBlock, /\$taskWorkerEnvironment\.SUB2API_VIDEO_BASE_URL = \$sub2ApiVideoBaseUrl/u);
+  assert.match(taskWorkerBlock, /\$taskWorkerEnvironment\.SUB2API_VIDEO_API_KEY = \$sub2ApiVideoApiKey/u);
+  assert.match(taskWorkerBlock, /-Environment \$taskWorkerEnvironment/u);
+  assert.doesNotMatch(localRunner, /SetEnvironmentVariable\("SUB2API_VIDEO_API_KEY", \$sub2ApiVideoApiKey/u);
+  assert.ok(taskWorkerStart > -1 && productionWorkerStart > taskWorkerStart, "Production Worker must start after the scoped Task Worker launch.");
 });
 
 test("local browser downloads sign against localhost while server storage stays on loopback", () => {
@@ -437,4 +433,42 @@ test("Studio presents safe corrective guidance for a persisted provider rejectio
   assert.match(workspace, /task\.error\?\.code === "PROVIDER_REJECTED"/);
   assert.match(workspace, /本次创作已进入生成阶段，但没有完成/);
   assert.match(workspace, /PROVIDER_REJECTED: "本次创作已进入生成阶段，但没有完成/);
+});
+
+test("local real-provider startup requires an explicit certified Semantic Director profile", () => {
+  const localRunner = read("../../infrastructure/local/start-full-local-stack.ps1");
+
+  assert.match(localRunner, /SEMANTIC_PLANNER_PROFILE_ID/u);
+  assert.match(localRunner, /Local Semantic Director certification requires an existing absolute report path/u);
+  assert.match(localRunner, /Reference-vision credentials are not a semantic-planner fallback/u);
+  assert.match(localRunner, /VIDEO_PROVIDER=sub2api requires SEMANTIC_PLANNER_ENABLED=true/u);
+  assert.match(localRunner, /\$workflowEnvironment\.SEMANTIC_PLANNER_PROFILE_ID = \$semanticPlannerProfileId/u);
+  assert.match(localRunner, /if \(\$semanticPlannerAllowLocalCertificationReportValue -eq "true"\) \{[\s\S]*?\$workflowEnvironment\.NODE_ENV = "development"[\s\S]*?SEMANTIC_PLANNER_CERTIFICATION_REPORT_PATH/u);
+  assert.doesNotMatch(localRunner, /\$localEnvironment\.NODE_ENV\s*=/u);
+  assert.match(localRunner, /Wait-FileContainsAll[\s\S]*?"profile_id"[\s\S]*?"model"/u);
+  assert.match(localRunner, /Wait-FileContainsAll[\s\S]*?-ProcessId \$workflowService\.pid[\s\S]*?-StderrPath \$workflowService\.stderr/u);
+  assert.match(localRunner, /Assert-NoUnmanagedLocalStackProcesses/u);
+  assert.match(localRunner, /\$script:ScopedLocalServiceEnvironmentNames/u);
+  assert.match(localRunner, /Remove-Item -LiteralPath \("Env:" \+ \$environmentName\)/u);
+  assert.match(localRunner, /\$controlApiEnvironment\.REFERENCE_DELIVERY_SIGNING_KEY = \$referenceDeliverySigningKey/u);
+  assert.match(localRunner, /\$mediaRuntimeEnvironment\.DOUBAO_SPEECH_API_KEY = \$doubaoSpeechApiKey/u);
+  assert.match(localRunner, /\$taskWorkerEnvironment\.SUB2API_VIDEO_API_KEY = \$sub2ApiVideoApiKey/u);
+  assert.doesNotMatch(localRunner, /\$localEnvironment\.REFERENCE_DELIVERY_SIGNING_KEY/u);
+  assert.doesNotMatch(localRunner, /SetEnvironmentVariable\("SUB2API_VIDEO_API_KEY", \$sub2ApiVideoApiKey/u);
+  assert.doesNotMatch(localRunner, /\$semanticPlannerBaseUrl = \$referenceVisionBaseUrl/u);
+  assert.doesNotMatch(localRunner, /\$semanticPlannerApiKey = \$referenceVisionApiKey/u);
+  assert.doesNotMatch(localRunner, /\$semanticPlannerModel = \$referenceVisionModel/u);
+});
+
+test("Studio distinguishes Semantic Director planning failure from video Provider failure", () => {
+  const workspace = read("app/pages/projects/[project_id].vue");
+  assert.match(workspace, /PLANNING_FAILED: "AI 语义规划未通过，尚未提交视频生成/);
+  assert.match(workspace, /AI 语义规划暂时无法完成，尚未提交视频生成/);
+  assert.match(workspace, /PROVIDER_UNAVAILABLE: "视频服务暂时不可用/);
+});
+
+test("real planning leases outlive the certified request timeout and classify queue retries", () => {
+  const workflowRoot = read("../workflow-worker/src/index.ts");
+  assert.match(workflowRoot, /semanticRuntime\.configuration\.timeout_ms \+ 30_000/u);
+  assert.match(workflowRoot, /isRetryableFailure: isRetryableCreativePlanningFailure/u);
 });

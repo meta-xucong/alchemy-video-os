@@ -3,13 +3,15 @@ import {
   projectSemanticDialogues,
   projectSemanticReferences,
   semanticValueHash,
-  type ProvenanceCheckedSemanticDirector,
+  type SemanticDirectorPort,
 } from "@alchemy-video/creative-planning/semantic-director";
-import type {
-  CanonicalReferenceSource,
-  SemanticDialogueProjection,
-  SemanticReferenceProjection,
-  VideoAudioOwner,
+import {
+  semanticPromptPackageIntegrityPayload,
+  type CanonicalReferenceSource,
+  type SemanticDialogueProjection,
+  type SemanticReferenceProjection,
+  type VideoAudioOwner,
+  type SemanticDirectorDecision,
 } from "@alchemy-video/contracts";
 import { createPrefixedId } from "@alchemy-video/domain";
 import type {
@@ -19,16 +21,17 @@ import type {
   CreativePlanningStore,
 } from "@alchemy-video/persistence";
 import {
+  UnsupportedVideoGenerationInputError,
+  VideoPromptCompilationError,
   compileVideoPrompt,
   type VideoProviderRuntimeProfile,
 } from "@alchemy-video/provider-video";
 
 import type { BoundedDocumentContextReader } from "./document-context-reader.js";
+import { canonicalizeSemanticPlan } from "./semantic-director-canonicalizer.js";
+import { SemanticPlanningExecutionError } from "./creative-planning-failure.js";
 
 const SEMANTIC_PROJECTOR_VERSION = "semantic-director-pure-projector-v1";
-const PROVIDER_MIN_DURATION_SECONDS = 1;
-const PROVIDER_MAX_DURATION_SECONDS = 15;
-const PROVIDER_MAX_REFERENCE_IMAGES = 7;
 
 const realAudioOwner = (profile: VideoProviderRuntimeProfile): VideoAudioOwner =>
   profile.audioOwner ?? "LEGACY_PRESERVE";
@@ -52,7 +55,7 @@ type SemanticPlanningStore = Pick<CreativePlanningStore, "completeCreativePlan">
 export class SemanticCreativePlanningExecutor {
   constructor(
     private readonly store: SemanticPlanningStore,
-    private readonly director: ProvenanceCheckedSemanticDirector,
+    private readonly director: SemanticDirectorPort,
     private readonly profile: VideoProviderRuntimeProfile,
     private readonly documentContextReader?: Pick<BoundedDocumentContextReader, "read">,
     private readonly makeId: typeof idFactory = idFactory,
@@ -64,6 +67,14 @@ export class SemanticCreativePlanningExecutor {
       || (profile.providerPromptMaxUtf8Bytes ?? 0) < 1) {
       throw new Error("Real semantic planning requires a certified provider prompt ceiling.");
     }
+    if (!Number.isInteger(profile.minDurationSeconds)
+      || !Number.isInteger(profile.maxDurationSeconds)
+      || profile.minDurationSeconds < 1
+      || profile.maxDurationSeconds < profile.minDurationSeconds
+      || !Number.isInteger(profile.maxReferenceImages)
+      || profile.maxReferenceImages < 0) {
+      throw new Error("Real semantic planning requires certified duration and reference limits.");
+    }
   }
 
   async execute(input: { brief: ControlCreativeBriefRevision; event: CreativePlanningEvent }) {
@@ -71,44 +82,82 @@ export class SemanticCreativePlanningExecutor {
       ? await this.readDocuments(input.brief)
       : [];
     const references = await this.readReferences(input.brief);
-    const bundle = createCanonicalSourceBundle({
-      sourceText: input.brief.sourceText,
-      stylePreferences: input.brief.stylePreferences,
-      targetDurationSeconds: input.brief.targetDurationSeconds,
-      documents: documents.map((document) => ({
-        documentId: document.documentId,
-        conversionId: document.conversionId,
-        content: document.content,
-      })),
-      references,
-      userDecisions: [{
-        decisionId: "dec_target_resolution",
-        field: "target_resolution",
-        value: input.brief.targetResolution,
-      }],
-      providerCapability: {
-        profile_id: `${this.profile.provider}:${this.profile.model}`,
-        min_duration_seconds: PROVIDER_MIN_DURATION_SECONDS,
-        max_duration_seconds: PROVIDER_MAX_DURATION_SECONDS,
-        max_prompt_utf8_bytes: this.profile.providerPromptMaxUtf8Bytes!,
-        max_reference_images: PROVIDER_MAX_REFERENCE_IMAGES,
-        audio_owner: realAudioOwner(this.profile),
-      },
-    });
-    const decision = await this.director.requireExecutable(bundle);
+    let bundle;
+    try {
+      bundle = createCanonicalSourceBundle({
+        sourceText: input.brief.sourceText,
+        stylePreferences: input.brief.stylePreferences,
+        targetDurationSeconds: input.brief.targetDurationSeconds,
+        documents: documents.map((document) => ({
+          documentId: document.documentId,
+          conversionId: document.conversionId,
+          markdownSha256: document.markdownSha256,
+          content: document.content,
+        })),
+        references,
+        userDecisions: [
+          {
+            decisionId: "dec_target_resolution",
+            field: "target_resolution",
+            value: input.brief.targetResolution,
+          },
+          ...(input.brief.stylePreferences.trim()
+            ? [{
+              decisionId: "dec_style_preferences",
+              field: "style_preferences",
+              value: input.brief.stylePreferences,
+            }]
+            : []),
+          ...(input.brief.sourceAssetRoles?.length
+            ? [{
+              decisionId: "dec_reference_roles",
+              field: "reference_roles",
+              value: input.brief.sourceAssetRoles.map((reference) => ({
+                asset_id: reference.assetId,
+                role: reference.role,
+                ...(reference.usage ? { usage: reference.usage } : {}),
+              })),
+            }]
+            : []),
+        ],
+        providerCapability: {
+          profile_id: `${this.profile.provider}:${this.profile.model}`,
+          min_duration_seconds: this.profile.minDurationSeconds,
+          max_duration_seconds: this.profile.maxDurationSeconds,
+          max_prompt_utf8_bytes: this.profile.providerPromptMaxUtf8Bytes!,
+          max_reference_images: this.profile.maxReferenceImages,
+          audio_owner: realAudioOwner(this.profile),
+        },
+      });
+    } catch {
+      throw new SemanticPlanningExecutionError("CANONICAL_SOURCE_BUNDLE_INVALID");
+    }
+    const rawPlan = await this.director.decide(bundle);
+    const decision = canonicalizeSemanticPlan(rawPlan, bundle);
     const decisionHash = semanticValueHash(decision);
-    const draft = this.buildDraft(input.brief, decision, decisionHash);
-    return this.store.completeCreativePlan({
+    let draft: CreativePlanningDraft;
+    try {
+      draft = this.buildDraft(input.brief, decision, decisionHash);
+    } catch (error) {
+      if (error instanceof VideoPromptCompilationError
+        || error instanceof UnsupportedVideoGenerationInputError) throw error;
+      throw new SemanticPlanningExecutionError("SEMANTIC_DRAFT_INVALID");
+    }
+    const completed = await this.store.completeCreativePlan({
       workspaceId: input.brief.workspaceId,
       creativeBriefRevisionId: input.brief.id,
       draft,
       event: input.event,
     });
+    if (!completed) {
+      throw new SemanticPlanningExecutionError("PLANNING_PERSISTENCE_STATE_INVALID");
+    }
+    return completed;
   }
 
   private async readDocuments(brief: ControlCreativeBriefRevision) {
     if (!this.documentContextReader) {
-      throw new Error("Real semantic planning has no bounded Markdown reader for frozen document evidence.");
+      throw new SemanticPlanningExecutionError("DOCUMENT_CONTEXT_READER_MISSING");
     }
     return this.documentContextReader.read(brief.documentContexts);
   }
@@ -116,20 +165,23 @@ export class SemanticCreativePlanningExecutor {
   private async readReferences(brief: ControlCreativeBriefRevision): Promise<CanonicalReferenceSource[]> {
     if (!this.store.resolveCanonicalReferenceSources) {
       if (brief.sourceAssetIds.length === 0) return [];
-      throw new Error("Real semantic planning cannot resolve canonical reference sources.");
+      throw new SemanticPlanningExecutionError("CANONICAL_REFERENCE_FACTS_INVALID");
     }
     const references = await this.store.resolveCanonicalReferenceSources(
       brief.workspaceId,
       brief.projectId,
       brief.sourceAssetIds,
+      brief.sourceAssetRoles ?? [],
     );
-    if (!references) throw new Error("Canonical reference facts are unavailable or invalid.");
+    if (!references) {
+      throw new SemanticPlanningExecutionError("CANONICAL_REFERENCE_FACTS_INVALID");
+    }
     return references;
   }
 
   private buildDraft(
     brief: ControlCreativeBriefRevision,
-    decision: Awaited<ReturnType<ProvenanceCheckedSemanticDirector["requireExecutable"]>>,
+    decision: SemanticDirectorDecision,
     decisionHash: string,
   ): CreativePlanningDraft {
     const shotSpecs = decision.segments.map((segment) => ({
@@ -147,6 +199,24 @@ export class SemanticCreativePlanningExecutor {
       const dialogueProjection = projectSemanticDialogues(decision, segment.segment_id);
       const referenceProjection = projectSemanticReferences(decision, segment.segment_id);
       const compiled = this.compileSegment(brief, segment.visual_decision, segment.duration_seconds, dialogueProjection, referenceProjection);
+      const evidenceIds = segment.evidence_refs.map((evidence) => evidence.evidence_id);
+      const audioOwner = realAudioOwner(this.profile);
+      const dialogueProjectionHash = semanticValueHash(dialogueProjection);
+      const referenceProjectionHash = semanticValueHash(referenceProjection);
+      const packageIntegrityHash = semanticValueHash(semanticPromptPackageIntegrityPayload({
+        shotSpecId: shotSpec.id,
+        prompt: compiled.prompt,
+        referencePolicy: shotSpec.referencePolicy,
+        sourcePrompt: compiled.sourcePrompt,
+        generatedPromptParts: compiled.generatedPromptParts,
+        evidenceIds,
+        dialogueProjection,
+        referenceProjection,
+        audioOwner,
+        maxDurationSeconds: this.profile.maxDurationSeconds,
+        maxReferenceImages: this.profile.maxReferenceImages,
+        ...(segment.bgm_intent ? { bgmPrompt: segment.bgm_intent } : {}),
+      }));
       return {
         id: this.makeId("ppk"),
         shotSpecId: shotSpec.id,
@@ -155,7 +225,7 @@ export class SemanticCreativePlanningExecutor {
         visualConstraints: {
           semantic_segment_id: segment.segment_id,
           semantic_decision_hash: decisionHash,
-          evidence_ids: segment.evidence_refs.map((evidence) => evidence.evidence_id),
+          evidence_ids: evidenceIds,
         },
         referenceMap: {
           reference_policy: shotSpec.referencePolicy,
@@ -165,15 +235,18 @@ export class SemanticCreativePlanningExecutor {
           semantic_segment_id: segment.segment_id,
           semantic_decision_hash: decisionHash,
           semantic_dialogue_projection: dialogueProjection,
+          semantic_dialogue_projection_hash: dialogueProjectionHash,
+          semantic_reference_projection_hash: referenceProjectionHash,
+          semantic_prompt_package_integrity_hash: packageIntegrityHash,
           authored_source_hash: decision.source_hash,
           prompt_source_kind: "SEMANTIC_VISUAL_PROJECTION",
           // Compatibility key for the outbound compactor. In the real path
           // this is the LLM visual projection, not the authored brief text.
           source_prompt: compiled.sourcePrompt,
           generated_prompt_parts: compiled.generatedPromptParts,
-          audio_owner: realAudioOwner(this.profile),
-          max_duration_seconds: PROVIDER_MAX_DURATION_SECONDS,
-          max_reference_images: PROVIDER_MAX_REFERENCE_IMAGES,
+          audio_owner: audioOwner,
+          max_duration_seconds: this.profile.maxDurationSeconds,
+          max_reference_images: this.profile.maxReferenceImages,
           ...(segment.bgm_intent ? { bgm_prompt: segment.bgm_intent } : {}),
         },
       };
@@ -196,8 +269,8 @@ export class SemanticCreativePlanningExecutor {
       continuityNote: "未声明平台推断的跨片段连续性；每段执行 LLM 视觉投影，其语义完整性仍需真实 QC 或人工复核。",
       shotSpecs,
       durationPolicy: {
-        minDurationSeconds: PROVIDER_MIN_DURATION_SECONDS,
-        maxDurationSeconds: PROVIDER_MAX_DURATION_SECONDS,
+        minDurationSeconds: this.profile.minDurationSeconds,
+        maxDurationSeconds: this.profile.maxDurationSeconds,
       },
       narrativeBeatCount: decision.segments.length,
       generationSegmentCount: decision.segments.length,

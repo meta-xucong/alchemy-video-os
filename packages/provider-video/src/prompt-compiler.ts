@@ -32,24 +32,10 @@ const buildDialogueDirective = (
   if (audioOwner === "NATIVE_PROVIDER") {
     return `One speaker per clip. Character says: "${lines.join("\n")}"`;
   }
-  return `Dialogue visual contract: preserve the following exact dialogue in its original language as visible speaking performance, mouth movement, and lip-sync reference during the assigned narration window; the platform narration supplies the final audible speech and the provider must not generate or carry audible dialogue: ${lines.map((line) => `“${line}”`).join(" ")}. Keep the visible performance aligned to the exact text, finish the window at a natural consistent pace, and use any remaining shot time for a no-dialogue visual hold or source-described non-speaking action with SILENCE/AMBIENT-ONLY sound. After the final narration window, do not continue an additional talking performance, lip-sync, vocalization, or new gesture; keep the mouth neutral and the end pose stable. Do not slow, stretch, repeat, or add filler words.`;
-};
-
-const buildObjectContinuityDirective = (visualObjectLocks: readonly KeyVisualObjectLock[] = []) => {
-  const objects = [...new Map(visualObjectLocks
-    .map((object) => [object.name.trim(), object] as const)
-    .filter(([name]) => Boolean(name))).values()];
-  if (objects.length === 0) return "";
-  const locks = objects.map((object) => {
-    const details = `${object.description} ${object.relation}`.trim();
-    const prohibited = object.prohibited_changes?.length ? `；禁止：${object.prohibited_changes.join("、")}` : "";
-    const transfer = object.transfer;
-    const transferText = transfer
-      ? `；明确换手：这是同一个${object.name}，先由${transfer.from === "LEFT_HAND" ? "左手" : transfer.from === "RIGHT_HAND" ? "右手" : transfer.from}释放，再双手接触交接，最后由${transfer.to === "LEFT_HAND" ? "左手" : transfer.to === "RIGHT_HAND" ? "右手" : transfer.to}持有且原手为空`
-      : "";
-    return `关键对象“${object.name}”：${details}${transferText}${prohibited}`;
-  }).join("；");
-  return `已验证关键对象约束：${locks}。只执行这些显式约束，不从提示文本推断其它对象关系。`;
+  // The fixed upstream sources do not define a platform narration wrapper.
+  // When a non-native owner is selected, the narration asset/AudioPlan is the
+  // authoritative audio input and no parallel prose contract is invented here.
+  return "";
 };
 
 export class VideoPromptCompilationError extends Error {
@@ -83,14 +69,8 @@ export const buildReferenceRoleDirective = (roles: readonly VisualReferenceRole[
   // provider input positions.
   const present = roles.filter((role, index) => roles.indexOf(role) === index);
   if (present.length === 0) return "";
-  const descriptions = present.map((role) => {
-    if (role === "SCENE") return "scene reference: scene/location anchor";
-    if (role === "SUBJECT") return "subject reference: subject identity and wardrobe";
-    if (role === "STYLE") return "style reference: palette or product detail";
-    return "handoff reference: approved opening endpoint";
-  }).join("; ");
-  const inputOrder = roles.map((role, index) => `image ${index + 1} = ${role.toLowerCase()} reference`).join(", ");
-  return `Reference image roles are explicit: ${descriptions}. Provider input order is semantic: ${inputOrder}. Do not infer roles from the original upload order. Preserve the scene anchor and subject identity/wardrobe; do not substitute a generic environment.`;
+  const inputOrder = roles.map((role, index) => `image ${index + 1} = ${role}`).join("; ");
+  return `Reference images (input order): ${inputOrder}. Preserve the supplied reference roles and order.`;
 };
 
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
@@ -107,7 +87,14 @@ const configuredSettings = (generationSettings: Record<string, unknown>, profile
   const duration = values.duration_seconds;
   const resolution = values.resolution;
   const ratio = values.ratio;
-  if (typeof duration !== "number" || !Number.isInteger(duration) || duration < 1 || duration > 15 || (resolution !== "480p" && resolution !== "720p") || ratio !== "16:9") {
+  if (typeof duration !== "number"
+    || !Number.isInteger(duration)
+    || duration < profile.minDurationSeconds
+    || duration > profile.maxDurationSeconds
+    || typeof resolution !== "string"
+    || !profile.supportedResolutions.includes(resolution)
+    || typeof ratio !== "string"
+    || !profile.supportedRatios.includes(ratio)) {
     throw new VideoPromptCompilationError("The saved video settings are not supported by this video profile.");
   }
   return { duration, resolution, ratio };
@@ -125,13 +112,12 @@ export const compileVideoPrompt = (input: Readonly<{
   const sourcePrompt = input.sourcePrompt.trim();
   if (!sourcePrompt) throw new VideoPromptCompilationError("A video idea is required before generation.");
   const referenceDirective = buildReferenceRoleDirective(input.referenceRoles ?? []);
-  const objectDirective = buildObjectContinuityDirective(input.visualObjectLocks);
   const dialogueDirective = buildDialogueDirective(input.dialogueLines, input.profile.audioOwner);
   const captionSuppressionDirective = input.profile.mode === "sub2api"
     && !hasProviderCaptionSuppressionDirective(sourcePrompt)
     ? PROVIDER_CAPTION_SUPPRESSION_DIRECTIVE
     : "";
-  const generatedPromptParts = [captionSuppressionDirective, objectDirective, referenceDirective, dialogueDirective].filter(Boolean);
+  const generatedPromptParts = [captionSuppressionDirective, referenceDirective, dialogueDirective].filter(Boolean);
   const prompt = [sourcePrompt, ...generatedPromptParts].filter(Boolean).join(" ");
   const compactedPrompt = compactRuntimePrompt(
     prompt,

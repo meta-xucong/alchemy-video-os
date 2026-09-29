@@ -2828,6 +2828,37 @@
           },
           "maxItems": 20
         },
+        "source_asset_roles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "asset_id": {
+                "$ref": "#/definitions/CreativeBriefRevision/properties/source_asset_ids/items"
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "SUBJECT",
+                  "SCENE",
+                  "STYLE"
+                ]
+              },
+              "usage": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              }
+            },
+            "required": [
+              "asset_id",
+              "role"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 20,
+          "default": []
+        },
         "document_contexts": {
           "type": "array",
           "items": {
@@ -2950,6 +2981,37 @@
                 "pattern": "^ast_[A-Za-z0-9][A-Za-z0-9_-]{2,63}$"
               },
               "maxItems": 20
+            },
+            "source_asset_roles": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "asset_id": {
+                    "$ref": "#/definitions/CreativeBriefRevisionSuccess/properties/data/properties/source_asset_ids/items"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "SUBJECT",
+                      "SCENE",
+                      "STYLE"
+                    ]
+                  },
+                  "usage": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  }
+                },
+                "required": [
+                  "asset_id",
+                  "role"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 20,
+              "default": []
             },
             "document_contexts": {
               "type": "array",
@@ -8741,6 +8803,37 @@
           },
           "maxItems": 20,
           "default": []
+        },
+        "source_asset_roles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "asset_id": {
+                "$ref": "#/definitions/CreateCreativeBriefRevisionCommand/properties/source_asset_ids/items"
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "SUBJECT",
+                  "SCENE",
+                  "STYLE"
+                ]
+              },
+              "usage": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              }
+            },
+            "required": [
+              "asset_id",
+              "role"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 20,
+          "default": []
         }
       },
       "required": [
@@ -9508,6 +9601,37 @@
                       "$ref": "#/definitions/ProjectDetailSuccess/properties/data/properties/shots/items/properties/selected_asset_id/anyOf/0"
                     },
                     "maxItems": 20
+                  },
+                  "source_asset_roles": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "asset_id": {
+                          "$ref": "#/definitions/ProjectDetailSuccess/properties/data/properties/shots/items/properties/selected_asset_id/anyOf/0"
+                        },
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "SUBJECT",
+                            "SCENE",
+                            "STYLE"
+                          ]
+                        },
+                        "usage": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 1000
+                        }
+                      },
+                      "required": [
+                        "asset_id",
+                        "role"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "maxItems": 20,
+                    "default": []
                   },
                   "document_contexts": {
                     "type": "array",

@@ -28,18 +28,27 @@ const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const runtimeDirectory = join(projectRoot, "services", "document-runtime");
 const runtimePython = join(projectRoot, ".codex-longrun", "c10-document-runtime-venv", "Scripts", "python.exe");
 
-const waitForRuntime = async (endpoint: string, process: ChildProcess) => {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (process.exitCode !== null) throw new Error(`C10 document runtime exited during startup with code ${process.exitCode}.`);
+const waitForRuntime = async (
+  endpoint: string,
+  process: ChildProcess,
+  diagnostics: () => string,
+) => {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (process.exitCode !== null) {
+      throw new Error(`C10 document runtime exited during startup with code ${process.exitCode}. ${diagnostics()}`.trim());
+    }
     try {
-      const response = await fetch(`${endpoint}/internal/v1/document-conversions`);
+      const response = await fetch(`${endpoint}/internal/v1/document-conversions`, {
+        signal: AbortSignal.timeout(1_000),
+      });
       if (response.status === 405) return;
     } catch {
       // The loopback server has not begun accepting requests yet.
     }
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error("C10 document runtime did not become ready on loopback.");
+  throw new Error(`C10 document runtime did not become ready on loopback. ${diagnostics()}`.trim());
 };
 
 const stopRuntime = async (process: ChildProcess) => {
@@ -158,11 +167,16 @@ test("Document executor completes a real loopback Runtime conversion and persist
   const runtime = spawn(runtimePython, ["-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", String(port), "--log-level", "warning"], {
     cwd: runtimeDirectory,
     env: { ...process.env, DOCUMENT_RUNTIME_TOKEN: "c10-local-fixture-token" },
-    stdio: "ignore",
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let runtimeStderr = "";
+  runtime.stderr?.setEncoding("utf8");
+  runtime.stderr?.on("data", (chunk: string) => {
+    runtimeStderr = `${runtimeStderr}${chunk}`.slice(-4_000);
   });
 
   try {
-    await waitForRuntime(endpoint, runtime);
+    await waitForRuntime(endpoint, runtime, () => runtimeStderr.trim());
     const executor = new DocumentConversionExecutor(
       fixture.store,
       fixture.storage,

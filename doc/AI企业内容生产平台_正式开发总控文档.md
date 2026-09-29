@@ -2,14 +2,19 @@
 
 ## 0. 文档状态
 
+> **最新用户变更覆盖（2026-09-29）**：网页 Studio 的 storyboard/delivery-plan 人工确认门已撤销。
+> 用户点击开始生成后，沿用原有 approval endpoint 与事件事实，由 Studio 自动确认并立即创建
+> ProductionRun。本文及历史方案中“用户显式确认分镜/交付后才开始制作”的 UI 流程描述均标记为
+> `HISTORICAL/SUPERSEDED`；真实 Provider 拒绝、素材/字幕/旁白事实缺失和技术 fail-closed 门不变。
+
 | 项目 | 内容 |
 | --- | --- |
 | 文档性质 | 开发基线、阶段门禁和审计总控文档 |
-| 当前版本 | `0.5.4-semantic-owner-audit-reconciled` |
-| 当前阶段 | G01“反自造语义治理与单一语义所有权”已按范围限定收口为 `ACCEPTED`；该状态只覆盖本地治理与代码边界，不表示平台生产可用。WP-00 至 WP-12 只表示 `IMPLEMENTED / LOCAL_TECHNICAL_AND_INFRA_GATES_PASS`。过去 C11.2、C11.4、C11.5、C11.6、C12.1、C12.2 等章节中依赖关键词、正则、手工评分、自动批准、伪修复或未检查即通过的历史 `ACCEPTED` 结论仅保留为历史证据，不再授权新的真实任务继续写入这些语义。C12.4/C12.5 与 E12/R01 的既有阻断/待审计状态不因 G01 收口自动升级。 |
-| 当前允许范围 | G01 已完成代码、文档、配置、安全历史净化和 Git 验收交付。测试证据分层：实现方历史完整隔离基础设施运行 `783/0/0`；独立复核当前环境运行 `763/20/0`，20 skip 为 PostgreSQL、Redis/BullMQ、MinIO 环境门。当前仅允许独立代码审计、审计缺陷修复、离线/本地回归和经单独授权的外部验收准备。不得把本地证据写成平台验收。真实 LLM、Provider、Pixabay、VPS、媒体产物与人工质量仍需单独授权和独立门禁。用户明确授权的 BGM 智能匹配和必要平台薄壳可以保留，但必须清楚标注来源与边界。 |
-| 当前禁止范围 | 未获单独授权的真实 Provider/TTS、Veyra、共享积分、网络、VPS、SSH、DNS、TLS 和生产部署继续禁止。Git 仅允许审计分支、验收 PR 和审计缺陷修复；独立验收前禁止 merge、tag 和发布。不得新增自然语言关键词表、语义正则、手工评分、行业特例、静默 fallback、自动批准、source 改写、未执行即成功或未检查即通过。公共契约、状态、事件、数据库或 wire 若确需改变，必须先落 ADR、兼容策略和测试，不得先改代码绕过。 |
-| 当前执行方案 | `AI企业内容生产平台_反自造逻辑治理与源仓库收敛完整优化方案.md` 是 G01 唯一主执行方案；`AI企业内容生产平台_反自造逻辑与通用LLM边界专项审计报告.md` 与 `AI企业内容生产平台_源仓库创作逻辑收敛与平台薄壳边界开发文档.md` 分别作为问题证据和固定来源边界。其它专项文档只保留历史或局部证据，冲突时不得覆盖主方案。 |
+| 当前版本 | `0.5.6-semantic-model-gate-ready-for-audit` |
+| 当前阶段 | G01“反自造语义治理与单一语义所有权”已按范围限定收口为 `ACCEPTED`；当前唯一活动范围切换为 G02“Semantic Director 真实模型能力门与规划阻断收口”，状态为 `BLOCKED / NOT_READY_FOR_PROVIDER_TEST`。G02 的严格诊断、模型 profile、启动传递和 fail-closed 代码已实现，但尚无真实模型通过完整 `SemanticDirectorDecision v1` fixture，因此禁止提交视频 Provider。C12.4/C12.5 与 E12/R01 的既有阻断/待审计状态不变。 |
+| 当前允许范围 | 仅允许 G02 的模型 fixture 认证、脱敏诊断复核、旧项目重新规划准备和离线/本地回归。实现方可登记真实模型的精确输出能力，但不得自动换模型、修补非法 JSON、回退 deterministic planner、手工注入旧 projection 或绕过规划门。真实 Grok/Pixabay、VPS、媒体产物与人工质量继续使用独立门禁。 |
+| 当前禁止范围 | 未获单独授权的真实 Provider/TTS、Veyra、共享积分、网络、VPS、SSH、DNS、TLS 和生产部署继续禁止。Git 仅允许审计分支、验收 PR 和审计缺陷修复；独立验收前禁止 merge、tag 和发布。不得新增自然语言关键词表、语义正则、手工评分、行业特例、静默 fallback、source 改写、未执行即成功或未检查即通过；网页 storyboard/delivery-plan 自动确认仅按 2026-09-29 用户覆盖执行，并且不能放行真实 Provider 或技术阻断。公共契约、状态、事件、数据库或 wire 若确需改变，必须先落 ADR、兼容策略和测试，不得先改代码绕过。 |
+| 当前执行方案 | G02 唯一现行方案为 `AI企业内容生产平台_SemanticDirector真实模型能力门与规划阻断收口开发文档.md` 与 ADR-0075。G01 的 `AI企业内容生产平台_反自造逻辑治理与源仓库收敛完整优化方案.md` 保留为已验收治理基线；两者冲突时，G02 只能收紧真实模型门，不得恢复 G01 禁止的自造语义或 fallback。 |
 | 语音路线专项参考 | `AI企业内容生产平台_原仓库语音路线与旁白质量迁移修复开发文档.md`；仅用于 native Provider/TTS owner、来源 selector、样音 gate、时长/混音/QC 的冲突裁定，不自动授权代码、状态或外部调用 |
 | 唯一长期架构参考 | `AI企业内容生产平台_代码实现与仓库整合详细方案.md` |
 | 当前阶段唯一执行参考 | `AI企业内容生产平台_本地MVP执行规格.md` |
@@ -26,13 +31,14 @@
 
 用户明确要求“视频 Provider 原生音频优先，原生不可接受时显式切 Doubao TTS”，并授权本机实际使用已配置的 Aiself Grok 与 Doubao profile，不设置平台自造的用量/金额硬上限。自动旁白不要求用户上传音频或样音；样音和正式旁白由服务端生成，样音仍需人工试听/审批。该授权允许在茅山历史项目中按同一画面/脚本重复执行受控 native/Doubao 对照，但不改变仓库/CI 默认 `VIDEO_PROVIDER=mock`、不启用自动 fallback、不改变章节状态，也不授权 Veyra/共享积分/VPS/Git。原仓库 `GrokVideo.supports["native_audio"]` 与 `DoubaoTTS` 的请求/轮询/下载顺序仍是唯一来源；若要把结果写入正式 NarrationAsset/TimelinePlan，仍需独立资产事实与人工听感/审批。
 
-## 0.1 当前唯一状态账本（2026-09-24）
+## 0.1 当前唯一状态账本（2026-09-25）
 
 以下表格是本轮实施和审计判断的唯一现行状态来源；本文后续较早章节段落中的状态、测试数量和“已完成”措辞均为历史快照，不能覆盖本账本，也不能作为重新开启章节或外部调用的授权。
 
 | 章节/范围 | 当前状态 | 本轮含义 |
 | --- | --- | --- |
 | G01 / 反自造语义治理 | `ACCEPTED`（范围限定） | 代码、文档/配置收口、安全历史净化和 Git 验收交付已完成。实现方历史完整基础设施回归为 `783/0/0`；独立复核当前环境为 `763/20/0`，20 skip 是服务环境门。provenance checker 只校验引用/结构，不证明语义正确或 source 完整覆盖；真实 LLM/Provider、VPS、成片语义 QC、人工质量、生产历史盘点和外部凭据轮换仍是发布前外部门，不得据此宣称生产可用 |
+| G02 / Semantic Director 真实模型能力门 | `BLOCKED / NOT_READY_FOR_PROVIDER_TEST` | 严格输出契约、机器 JSON Schema、模型 profile、脱敏诊断、显式环境传递、旧 Worker 阻断和本地认证报告运行门已实现，开发侧为 `READY_FOR_AUDIT`；完整隔离 PostgreSQL/Redis/BullMQ/MinIO 根级回归为 `831/0/0`。Claude、DeepSeek、Doubao Pro 与 reference-vision Lite 当前均为 `UNAVAILABLE`，尚无真实 profile 通过完整 fixture。旧项目不得手工补 projection；在重新规划通过前禁止 Grok submit 和扣费 |
 | C11.2 | `ACCEPTED`（历史窄切片） | 仅表示旧资料理解/事实包范围的历史记录；deterministic analyzer/selector 已不再构成当前真实路径授权，也不开放真实外部系统 |
 | C12.4/C12.5 | `IMPLEMENTED_PENDING_AUDIT` | S01/E02、E03/HB-STORYBOARD-TIMING 8–15 秒、E04/OpenMontage Piper、E05/OpenMontage `_full_mix` + ALCHMED8、E06 approved full narration 窗口与 cue-only 边界、E07 transition/xfade 与有效时长、E09 source-expressed checked transcript/subtitle/FFmpeg fallback、E10 approval/formal asset/TimelinePlan identity-window、E11/S08 measured-duration feedback、E08 segmented/HyperFrames timed-audio 均为来源可表达窄切片 `ACCEPTED`；E12/R01 的 native/Doubao canary 仅是已授权产物/连通性证据，仍不足以关闭已选 profile 的能力证据、自动生成样音审批、正式旁白/TimelinePlan、section windows、中文口音和 Studio 硬门。统一 source registry/rank 明确 `DEFERRED`，不作为总体关闭条件。用户上传旁白/样音不属于当前自动流程前提；完整 AudioPlan、混合转场、continuous narration 非 cut、REQUIRED 字幕、完整 E11 自动重规划及其它未映射能力继续 fail-closed；总体不得扩展第二套协议或平行逻辑 |
 | E08 / OM-SEGMENTED-MUSIC + OM-HYPERFRAMES-AUDIO | `ACCEPTED`（窄切片） | 固定 OpenMontage segmented `[start,end]` 音乐窗口/fade 与 HyperFrames 独立音频 `data-start/data-duration` 已完成最小适配、fixture/受控媒体证据、纠察复核和独立验收；完整 renderer/其它硬门不随之关闭 |
@@ -693,7 +699,7 @@ C11.7/C12.7A 状态为 `ACCEPTED`。它是《源仓库全量能力迁入与冲�
 5. 支持 8-12 个镜头版本化合成，失败镜头可标记而不破坏全部工程。
 6. C11.3 生效后，Scheduler 只接收已冻结的动作计划快照，并在单段技术 QC 与最终合成报告中保留动作时间轴版本和哈希；历史无动作计划的 TaskRun 继续按兼容字段处理。
 
-对需要连续画面的长叙事，C12 从已接受镜头提取 `HandoffAsset`，在前序通过基础 QC 后才允许提交依赖它的后续镜头。后续镜头的视觉输入按“第 0 位交接帧 + 最多 6 张用户上传参考图”组织；派生交接帧不得回流为新的用户来源素材，也不得替代用户在前端的参考图勾选事实。当前 provider 仍不支持已认证尾帧字段或语义级逐帧 QC；因此视觉连续性必须通过交接帧、Prompt 约束、明确转场和最终合成逐层实现，不可描述为模型保证的逐帧连续。新的故事输入只能使用用户上传且已确认的素材。音频不再按“有来源音轨就无条件保留”处理，而按 C12.4 的 `AudioOwnership` 决定：统一平台旁白接管时移除不连续的 Provider dialogue，用户源音频、环境声和未被接管的来源音轨仍按策略保留。对尚无语义级首尾衔接验收的边界，必须使用有界的画面/音频淡变并保持规划总时长。任何局部重做只能重算受影响镜头和依赖它的后续镜头，不能覆盖既有接受版本。
+对需要连续画面的长叙事，C12 从已接受镜头提取 `HandoffAsset`，在前序通过基础 QC 后才允许提交依赖它的后续镜头。后续镜头的视觉输入按“第 0 位交接帧 + 最多 6 张用户上传参考图”组织；派生交接帧不得回流为新的用户来源素材，也不得替代用户在前端的参考图勾选事实。当前 provider 仍不支持已认证尾帧字段或语义级逐帧 QC；因此视觉连续性必须通过交接帧、Prompt 约束、明确转场和最终合成逐层实现，不可描述为模型保证的逐帧连续。新的故事输入只能使用用户上传且已确认的素材。音频不再按“有来源音轨就无条件保留”处理，而按 C12.4 的 `AudioOwnership` 决定：统一平台旁白接管时移除不连续的 Provider dialogue，用户源音频、环境声和未被接管的来源音轨仍按策略保留。只有已有明确 `BLEND`/`BRIDGE` composition plan 的边界才使用受限画面/音频淡变；`UNAVAILABLE`/`FAILED` 按 ADR-0076 直切并保持 `NEEDS_ATTENTION`。任何局部重做只能重算受影响镜头和依赖它的后续镜头，不能覆盖既有接受版本。
 
 ### 17.3 Exit Gate
 
@@ -703,11 +709,17 @@ C11.7/C12.7A 状态为 `ACCEPTED`。它是《源仓库全量能力迁入与冲�
 
 C12.1 是 C12 已验收链路上的本地质量子章节，不重开或重写既有 C12 事实。它补齐“两个可播放片段之间是否语义自然衔接”的持久化判断和有界自动修复：相邻主片段的尾帧与首帧经基础技术 QC 后，由受控 `HandoffEvaluatorPort` 给出 `PASS`、`BLEND`、`BRIDGE_REQUIRED`、`UNAVAILABLE` 或失败结论。`PASS` 直接合成，`BLEND` 使用现有淡变，`BRIDGE_REQUIRED` 最多生成或编排一个 1 至 3 秒的本地媒体运行时转场；`UNAVAILABLE` 或失败只直切并向公开进度投影“衔接检查未完成”，不得伪造语义通过或转场修复。
 
+> **2026-09-28 ADR-0076 当前执行修订**：上段保留为历史设计说明；当前生产路径不创建或调用 `HandoffEvaluatorPort`，`HandoffReview` 仅新写 `UNAVAILABLE/FAILED` 安全审计事实，`PASS/BLEND/BRIDGE_REQUIRED` 只兼容读取历史。无 evaluator 时不提取边界帧、不调用视觉模型；契约选择 A 后，`UNAVAILABLE/FAILED` 直切并保持 `NEEDS_ATTENTION`。本修订不创建新的 `TransitionRepair`。
+
 自动转场属于私有 `TransitionRepair`，不是新的叙事点或主生成片段；主片段数量、主时长和用户目标总时长保持可追溯。每个边界最多一次自动修复，每个 `ProductionRun` 冻结自动修复上限；C12.1 本地实现不得创建桥接 Provider TaskRun，重启、重复 outbox 或重复命令均不得重复创建修复事实。评估原始图像、模型回答、评分、Provider、Prompt、对象 key、临时路径和命令行不得进入公开 DTO、SSE、日志或浏览器。详细设计以 `AI企业内容生产平台_C12.1语义衔接质检与自动转场修复开发设计.md`、ADR-0044 和领域/API 契约为准。
 
 ### 17.5 C12.1 Exit Gate
 
 同项目相邻主片段的边界帧、评估结果、修复策略和次数可追溯；`BRIDGE_REQUIRED` 最多增加一个私有本地修复事实与转场计划且不改变用户看到的主片段数，也不增加 C12.1 的 Provider 调用；`UNAVAILABLE` 或评估失败只标记 `NEEDS_ATTENTION` 并直切，不得创建无语义依据的淡变修复；修复失败不会删除已接受片段或旧 `VideoVersion`；活动租约内的重复投递必须返回 `BUSY`，源片段/边界帧不可用时不得错误确认事件；多个桥接边界的时长必须按边界顺序编译；`PASS`、`BLEND`、`BRIDGE_REQUIRED`、`UNAVAILABLE`、失败恢复和时长守卫均由 Mock/夹具覆盖；浏览器只显示自然语言进度与安全摘要；默认 Mock 模式在无网络、无真实 Key、无 Veyra 的条件下全量通过。
+
+> **2026-09-28 ADR-0076 当前执行修订**：上段的 `PASS`/`BLEND`/`BRIDGE_REQUIRED` 仅用于历史兼容读取，本轮不创建或判定；本轮新写的 `HandoffReview` 仅允许 `UNAVAILABLE`/`FAILED`，生产 Worker 不装配 evaluator，缺少 evaluator 时不提取边界帧。领域/API 契约已选择 A 后，所有 review 完成才发唯一 `composition_requested`，`UNAVAILABLE/FAILED` 走直切 + `NEEDS_ATTENTION`；重复 requested 事件按既有 outbox 事实去重。
+
+> **2026-09-28 实现与真实片段复核**：C12.1 A 方案已落到仓储/Worker 薄壳并通过 Persistence `107/107`（本地 PostgreSQL）、Production Worker `78/78`、Media Runtime `141 passed + 7 subtests`、typecheck 与 `git diff --check`。使用既有真实 Grok 三段片段重试合成后，VideoVersion `SUCCEEDED`，`30.125s / 848x480 / H.264+AAC`，公开 continuity 保持 `NEEDS_ATTENTION`。本条只提交 `READY_FOR_AUDIT` 候选，不升级 C12.1 或总体章节状态，不覆盖其它音频、BGM、VPS、计费和人工质量门禁。
 
 ### 17.6 C12.4：连续旁白轨道与分段视频音频编排
 

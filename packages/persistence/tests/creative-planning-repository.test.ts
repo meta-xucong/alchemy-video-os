@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { InternalCreativePlanningQueueMessageSchema } from "@alchemy-video/contracts";
+
 import { InMemoryCreativePlanningStore } from "../src/creative-planning-repository.js";
 
 const hash = (suffix: string) => suffix.padEnd(64, "0").slice(0, 64);
@@ -157,6 +159,15 @@ test("objective reference observations never become semantic object locks", asyn
 const completePlan = (
   planningStore: InMemoryCreativePlanningStore,
   ids = { scriptRevisionId: "scr_story_1", storyboardRevisionId: "sbr_story_1" },
+  promptPackages?: Array<{
+    id: string;
+    shotSpecId: string;
+    compilerVersion: string;
+    prompt: string;
+    visualConstraints: Record<string, unknown>;
+    referenceMap: Record<string, unknown>;
+    capabilitySnapshot: Record<string, unknown>;
+  }>,
 ) => planningStore.completeCreativePlan({
   workspaceId: "ws_story",
   creativeBriefRevisionId: "cbr_story_1",
@@ -220,7 +231,56 @@ const completePlan = (
     ],
     narrativeBeatCount: 3,
     generationSegmentCount: 3,
+    ...(promptPackages ? { promptPackages } : {}),
   },
+});
+
+test("InMemory planning exposes persisted storyboard music intent hints in shot order", async () => {
+  const planningStore = store();
+  const created = await planningStore.createCreativeBriefRevision(createBrief("idem_music_hints"));
+  assert.equal(created.kind, "NEW");
+  const requested = await planningStore.requestCreativePlan({
+    scope: "usr_dev_owner:/api/v1/creative-brief-revisions/cbr_story_1/plan",
+    idempotencyKey: "idem_music_hints_plan",
+    requestHash: hash("idem_music_hints_plan"),
+    workspaceId: "ws_story",
+    creativeBriefRevisionId: "cbr_story_1",
+    event: event("music_hints_plan"),
+  });
+  assert.equal(requested.kind, "NEW");
+  await completePlan(planningStore, undefined, [
+    {
+      id: "pp_story_1",
+      shotSpecId: "ssp_story_1",
+      compilerVersion: "fixture",
+      prompt: "shot 1",
+      visualConstraints: {},
+      referenceMap: {},
+      capabilitySnapshot: { bgm_prompt: "ambient beauty" },
+    },
+    {
+      id: "pp_story_2",
+      shotSpecId: "ssp_story_2",
+      compilerVersion: "fixture",
+      prompt: "shot 2",
+      visualConstraints: {},
+      referenceMap: {},
+      capabilitySnapshot: { bgm_prompt: "warm piano" },
+    },
+    {
+      id: "pp_story_3",
+      shotSpecId: "ssp_story_3",
+      compilerVersion: "fixture",
+      prompt: "shot 3",
+      visualConstraints: {},
+      referenceMap: {},
+      capabilitySnapshot: {},
+    },
+  ]);
+  assert.deepEqual(
+    await planningStore.listStoryboardMusicIntentHints?.("ws_story", "sbr_story_1"),
+    ["ambient beauty", "warm piano"],
+  );
 });
 
 test("C11 keeps story planning immutable, workspace-scoped, and free of execution side effects", async () => {
@@ -419,4 +479,121 @@ test("C11.2 in-memory planning blocks document briefs until READY facts are avai
     sourceAssetIds: ["ast_document"],
   });
   assert.deepEqual(blocked, { kind: "DOCUMENT_KNOWLEDGE_NOT_READY" });
+});
+
+test("canonical reference resolution preserves every selected image or fails closed", async () => {
+  const imageIds = Array.from({ length: 8 }, (_, index) => `ast_image_${index + 1}`);
+  const assets = new Map<string, {
+    id: string;
+    projectId: string;
+    status: "READY";
+    origin: "USER_UPLOAD" | "DERIVED";
+    kind: "IMAGE" | "DOCUMENT";
+    sha256?: string;
+    mimeType?: string;
+  }>();
+  assets.set("ast_document_canonical", {
+    id: "ast_document_canonical", projectId: "prj_story", status: "READY",
+    origin: "USER_UPLOAD", kind: "DOCUMENT",
+  });
+  imageIds.forEach((id, index) => assets.set(id, {
+    id, projectId: "prj_story", status: "READY", origin: "USER_UPLOAD",
+    kind: "IMAGE", sha256: String(index + 1).repeat(64), mimeType: "image/png",
+  }));
+  assets.set("ast_derived_canonical", {
+    id: "ast_derived_canonical", projectId: "prj_story", status: "READY",
+    origin: "DERIVED", kind: "IMAGE", sha256: "a".repeat(64), mimeType: "image/png",
+  });
+  const planningStore = new InMemoryCreativePlanningStore({
+    findAsset: async (_workspaceId, assetId) => assets.get(assetId),
+  });
+  const valid = await planningStore.resolveCanonicalReferenceSources(
+    "ws_story",
+    "prj_story",
+    ["ast_document_canonical", imageIds[0]!, imageIds[1]!],
+  );
+  assert.deepEqual(valid?.map((item) => ({
+    asset_id: item.asset_id,
+    position: item.position,
+  })), [
+    { asset_id: imageIds[0], position: 0 },
+    { asset_id: imageIds[1], position: 1 },
+  ]);
+  assert.equal(await planningStore.resolveCanonicalReferenceSources(
+    "ws_story", "prj_story", [imageIds[0]!, "ast_missing"],
+  ), undefined);
+  assert.equal(await planningStore.resolveCanonicalReferenceSources(
+    "ws_story", "prj_story", ["ast_derived_canonical"],
+  ), undefined);
+  assert.equal(await planningStore.resolveCanonicalReferenceSources(
+    "ws_story", "prj_story", imageIds,
+  ), undefined);
+});
+
+test("in-memory planning lease can be reclaimed after a retryable release", async () => {
+  const planningStore = store();
+  const created = await planningStore.createCreativeBriefRevision({
+    ...createBrief("idem_retryable_lease"),
+    creativeBriefRevisionId: "cbr_retryable_lease",
+  });
+  assert.equal(created.kind, "NEW");
+  const requested = await planningStore.requestCreativePlan({
+    scope: "usr_dev_owner:/api/v1/creative-brief-revisions/cbr_retryable_lease/plan",
+    idempotencyKey: "idem_retryable_lease_plan",
+    requestHash: hash("idem_retryable_lease_plan"),
+    workspaceId: "ws_story",
+    creativeBriefRevisionId: "cbr_retryable_lease",
+    event: event("retryable_lease"),
+  });
+  assert.equal(requested.kind, "NEW");
+  const message = InternalCreativePlanningQueueMessageSchema.parse({
+    contract_version: "1.0",
+    event_id: "evt_retryable_lease",
+    workspace_id: "ws_story",
+    project_id: "prj_story",
+    creative_brief_revision_id: "cbr_retryable_lease",
+    correlation_id: "cor_retryable_lease",
+  });
+  const first = await planningStore.claimCreativePlanningEvent({
+    message, consumerName: "planning-consumer", workerId: "worker-one",
+    now: new Date(0), leaseMs: 1_000,
+  });
+  assert.equal(first.kind, "CLAIMED");
+  await planningStore.releaseCreativePlanningEvent({
+    eventId: message.event_id,
+    workspaceId: message.workspace_id,
+    consumerName: "planning-consumer",
+    workerId: "worker-one",
+    reason: "DIRECTOR_TIMEOUT",
+    deadLetter: false,
+    now: new Date(1),
+  });
+  const reclaimed = await planningStore.claimCreativePlanningEvent({
+    message, consumerName: "planning-consumer", workerId: "worker-two",
+    now: new Date(2), leaseMs: 1_000,
+  });
+  assert.equal(reclaimed.kind, "CLAIMED");
+  await planningStore.releaseCreativePlanningEvent({
+    eventId: message.event_id,
+    workspaceId: message.workspace_id,
+    consumerName: "planning-consumer",
+    workerId: "worker-two",
+    reason: "DIRECTOR_TIMEOUT",
+    deadLetter: false,
+    now: new Date(3),
+  });
+  await planningStore.releaseCreativePlanningEvent({
+    eventId: message.event_id,
+    workspaceId: message.workspace_id,
+    consumerName: "planning-consumer",
+    workerId: "worker-two",
+    reason: "DIRECTOR_CONTENT_FORMAT_INVALID",
+    deadLetter: true,
+    now: new Date(4),
+  });
+  const terminalDuplicate = await planningStore.claimCreativePlanningEvent({
+    message, consumerName: "planning-consumer", workerId: "worker-three",
+    now: new Date(5), leaseMs: 1_000,
+  });
+  assert.equal(terminalDuplicate.kind, "DUPLICATE");
 });

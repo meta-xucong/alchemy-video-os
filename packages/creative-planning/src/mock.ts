@@ -29,6 +29,12 @@ import {
   extractVisualConstraints,
 } from "@alchemy-video/domain/mock-heuristics";
 import { checkOpenMontageSceneVariation, scoreOpenMontageSlideshowRisk } from "./openmontage-variation-audit.js";
+import {
+  extractDialogueLines,
+  isSpokenQuoteAt,
+  normalizeDialogueText,
+  quotedDialoguePattern,
+} from "./source-dialogue.js";
 export { buildNarrationTimeline, normalizeNarrationSections } from "./narration-quality.js";
 export * from "./semantic-director.js";
 
@@ -488,39 +494,6 @@ const isPlatformBoundaryShell = (input: Pick<CompilationInput, "startState" | "e
   && input.endState === "本段结束"
   && input.transitionSummary === "按分段顺序承接";
 
-// Dialogue is an authored provider-facing utterance.  Keep its line breaks
-// intact while normalizing only horizontal formatting whitespace; the
-// selected provider remains responsible for its own punctuation/pauses.
-const normalizeDialogueText = (value: string) => value
-  .replace(/\r\n?/gu, "\n")
-  .replace(/[^\S\n]+/gu, " ")
-  .replace(/[ \t]+\n/gu, "\n")
-  .replace(/\n[ \t]+/gu, "\n")
-  .trim();
-
-// Huobao's storyboard-breaker receives authored script paragraphs, rather
-// than a flat character stream. Preserve every non-empty source line as one
-// ordered section and carry the original line break on the following section;
-// this keeps provider_text lossless without inventing pause durations.
-const splitAuthoredDialogueSections = (value: string) => {
-  const normalized = normalizeDialogueText(value);
-  if (!normalized) return [] as string[];
-  const sections: string[] = [];
-  let lineBreaksBefore = 0;
-  for (const rawLine of normalized.split("\n")) {
-    const line = rawLine.trim();
-    if (!line) {
-      lineBreaksBefore += 1;
-      continue;
-    }
-    const prefix = sections.length === 0 ? "" : "\n".repeat(Math.max(1, lineBreaksBefore));
-    sections.push(`${prefix}${line}`);
-    // The split itself contributes one line break before the next source line.
-    lineBreaksBefore = 1;
-  }
-  return sections;
-};
-
 // Sentence distribution may split immediately after authored punctuation.
 // Keep any source line/paragraph break that belongs to the following clause;
 // it is part of provider_text rather than disposable indentation.
@@ -537,64 +510,6 @@ const normalizeDialogueClause = (value: string) => {
 const countSpokenCharacters = (value: string) =>
   [...value].filter((character) => !/\s/u.test(character)).length;
 
-const repairDialogueBoundaryQuotes = (value: string) => {
-  const text = value.trim();
-  const first = text[0];
-  const last = text.at(-1);
-  const balanced = (first === "“" && last === "”")
-    || (first === "「" && last === "」")
-    || (first === "『" && last === "』")
-    || (first === '"' && last === '"')
-    || (first === "'" && last === "'");
-  if (balanced) return text;
-  return text
-    .replace(/^[“”「」『』"']+\s*/u, "")
-    .replace(/\s*[“”「」『』"']+$/u, "")
-    .trim();
-};
-
-  const spokenQuoteCue = /(?:口播文案|口播|旁白文案|配音文案|对白文案|对白|台词|说|说道|说着|问|问道|问到|回答|喊道|唱道|开口)\s*(?:为)?\s*[:：]?\s*$/u;
-const quotedDialoguePattern = /“([\s\S]*?)”|”([\s\S]*?)”|「([\s\S]*?)」|『([\s\S]*?)』|"([\s\S]*?)"/gu;
-const isSpokenQuoteAt = (value: string, start: number) =>
-  spokenQuoteCue.test(value.slice(Math.max(0, start - 80), start));
-
-const quotedDialogueLines = (value: string, requireSpokenCue = false) => [...value.matchAll(quotedDialoguePattern)]
-    .filter((match) => {
-      if (!requireSpokenCue) return true;
-      const start = match.index ?? 0;
-      return isSpokenQuoteAt(value, start);
-  })
-    .flatMap((match) => splitAuthoredDialogueSections(match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5] ?? ""))
-    .filter((line) => !/\.(?:png|jpe?g|webp|gif|bmp|mp4|mov|pdf|pptx?|docx?)$/iu.test(line))
-    .filter(Boolean)
-    .filter((line) => !/(?:主持人说|口播文案|话为主|以主持人说话)/u.test(line));
-
-// Source-first input parsing only: this protects authored dialogue so the
-// director can reference it by order. It is not a scene, action, camera or
-// keyword planner and must not be used to manufacture director facts.
-const extractDialogueLines = (value: string) => {
-  // Users commonly paste a screenplay as `口播文案` followed by an
-  // unquoted paragraph and then a separate visual-intent section. Treat that
-  // labelled block as authoritative speech; otherwise it is misclassified as
-  // visual events and the planner falls back to short, fixed segments.
-  const labelled = value.match(/(?:^|\n)\s*(?:口播文案|旁白文案|配音文案|对白文案)\s*(?:为)?\s*[:：]?\s*([\s\S]*?)(?=\n\s*(?:视频生成意图描述|视频生成意图|画面描述|镜头描述|视觉描述|备注|说明)(?:\s*[:：][^\n]*)?(?:\n|$)|$)/u)?.[1];
-  if (labelled) {
-    const labelledText = repairDialogueBoundaryQuotes(labelled);
-    const quoted = quotedDialogueLines(labelledText);
-    if (quoted.length > 0) return quoted;
-    const plain = normalizeDialogueText(labelledText)
-      .replace(/^(?:口播文案|旁白文案|配音文案|对白文案)\s*(?:为)?\s*[:：]?/u, "")
-      .trim();
-    if (plain) return splitAuthoredDialogueSections(plain);
-  }
-  const matches = quotedDialogueLines(value, true);
-  if (matches.length > 0) return matches;
-  return [...value.matchAll(/(?:开口(?:问到|说道)?|说道|说|问道|回答)[:：]?\s*([^。！？!?\n]+)/gu)]
-    .map((match) => normalizeDialogueText(match[1] ?? ""))
-    .filter(Boolean)
-    .filter((line) => !/(?:主持人说|口播文案|话为主|以主持人说话)/u.test(line));
-};
-
 const buildLlmFreeformPlanningContext = (
   input: PlanningInput,
 ): LlmFreeformPlanningContext => ({
@@ -607,7 +522,7 @@ const buildLlmFreeformPlanningContext = (
   ...(input.minimumGenerationSegmentCount !== undefined
     ? { minimumSegments: Math.max(1, input.minimumGenerationSegmentCount) }
     : {}),
-  dialogueLines: extractDialogueLines(input.sourceText.trim()),
+  dialogueLines: extractDialogueLines(input.sourceText.trim()).map((record) => record.text),
   stylePreferences: input.stylePreferences,
   sourceAssetIds: [...input.sourceAssetIds],
 });
@@ -705,7 +620,7 @@ const distributeDialogueLines = (lines: readonly string[], count: number, durati
 const normalizedDialogueLines = (value: string, preferredLines: readonly string[] = []) =>
   preferredLines.length > 0
     ? preferredLines.map(normalizeDialogueClause).filter(Boolean)
-    : extractDialogueLines(value);
+    : extractDialogueLines(value).map((record) => record.text);
 
 const buildAuthoredDialogueSource = (value: string, preferredLines: readonly string[] = [], audioOwner?: VideoAudioOwner) => {
   const lines = normalizedDialogueLines(value, preferredLines);
@@ -1497,7 +1412,7 @@ export class DeterministicPlanningModel implements PlanningModelPort {
     // Preserve raw line boundaries until the labeled narration block has
     // been removed. Normalizing first makes a following visual-description
     // heading indistinguishable from narration and erases the scene plan.
-    const dialogueLines = extractDialogueLines(rawSourceText);
+    const dialogueLines = extractDialogueLines(rawSourceText).map((record) => record.text);
     const narrative = narrativePlanningInput(stripSpokenDialogue(rawSourceText), dialogueLines.length > 0);
     const mergedObjects = new Map<string, KeyVisualObjectLock>();
     for (const object of input.visualObjectLocks ?? []) mergedObjects.set(object.name, object);

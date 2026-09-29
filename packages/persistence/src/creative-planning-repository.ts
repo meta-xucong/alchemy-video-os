@@ -81,6 +81,12 @@ export type PlanningFactContextResolver = {
   resolveFactContexts(input: { workspaceId: string; projectId: string; creativeBriefRevisionId: string; sourceAssetIds: string[]; sourceText: string; stylePreferences: string }): Promise<CreativeBriefFactContext[] | undefined>;
 };
 
+export type ControlCreativeBriefSourceAssetRole = {
+  assetId: string;
+  role: NonNullable<CanonicalReferenceSource["provider_role"]>;
+  usage?: string;
+};
+
 export type ControlCreativeBriefRevision = {
   id: string;
   workspaceId: string;
@@ -91,6 +97,7 @@ export type ControlCreativeBriefRevision = {
   targetResolution: CreativeBriefTargetResolution;
   stylePreferences: string;
   sourceAssetIds: string[];
+  sourceAssetRoles?: ControlCreativeBriefSourceAssetRole[];
   documentContexts: ControlPlanningDocumentContext[];
   /** Internal frozen fact snapshot consumed by Workflow Worker; omitted by public serializer. */
   factContexts?: CreativeBriefFactContext[];
@@ -196,6 +203,7 @@ export type CreativeBriefCommandInput = {
   targetResolution: CreativeBriefTargetResolution;
   stylePreferences: string;
   sourceAssetIds: string[];
+  sourceAssetRoles?: ControlCreativeBriefSourceAssetRole[];
   event: CreativePlanningEvent;
 };
 
@@ -251,7 +259,9 @@ export interface CreativePlanningStore {
   listProjectStoryboardRevisions(workspaceId: string, projectId: string): Promise<ControlStoryboardRevision[]>;
   findStoryboardRevision(workspaceId: string, storyboardRevisionId: string): Promise<ControlStoryboardRevision | undefined>;
   listStoryboardDialogueProjections?(workspaceId: string, storyboardRevisionId: string): Promise<SemanticDialogueProjection[]>;
-  resolveCanonicalReferenceSources?(workspaceId: string, projectId: string, sourceAssetIds: string[]): Promise<CanonicalReferenceSource[] | undefined>;
+  /** Private, read-only music intent projection for AUTO preflight. */
+  listStoryboardMusicIntentHints?(workspaceId: string, storyboardRevisionId: string): Promise<string[]>;
+  resolveCanonicalReferenceSources?(workspaceId: string, projectId: string, sourceAssetIds: string[], sourceAssetRoles?: ControlCreativeBriefSourceAssetRole[]): Promise<CanonicalReferenceSource[] | undefined>;
   listProjectProductionRuns(workspaceId: string, projectId: string): Promise<ControlProductionRun[]>;
   createCreativeBriefRevision(input: CreativeBriefCommandInput): Promise<CreativePlanningCommandOutcome<ControlCreativeBriefRevision>>;
   requestCreativePlan(input: PlanningCommandInput): Promise<CreativePlanningCommandOutcome<ControlCreativeBriefRevision>>;
@@ -277,10 +287,22 @@ const now = () => new Date().toISOString();
 
 const readDialogueProjection = (snapshot: unknown): SemanticDialogueProjection | undefined => {
   if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return undefined;
+  const record = snapshot as Record<string, unknown>;
   const parsed = SemanticDialogueProjectionSchema.safeParse(
-    (snapshot as Record<string, unknown>).semantic_dialogue_projection,
+    record.semantic_dialogue_projection,
   );
-  return parsed.success ? parsed.data : undefined;
+  if (!parsed.success
+    || record.prompt_source_kind !== "SEMANTIC_VISUAL_PROJECTION"
+    || record.authored_source_hash !== parsed.data.source_hash
+    || record.semantic_decision_hash !== parsed.data.decision_hash
+    || record.semantic_segment_id !== parsed.data.segment_id) return undefined;
+  return parsed.data;
+};
+
+const readMusicIntentHint = (snapshot: unknown): string | undefined => {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return undefined;
+  const value = (snapshot as Record<string, unknown>).bgm_prompt;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 };
 
 const objectiveReferenceDescription = (metadata: Record<string, unknown> | undefined) => {
@@ -288,6 +310,13 @@ const objectiveReferenceDescription = (metadata: Record<string, unknown> | undef
   if (!analysis || typeof analysis !== "object" || Array.isArray(analysis)) return undefined;
   const summary = (analysis as Record<string, unknown>).summary;
   return typeof summary === "string" && summary.trim() ? summary.trim().slice(0, 5_000) : undefined;
+};
+
+const objectiveReferenceRole = (metadata: Record<string, unknown> | undefined): CanonicalReferenceSource["provider_role"] => {
+  const analysis = metadata?.visual_analysis;
+  if (!analysis || typeof analysis !== "object" || Array.isArray(analysis)) return undefined;
+  const role = (analysis as Record<string, unknown>).role;
+  return role === "SUBJECT" || role === "SCENE" || role === "STYLE" ? role : undefined;
 };
 
 const isCanonicalReferenceMime = (value: unknown): value is CanonicalReferenceSource["mime_type"] =>
@@ -303,6 +332,11 @@ const serializeCreativeBrief = (value: typeof creativeBriefRevisions.$inferSelec
   targetResolution: value.targetResolution,
   stylePreferences: value.stylePreferences,
   sourceAssetIds: value.sourceAssetIds,
+  sourceAssetRoles: (value.sourceAssetRoles ?? []).map((reference) => ({
+    assetId: reference.asset_id,
+    role: reference.role,
+    ...(reference.usage ? { usage: reference.usage } : {}),
+  })),
   documentContexts,
   factContexts,
   status: value.status,
@@ -518,21 +552,45 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
       });
   }
 
-  async resolveCanonicalReferenceSources(workspaceId: string, projectId: string, sourceAssetIds: string[]) {
+  async listStoryboardMusicIntentHints(workspaceId: string, storyboardRevisionId: string) {
+    const storyboard = await this.findStoryboardRevision(workspaceId, storyboardRevisionId);
+    if (!storyboard) return [];
+    const packageByShot = new Map(
+      [...this.promptPackages.values()].map((promptPackage) => [promptPackage.shotSpecId, promptPackage]),
+    );
+    return [...storyboard.shotSpecs]
+      .sort((left, right) => left.sequence - right.sequence)
+      .flatMap((shotSpec) => {
+        const hint = readMusicIntentHint(packageByShot.get(shotSpec.id)?.capabilitySnapshot);
+        return hint ? [hint] : [];
+      });
+  }
+
+  async resolveCanonicalReferenceSources(workspaceId: string, projectId: string, sourceAssetIds: string[], sourceAssetRoles: ControlCreativeBriefSourceAssetRole[] = []) {
     if (!this.sourceAssetResolver) return sourceAssetIds.length === 0 ? [] : undefined;
+    const roleByAssetId = new Map(sourceAssetRoles.map((reference) => [reference.assetId, reference]));
     const results: CanonicalReferenceSource[] = [];
     for (const assetId of sourceAssetIds) {
       const asset = await this.sourceAssetResolver.findAsset(workspaceId, assetId);
-      if (!asset || asset.projectId !== projectId || asset.status !== "READY" || asset.kind !== "IMAGE") continue;
+      if (!asset
+        || asset.projectId !== projectId
+        || asset.status !== "READY"
+        || asset.origin !== "USER_UPLOAD"
+        || (asset.id !== undefined && asset.id !== assetId)) return undefined;
+      if (asset.kind === "DOCUMENT") continue;
+      if (asset.kind !== "IMAGE" || results.length >= 7) return undefined;
       if (typeof asset.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(asset.sha256) || !isCanonicalReferenceMime(asset.mimeType)) return undefined;
+      const objectiveDescription = objectiveReferenceDescription(asset.metadata);
+      const declaredRole = roleByAssetId.get(asset.id ?? assetId);
+      const providerRole = declaredRole?.role ?? objectiveReferenceRole(asset.metadata);
       results.push({
         asset_id: asset.id ?? assetId,
         asset_sha256: asset.sha256,
         mime_type: asset.mimeType,
         position: results.length,
-        ...(objectiveReferenceDescription(asset.metadata) ? { objective_description: objectiveReferenceDescription(asset.metadata) } : {}),
+        ...(providerRole ? { provider_role: providerRole } : {}),
+        ...(objectiveDescription ? { objective_description: objectiveDescription } : {}),
       });
-      if (results.length === 7) break;
     }
     return results;
   }
@@ -565,6 +623,7 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
       targetResolution: input.targetResolution,
       stylePreferences: input.stylePreferences,
       sourceAssetIds: [...input.sourceAssetIds],
+      sourceAssetRoles: [...(input.sourceAssetRoles ?? [])],
       documentContexts,
       factContexts,
       status: "DRAFT",
@@ -745,7 +804,10 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
     return undefined;
   }
 
-  async releaseCreativePlanningEvent() {
+  async releaseCreativePlanningEvent(input: { eventId: string; workspaceId: string; consumerName: string; workerId: string; reason: string; deadLetter: boolean; now: Date }) {
+    const key = `${input.workspaceId}:${input.eventId}:${input.consumerName}`;
+    if (input.deadLetter) this.consumedEvents.add(key);
+    else this.consumedEvents.delete(key);
     return undefined;
   }
 
@@ -1104,9 +1166,46 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
     });
   }
 
-  async resolveCanonicalReferenceSources(workspaceId: string, projectId: string, sourceAssetIds: string[]) {
+  async listStoryboardMusicIntentHints(workspaceId: string, storyboardRevisionId: string) {
+    const specs = await this.db
+      .select({ id: storyboardShotSpecs.id, sequence: storyboardShotSpecs.sequence })
+      .from(storyboardShotSpecs)
+      .where(and(
+        eq(storyboardShotSpecs.workspaceId, workspaceId),
+        eq(storyboardShotSpecs.storyboardRevisionId, storyboardRevisionId),
+      ))
+      .orderBy(asc(storyboardShotSpecs.sequence));
+    if (specs.length === 0) return [];
+    const rows = await this.db
+      .select({
+        shotSpecId: promptPackages.shotSpecId,
+        capabilitySnapshot: promptPackages.capabilitySnapshot,
+        createdAt: promptPackages.createdAt,
+      })
+      .from(promptPackages)
+      .where(and(
+        eq(promptPackages.workspaceId, workspaceId),
+        inArray(promptPackages.shotSpecId, specs.map((spec) => spec.id)),
+      ))
+      .orderBy(desc(promptPackages.createdAt));
+    const latestByShot = new Map<string, string>();
+    const seenShots = new Set<string>();
+    for (const row of rows) {
+      if (seenShots.has(row.shotSpecId)) continue;
+      seenShots.add(row.shotSpecId);
+      const hint = readMusicIntentHint(row.capabilitySnapshot);
+      if (hint) latestByShot.set(row.shotSpecId, hint);
+    }
+    return specs.flatMap((spec) => {
+      const hint = latestByShot.get(spec.id);
+      return hint ? [hint] : [];
+    });
+  }
+
+  async resolveCanonicalReferenceSources(workspaceId: string, projectId: string, sourceAssetIds: string[], sourceAssetRoles: ControlCreativeBriefSourceAssetRole[] = []) {
     const orderedIds = [...new Set(sourceAssetIds)];
     if (orderedIds.length === 0) return [];
+    const roleByAssetId = new Map(sourceAssetRoles.map((reference) => [reference.assetId, reference]));
     const rows = await this.db
       .select({
         id: assets.id,
@@ -1121,26 +1220,30 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
       .from(assets)
       .where(and(
         eq(assets.workspaceId, workspaceId),
-        eq(assets.projectId, projectId),
-        eq(assets.status, "READY"),
-        eq(assets.kind, "IMAGE"),
-        eq(assets.origin, "USER_UPLOAD"),
         inArray(assets.id, orderedIds),
       ));
     const byId = new Map(rows.map((row) => [row.id, row]));
     const results: CanonicalReferenceSource[] = [];
     for (const assetId of orderedIds) {
       const asset = byId.get(assetId);
-      if (!asset) continue;
+      if (!asset
+        || asset.projectId !== projectId
+        || asset.status !== "READY"
+        || asset.origin !== "USER_UPLOAD") return undefined;
+      if (asset.kind === "DOCUMENT") continue;
+      if (asset.kind !== "IMAGE" || results.length >= 7) return undefined;
       if (typeof asset.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(asset.sha256) || !isCanonicalReferenceMime(asset.mimeType)) return undefined;
+      const objectiveDescription = objectiveReferenceDescription(asset.metadata ?? undefined);
+      const declaredRole = roleByAssetId.get(asset.id);
+      const providerRole = declaredRole?.role ?? objectiveReferenceRole(asset.metadata ?? undefined);
       results.push({
         asset_id: asset.id,
         asset_sha256: asset.sha256,
         mime_type: asset.mimeType,
         position: results.length,
-        ...(objectiveReferenceDescription(asset.metadata ?? undefined) ? { objective_description: objectiveReferenceDescription(asset.metadata ?? undefined) } : {}),
+        ...(providerRole ? { provider_role: providerRole } : {}),
+        ...(objectiveDescription ? { objective_description: objectiveDescription } : {}),
       });
-      if (results.length === 7) break;
     }
     return results;
   }
@@ -1197,6 +1300,11 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
           targetResolution: input.targetResolution,
           stylePreferences: input.stylePreferences,
           sourceAssetIds: input.sourceAssetIds,
+          sourceAssetRoles: (input.sourceAssetRoles ?? []).map((reference) => ({
+            asset_id: reference.assetId,
+            role: reference.role,
+            ...(reference.usage ? { usage: reference.usage } : {}),
+          })),
           status: "DRAFT",
         })
         .returning();
@@ -1749,6 +1857,12 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
   }
 
   async releaseCreativePlanningEvent(input: { eventId: string; workspaceId: string; consumerName: string; workerId: string; reason: string; deadLetter: boolean; now: Date }) {
+    const leaseOwnerMatches = input.deadLetter
+      ? or(
+        eq(eventConsumptions.leaseOwner, input.workerId),
+        and(isNull(eventConsumptions.leaseOwner), isNull(eventConsumptions.leaseExpiresAt)),
+      )
+      : eq(eventConsumptions.leaseOwner, input.workerId);
     await this.db
       .update(eventConsumptions)
       .set({
@@ -1762,7 +1876,7 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
         eq(eventConsumptions.workspaceId, input.workspaceId),
         eq(eventConsumptions.eventId, input.eventId),
         eq(eventConsumptions.consumerName, input.consumerName),
-        eq(eventConsumptions.leaseOwner, input.workerId),
+        leaseOwnerMatches,
       ));
   }
 

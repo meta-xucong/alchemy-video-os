@@ -4,9 +4,13 @@ import { BullMqCreativePlanningQueue, createBullMqCreativePlanningWorker } from 
 import { createS3StoragePort } from "@alchemy-video/storage-client";
 
 import { BoundedDocumentContextReader } from "./document-context-reader.js";
+import { isRetryableCreativePlanningFailure } from "./creative-planning-failure.js";
 import { SemanticCreativePlanningExecutor } from "./semantic-execution-service.js";
 import { CreativePlanningEventConsumer, CreativePlanningOutboxRelay } from "./service.js";
-import { createProvenanceCheckedSemanticDirectorFromEnv } from "./semantic-director-client.js";
+import {
+  createSemanticDirectorRuntimeFromEnv,
+  type SemanticDirectorDiagnostic,
+} from "./semantic-director-client.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const redisUrl = process.env.REDIS_URL;
@@ -36,6 +40,13 @@ const effectiveRuntimeProfile = {
   providerPromptMaxUtf8Bytes,
 };
 const documentReader = new BoundedDocumentContextReader(storage);
+const semanticDiagnosticSink = (diagnostic: SemanticDirectorDiagnostic) => {
+  const logger = diagnostic.outcome === "FAILED" ? console.error : console.info;
+  logger(JSON.stringify(diagnostic));
+};
+const semanticRuntime = runtimeProfile.mode === "mock"
+  ? undefined
+  : createSemanticDirectorRuntimeFromEnv({ diagnosticSink: semanticDiagnosticSink });
 const executor = runtimeProfile.mode === "mock"
   ? (await import("./mock/bootstrap.js")).createMockCreativePlanningExecutor({
     store: planningStore,
@@ -45,7 +56,7 @@ const executor = runtimeProfile.mode === "mock"
   })
   : new SemanticCreativePlanningExecutor(
     planningStore,
-    createProvenanceCheckedSemanticDirectorFromEnv(),
+    semanticRuntime!.rawDirector,
     effectiveRuntimeProfile,
     documentReader,
   );
@@ -59,10 +70,13 @@ const relay = new CreativePlanningOutboxRelay(planningStore, queue, {
   maxAttempts: 3,
   batchSize: 25,
 });
+const planningLeaseMs = semanticRuntime
+  ? semanticRuntime.configuration.timeout_ms + 30_000
+  : 30_000;
 const consumer = new CreativePlanningEventConsumer(planningStore, executor, {
   consumerName: "creative-planning-transition",
   workerId,
-  leaseMs: 30_000,
+  leaseMs: planningLeaseMs,
 });
 const worker = createBullMqCreativePlanningWorker({
   redisUrl,
@@ -72,6 +86,7 @@ const worker = createBullMqCreativePlanningWorker({
   processor: async (message) => {
     await consumer.process(message);
   },
+  isRetryableFailure: isRetryableCreativePlanningFailure,
   onTerminalFailure: async ({ event_id, workspace_id, creative_brief_revision_id, reason }) => {
     await consumer.deadLetter({ eventId: event_id, workspaceId: workspace_id, creativeBriefRevisionId: creative_brief_revision_id, reason });
   },
@@ -85,7 +100,12 @@ const relayTimer = setInterval(() => {
   });
 }, 250);
 await relay.runOnce();
-console.info(JSON.stringify({ event: "workflow_worker.ready", worker_id: workerId }));
+console.info(JSON.stringify({
+  event: "workflow_worker.ready",
+  worker_id: workerId,
+  runtime_mode: runtimeProfile.mode,
+  ...(semanticRuntime ? { semantic_director: semanticRuntime.configuration } : {}),
+}));
 
 let shuttingDown = false;
 const shutdown = async () => {
