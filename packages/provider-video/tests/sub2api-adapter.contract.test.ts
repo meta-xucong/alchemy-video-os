@@ -11,6 +11,7 @@ import {
   createMockMp4Fixture,
   validateMp4Bytes,
 } from "../src/index.js";
+import type { ProviderStatus } from "../src/port.js";
 import { FakeSub2ApiTransport } from "./support/fake-sub2api-transport.js";
 
 const fixtureRootUrl = new URL("../../../fixtures/providers/sub2api/grok-imagine-video-1.5/", import.meta.url);
@@ -75,46 +76,67 @@ test("the adapter accepts the documented request_id compatibility branch", async
   assert.deepEqual(await provider.submit(input), { providerRequestId: "req_fixture_compat_001" });
 });
 
-test("the adapter accepts a KIE-compatible nested taskId submission envelope", async () => {
+test("CONTRACT-003 preserves the source ID when a successful HTTP response contains business errors", async () => {
   const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{
     status: 200,
-    json: { code: 200, msg: "success", data: { taskId: "task_grok_fixture_001" } },
+    json: { code: 422, status: "failed", request_id: "req_fixture_source_id" },
   }]));
 
-  assert.deepEqual(await provider.submit(input), { providerRequestId: "task_grok_fixture_001" });
+  assert.deepEqual(await provider.submit(input), { providerRequestId: "req_fixture_source_id" });
 });
 
-test("the adapter accepts a compatible nested video.task_id envelope", async () => {
+test("CONTRACT-003 rejects a business error response without a source ID", async () => {
   const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{
     status: 200,
-    json: { status: "queued", video: { task_id: "task_grok_fixture_video_001" } },
+    json: { code: 422, message: "invalid input" },
   }]));
 
-  assert.deepEqual(await provider.submit(input), { providerRequestId: "task_grok_fixture_video_001" });
+  await assert.rejects(() => provider.submit(input), VideoProviderProtocolError);
 });
 
-test("the adapter reads nested status and msg fields without changing the wire path", async () => {
+test("the adapter recursively reads source IDs through object and array values", async () => {
   const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{
-    status: 200,
-    json: { code: 200, data: { taskId: "task_grok_fixture_001", status: "completed" } },
+    status: 202,
+    json: { result: [{ nested: { id: "req_fixture_nested" } }, { id: "req_fixture_later_array" }] },
   }]));
 
-  assert.deepEqual(await provider.getStatus({ providerRequestId: "task_grok_fixture_001" }), { state: "SUCCEEDED" });
+  assert.deepEqual(await provider.submit(input), { providerRequestId: "req_fixture_nested" });
 });
 
-test("the adapter exposes a nested KIE rejection as a non-retryable provider failure", async () => {
+test("the adapter follows source ID field priority and traverses values in insertion order", async () => {
   const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{
-    status: 200,
-    json: { code: 422, msg: "invalid input" },
+    status: 202,
+    json: {
+      id: "req_fixture_direct_id",
+      request_id: "req_fixture_direct_request_id",
+      nested: { request_id: "req_fixture_nested_request_id" },
+    },
   }]));
 
-  await assert.rejects(
-    () => provider.submit(input),
-    (error: unknown) => error instanceof Sub2ApiProviderFailure
-      && error.status.code === "PROVIDER_REJECTED"
-      && error.status.message === "invalid input"
-      && !error.status.retryable,
-  );
+  assert.deepEqual(await provider.submit(input), { providerRequestId: "req_fixture_direct_request_id" });
+  const nestedProvider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{
+    status: 202,
+    json: { nested: { id: "req_fixture_first_nested" }, later: { request_id: "req_fixture_later" } },
+  }]));
+  assert.deepEqual(await nestedProvider.submit(input), { providerRequestId: "req_fixture_first_nested" });
+});
+
+test("a non-object successful submit body remains a protocol error", async () => {
+  for (const json of [null, [], "not-json"]) {
+    await assert.rejects(
+      () => new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{ status: 200, json }])).submit(input),
+      VideoProviderProtocolError,
+    );
+  }
+});
+
+test("submission does not treat task_id or taskId as source request IDs", async () => {
+  for (const json of [{ task_id: "not-source-id" }, { taskId: "not-source-id" }]) {
+    await assert.rejects(
+      () => new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{ status: 200, json }])).submit(input),
+      VideoProviderProtocolError,
+    );
+  }
 });
 
 test("the adapter requires an explicitly injected transport", () => {
@@ -191,53 +213,78 @@ test("CONTRACT-005 maps successful status and returns a stream C06 can validate"
   ]);
 });
 
-test("the adapter accepts the documented complete and done terminal statuses", async () => {
-  for (const fixture of ["status.complete.json", "status.done.json"]) {
-    const transport = new FakeSub2ApiTransport([{
-      status: 200,
-      json: await readJson(fixture),
-    }]);
-    const provider = new Sub2ApiVideoProvider(transport);
-
+test("all source success terminal states map to SUCCEEDED", async () => {
+  for (const status of ["completed", "complete", "succeeded", "success", "done"]) {
+    const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{ status: 200, json: { status } }]));
     assert.deepEqual(await provider.getStatus({ providerRequestId: "req_fixture_001" }), { state: "SUCCEEDED" });
-    assert.deepEqual(transport.requests, [{ method: "GET", path: "/videos/req_fixture_001" }]);
   }
 });
 
-test("the adapter treats the observed unknown status as transient before queued and terminal states", async () => {
-  const transport = new FakeSub2ApiTransport([
-    { status: 200, json: await readJson("status.unknown.json") },
-    { status: 200, json: await readJson("status.queued.json") },
-    { status: 200, json: await readJson("status.succeeded.json") },
-  ]);
-  const provider = new Sub2ApiVideoProvider(transport);
-
-  assert.deepEqual(await provider.getStatus({ providerRequestId: "req_fixture_001" }), { state: "PROCESSING" });
-  assert.deepEqual(await provider.getStatus({ providerRequestId: "req_fixture_001" }), { state: "PROCESSING" });
-  assert.deepEqual(await provider.getStatus({ providerRequestId: "req_fixture_001" }), { state: "SUCCEEDED" });
-  assert.deepEqual(transport.requests, [
-    { method: "GET", path: "/videos/req_fixture_001" },
-    { method: "GET", path: "/videos/req_fixture_001" },
-    { method: "GET", path: "/videos/req_fixture_001" },
-  ]);
+test("all source failure terminal states map to the existing rejected failure", async () => {
+  for (const status of ["failed", "error", "cancelled", "canceled", "rejected"]) {
+    const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{ status: 200, json: { status } }]));
+    assert.deepEqual(await provider.getStatus({ providerRequestId: "req_fixture_001" }), {
+      state: "FAILED",
+      code: "PROVIDER_REJECTED",
+      message: "The SUB2API video request was rejected.",
+      retryable: false,
+    });
+  }
 });
 
-test("the adapter keeps incomplete or arbitrary unknown statuses fail-closed", async () => {
+test("unknown, arbitrary nonterminal and missing statuses continue as processing regardless of progress", async () => {
   for (const json of [
     { status: "unknown", progress: 0 },
-    { id: "req_fixture_001", status: "unknown" },
-    { id: "req_fixture_001", status: "unknown", progress: "0" },
-    { id: "req_fixture_001", status: "unknown", progress: 100 },
-    { id: "req_fixture_001", status: "unknown", progress: -1 },
-    { id: "req_fixture_001", status: "unknown", progress: Number.NaN },
-    { id: "req_fixture_001", status: "mystery", progress: 0 },
+    { status: "unknown" },
+    { status: "unknown", progress: "0" },
+    { status: "unknown", progress: 100 },
+    { status: "unknown", progress: -1 },
+    { status: "mystery", progress: 0 },
+    { status: "mystery", progress: 100 },
+    { status: "queued" },
+    {},
+    { data: {} },
   ]) {
+    const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{ status: 200, json }]));
+    assert.deepEqual(await provider.getStatus({ providerRequestId: "req_fixture_001" }), { state: "PROCESSING" });
+  }
+});
+
+test("status extraction follows source name priority, recursive order and data wrapper selection", async () => {
+  const cases: Array<{ json: unknown; expected: ProviderStatus }> = [
+    { json: { status: "processing", state: "succeeded" }, expected: { state: "PROCESSING" } },
+    { json: { state: "succeeded", nested: { status: "failed" } }, expected: { state: "SUCCEEDED" } },
+    { json: { status: " mystery-state ", nested: { status: "failed" } }, expected: { state: "PROCESSING" } },
+    { json: { result: [{ state: "complete" }] }, expected: { state: "SUCCEEDED" } },
+    { json: { result: [{ status: "queued" }, { status: "succeeded" }] }, expected: { state: "PROCESSING" } },
+    { json: { status: "failed", data: { status: "succeeded" } }, expected: { state: "SUCCEEDED" } },
+    { json: { status: "succeeded", data: { details: [{ state: "failed" }] } }, expected: { state: "FAILED", code: "PROVIDER_REJECTED", message: "The SUB2API video request was rejected.", retryable: false } },
+    { json: { status: "failed", data: [] }, expected: { state: "FAILED", code: "PROVIDER_REJECTED", message: "The SUB2API video request was rejected.", retryable: false } },
+    { json: { status: "succeeded", data: {} }, expected: { state: "PROCESSING" } },
+  ];
+
+  for (const { json, expected } of cases) {
+    const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{ status: 200, json }]));
+    assert.deepEqual(await provider.getStatus({ providerRequestId: "req_fixture_001" }), expected);
+  }
+});
+
+test("a non-object status body remains a protocol error", async () => {
+  for (const json of [null, [], "not-json"]) {
     await assert.rejects(
       () => new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{ status: 200, json }]))
         .getStatus({ providerRequestId: "req_fixture_001" }),
       VideoProviderProtocolError,
     );
   }
+});
+
+test("status normalization only trims and lowercases; it does not rewrite separators", async () => {
+  const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{
+    status: 200,
+    json: { status: " In-Progress " },
+  }]));
+  assert.deepEqual(await provider.getStatus({ providerRequestId: "req_fixture_001" }), { state: "PROCESSING" });
 });
 
 test("CONTRACT-005 preserves the MIME type while accepting standard Content-Type parameters", async () => {
@@ -348,7 +395,7 @@ test("CONTRACT-005 rejects an invalid or empty download Content-Length", async (
   );
 });
 
-test("CONTRACT-007 rejects malformed payloads without retrying submission", async () => {
+test("CONTRACT-007 rejects malformed submit payloads and preserves source unknown-status behavior", async () => {
   const missingId = new FakeSub2ApiTransport([{ status: 202, json: await readJson("malformed.missing-id.json") }]);
   await assert.rejects(
     () => new Sub2ApiVideoProvider(missingId).submit(input),
@@ -357,9 +404,9 @@ test("CONTRACT-007 rejects malformed payloads without retrying submission", asyn
   assert.equal(missingId.requests.length, 1);
 
   const missingStatus = new FakeSub2ApiTransport([{ status: 200, json: await readJson("malformed.missing-status.json") }]);
-  await assert.rejects(
-    () => new Sub2ApiVideoProvider(missingStatus).getStatus({ providerRequestId: "req_fixture_001" }),
-    VideoProviderProtocolError,
+  assert.deepEqual(
+    await new Sub2ApiVideoProvider(missingStatus).getStatus({ providerRequestId: "req_fixture_001" }),
+    { state: "PROCESSING" },
   );
 
   const nonJson = new FakeSub2ApiTransport([{
@@ -375,10 +422,25 @@ test("CONTRACT-007 rejects malformed payloads without retrying submission", asyn
     status: 200,
     json: { status: "processing", state: "succeeded" },
   }]);
-  await assert.rejects(
-    () => new Sub2ApiVideoProvider(conflictingState).getStatus({ providerRequestId: "req_fixture_001" }),
-    VideoProviderProtocolError,
+  assert.deepEqual(
+    await new Sub2ApiVideoProvider(conflictingState).getStatus({ providerRequestId: "req_fixture_001" }),
+    { state: "PROCESSING" },
   );
+});
+
+test("the adapter keeps its strict 2xx gate for HTTP 422 and 302 responses", async () => {
+  for (const status of [302, 422]) {
+    const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{
+      status,
+      json: { request_id: "must_not_be_accepted" },
+    }]));
+    await assert.rejects(
+      () => provider.submit(input),
+      (error: unknown) => error instanceof Sub2ApiProviderFailure
+        && error.status.code === "PROVIDER_REJECTED"
+        && !error.status.retryable,
+    );
+  }
 });
 
 test("CONTRACT-008 keeps fixtures and derived failure summaries free of sensitive values", async () => {

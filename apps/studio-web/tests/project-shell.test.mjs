@@ -108,3 +108,17 @@ test("Studio never re-parses authored narration during automatic production", ()
   assert.doesNotMatch(page, /createNarrationScriptRevision|provider_text/);
   assert.match(page, /AI 正在确认分镜并开始制作视频/);
 });
+
+test("Studio exposes an explicit, default-preserve ProductionRun audio choice", () => {
+  const page = read("app/pages/projects/[project_id].vue");
+  const api = read("app/composables/useControlApi.ts");
+  assert.match(page, /PRESERVE_PROVIDER_AUDIO/);
+  assert.match(page, /DOUBAO_TTS_REPLACE/);
+  assert.match(page, /MUSIC_REPLACE_PROVIDER_AUDIO/);
+  assert.match(page, /会移除视频 Provider 原声/);
+  assert.match(page, /musicPlan\.mode !== "MANUAL" \|\| !selectedMusicAsset\.value/);
+  assert.match(page, /aria-labelledby="audio-selection-title"[\s\S]{0,220}id="audio-selection-title"/);
+  assert.match(page, /const audioSelection = ref<.*>\("PRESERVE_PROVIDER_AUDIO"\)/);
+  assert.match(page, /audio_selection: audioSelection\.value/);
+  assert.match(api, /audio_selection: "PRESERVE_PROVIDER_AUDIO" \| "DOUBAO_TTS_REPLACE" \| "MUSIC_REPLACE_PROVIDER_AUDIO"/);
+});

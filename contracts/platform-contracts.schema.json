@@ -7549,7 +7549,8 @@
           "minimum": 0
         },
         "prompt": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "model": {
           "anyOf": [
@@ -7639,7 +7640,8 @@
               "minimum": 0
             },
             "prompt": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 20000
             },
             "model": {
               "anyOf": [
@@ -8609,6 +8611,7 @@
         },
         "prompt": {
           "type": "string",
+          "maxLength": 20000,
           "default": ""
         },
         "model": {
@@ -8674,7 +8677,8 @@
           "minimum": 0
         },
         "prompt": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 20000
         },
         "model": {
           "anyOf": [
@@ -9115,6 +9119,15 @@
             "mode"
           ],
           "additionalProperties": false
+        },
+        "audio_selection": {
+          "type": "string",
+          "enum": [
+            "PRESERVE_PROVIDER_AUDIO",
+            "DOUBAO_TTS_REPLACE",
+            "MUSIC_REPLACE_PROVIDER_AUDIO"
+          ],
+          "default": "PRESERVE_PROVIDER_AUDIO"
         }
       },
       "required": [
@@ -9197,7 +9210,8 @@
                     "minimum": 0
                   },
                   "prompt": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 20000
                   },
                   "model": {
                     "anyOf": [

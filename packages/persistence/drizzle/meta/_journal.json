@@ -183,6 +183,13 @@
       "when": 1790447496320,
       "tag": "0025_magical_cobalt_man",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1790920851639,
+      "tag": "0026_canonical_visual_entity_revisions",
+      "breakpoints": true
     }
   ]
 }

@@ -355,16 +355,31 @@ export const CreateCreativeBriefRevisionCommandSchema = z.object({
 }).strict().superRefine(validateCreativeBriefReferenceRoles);
 export const RequestCreativePlanCommandSchema = z.object({}).strict();
 export const ApproveStoryboardRevisionCommandSchema = z.object({}).strict();
+export const ProductionRunAudioSelectionSchema = z.enum([
+  "PRESERVE_PROVIDER_AUDIO",
+  "DOUBAO_TTS_REPLACE",
+  "MUSIC_REPLACE_PROVIDER_AUDIO",
+]);
 export const CreateProductionRunCommandSchema = z.object({
   storyboard_revision_id: StoryboardRevisionIdSchema,
   delivery_plan_revision_id: DeliveryPlanRevisionIdSchema,
   music_plan: MusicPlanSchema,
-}).strict();
+  audio_selection: ProductionRunAudioSelectionSchema.default("PRESERVE_PROVIDER_AUDIO"),
+}).strict().superRefine((value, context) => {
+  if (value.audio_selection === "MUSIC_REPLACE_PROVIDER_AUDIO" && value.music_plan.mode !== "MANUAL") {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["music_plan"],
+      message: "Replacing provider audio requires one explicitly selected manual MUSIC asset.",
+    });
+  }
+});
 
 export type CreativeRevisionStatus = z.infer<typeof CreativeRevisionStatusSchema>;
 export type ContinuityLevel = z.infer<typeof ContinuityLevelSchema>;
 export type ReferencePolicy = z.infer<typeof ReferencePolicySchema>;
 export type ProductionRunStatus = z.infer<typeof ProductionRunStatusSchema>;
+export type ProductionRunAudioSelection = z.infer<typeof ProductionRunAudioSelectionSchema>;
 export type ContinuityStatus = z.infer<typeof ContinuityStatusSchema>;
 export type CreativeBriefTargetResolution = z.infer<typeof CreativeBriefTargetResolutionSchema>;
 export type CreativeBriefReferenceRole = z.infer<typeof CreativeBriefReferenceRoleSchema>;

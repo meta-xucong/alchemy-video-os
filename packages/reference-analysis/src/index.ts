@@ -59,8 +59,39 @@ const parseCandidate = (value: unknown): ReferenceVisionCandidate => {
 
 const endpointFor = (baseUrl: string) => {
   const url = new URL(baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
-  if (url.username || url.password || url.search || url.hash) throw new ReferenceVisionAnalysisError(false, "Reference vision base URL is invalid.");
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) throw new ReferenceVisionAnalysisError(false, "Reference vision base URL is invalid.");
   return new URL("chat/completions", url).toString();
+};
+
+const readResponseText = async (response: Response, maximumBytes = 1 * 1024 * 1024) => {
+  const declaredLength = Number(response.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) throw new ReferenceVisionAnalysisError(false, "Reference vision response is too large.");
+  if (!response.body) {
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > maximumBytes) throw new ReferenceVisionAnalysisError(false, "Reference vision response is too large.");
+    return text;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      size += next.value.byteLength;
+      if (size > maximumBytes) {
+        await reader.cancel("response exceeds configured limit").catch(() => undefined);
+        throw new ReferenceVisionAnalysisError(false, "Reference vision response is too large.");
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder().decode(bytes);
 };
 
 /** OpenAI-compatible multimodal adapter. It is opt-in and never used without an explicit endpoint and key. */
@@ -114,7 +145,13 @@ export class OpenAiCompatibleReferenceVisionAnalyzer implements ReferenceVisionA
         signal: controller.signal,
       });
       if (!response.ok) throw new ReferenceVisionAnalysisError(response.status >= 500 || response.status === 429, "Reference vision service rejected the analysis request.");
-      const payload = await response.json().catch(() => undefined) as { choices?: Array<{ message?: { content?: unknown } }> } | undefined;
+      let payload: { choices?: Array<{ message?: { content?: unknown } }> };
+      try {
+        payload = JSON.parse(await readResponseText(response)) as { choices?: Array<{ message?: { content?: unknown } }> };
+      } catch (error) {
+        if (error instanceof ReferenceVisionAnalysisError) throw error;
+        throw new ReferenceVisionAnalysisError(false, "Reference vision returned invalid JSON.");
+      }
       const content = payload?.choices?.[0]?.message?.content;
       return parseCandidate(jsonFromContent(content));
     } catch (error) {

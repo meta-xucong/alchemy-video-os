@@ -6,6 +6,7 @@ import binascii
 import json
 import math
 import os
+import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -21,6 +22,7 @@ from runtime import (
     COMPOSITION_ADVANCED_AUDIO_PLAN_MAGIC,
     COMPOSITION_OWNERSHIP_AUDIO_PLAN_MAGIC,
     COMPOSITION_COMPLETE_AUDIO_PLAN_MAGIC,
+    COMPOSITION_AUDIO_SELECTION_MAGIC,
     MAX_COMPOSITION_INPUT_BYTES,
     MAX_SINGLE_VIDEO_BYTES,
     _AUDIO_MIME_TYPES,
@@ -263,9 +265,19 @@ def source_pixabay_filename(title: object) -> str:
     return f"pixabay_music_{safe_title[:60]}.mp3"
 
 
-def forbidden_response(error: MediaRuntimeError) -> JSONResponse:
+def forbidden_response(error: MediaRuntimeError, *, include_render_diagnostic: bool = False) -> JSONResponse:
     status = 503 if error.retryable else 400
-    return JSONResponse({"error": {"code": error.code, "retryable": error.retryable}}, status_code=status)
+    payload = {"code": error.code, "retryable": error.retryable}
+    if error.code == "QC_FAILED" or (include_render_diagnostic and error.code == "MEDIA_RENDER_FAILED"):
+        diagnostic = re.sub(r"(?i)https?://[^\s,;]+", "[url]", str(error))
+        diagnostic = re.sub(r"(?i)\bauthorization\s*[:=]\s*bearer\s+[^\s,;]+", "authorization=[redacted]", diagnostic)
+        diagnostic = re.sub(r"(?i)\b(?:bearer\s+|(?:api[_-]?key|token|password|passwd|secret|client_secret|access_key|private_key|authorization)\s*[:=]\s*)[^\s,;]+", "[redacted]", diagnostic)
+        diagnostic = re.sub(r"(?i)\b[A-Z]:\\[^\s,;]+|(?<![\w:])/(?:[^\s,;]+)", "[path]", diagnostic)
+        diagnostic = re.sub(r"[\r\n\t\x00-\x1f\x7f]+", " ", diagnostic)
+        diagnostic = re.sub(r"\s+", " ", diagnostic).strip()[:240]
+        if diagnostic:
+            payload["diagnostic"] = diagnostic
+    return JSONResponse({"error": payload}, status_code=status)
 
 
 async def authorize(authorization: str | None, operation_id: str | None) -> str | JSONResponse:
@@ -329,7 +341,7 @@ async def pixabay_music(
         return forbidden_response(MediaRuntimeError("MEDIA_RENDER_FAILED", "Pixabay Music request is invalid."))
     except Exception as error:
         if str(error).startswith("No music found on Pixabay"):
-            return forbidden_response(MediaRuntimeError("MEDIA_RENDER_FAILED", str(error)))
+            return forbidden_response(MediaRuntimeError("MEDIA_RENDER_FAILED", "No music found on Pixabay for the requested query."))
         return forbidden_response(MediaRuntimeError("MEDIA_RUNTIME_UNAVAILABLE", "Pixabay Music is unavailable.", retryable=True))
     track = result.track
     rating = track.get("rating")
@@ -481,6 +493,7 @@ async def final_review(
     x_media_expected_sha256: str | None = Header(default=None),
     x_media_script_text_base64: str | None = Header(default=None),
     x_media_caption_policy: str | None = Header(default=None),
+    x_media_music_applied: str | None = Header(default=None),
 ):
     authorized = await authorize(authorization, x_media_operation_id)
     if isinstance(authorized, JSONResponse):
@@ -497,11 +510,14 @@ async def final_review(
                 script_text = decoded_script
             except (ValueError, UnicodeDecodeError):
                 raise MediaRuntimeError("MEDIA_RENDER_FAILED", "Script context header is invalid.")
+        if x_media_music_applied not in {None, "true", "false"}:
+            raise MediaRuntimeError("MEDIA_RENDER_FAILED", "Music review flag is invalid.")
         return final_review_video_bytes(
             body=await read_bounded_request(request, maximum=MAX_SINGLE_VIDEO_BYTES),
             expected_sha256=x_media_expected_sha256,
             script_text=script_text,
             caption_policy=x_media_caption_policy or "OFF",
+            music_applied=x_media_music_applied == "true",
         ).payload
     except MediaRuntimeError as error:
         return forbidden_response(error)
@@ -668,11 +684,11 @@ async def compose_video(
         return JSONResponse({"error": {"code": "MEDIA_RENDER_FAILED", "retryable": False}}, status_code=400)
     try:
         body = await read_bounded_request(request, maximum=MAX_COMPOSITION_INPUT_BYTES)
-        if not (body.startswith(COMPOSITION_MAGIC) or body.startswith(COMPOSITION_PLAN_MAGIC) or body.startswith(COMPOSITION_AUDIO_PLAN_MAGIC) or body.startswith(COMPOSITION_MUSIC_PLAN_MAGIC) or body.startswith(COMPOSITION_NARRATION_PLAN_MAGIC) or body.startswith(COMPOSITION_ADVANCED_AUDIO_PLAN_MAGIC) or body.startswith(COMPOSITION_OWNERSHIP_AUDIO_PLAN_MAGIC) or body.startswith(COMPOSITION_COMPLETE_AUDIO_PLAN_MAGIC)):
+        if not (body.startswith(COMPOSITION_MAGIC) or body.startswith(COMPOSITION_PLAN_MAGIC) or body.startswith(COMPOSITION_AUDIO_PLAN_MAGIC) or body.startswith(COMPOSITION_MUSIC_PLAN_MAGIC) or body.startswith(COMPOSITION_NARRATION_PLAN_MAGIC) or body.startswith(COMPOSITION_ADVANCED_AUDIO_PLAN_MAGIC) or body.startswith(COMPOSITION_OWNERSHIP_AUDIO_PLAN_MAGIC) or body.startswith(COMPOSITION_COMPLETE_AUDIO_PLAN_MAGIC) or body.startswith(COMPOSITION_AUDIO_SELECTION_MAGIC)):
             raise MediaRuntimeError("MEDIA_RENDER_FAILED", "Composition input is invalid.")
         result = compose_video_bundle(body=body, expected_sha256=x_media_expected_sha256)
     except MediaRuntimeError as error:
-        return forbidden_response(error)
+        return forbidden_response(error, include_render_diagnostic=True)
     return Response(
         content=result.bytes,
         media_type=result.inspection.mime_type,

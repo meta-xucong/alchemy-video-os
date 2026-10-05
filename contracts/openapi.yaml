@@ -3,10 +3,13 @@ info:
   title: AI Enterprise Content Platform Control API
   version: 1.0.0
   description: C02 contract export. C03 implements the HTTP handlers.
+security:
+  - videoSessionCookie: []
 paths:
   /api/v1/health:
     get:
       operationId: getHealth
+      security: []
       responses:
         "200":
           description: Control API health
@@ -14,6 +17,34 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthSuccess"
+  /api/v1/health/live:
+    get:
+      operationId: getLiveness
+      security: []
+      responses:
+        "200":
+          description: Control API process liveness
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthSuccess"
+  /api/v1/health/ready:
+    get:
+      operationId: getReadiness
+      security: []
+      responses:
+        "200":
+          description: Control API readiness
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthSuccess"
+        "503":
+          description: Control API dependencies are not ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiFailure"
   /api/v1/me:
     get:
       operationId: getCurrentIdentity
@@ -1346,6 +1377,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/PublicWorkspaceEventEnvelope"
 components:
+  securitySchemes:
+    videoSessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-video_session
+      description: Production Veyra video session cookie. Local DevIdentity is not a
+        commercial authentication mechanism.
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -7104,6 +7142,7 @@ components:
           minimum: 0
         prompt:
           type: string
+          maxLength: 20000
         model:
           type: string
           minLength: 1
@@ -7167,6 +7206,7 @@ components:
               minimum: 0
             prompt:
               type: string
+              maxLength: 20000
             model:
               type: string
               minLength: 1
@@ -7837,6 +7877,7 @@ components:
           minimum: 0
         prompt:
           type: string
+          maxLength: 20000
           default: ""
         model:
           type: string
@@ -7882,6 +7923,7 @@ components:
           minimum: 0
         prompt:
           type: string
+          maxLength: 20000
         model:
           type: string
           minLength: 1
@@ -8209,6 +8251,13 @@ components:
           required:
             - mode
           additionalProperties: false
+        audio_selection:
+          type: string
+          enum:
+            - PRESERVE_PROVIDER_AUDIO
+            - DOUBAO_TTS_REPLACE
+            - MUSIC_REPLACE_PROVIDER_AUDIO
+          default: PRESERVE_PROVIDER_AUDIO
       required:
         - storyboard_revision_id
         - delivery_plan_revision_id
@@ -8276,6 +8325,7 @@ components:
                     minimum: 0
                   prompt:
                     type: string
+                    maxLength: 20000
                   model:
                     type: string
                     minLength: 1

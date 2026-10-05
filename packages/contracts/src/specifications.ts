@@ -194,11 +194,30 @@ export const createOpenApiDocument = (): JsonSchema => ({
     version: "1.0.0",
     description: "C02 contract export. C03 implements the HTTP handlers.",
   },
+  security: [{ videoSessionCookie: [] }],
   paths: {
     "/api/v1/health": {
       get: {
         operationId: "getHealth",
+        security: [],
         responses: { "200": response("HealthSuccess", "Control API health"), },
+      },
+    },
+    "/api/v1/health/live": {
+      get: {
+        operationId: "getLiveness",
+        security: [],
+        responses: { "200": response("HealthSuccess", "Control API process liveness"), },
+      },
+    },
+    "/api/v1/health/ready": {
+      get: {
+        operationId: "getReadiness",
+        security: [],
+        responses: {
+          "200": response("HealthSuccess", "Control API readiness"),
+          "503": response("ApiFailure", "Control API dependencies are not ready"),
+        },
       },
     },
     "/api/v1/me": {
@@ -869,6 +888,14 @@ export const createOpenApiDocument = (): JsonSchema => ({
     },
   },
   components: {
+    securitySchemes: {
+      videoSessionCookie: {
+        type: "apiKey",
+        in: "cookie",
+        name: "__Host-video_session",
+        description: "Production Veyra video session cookie. Local DevIdentity is not a commercial authentication mechanism.",
+      },
+    },
     parameters: {
       IdempotencyKey: {
         name: "Idempotency-Key",

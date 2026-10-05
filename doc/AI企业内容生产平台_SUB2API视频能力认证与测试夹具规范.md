@@ -119,7 +119,7 @@ type VideoProviderProfile = {
 | `CONTRACT-004` | 处理中查询 | `processing` fixture | 映射为 `PROCESSING`，不下载 |
 | `CONTRACT-005` | 成功查询与下载 | `succeeded` + content metadata | 映射为 `SUCCEEDED`，返回实际 MIME/可用长度与流；C06 以该 metadata 校验后才保存 |
 | `CONTRACT-006` | 失败查询/提交 | 上游失败 fixture | 生成带 `PROVIDER` 阶段的 `PROVIDER_REJECTED` 或 `PROVIDER_UNAVAILABLE` 安全失败；`GET /videos/{id}` 的 `429/503` 返回 `FAILED { code: PROVIDER_UNAVAILABLE, retryable: true }`，C06 保持已提交 TaskRun 为 `PROVIDER_PROCESSING` 并交给当前 delivery 重试，不重提 |
-| `CONTRACT-007` | 非法响应/下载 | 无 ID、无状态、非 JSON、404 或无效 MIME | 结构响应为 `PROVIDER_PROTOCOL_INVALID`；下载 404/metadata 无效为 `DOWNLOAD_INVALID`，都不重提 |
+| `CONTRACT-007` | 非法响应/下载与来源兼容状态 | submit 缺来源 `request_id`/`id`、非 JSON/非对象；status 非 JSON/非对象；下载 404 或无效 MIME/metadata | 非法结构/缺来源 ID 为 `PROVIDER_PROTOCOL_INVALID`；下载 404/metadata 无效为 `DOWNLOAD_INVALID`，都不重提。HTTP 2xx JSON object 的业务 `code`/失败 status 不额外拒绝 submit，先按来源递归提取 `request_id`/`id` 并保留；无 ID 仍协议错误。status 查询先仅在 `data` 为 object 时选择 `data`，否则选择根 object；缺少可用 status/state 按来源视作 `unknown` 并映射 `PROCESSING`，受现有有限 poll/recovery budget 管控，不推导成功、不重提。字段优先级与递归顺序遵循固定来源；仅精确来源终态集合为终态。 |
 | `CONTRACT-008` | 脱敏 | 含 `Authorization`、签名 URL 的 fixture 输入 | 持久化审计中不出现敏感字段 |
 
 下载完成后的最小验证为：响应状态 `2xx`、文件大于零、允许的 `Content-Type`、SHA-256 计算成功、`ffprobe` 能读取视频流。`ffprobe` 失败应标记 `DOWNLOAD_INVALID`，保留临时诊断摘要但删除临时二进制。

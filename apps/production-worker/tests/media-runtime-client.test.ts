@@ -279,39 +279,179 @@ test("C12.4 ALCHMED8 carries the complete AudioPlan metadata block", () => {
   assert.equal(musicBundle.at(-1), 1, "the encoded AudioPlan must leave room for the trailing video payload");
 });
 
-test("C12.4 ALCHMED8 music-only plans retain the source full_mix path", () => {
-  const bundle = encodeMediaCompositionBundle(
-    [new Uint8Array([1])],
-    {
+test("C12.4 ALCHMED8 preserves MUSIC identity and absent versus explicit-zero track fades", () => {
+  const plan = {
+    target_duration_ms: 2_000,
+    transitions: [],
+    bridge_durations_ms: [],
+    audio_policy: "LEGACY_PRESERVE" as const,
+    audio_plan: {
+      version: 1 as const,
       target_duration_ms: 2_000,
-      transitions: [],
-      bridge_durations_ms: [],
-      audio_policy: "LEGACY_PRESERVE",
-      audio_plan: {
-        version: 1,
-        target_duration_ms: 2_000,
-        narration_sections: [{ section_id: "tail", start_ms: 0, end_ms: 2_000, visual_role: "HOLD" }],
-        stitch_policy: "LEGACY_PRESERVE",
-        tracks: [{
-          track_id: "music",
-          ownership: "MUSIC",
-          asset_id: "ast-music",
-          start_ms: 0,
-          end_ms: 2_000,
-          gain_db: "-6",
-          duck_under_narration: true,
-          fade_in_ms: 100,
-          fade_out_ms: 200,
-        }],
-      },
-      music_mix: { enabled: true },
-      music_segments_ms: [{ start_ms: 0, end_ms: 2_000 }],
+      narration_sections: [{ section_id: "tail", start_ms: 0, end_ms: 2_000, visual_role: "HOLD" as const }],
+      stitch_policy: "LEGACY_PRESERVE" as const,
+      tracks: [{
+        track_id: "music",
+        ownership: "MUSIC" as const,
+        asset_id: "ast_native_manual_music",
+        start_ms: 0,
+        end_ms: 2_000,
+        gain_db: "-6",
+        duck_under_narration: true,
+      }],
     },
-    new Uint8Array([0x6d, 0x75, 0x73, 0x69, 0x63]),
+    music_mix: { enabled: true },
+    music_segments_ms: [{ start_ms: 0, end_ms: 2_000 }],
+  };
+  const musicBytes = new Uint8Array([0x6d, 0x75, 0x73, 0x69, 0x63]);
+  const absentFadeBundle = encodeMediaCompositionBundle([new Uint8Array([1])], plan, musicBytes);
+  const explicitZeroBundle = encodeMediaCompositionBundle([new Uint8Array([1])], {
+    ...plan,
+    audio_plan: {
+      ...plan.audio_plan,
+      tracks: [{ ...plan.audio_plan.tracks[0]!, fade_in_ms: 0, fade_out_ms: 0 }],
+    },
+  }, musicBytes);
+  const trackFadeBytes = (bundle: Uint8Array) => {
+    assert.deepEqual([...bundle.slice(0, 8)], [...Buffer.from("ALCHMED8")]);
+    const bytes = Buffer.from(bundle);
+    const identityOffset = bytes.indexOf(Buffer.from("ast_native_manual_music"));
+    assert.notEqual(identityOffset, -1);
+    const gainLengthOffset = identityOffset + Buffer.byteLength("ast_native_manual_music");
+    const fadeOffset = gainLengthOffset + 1 + bundle[gainLengthOffset]!;
+    const view = new DataView(bundle.buffer, bundle.byteOffset + fadeOffset, 4);
+    return [view.getUint16(0, false), view.getUint16(2, false)];
+  };
+
+  const defaultHeaderFades = new DataView(absentFadeBundle.buffer, absentFadeBundle.byteOffset + 25, 4);
+  assert.equal(defaultHeaderFades.getUint16(0, false), 1_500);
+  assert.equal(defaultHeaderFades.getUint16(2, false), 2_500);
+  assert.deepEqual(trackFadeBytes(absentFadeBundle), [0xffff, 0xffff]);
+  assert.deepEqual(trackFadeBytes(explicitZeroBundle), [0, 0]);
+  assert.ok(Buffer.from(absentFadeBundle).includes(Buffer.from(musicBytes)));
+});
+
+test("explicit Doubao replacement uses ALCHMED9 and carries only its selection byte plus existing AudioPlan", () => {
+  const bundle = encodeMediaCompositionBundle([new Uint8Array([1])], {
+    target_duration_ms: 2_000,
+    transitions: [],
+    bridge_durations_ms: [],
+    audio_policy: "CONTINUOUS_NARRATION",
+    audio_selection: "DOUBAO_TTS_REPLACE",
+    audio_plan: {
+      version: 1,
+      target_duration_ms: 2_000,
+      narration_asset_id: "ast-approved-doubao",
+      narration_sections: [{ section_id: "sec_1", start_ms: 0, end_ms: 2_000, visual_role: "PRIMARY" }],
+      stitch_policy: "CONTINUOUS_NARRATION",
+      tracks: [{ track_id: "platform-narration", ownership: "PLATFORM_NARRATION", asset_id: "ast-approved-doubao", start_ms: 0, end_ms: 2_000, gain_db: "0", duck_under_narration: false }],
+    },
+  }, undefined, new Uint8Array([1, 2, 3]));
+  assert.deepEqual([...bundle.slice(0, 9)], [...Buffer.from("ALCHMED9"), 1]);
+  assert.ok(Buffer.from(bundle).includes(Buffer.from("ast-approved-doubao")));
+  assert.equal(Buffer.from(bundle).includes(Buffer.from("production_run_id")), false);
+  assert.throws(() => encodeMediaCompositionBundle([new Uint8Array([1])], {
+    target_duration_ms: 2_000,
+    transitions: [],
+    bridge_durations_ms: [],
+    audio_selection: "DOUBAO_TTS_REPLACE",
+  }), MediaRuntimeClientError);
+});
+
+test("explicit BGM-only replacement uses ALCHMED9 selection 2 and carries the frozen full-track plan", () => {
+  const music = new Uint8Array([0x6d, 0x75, 0x73, 0x69, 0x63]);
+  const bundle = encodeMediaCompositionBundle([new Uint8Array([0x76])], {
+    target_duration_ms: 2_000,
+    transitions: [],
+    bridge_durations_ms: [],
+    audio_policy: "LEGACY_PRESERVE",
+    audio_selection: "MUSIC_REPLACE_PROVIDER_AUDIO",
+    audio_plan: {
+      version: 1,
+      target_duration_ms: 2_000,
+      narration_sections: [{ section_id: "tail", start_ms: 0, end_ms: 2_000, visual_role: "HOLD" }],
+      stitch_policy: "LEGACY_PRESERVE",
+      tracks: [{
+        track_id: "music",
+        ownership: "MUSIC",
+        asset_id: "ast_manual_music",
+        start_ms: 0,
+        end_ms: 2_000,
+        gain_db: "0",
+        duck_under_narration: false,
+      }],
+    },
+    music_mix: { enabled: true },
+    music_segments_ms: [{ start_ms: 0, end_ms: 2_000 }],
+  }, music);
+
+  assert.deepEqual([...bundle.slice(0, 8)], [...Buffer.from("ALCHMED9")]);
+  assert.equal(bundle[8], 2);
+  assert.ok(Buffer.from(bundle).includes(Buffer.from("ast_manual_music")));
+  assert.ok(Buffer.from(bundle).includes(Buffer.from(music)));
+});
+
+test("ALCHMED9 selection 2 rejects a mismatched or extra-track plan before encoding", () => {
+  const music = new Uint8Array([0x6d, 0x75, 0x73, 0x69, 0x63]);
+  const musicTrack = {
+    track_id: "music",
+    ownership: "MUSIC" as const,
+    asset_id: "ast_manual_music",
+    start_ms: 0,
+    end_ms: 2_000,
+    gain_db: "0",
+    duck_under_narration: false,
+  };
+  const validPlan = {
+    target_duration_ms: 2_000,
+    transitions: [],
+    bridge_durations_ms: [],
+    audio_policy: "LEGACY_PRESERVE" as const,
+    audio_selection: "MUSIC_REPLACE_PROVIDER_AUDIO" as const,
+    audio_plan: {
+      version: 1 as const,
+      target_duration_ms: 2_000,
+      narration_sections: [{ section_id: "hold", start_ms: 0, end_ms: 2_000, visual_role: "HOLD" as const }],
+      stitch_policy: "LEGACY_PRESERVE" as const,
+      tracks: [musicTrack],
+    },
+    music_mix: { enabled: true },
+    music_segments_ms: [{ start_ms: 0, end_ms: 2_000 }],
+  };
+  const invalidPlans = [
+    { ...validPlan, audio_plan: { ...validPlan.audio_plan, tracks: [] } },
+    { ...validPlan, audio_plan: { ...validPlan.audio_plan, tracks: [musicTrack, { ...musicTrack, track_id: "music-2", asset_id: "ast_other_music" }] } },
+    { ...validPlan, audio_plan: { ...validPlan.audio_plan, tracks: [musicTrack, { ...musicTrack, track_id: "platform-narration", ownership: "PLATFORM_NARRATION" as const, asset_id: "ast_narration" }] } },
+    { ...validPlan, audio_plan: { ...validPlan.audio_plan, tracks: [{ ...musicTrack, end_ms: 1_999 }] } },
+  ];
+  const { audio_plan: _completePlan, ...legacyBasePlan } = validPlan;
+  invalidPlans.push({ ...legacyBasePlan, audio_tracks: [musicTrack] } as typeof validPlan);
+
+  for (const plan of invalidPlans) {
+    assert.throws(
+      () => encodeMediaCompositionBundle([new Uint8Array([0x76])], plan as typeof validPlan, music),
+      (error: unknown) => error instanceof MediaRuntimeClientError,
+    );
+  }
+  assert.throws(
+    () => encodeMediaCompositionBundle([new Uint8Array([0x76])], validPlan, undefined),
+    (error: unknown) => error instanceof MediaRuntimeClientError,
   );
-  assert.deepEqual([...bundle.slice(0, 8)], [...Buffer.from("ALCHMED8")]);
-  assert.ok(Buffer.from(bundle).includes(Buffer.from("ast-music")));
-  assert.ok(Buffer.from(bundle).includes(Buffer.from("music")));
+});
+
+test("C12 media runtime errors preserve a bounded diagnostic for internal recovery", async () => {
+  const client = new HttpMediaRuntimeClient({
+    runtimeUrl: "http://127.0.0.1:4033/",
+    token: "test-token",
+    fetcher: async () => new Response(JSON.stringify({
+      error: { code: "MEDIA_RENDER_FAILED", retryable: false, diagnostic: "OpenMontage composition rejected a declared track window" },
+    }), { status: 400, headers: { "Content-Type": "application/json" } }),
+  });
+  await assert.rejects(
+    () => client.compose({ operationId: "mop_01J4N8QZ8PCW2N2G6D2XJXJXJX", segments: [new Uint8Array([1])] }),
+    (error: unknown) => error instanceof MediaRuntimeClientError
+      && error.message === "MEDIA_RENDER_FAILED: OpenMontage composition rejected a declared track window",
+  );
 });
 
 test("C12.4 ALCHMED8 carries independently measured speech payloads by absolute track identity", () => {
@@ -734,11 +874,13 @@ test("C12.2 media runtime client preserves OpenMontage final-review statuses", a
       const headers = new Headers(init?.headers);
       assert.equal(headers.get("X-Media-Script-Text-Base64"), null);
       assert.equal(headers.get("X-Media-Caption-Policy"), "REQUIRED");
+      assert.equal(headers.get("X-Media-Music-Applied"), "true");
       return new Response(JSON.stringify({
         status: "NEEDS_ATTENTION",
+        review_completeness: "PARTIAL",
         technical_probe: { valid_container: true, duration_seconds: 15, resolution: "848x480", fps: 24, has_audio: true, codec: "h264", file_size_bytes: 3, issues: [] },
         visual_spotcheck: { frames_sampled: 4, black_frames_detected: false, broken_overlays: null, missing_assets: null, unreadable_text: null, issues: [] },
-        audio_spotcheck: { has_audio: true, unexpected_silence: false, issues: [] },
+        audio_spotcheck: { has_audio: true, unexpected_silence: false, true_peak_limit_db: -1.0, issues: [] },
         promise_preservation: { status: "UNAVAILABLE", renderer_family_used: "source-aligned video composition", render_runtime_used: "ffmpeg", runtime_swap_detected: null, silent_downgrade_detected: null, issues: ["not checked"] },
         subtitle_check: { status: "NOT_EXPECTED", subtitles_expected: false, subtitles_present: false, issues: [] },
         transcript_comparison: { status: "UNAVAILABLE", transcript_matches_script: null, word_accuracy: null, issues: [] },
@@ -748,8 +890,9 @@ test("C12.2 media runtime client preserves OpenMontage final-review statuses", a
       }), { headers: { "Content-Type": "application/json" } });
     },
   });
-  const result = await client.finalReview({ operationId: "mop_01J4N8QZ8PCW2N2G6D2XJXJXJX", bytes: source, expectedSha256: sha256(source), captionPolicy: "REQUIRED" });
+  const result = await client.finalReview({ operationId: "mop_01J4N8QZ8PCW2N2G6D2XJXJXJX", bytes: source, expectedSha256: sha256(source), captionPolicy: "REQUIRED", musicApplied: true });
   assert.equal(result.status, "NEEDS_ATTENTION");
+  assert.equal(result.review_completeness, "PARTIAL");
   assert.equal(result.semantic_evaluation.status, "UNAVAILABLE");
 });
 

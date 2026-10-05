@@ -30,10 +30,17 @@ import {
   MediaRuntimeNarrationDurationFeedbackSchema,
   SemanticDialogueProjectionSchema,
   SemanticReferenceProjectionSchema,
+  SemanticEntityReferenceProjectionSchema,
+  SemanticNarrativeBeatProjectionSchema,
   VideoAudioOwnerSchema,
   semanticPromptPackageIntegrityPayload,
+  parseG02ApprovedBeatMarkers,
+  findExactEntityAnchor,
+  hasExactEntityNameMention,
   type SemanticDialogueProjection,
   type SemanticReferenceProjection,
+  type SemanticEntityReferenceProjection,
+  type SemanticNarrativeBeatProjection,
   type MediaRuntimeNarrationDurationFeedback,
 } from "@alchemy-video/contracts";
 import {
@@ -52,6 +59,9 @@ import {
   assets,
   assetDerivations,
   commandDeduplications,
+  canonicalVisualEntities,
+  canonicalVisualEntityRevisionAssets,
+  canonicalVisualEntityRevisions,
   creativeBriefRevisions,
   creativeDecisionLogs,
   deliveryPlanRevisions,
@@ -73,7 +83,13 @@ import {
   transitionRepairs,
   videoVersions,
 } from "./schema.js";
-import { findApprovedNarrationTimeline, type ApprovedNarrationTimeline } from "./approved-narration-timeline.js";
+import {
+  findApprovedNarrationTimeline,
+  freezeDoubaoAudioSourceIdentity,
+  matchesFrozenDoubaoAudioSourceIdentity,
+  type ApprovedNarrationTimeline,
+  type FrozenDoubaoAudioSourceIdentity,
+} from "./approved-narration-timeline.js";
 import { NARRATION_MEASURED_DURATION_TOLERANCE_MS } from "./narration-quality-repository.js";
 import { productionTaskFailureSummary } from "./production-failure-summary.js";
 
@@ -343,6 +359,10 @@ export type ProductionTaskRunInput = Readonly<{
   visualInput: VisualInputSnapshot;
   generationSegmentSequence: number;
   narrativeBeatSequences: number[];
+  semanticEntityReferenceProjection?: SemanticEntityReferenceProjection;
+  semanticEntityReferenceProjectionHash?: string;
+  semanticNarrativeBeatLineage?: SemanticNarrativeBeatProjection;
+  semanticNarrativeBeatLineageHash?: string;
   motionPlanVersion?: string;
   motionPlanHash?: string;
   motionTimeline?: MotionBeat[];
@@ -468,6 +488,10 @@ export type ProductionCompositionInput = {
   projectId: string;
   productionRunId: string;
   storyboardRevisionId: string;
+  deliveryPlanRevisionId?: string;
+  audioSelection?: "PRESERVE_PROVIDER_AUDIO" | "DOUBAO_TTS_REPLACE" | "MUSIC_REPLACE_PROVIDER_AUDIO";
+  /** Private DB-verified identity chain; it is never encoded into the Runtime wire. */
+  audioProvenance?: FrozenDoubaoAudioSourceIdentity & { productionRunId: string };
   /** Derived privately from the approved creative brief for automatic transcript QC. */
   scriptText?: string;
   narrationScriptText?: string;
@@ -483,9 +507,9 @@ export type ProductionCompositionInput = {
   /** Private delivery-plan policy forwarded to Runtime final review. */
   captionPolicy?: "REQUIRED" | "OPTIONAL" | "OFF";
   /** Private approved C12.7B audio asset metadata; never public. */
-  narrationAsset?: { id: string; workspaceId: string; projectId: string; objectKey: string; sha256: string; byteSize: number; mimeType: string; durationMs: number };
+  narrationAsset?: NonNullable<ApprovedNarrationTimeline["narrationAsset"]>;
   /** Independently measured formal narration assets mapped one-to-one to PRIMARY windows. */
-  narrationAssets?: Array<{ sectionId: string; assetVersionId: string; id: string; workspaceId: string; projectId: string; objectKey: string; sha256: string; byteSize: number; mimeType: string; durationMs: number }>;
+  narrationAssets?: NonNullable<ApprovedNarrationTimeline["narrationAssets"]>;
   compositionPlan?: MediaRuntimeCompositionPlan;
   /** Internal scope metadata is required because workspace music is shared across projects. */
   musicAsset?: { id: string; workspaceId: string; projectId: string; objectKey: string; sha256: string; byteSize: number; mimeType: string; durationMs?: number };
@@ -627,7 +651,7 @@ export interface ProductionStore extends OutboxRelayStore {
   completeProductionComposition(input: {
     event: Extract<InternalEventEnvelope, { event_type: "video_version.composition_requested" }>;
     videoAsset: { id: string; objectKey: string; sha256: string; byteSize: number; durationMs: number };
-    finalReview?: { status: "PASS" | "NEEDS_ATTENTION" | "FAILED"; issues_found: string[]; recommended_action: "PRESENT_WITH_REVIEW" | "REVISE" | "BLOCK"; audio_summary?: Record<string, unknown> };
+    finalReview?: { status: "PASS" | "NEEDS_ATTENTION" | "FAILED"; review_completeness?: "COMPLETE" | "PARTIAL"; issues_found: string[]; recommended_action: "PRESENT_WITH_REVIEW" | "REVISE" | "BLOCK"; audio_summary?: Record<string, unknown> };
     now: Date;
   }): Promise<ControlProductionRunProgress | undefined>;
   recordNarrationDurationFeedback?(input: NarrationDurationFeedbackInput): Promise<void>;
@@ -824,6 +848,81 @@ const compositionRequestedEventExists = async (
     ))
     .limit(1);
   return Boolean(existing);
+};
+
+export const compositionQcSafeSummary = (review?: { status: "PASS" | "NEEDS_ATTENTION" | "FAILED"; review_completeness?: "COMPLETE" | "PARTIAL" }) =>
+  review?.status === "NEEDS_ATTENTION"
+    ? review.review_completeness === "PARTIAL"
+      ? "检查发现需要复核的质量项；部分检查未运行，建议人工复核。"
+      : "检查发现需要复核的质量项。"
+    : review?.review_completeness === "PARTIAL"
+      ? "已执行的基础检查通过；部分检查未运行，建议人工复核。"
+      : "成片检查通过。";
+
+export const isApprovedNarrationAuthoritative = (
+  preserveProviderAudio: boolean,
+  audioSelection: "PRESERVE_PROVIDER_AUDIO" | "DOUBAO_TTS_REPLACE" | "MUSIC_REPLACE_PROVIDER_AUDIO",
+) => audioSelection === "MUSIC_REPLACE_PROVIDER_AUDIO"
+  ? false
+  : !preserveProviderAudio || audioSelection === "DOUBAO_TTS_REPLACE";
+
+const findCompositionRequestState = async (
+  executor: QueryExecutor,
+  input: { workspaceId: string; projectId: string; productionRunId: string },
+) => {
+  const requests = await executor
+    .select({
+      id: outboxEvents.id,
+      consumptionEventId: eventConsumptions.eventId,
+      completedAt: eventConsumptions.completedAt,
+      deadLetteredAt: eventConsumptions.deadLetteredAt,
+      leaseOwner: eventConsumptions.leaseOwner,
+      leaseExpiresAt: eventConsumptions.leaseExpiresAt,
+      attempts: eventConsumptions.attempts,
+      lastError: eventConsumptions.lastError,
+    })
+    .from(outboxEvents)
+    .leftJoin(eventConsumptions, and(
+      eq(eventConsumptions.workspaceId, outboxEvents.workspaceId),
+      eq(eventConsumptions.eventId, outboxEvents.id),
+      eq(eventConsumptions.consumerName, "media-runtime-transition"),
+    ))
+    .where(and(
+      eq(outboxEvents.workspaceId, input.workspaceId),
+      eq(outboxEvents.projectId, input.projectId),
+      eq(outboxEvents.aggregateType, "production_run"),
+      eq(outboxEvents.aggregateId, input.productionRunId),
+      eq(outboxEvents.eventType, "video_version.composition_requested"),
+    ));
+  const failedVersions = await executor
+    .select({ id: videoVersions.id })
+    .from(videoVersions)
+    .where(and(
+      eq(videoVersions.workspaceId, input.workspaceId),
+      eq(videoVersions.projectId, input.projectId),
+      eq(videoVersions.productionRunId, input.productionRunId),
+      eq(videoVersions.status, "FAILED"),
+    ))
+    .limit(2);
+  const recoverableUnmarkedDeadLetters = failedVersions.length === 1
+    ? requests.filter((request) => request.consumptionEventId
+      && !request.completedAt
+      && !request.deadLetteredAt
+      && !request.leaseOwner
+      && !request.leaseExpiresAt
+      && request.attempts !== null
+      && request.attempts >= 3
+      && Boolean(request.lastError?.trim()))
+    : [];
+  return {
+    hasOutstandingRequest: requests.some((request) => !request.consumptionEventId
+      || (!request.completedAt && !request.deadLetteredAt)
+      || (Boolean(request.completedAt) && Boolean(request.deadLetteredAt))),
+    hasDeadLetteredRequest: requests.some((request) => Boolean(request.deadLetteredAt) && !request.completedAt),
+    recoverableUnmarkedDeadLetterIds: recoverableUnmarkedDeadLetters.length === 1
+      ? [recoverableUnmarkedDeadLetters[0]!.id]
+      : [],
+  };
 };
 
 const lockProject = (executor: QueryExecutor, workspaceId: string, projectId: string) =>
@@ -1219,6 +1318,14 @@ const semanticJsonRecord = (value: unknown): Record<string, unknown> | undefined
     ? value as Record<string, unknown>
     : undefined;
 
+const hasG02BriefSourceMarker = (sourceText: string) => parseG02ApprovedBeatMarkers(sourceText) !== undefined;
+
+const hasG02PackageFields = (capabilitySnapshot: Record<string, unknown>, referenceMap: Record<string, unknown>) =>
+  Object.hasOwn(capabilitySnapshot, "semantic_narrative_beat_lineage")
+  || Object.hasOwn(capabilitySnapshot, "semantic_narrative_beat_lineage_hash")
+  || Object.hasOwn(capabilitySnapshot, "semantic_entity_reference_projection_hash")
+  || Object.hasOwn(referenceMap, "semantic_entity_reference_projection");
+
 const semanticPromptPackageKind = (input: {
   capabilitySnapshot: unknown;
   referenceMap: unknown;
@@ -1231,7 +1338,9 @@ const semanticPromptPackageKind = (input: {
     || Object.hasOwn(capabilitySnapshot, "semantic_dialogue_projection")
     || Object.hasOwn(referenceMap, "semantic_reference_projection")
     || Object.hasOwn(visualConstraints, "semantic_segment_id")
-    || Object.hasOwn(visualConstraints, "semantic_decision_hash");
+    || Object.hasOwn(visualConstraints, "semantic_decision_hash")
+    || Object.hasOwn(referenceMap, "semantic_entity_reference_projection")
+    || Object.hasOwn(capabilitySnapshot, "semantic_narrative_beat_lineage");
   return hasSemanticField ? "SEMANTIC" as const : "LEGACY" as const;
 };
 
@@ -1260,6 +1369,7 @@ const readSemanticReferenceProjection = (input: {
 
 export const validateSemanticPromptPackage = (input: {
   shotSpecId: string;
+  promptPackageId?: string;
   prompt: string;
   sourcePrompt?: string;
   referencePolicy: string;
@@ -1270,6 +1380,8 @@ export const validateSemanticPromptPackage = (input: {
   kind: "VERIFIED";
   dialogueProjection: SemanticDialogueProjection;
   referenceProjection: SemanticReferenceProjection;
+  entityReferenceProjection?: SemanticEntityReferenceProjection;
+  narrativeBeatLineage?: SemanticNarrativeBeatProjection;
 } | { kind: "INVALID" } => {
   if (semanticPromptPackageKind(input) === "LEGACY") return { kind: "LEGACY" };
   const capabilitySnapshot = semanticJsonRecord(input.capabilitySnapshot);
@@ -1282,8 +1394,17 @@ export const validateSemanticPromptPackage = (input: {
     referenceMap,
     visualConstraints,
   };
+  const identity = semanticPromptIdentity(capabilitySnapshot);
   const dialogueProjection = readSemanticDialogueProjection(capabilitySnapshot);
   const referenceProjection = readSemanticReferenceProjection(normalizedInput);
+  const rawEntityProjection = referenceMap.semantic_entity_reference_projection;
+  const entityReferenceProjection = rawEntityProjection === undefined
+    ? undefined
+    : SemanticEntityReferenceProjectionSchema.safeParse(rawEntityProjection);
+  const rawBeatLineage = capabilitySnapshot.semantic_narrative_beat_lineage;
+  const narrativeBeatLineage = rawBeatLineage === undefined
+    ? undefined
+    : SemanticNarrativeBeatProjectionSchema.safeParse(rawBeatLineage);
   const dialogueProjectionHash = capabilitySnapshot.semantic_dialogue_projection_hash;
   const referenceProjectionHash = capabilitySnapshot.semantic_reference_projection_hash;
   const packageIntegrityHash = capabilitySnapshot.semantic_prompt_package_integrity_hash;
@@ -1294,8 +1415,26 @@ export const validateSemanticPromptPackage = (input: {
   const maxDurationSeconds = capabilitySnapshot.max_duration_seconds;
   const maxReferenceImages = capabilitySnapshot.max_reference_images;
   const bgmPrompt = capabilitySnapshot.bgm_prompt;
+  const entityProjectionHash = capabilitySnapshot.semantic_entity_reference_projection_hash;
+  const beatLineageHash = capabilitySnapshot.semantic_narrative_beat_lineage_hash;
   if (!dialogueProjection
     || !referenceProjection
+    || (rawEntityProjection !== undefined && (!entityReferenceProjection?.success
+      || typeof entityProjectionHash !== "string"
+      || !/^[a-f0-9]{64}$/u.test(entityProjectionHash)
+      || entityProjectionHash !== semanticIntegrityHash(entityReferenceProjection.data)
+      || input.promptPackageId !== entityReferenceProjection.data.prompt_package_id
+      || entityReferenceProjection.data.prompt_package_id !== input.promptPackageId
+      || entityReferenceProjection.data.source_hash !== identity?.sourceHash
+      || entityReferenceProjection.data.decision_hash !== identity?.decisionHash
+      || entityReferenceProjection.data.segment_id !== identity?.segmentId))
+    || (rawEntityProjection === undefined && entityProjectionHash !== undefined)
+    || (rawBeatLineage !== undefined && (!narrativeBeatLineage?.success
+      || typeof beatLineageHash !== "string"
+      || !/^[a-f0-9]{64}$/u.test(beatLineageHash)
+      || beatLineageHash !== semanticIntegrityHash(narrativeBeatLineage.data)
+      || narrativeBeatLineage.data.source_hash !== identity?.sourceHash))
+    || (rawBeatLineage === undefined && beatLineageHash !== undefined)
     || typeof input.shotSpecId !== "string"
     || !input.shotSpecId.trim()
     || referenceMap.reference_policy !== input.referencePolicy
@@ -1320,6 +1459,17 @@ export const validateSemanticPromptPackage = (input: {
     || (bgmPrompt !== undefined && (typeof bgmPrompt !== "string" || !bgmPrompt.trim()))) {
     return { kind: "INVALID" };
   }
+  if (entityReferenceProjection?.success) {
+    const references = referenceProjection.references;
+    const positions = entityReferenceProjection.data.bindings.map((binding) => binding.provider_position).sort((left, right) => left - right);
+    const expectedPositions = references.map((_reference, index) => index);
+    if (entityReferenceProjection.data.bindings.some((binding) => {
+      const reference = references[binding.provider_position];
+      return !reference || reference.asset_id !== binding.asset_id;
+    }) || JSON.stringify(positions) !== JSON.stringify(expectedPositions)) {
+      return { kind: "INVALID" };
+    }
+  }
   const expectedPackageIntegrityHash = semanticIntegrityHash(semanticPromptPackageIntegrityPayload({
     shotSpecId: input.shotSpecId,
     prompt: input.prompt,
@@ -1332,10 +1482,25 @@ export const validateSemanticPromptPackage = (input: {
     audioOwner: audioOwner.data,
     maxDurationSeconds: maxDurationSeconds as number,
     maxReferenceImages: maxReferenceImages as number,
+    ...(entityReferenceProjection?.success ? {
+      promptPackageId: input.promptPackageId,
+      semanticEntityReferenceProjection: entityReferenceProjection.data,
+      semanticEntityReferenceProjectionHash: entityProjectionHash as string,
+    } : {}),
+    ...(narrativeBeatLineage?.success ? {
+      semanticNarrativeBeatLineage: narrativeBeatLineage.data,
+      semanticNarrativeBeatLineageHash: beatLineageHash as string,
+    } : {}),
     ...(typeof bgmPrompt === "string" ? { bgmPrompt } : {}),
   }));
   if (packageIntegrityHash !== expectedPackageIntegrityHash) return { kind: "INVALID" };
-  return { kind: "VERIFIED", dialogueProjection, referenceProjection };
+  return {
+    kind: "VERIFIED",
+    dialogueProjection,
+    referenceProjection,
+    ...(entityReferenceProjection?.success ? { entityReferenceProjection: entityReferenceProjection.data } : {}),
+    ...(narrativeBeatLineage?.success ? { narrativeBeatLineage: narrativeBeatLineage.data } : {}),
+  };
 };
 
 const initialVisualInput = async (transaction: QueryExecutor, input: {
@@ -1435,6 +1600,127 @@ const initialVisualInput = async (transaction: QueryExecutor, input: {
   };
 };
 
+const hasActiveG02EntityMappings = async (transaction: QueryExecutor, input: {
+  workspaceId: string;
+  projectId: string;
+  brief: typeof creativeBriefRevisions.$inferSelect;
+  shotSpec: typeof storyboardShotSpecs.$inferSelect;
+  prompt: string;
+  projection: SemanticEntityReferenceProjection;
+  referenceProjection: SemanticReferenceProjection;
+  visualInput?: VisualInputSnapshot;
+}) => {
+  const { projection, referenceProjection, visualInput } = input;
+  if (projection.brief_revision_id !== input.brief.id
+    || projection.source_hash !== referenceProjection.source_hash
+    || projection.decision_hash !== referenceProjection.decision_hash
+    || projection.segment_id !== referenceProjection.segment_id
+    || projection.bindings.length === 0
+    || projection.bindings.length !== referenceProjection.references.length
+    || (visualInput !== undefined && (visualInput.mode === "TEXT" || visualInput.references.length !== projection.bindings.length))) return false;
+
+  const sourceRoles = input.brief.sourceAssetRoles as Array<{ asset_id?: unknown; usage?: unknown }>;
+  const entityBindings = new Map<string, SemanticEntityReferenceProjection["bindings"][number]>();
+  for (const binding of projection.bindings) {
+    if (findExactEntityAnchor(input.prompt, binding.exact_name) < 0) return false;
+    const previous = entityBindings.get(binding.entity_id);
+    if (previous && (previous.entity_kind !== binding.entity_kind
+      || previous.entity_revision_id !== binding.entity_revision_id
+      || previous.exact_name !== binding.exact_name)) return false;
+    entityBindings.set(binding.entity_id, binding);
+  }
+  const characterIds = [...entityBindings.values()].filter((binding) => binding.entity_kind === "CHARACTER").map((binding) => binding.entity_id).sort();
+  const propIds = [...entityBindings.values()].filter((binding) => binding.entity_kind === "PROP").map((binding) => binding.entity_id).sort();
+  const sceneIds = [...entityBindings.values()].filter((binding) => binding.entity_kind === "SCENE").map((binding) => binding.entity_id).sort();
+  if (JSON.stringify([...input.shotSpec.characterIds].sort()) !== JSON.stringify(characterIds)
+    || JSON.stringify([...input.shotSpec.propIds].sort()) !== JSON.stringify(propIds)
+    || (sceneIds.length > 1)
+    || (sceneIds.length === 1 && input.shotSpec.sceneId !== sceneIds[0])
+    || (sceneIds.length === 0 && input.shotSpec.sceneId !== null)) return false;
+  const expectedAnchors = [...entityBindings.values()]
+    .map((binding) => ({ anchor: `@${binding.exact_name}`, firstIndex: findExactEntityAnchor(input.prompt, binding.exact_name) }))
+    .sort((left, right) => left.firstIndex - right.firstIndex)
+    .map(({ anchor }) => anchor);
+  if (new Set(input.shotSpec.referenceAnchors).size !== input.shotSpec.referenceAnchors.length
+    || JSON.stringify(input.shotSpec.referenceAnchors) !== JSON.stringify(expectedAnchors)) return false;
+  const ids = projection.bindings.map((binding) => binding.asset_id);
+  if (new Set(ids).size !== ids.length || new Set(projection.bindings.map((binding) => binding.provider_position)).size !== ids.length) return false;
+  const mappingRows = await transaction
+    .select()
+    .from(canonicalVisualEntityRevisionAssets)
+    .where(and(
+      eq(canonicalVisualEntityRevisionAssets.workspaceId, input.workspaceId),
+      eq(canonicalVisualEntityRevisionAssets.projectId, input.projectId),
+      eq(canonicalVisualEntityRevisionAssets.briefRevisionId, input.brief.id),
+      inArray(canonicalVisualEntityRevisionAssets.assetId, ids),
+    ))
+    .for("update");
+  const ledger = mappingRows as unknown as Array<{
+    id: string;
+    changeKind: "ADD" | "REVOKE";
+    entityId: string;
+    revisionNumber: number;
+    assetId: string;
+    assetSha256: string;
+    mappingEvidenceId: string;
+    referenceEvidenceId: string;
+    briefRevisionId: string;
+    usage: string;
+    revokedAddId: string | null;
+  }>;
+  const revokedIds = new Set(ledger.filter((row) => row.changeKind === "REVOKE" && row.revokedAddId).map((row) => row.revokedAddId!));
+  for (const [position, binding] of projection.bindings.entries()) {
+    const reference = referenceProjection.references[position];
+    const visualReference = visualInput?.references[position];
+    const declaredUsage = sourceRoles.find((role) => role.asset_id === binding.asset_id)?.usage;
+    if (!reference || (visualInput !== undefined && !visualReference)
+      || binding.provider_position !== position
+      || (visualReference !== undefined && (visualReference.position !== position
+        || visualReference.asset_id !== binding.asset_id
+        || visualReference.sha256 !== binding.asset_sha256))
+      || reference.asset_id !== binding.asset_id
+      || reference.evidence_ids.length !== 1
+      || typeof declaredUsage !== "string"
+      || reference.usage !== declaredUsage
+      || !hasExactEntityNameMention(declaredUsage, binding.exact_name)) return false;
+    const activeAdds = ledger.filter((row) => row.changeKind === "ADD" && row.assetId === binding.asset_id && !revokedIds.has(row.id));
+    if (activeAdds.length !== 1) return false;
+    const mapping = activeAdds[0]!;
+    if (mapping.id !== binding.mapping_evidence_id
+      || mapping.mappingEvidenceId !== binding.mapping_evidence_id
+      || mapping.entityId !== binding.entity_id
+      || mapping.assetSha256 !== binding.asset_sha256
+      || mapping.referenceEvidenceId !== reference.evidence_ids[0]
+      || mapping.briefRevisionId !== input.brief.id
+      || mapping.usage !== declaredUsage) return false;
+    const [revision] = await transaction
+      .select({
+        id: canonicalVisualEntityRevisions.id,
+        revisionNumber: canonicalVisualEntityRevisions.revisionNumber,
+        exactName: canonicalVisualEntityRevisions.exactName,
+        entityKind: canonicalVisualEntities.entityKind,
+      })
+      .from(canonicalVisualEntityRevisions)
+      .innerJoin(canonicalVisualEntities, and(
+        eq(canonicalVisualEntities.workspaceId, canonicalVisualEntityRevisions.workspaceId),
+        eq(canonicalVisualEntities.projectId, canonicalVisualEntityRevisions.projectId),
+        eq(canonicalVisualEntities.id, canonicalVisualEntityRevisions.entityId),
+      ))
+      .where(and(
+        eq(canonicalVisualEntityRevisions.workspaceId, input.workspaceId),
+        eq(canonicalVisualEntityRevisions.projectId, input.projectId),
+        eq(canonicalVisualEntityRevisions.id, binding.entity_revision_id),
+        eq(canonicalVisualEntityRevisions.entityId, binding.entity_id),
+      ))
+      .limit(1);
+    if (!revision || revision.id !== binding.entity_revision_id
+      || revision.revisionNumber !== mapping.revisionNumber
+      || revision.exactName !== binding.exact_name
+      || revision.entityKind !== binding.entity_kind) return false;
+  }
+  return true;
+};
+
 export type ProductionCompositionRetryExecution =
   | { kind: "NEW"; value: ControlProductionRunProgress; status: 202 }
   | { kind: "REPLAY"; value: ControlProductionRunProgress; status: 202 }
@@ -1464,6 +1750,16 @@ const createDefaultProductionTaskRunInputSnapshot: ProductionTaskRunInputFactory
     ratio: input.ratio,
     reference_asset_ids: input.referenceAssetIds,
     visual_input: input.visualInput,
+    generation_segment_sequence: input.generationSegmentSequence,
+    narrative_beat_sequences: input.narrativeBeatSequences,
+    ...(input.semanticEntityReferenceProjection ? {
+      semantic_entity_reference_projection: input.semanticEntityReferenceProjection,
+      semantic_entity_reference_projection_hash: input.semanticEntityReferenceProjectionHash,
+    } : {}),
+    ...(input.semanticNarrativeBeatLineage ? {
+      semantic_narrative_beat_lineage: input.semanticNarrativeBeatLineage,
+      semantic_narrative_beat_lineage_hash: input.semanticNarrativeBeatLineageHash,
+    } : {}),
     ...(input.deliveryPlanRevisionId ? { delivery_plan_revision_id: input.deliveryPlanRevisionId } : {}),
     ...(input.motionPlanVersion ? { motion_plan_version: input.motionPlanVersion } : {}),
     ...(input.motionPlanHash ? { motion_plan_hash: input.motionPlanHash } : {}),
@@ -1757,16 +2053,50 @@ export class DrizzleProductionRepository implements ProductionStore {
       const segments = await transaction.select().from(productionSegments)
         .where(and(eq(productionSegments.workspaceId, input.workspaceId), eq(productionSegments.projectId, run.projectId), eq(productionSegments.productionRunId, run.id)))
         .orderBy(asc(productionSegments.sequence));
-      if (run.status !== "FAILED" || segments.length !== run.totalShotCount || segments.some((segment) => segment.status !== "ACCEPTED" || !segment.taskRunId)) {
+      let compositionRequestState = await findCompositionRequestState(transaction, {
+        workspaceId: run.workspaceId,
+        projectId: run.projectId,
+        productionRunId: run.id,
+      });
+      if (compositionRequestState.recoverableUnmarkedDeadLetterIds.length === 1) {
+        const [eventId] = compositionRequestState.recoverableUnmarkedDeadLetterIds;
+        await transaction.update(eventConsumptions).set({ deadLetteredAt: timestamp(new Date()) })
+          .where(and(
+            eq(eventConsumptions.workspaceId, input.workspaceId),
+            eq(eventConsumptions.eventId, eventId!),
+            eq(eventConsumptions.consumerName, "media-runtime-transition"),
+            isNull(eventConsumptions.completedAt),
+            isNull(eventConsumptions.deadLetteredAt),
+            isNull(eventConsumptions.leaseOwner),
+            isNull(eventConsumptions.leaseExpiresAt),
+            sql`${eventConsumptions.attempts} >= 3`,
+            sql`nullif(btrim(${eventConsumptions.lastError}), '') is not null`,
+          ));
+        compositionRequestState = await findCompositionRequestState(transaction, {
+          workspaceId: run.workspaceId,
+          projectId: run.projectId,
+          productionRunId: run.id,
+        });
+      }
+      const canRecoverDeadLetteredReview = run.status === "REVIEWING"
+        && compositionRequestState.hasDeadLetteredRequest
+        && !compositionRequestState.hasOutstandingRequest;
+      if ((run.status !== "FAILED" && !canRecoverDeadLetteredReview)
+        || segments.length !== run.totalShotCount
+        || segments.some((segment) => segment.status !== "ACCEPTED" || !segment.taskRunId)) {
         await transaction.update(commandDeduplications).set({ responseSnapshot: { kind: "STATE_INVALID" } }).where(retryCommandScope(input.scope, input.idempotencyKey));
         return { kind: "STATE_INVALID" };
       }
-      assertProductionRunTransition(run.status, "REVIEWING");
-      const [reviewing] = await transaction.update(productionRuns)
-        .set({ status: "REVIEWING", updatedAt: timestamp(new Date()) })
-        .where(and(eq(productionRuns.workspaceId, input.workspaceId), eq(productionRuns.id, run.id), eq(productionRuns.status, "FAILED")))
-        .returning();
-      if (!reviewing) return { kind: "STATE_INVALID" };
+      let reviewing = run;
+      if (run.status === "FAILED") {
+        assertProductionRunTransition(run.status, "REVIEWING");
+        const [reopened] = await transaction.update(productionRuns)
+          .set({ status: "REVIEWING", updatedAt: timestamp(new Date()) })
+          .where(and(eq(productionRuns.workspaceId, input.workspaceId), eq(productionRuns.id, run.id), eq(productionRuns.status, "FAILED")))
+          .returning();
+        if (!reopened) return { kind: "STATE_INVALID" };
+        reviewing = reopened;
+      }
       const source: EventSource = {
         message_id: input.event.messageId,
         trace_id: input.event.traceId,
@@ -1776,11 +2106,7 @@ export class DrizzleProductionRepository implements ProductionStore {
         project_id: run.projectId,
       };
       await transaction.update(commandDeduplications).set({ responseSnapshot: { kind: "PRODUCTION_COMPOSITION_RETRY", productionRunId: run.id } }).where(retryCommandScope(input.scope, input.idempotencyKey));
-      if (!await compositionRequestedEventExists(transaction, {
-        workspaceId: run.workspaceId,
-        projectId: run.projectId,
-        productionRunId: run.id,
-      })) {
+      if (!compositionRequestState.hasOutstandingRequest) {
         await insertOutboxEvent(transaction, compositionRequestedEvent(source, { now: new Date(), productionRunId: run.id }));
       }
       const progress = await this.progressWithinTransaction(transaction, input.workspaceId, run.id);
@@ -2063,6 +2389,7 @@ export class DrizzleProductionRepository implements ProductionStore {
       if (semanticOwnedPrompt) {
         const semanticPackage = validateSemanticPromptPackage({
           shotSpecId: promptPackage.shotSpecId,
+          promptPackageId: promptPackage.id,
           prompt: promptPackage.prompt,
           referencePolicy: promptShotSpec.referencePolicy,
           capabilitySnapshot: promptPackage.capabilitySnapshot,
@@ -2276,16 +2603,100 @@ export class DrizzleProductionRepository implements ProductionStore {
     const audioOwnerFacts: AudioOwnerFact[] = [];
     const projectedDialogueTexts: string[] = [];
     const musicIntentHints: string[] = [];
-    const approvedNarration = run.deliveryPlanRevisionId
-      ? await findApprovedNarrationTimeline(this.db, run.workspaceId, run.projectId, run.deliveryPlanRevisionId)
+    const rawAudioSelection = (run.budgetGuard as Record<string, unknown> | undefined)?.audio_selection;
+    const audioSelection = rawAudioSelection === undefined || rawAudioSelection === "PRESERVE_PROVIDER_AUDIO"
+      ? "PRESERVE_PROVIDER_AUDIO"
+      : rawAudioSelection === "DOUBAO_TTS_REPLACE" || rawAudioSelection === "MUSIC_REPLACE_PROVIDER_AUDIO"
+        ? rawAudioSelection
+        : undefined;
+    if (!audioSelection) unavailable("frozen ProductionRun audio selection is invalid");
+    const frozenAudioSelection: "PRESERVE_PROVIDER_AUDIO" | "DOUBAO_TTS_REPLACE" | "MUSIC_REPLACE_PROVIDER_AUDIO" = audioSelection ?? "PRESERVE_PROVIDER_AUDIO";
+    const rawFrozenAudioSource = (run.budgetGuard as Record<string, unknown> | undefined)?.audio_selection_source;
+    const frozenSourceObject = rawFrozenAudioSource && typeof rawFrozenAudioSource === "object"
+      ? rawFrozenAudioSource as Record<string, unknown>
       : undefined;
+    const frozenTimelinePlanId = frozenSourceObject?.version === 1 && typeof frozenSourceObject.timelinePlanId === "string"
+      ? frozenSourceObject.timelinePlanId
+      : undefined;
+    if (frozenAudioSelection === "DOUBAO_TTS_REPLACE" && !frozenTimelinePlanId) {
+      unavailable("the frozen Doubao selection has no valid source identity snapshot");
+    }
+    const rawMusicReplacementSource = (run.budgetGuard as Record<string, unknown> | undefined)?.music_replacement_source;
+    const frozenMusicReplacementSource = rawMusicReplacementSource && typeof rawMusicReplacementSource === "object"
+      ? rawMusicReplacementSource as Record<string, unknown>
+      : undefined;
+    if (frozenAudioSelection === "MUSIC_REPLACE_PROVIDER_AUDIO"
+      && (!frozenMusicReplacementSource
+        || frozenMusicReplacementSource.version !== 1
+        || typeof frozenMusicReplacementSource.assetId !== "string"
+        || typeof frozenMusicReplacementSource.workspaceId !== "string"
+        || typeof frozenMusicReplacementSource.projectId !== "string"
+        || typeof frozenMusicReplacementSource.sha256 !== "string"
+        || !/^[a-f0-9]{64}$/u.test(frozenMusicReplacementSource.sha256)
+        || !Number.isSafeInteger(frozenMusicReplacementSource.byteSize)
+        || typeof frozenMusicReplacementSource.mimeType !== "string"
+        || !Number.isSafeInteger(frozenMusicReplacementSource.durationMs))) {
+      unavailable("the frozen BGM replacement selection has no valid source identity snapshot");
+    }
+    const approvedNarration = run.deliveryPlanRevisionId
+      ? await findApprovedNarrationTimeline(
+        this.db,
+        run.workspaceId,
+        run.projectId,
+        run.deliveryPlanRevisionId,
+        frozenAudioSelection === "DOUBAO_TTS_REPLACE" ? frozenTimelinePlanId : undefined,
+        frozenAudioSelection === "DOUBAO_TTS_REPLACE",
+      )
+      : undefined;
+    const currentAudioSelectionSource = approvedNarration && frozenAudioSelection === "DOUBAO_TTS_REPLACE"
+      ? freezeDoubaoAudioSourceIdentity({
+        timeline: approvedNarration,
+        workspaceId: run.workspaceId,
+        projectId: run.projectId,
+        storyboardRevisionId: run.storyboardRevisionId,
+      })
+      : undefined;
+    if (frozenAudioSelection === "DOUBAO_TTS_REPLACE"
+      && (!currentAudioSelectionSource || !matchesFrozenDoubaoAudioSourceIdentity(rawFrozenAudioSource, currentAudioSelectionSource))) {
+      unavailable("approved Doubao timeline or formal narration no longer matches the ProductionRun frozen source identity");
+    }
+    const formalNarrationVersions = [
+      ...(approvedNarration?.narrationAsset ? [{
+        assetVersionId: approvedNarration.narrationAsset.assetVersionId,
+        narrationScriptRevisionId: approvedNarration?.narrationScriptRevisionId ?? "",
+        assetId: approvedNarration.narrationAsset.id,
+        sha256: approvedNarration.narrationAsset.sha256,
+        durationMs: approvedNarration.narrationAsset.durationMs,
+        provider: approvedNarration.narrationAsset.provider,
+        voiceId: approvedNarration.narrationAsset.voiceId,
+      }] : []),
+      ...(approvedNarration?.narrationAssets ?? []).map((asset) => ({
+        assetVersionId: asset.assetVersionId,
+        narrationScriptRevisionId: approvedNarration?.narrationScriptRevisionId ?? "",
+        assetId: asset.id,
+        sha256: asset.sha256,
+        durationMs: asset.durationMs,
+        provider: asset.provider,
+        voiceId: asset.voiceId,
+      })),
+    ];
+    if (frozenAudioSelection === "DOUBAO_TTS_REPLACE"
+      && (!run.deliveryPlanRevisionId || !approvedNarration || formalNarrationVersions.length === 0
+        || formalNarrationVersions.some((asset) => asset.provider !== "doubao" || !asset.voiceId))) {
+      unavailable("the frozen Doubao selection no longer has its approved same-run formal narration timeline");
+    }
     const [deliveryPlan] = run.deliveryPlanRevisionId
-      ? await this.db.select({ captionPolicy: deliveryPlanRevisions.captionPolicy }).from(deliveryPlanRevisions).where(and(
+      ? await this.db.select({ captionPolicy: deliveryPlanRevisions.captionPolicy, storyboardRevisionId: deliveryPlanRevisions.storyboardRevisionId, status: deliveryPlanRevisions.status }).from(deliveryPlanRevisions).where(and(
         eq(deliveryPlanRevisions.workspaceId, run.workspaceId),
         eq(deliveryPlanRevisions.projectId, run.projectId),
         eq(deliveryPlanRevisions.id, run.deliveryPlanRevisionId),
       )).limit(1)
       : [];
+    if (frozenAudioSelection === "DOUBAO_TTS_REPLACE"
+      && (!deliveryPlan || deliveryPlan.status !== "CONSUMED" || deliveryPlan.storyboardRevisionId !== run.storyboardRevisionId
+        || approvedNarration?.deliveryPlanRevisionId !== run.deliveryPlanRevisionId)) {
+      unavailable("the frozen Doubao selection is not bound to this run's consumed DeliveryPlan and Storyboard");
+    }
     let narrationCursorMs = 0;
     for (const segment of segments) {
       const taskRunId = segment.taskRunId;
@@ -2368,6 +2779,7 @@ export class DrizzleProductionRepository implements ProductionStore {
       const semanticPackage = brief
         ? validateSemanticPromptPackage({
           shotSpecId: promptPackage.shotSpecId,
+          promptPackageId: promptPackage.id,
           prompt: promptPackage.prompt,
           sourcePrompt: brief.sourceText,
           referencePolicy: promptShotSpec.referencePolicy,
@@ -2415,7 +2827,8 @@ export class DrizzleProductionRepository implements ProductionStore {
           || (audioOwnerFact.owner !== "NATIVE_PROVIDER" && audioOwnerFact.owner !== "LEGACY_PRESERVE"))) {
         unavailable("exact dialogue requires an approved platform narration timeline");
       }
-      if (legacySegmentScript && !approvedNarration && audioOwnerFact.kind === "ABSENT") {
+      if (frozenAudioSelection !== "MUSIC_REPLACE_PROVIDER_AUDIO"
+        && legacySegmentScript && !approvedNarration && audioOwnerFact.kind === "ABSENT") {
         narrationSegments.push({ text: narrationTextForSynthesis(legacySegmentScript), startMs: narrationCursorMs });
       }
       sourceAudioTracks.push({
@@ -2457,7 +2870,10 @@ export class DrizzleProductionRepository implements ProductionStore {
     }
     const resolvedAudioOwner = resolveAudioOwnerForComposition(audioOwnerFacts);
     const preserveProviderAudio = resolvedAudioOwner === "NATIVE_PROVIDER" || resolvedAudioOwner === "LEGACY_PRESERVE";
-    if (preserveProviderAudio && approvedNarration) {
+    if (frozenAudioSelection === "MUSIC_REPLACE_PROVIDER_AUDIO" && approvedNarration) {
+      unavailable("BGM-only replacement cannot include a platform narration asset");
+    }
+    if (preserveProviderAudio && approvedNarration && !isApprovedNarrationAuthoritative(preserveProviderAudio, frozenAudioSelection)) {
       unavailable("provider-owned segment audio conflicts with an approved platform narration timeline");
     }
     if (preserveProviderAudio) narrationSegments.length = 0;
@@ -2586,6 +3002,12 @@ export class DrizzleProductionRepository implements ProductionStore {
     const budgetGuard = run.budgetGuard && typeof run.budgetGuard === "object"
       ? run.budgetGuard as Record<string, unknown>
       : {};
+    if (frozenAudioSelection === "MUSIC_REPLACE_PROVIDER_AUDIO"
+      && (musicPlan.mode !== "MANUAL"
+        || musicPlan.asset_id !== frozenMusicReplacementSource?.assetId
+        || frozenMusicReplacementSource?.workspaceId !== run.workspaceId)) {
+      unavailable("the frozen BGM replacement selection does not match its MANUAL MusicPlan asset");
+    }
     const rawPixabayFallbackMusicAssetId = musicPlan.mode === "AUTO"
       ? budgetGuard.pixabay_fallback_music_asset_id
       : undefined;
@@ -2615,10 +3037,11 @@ export class DrizzleProductionRepository implements ProductionStore {
     const legacyScriptText = !run.deliveryPlanRevisionId && brief?.sourceText
       ? deriveTranscriptScript(brief.sourceText)
       : undefined;
-    const scriptText = approvedNarration || preserveProviderAudio
+    const scriptText = frozenAudioSelection === "MUSIC_REPLACE_PROVIDER_AUDIO" || approvedNarration || preserveProviderAudio
       ? undefined
       : projectedScriptText ?? legacyScriptText;
-    const hasAuthoritativeNarration = !preserveProviderAudio && Boolean(approvedNarration || scriptText);
+    const hasAuthoritativeNarration = isApprovedNarrationAuthoritative(preserveProviderAudio, frozenAudioSelection)
+      && Boolean(approvedNarration || scriptText);
     if (approvedNarration) narrationSegments.push(...approvedNarration.narrationSegments);
     if (!approvedNarration && !preserveProviderAudio && legacyScriptText && narrationSegments.length === 0) {
       narrationSegments.push({ text: narrationTextForSynthesis(legacyScriptText), startMs: 0 });
@@ -2678,7 +3101,7 @@ export class DrizzleProductionRepository implements ProductionStore {
                 ...(asset.fadeOutMs !== undefined ? { fade_out_ms: asset.fadeOutMs } : {}),
               };
             })),
-            ...sourceTracksWithGain,
+            ...(frozenAudioSelection === "PRESERVE_PROVIDER_AUDIO" ? sourceTracksWithGain : []),
           ].sort((left, right) => left.start_ms - right.start_ms || left.track_id.localeCompare(right.track_id)),
         }
         : {
@@ -2691,7 +3114,7 @@ export class DrizzleProductionRepository implements ProductionStore {
             visual_role: "HOLD" as const,
           }],
           stitch_policy: "LEGACY_PRESERVE" as const,
-          tracks: sourceTracksWithGain,
+          tracks: frozenAudioSelection === "PRESERVE_PROVIDER_AUDIO" ? sourceTracksWithGain : [],
         }
       : undefined;
     const briefText = [
@@ -2730,6 +3153,20 @@ export class DrizzleProductionRepository implements ProductionStore {
       // rows carrying audio_role=MUSIC above, so narration samples and user
       // source audio cannot satisfy this gate.
       unavailable("AUTO music requires an explicit source-backed MUSIC asset or a completed Pixabay import");
+    }
+    if (frozenAudioSelection === "MUSIC_REPLACE_PROVIDER_AUDIO"
+      && (!musicAsset
+        || musicAsset.id !== frozenMusicReplacementSource?.assetId
+        || musicAsset.workspaceId !== frozenMusicReplacementSource?.workspaceId
+        || musicAsset.projectId !== frozenMusicReplacementSource?.projectId
+        || musicAsset.sha256 !== frozenMusicReplacementSource?.sha256
+        || musicAsset.byteSize !== frozenMusicReplacementSource?.byteSize
+        || musicAsset.mimeType !== frozenMusicReplacementSource?.mimeType
+        || musicAsset.durationMs !== frozenMusicReplacementSource?.durationMs
+        || typeof musicAsset.durationMs !== "number"
+        || !Number.isSafeInteger(musicAsset.durationMs)
+        || musicAsset.durationMs < targetDurationMs)) {
+      unavailable("the frozen BGM replacement asset identity or full-run duration has changed");
     }
     // OpenMontage's source full_mix accepts preserved source audio as an SFX
     // track alongside one project-level MUSIC track. Keep the provider-owned
@@ -2771,6 +3208,7 @@ export class DrizzleProductionRepository implements ProductionStore {
       target_duration_ms: targetDurationMs,
       transitions,
       bridge_durations_ms: bridgeDurations,
+      audio_selection: frozenAudioSelection,
       // OpenMontage treats a complete source script as one authoritative
       // narration track even when the visual plan has a single segment.
       audio_policy: hasAuthoritativeNarration ? "CONTINUOUS_NARRATION" : "LEGACY_PRESERVE",
@@ -2801,6 +3239,14 @@ export class DrizzleProductionRepository implements ProductionStore {
       projectId: run.projectId,
       productionRunId: run.id,
       storyboardRevisionId: run.storyboardRevisionId,
+      ...(run.deliveryPlanRevisionId ? { deliveryPlanRevisionId: run.deliveryPlanRevisionId } : {}),
+      audioSelection: frozenAudioSelection,
+      ...(frozenAudioSelection === "DOUBAO_TTS_REPLACE" && approvedNarration && run.deliveryPlanRevisionId ? {
+        audioProvenance: {
+          ...currentAudioSelectionSource!,
+          productionRunId: run.id,
+        },
+      } : {}),
       ...(deliveryPlan?.captionPolicy ? { captionPolicy: deliveryPlan.captionPolicy } : {}),
       ...(scriptText ? { scriptText } : {}),
       ...(approvedNarration ? { narrationScriptText: approvedNarration.narrationScriptText } : {}),
@@ -3143,7 +3589,7 @@ export class DrizzleProductionRepository implements ProductionStore {
   async completeProductionComposition(input: {
     event: Extract<InternalEventEnvelope, { event_type: "video_version.composition_requested" }>;
     videoAsset: { id: string; objectKey: string; sha256: string; byteSize: number; durationMs: number };
-    finalReview?: { status: "PASS" | "NEEDS_ATTENTION" | "FAILED"; issues_found: string[]; recommended_action: "PRESENT_WITH_REVIEW" | "REVISE" | "BLOCK" };
+    finalReview?: { status: "PASS" | "NEEDS_ATTENTION" | "FAILED"; review_completeness?: "COMPLETE" | "PARTIAL"; issues_found: string[]; recommended_action: "PRESENT_WITH_REVIEW" | "REVISE" | "BLOCK" };
     now: Date;
   }) {
     return this.db.transaction(async (transaction) => {
@@ -3180,7 +3626,7 @@ export class DrizzleProductionRepository implements ProductionStore {
         subjectId: videoVersionId,
         kind: "COMPOSITION",
         status: input.finalReview?.status === "NEEDS_ATTENTION" ? "NEEDS_ATTENTION" : "PASS",
-        safeSummary: input.finalReview?.status === "NEEDS_ATTENTION" ? "成片已完成，但仍有质量项需要人工复核。" : "成片检查通过。",
+        safeSummary: compositionQcSafeSummary(input.finalReview),
         details: { ...(input.finalReview ?? { status: "PASS", issues_found: [], recommended_action: "PRESENT_WITH_REVIEW" }), },
         createdAt: timestamp(input.now),
       });
@@ -3545,6 +3991,12 @@ export class DrizzleProductionRepository implements ProductionStore {
   }
 
   async releaseProductionEvent(input: { eventId: string; workspaceId: string; consumerName: string; workerId: string; reason: string; deadLetter: boolean; now: Date }) {
+    const ownershipCondition = input.deadLetter
+      ? or(
+        eq(eventConsumptions.leaseOwner, input.workerId),
+        and(isNull(eventConsumptions.leaseOwner), isNull(eventConsumptions.leaseExpiresAt)),
+      )
+      : eq(eventConsumptions.leaseOwner, input.workerId);
     await this.db
       .update(eventConsumptions)
       .set({
@@ -3558,7 +4010,8 @@ export class DrizzleProductionRepository implements ProductionStore {
         eq(eventConsumptions.workspaceId, input.workspaceId),
         eq(eventConsumptions.eventId, input.eventId),
         eq(eventConsumptions.consumerName, input.consumerName),
-        eq(eventConsumptions.leaseOwner, input.workerId),
+        ownershipCondition,
+        isNull(eventConsumptions.completedAt),
       ));
   }
 
@@ -3667,7 +4120,7 @@ export class DrizzleProductionRepository implements ProductionStore {
     const [script] = await transaction.select().from(scriptRevisions)
       .where(and(eq(scriptRevisions.workspaceId, input.productionRun.workspaceId), eq(scriptRevisions.projectId, input.productionRun.projectId), eq(scriptRevisions.id, storyboard.scriptRevisionId))).limit(1);
     const [brief] = script
-      ? await transaction.select().from(creativeBriefRevisions).where(and(eq(creativeBriefRevisions.workspaceId, input.productionRun.workspaceId), eq(creativeBriefRevisions.projectId, input.productionRun.projectId), eq(creativeBriefRevisions.id, script.creativeBriefRevisionId))).limit(1)
+      ? await transaction.select().from(creativeBriefRevisions).where(and(eq(creativeBriefRevisions.workspaceId, input.productionRun.workspaceId), eq(creativeBriefRevisions.projectId, input.productionRun.projectId), eq(creativeBriefRevisions.id, script.creativeBriefRevisionId))).limit(1).for("update")
       : [];
     if (!brief) return;
     const segments = await transaction.select().from(productionSegments)
@@ -3678,8 +4131,78 @@ export class DrizzleProductionRepository implements ProductionStore {
       reasonCode: "DEPENDENCY_PENDING" | "SEGMENT_NEEDS_ATTENTION" | "REFERENCE_POLICY_UNSATISFIED";
       retryable: boolean;
     } | undefined;
+    const packageInputs: Array<{
+      segment: typeof productionSegments.$inferSelect;
+      spec?: typeof storyboardShotSpecs.$inferSelect;
+      promptPackage?: typeof promptPackages.$inferSelect;
+    }> = [];
+    for (const segment of segments) {
+      const [spec] = await transaction.select().from(storyboardShotSpecs)
+        .where(and(eq(storyboardShotSpecs.workspaceId, segment.workspaceId), eq(storyboardShotSpecs.projectId, segment.projectId), eq(storyboardShotSpecs.id, segment.shotSpecId))).limit(1);
+      const [promptPackage] = spec
+        ? await transaction.select().from(promptPackages).where(and(eq(promptPackages.workspaceId, segment.workspaceId), eq(promptPackages.projectId, segment.projectId), eq(promptPackages.shotSpecId, spec.id))).orderBy(desc(promptPackages.createdAt)).limit(1)
+        : [];
+      packageInputs.push({ segment, ...(spec ? { spec } : {}), ...(promptPackage ? { promptPackage } : {}) });
+    }
+    const packageHasG02Fields = packageInputs.some(({ promptPackage }) => {
+      if (!promptPackage) return false;
+      const capabilitySnapshot = semanticJsonRecord(promptPackage.capabilitySnapshot) ?? {};
+      const referenceMap = semanticJsonRecord(promptPackage.referenceMap) ?? {};
+      return hasG02PackageFields(capabilitySnapshot, referenceMap);
+    });
+    const runHasG02 = hasG02BriefSourceMarker(brief.sourceText);
+    const g02ModeMismatch = !runHasG02 && packageHasG02Fields;
+    let g02PreflightFailed = false;
+    if (runHasG02 || g02ModeMismatch) {
+      for (const { segment, spec, promptPackage } of packageInputs) {
+        if (segment.status !== "PENDING" && segment.status !== "WAITING") continue;
+        let valid = runHasG02 && Boolean(spec && promptPackage);
+        if (valid && spec && promptPackage) {
+          const capabilitySnapshot = semanticJsonRecord(promptPackage.capabilitySnapshot) ?? {};
+          const referenceMap = semanticJsonRecord(promptPackage.referenceMap) ?? {};
+          const hasG02Fields = hasG02PackageFields(capabilitySnapshot, referenceMap);
+          const semanticPackage = hasG02Fields ? validateSemanticPromptPackage({
+            shotSpecId: promptPackage.shotSpecId,
+            promptPackageId: promptPackage.id,
+            prompt: promptPackage.prompt,
+            sourcePrompt: brief.sourceText,
+            referencePolicy: spec.referencePolicy,
+            capabilitySnapshot: promptPackage.capabilitySnapshot,
+            referenceMap: promptPackage.referenceMap,
+            visualConstraints: promptPackage.visualConstraints,
+          }) : { kind: "INVALID" as const };
+          valid = semanticPackage.kind === "VERIFIED"
+            && Boolean(semanticPackage.entityReferenceProjection)
+            && Boolean(semanticPackage.narrativeBeatLineage)
+            && await hasActiveG02EntityMappings(transaction, {
+              workspaceId: segment.workspaceId,
+              projectId: segment.projectId,
+              brief,
+              shotSpec: spec,
+              prompt: promptPackage.prompt,
+              projection: semanticPackage.entityReferenceProjection!,
+              referenceProjection: semanticPackage.referenceProjection,
+            });
+        }
+        if (!valid) {
+          g02PreflightFailed = true;
+          await transaction.update(productionSegments).set({
+            status: "WAITING",
+            retryable: false,
+            safeSummary: "G02 实体映射或来源证据门禁未通过，尚未创建视频任务。",
+            updatedAt: timestamp(input.now),
+          }).where(and(
+            eq(productionSegments.workspaceId, segment.workspaceId),
+            eq(productionSegments.id, segment.id),
+            inArray(productionSegments.status, ["PENDING", "WAITING"]),
+          ));
+          firstBlockedSegment ??= { sequence: segment.sequence, reasonCode: "SEGMENT_NEEDS_ATTENTION", retryable: false };
+        }
+      }
+    }
     for (const segment of segments) {
       if (segment.status !== "PENDING" && segment.status !== "WAITING") continue;
+      if (g02PreflightFailed) continue;
       try {
         assertProductionSegmentDependencies({ sequence: segment.sequence, dependencySequences: segment.dependsOnSequences, acceptedSequences });
       } catch {
@@ -3704,6 +4227,7 @@ export class DrizzleProductionRepository implements ProductionStore {
       }
       const semanticPackage = validateSemanticPromptPackage({
         shotSpecId: promptPackage.shotSpecId,
+        promptPackageId: promptPackage.id,
         prompt: promptPackage.prompt,
         sourcePrompt: brief.sourceText,
         referencePolicy: spec.referencePolicy,
@@ -3727,6 +4251,22 @@ export class DrizzleProductionRepository implements ProductionStore {
           reasonCode: "SEGMENT_NEEDS_ATTENTION",
           retryable: false,
         };
+        continue;
+      }
+      const hasG02Projection = semanticPackage.kind === "VERIFIED"
+        && (semanticPackage.entityReferenceProjection !== undefined || semanticPackage.narrativeBeatLineage !== undefined);
+      if (hasG02Projection && (!semanticPackage.entityReferenceProjection || !semanticPackage.narrativeBeatLineage)) {
+        await transaction.update(productionSegments).set({
+          status: "WAITING",
+          retryable: false,
+          safeSummary: "实体映射或时间轴来源证据不完整，需要重新规划。",
+          updatedAt: timestamp(input.now),
+        }).where(and(
+          eq(productionSegments.workspaceId, segment.workspaceId),
+          eq(productionSegments.id, segment.id),
+          inArray(productionSegments.status, ["PENDING", "WAITING"]),
+        ));
+        firstBlockedSegment ??= { sequence: segment.sequence, reasonCode: "SEGMENT_NEEDS_ATTENTION", retryable: false };
         continue;
       }
       const motionPlanResult = promptPackage
@@ -3753,6 +4293,30 @@ export class DrizzleProductionRepository implements ProductionStore {
         await transaction.update(productionSegments).set({ status: "WAITING", safeSummary: visual.safeSummary, updatedAt: timestamp(input.now) })
           .where(and(eq(productionSegments.workspaceId, segment.workspaceId), eq(productionSegments.id, segment.id), inArray(productionSegments.status, ["PENDING", "WAITING"])));
         firstBlockedSegment ??= { sequence: segment.sequence, reasonCode: visual.reasonCode, retryable: true };
+        continue;
+      }
+      if (hasG02Projection && semanticPackage.kind === "VERIFIED"
+        && !(await hasActiveG02EntityMappings(transaction, {
+          workspaceId: segment.workspaceId,
+          projectId: segment.projectId,
+          brief,
+          shotSpec: spec,
+          prompt: promptPackage.prompt,
+          projection: semanticPackage.entityReferenceProjection!,
+          referenceProjection: semanticPackage.referenceProjection,
+          visualInput: visual.visualInput,
+        }))) {
+        await transaction.update(productionSegments).set({
+          status: "WAITING",
+          retryable: false,
+          safeSummary: "实体图像映射或有序 Provider 参考输入已失效，需要重新规划。",
+          updatedAt: timestamp(input.now),
+        }).where(and(
+          eq(productionSegments.workspaceId, segment.workspaceId),
+          eq(productionSegments.id, segment.id),
+          inArray(productionSegments.status, ["PENDING", "WAITING"]),
+        ));
+        firstBlockedSegment ??= { sequence: segment.sequence, reasonCode: "SEGMENT_NEEDS_ATTENTION", retryable: false };
         continue;
       }
       await lockProject(transaction, segment.workspaceId, segment.projectId);
@@ -3793,6 +4357,14 @@ export class DrizzleProductionRepository implements ProductionStore {
           visualInput: visual.visualInput,
           generationSegmentSequence: segment.sequence,
           narrativeBeatSequences: spec.narrativeBeatSequences,
+          ...(semanticPackage.kind === "VERIFIED" && semanticPackage.entityReferenceProjection ? {
+            semanticEntityReferenceProjection: semanticPackage.entityReferenceProjection,
+            semanticEntityReferenceProjectionHash: promptPackage.capabilitySnapshot.semantic_entity_reference_projection_hash as string,
+          } : {}),
+          ...(semanticPackage.kind === "VERIFIED" && semanticPackage.narrativeBeatLineage ? {
+            semanticNarrativeBeatLineage: semanticPackage.narrativeBeatLineage,
+            semanticNarrativeBeatLineageHash: promptPackage.capabilitySnapshot.semantic_narrative_beat_lineage_hash as string,
+          } : {}),
           motionPlanVersion: motionPlan?.version,
           motionPlanHash,
           motionTimeline: motionPlan?.motion_beats,

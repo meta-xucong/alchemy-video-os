@@ -9,11 +9,13 @@ import { HttpVeyraCreditTransport, VideoVeyraBridgeAdapter, VeyraSub2ApiCreditAd
 
 import { createApp } from "./app.js";
 import { HttpPixabayMusicClient } from "./pixabay-music.js";
-import { VideoSessionCodec, VideoSessionIdentityAdapter } from "./veyra-session.js";
+import { isActiveVeyraAccountStatus, VideoSessionCodec, VideoSessionIdentityAdapter } from "./veyra-session.js";
 import { createControlProductionTaskRunInputSnapshotFactory } from "./production-video-input-snapshot.js";
 import { createFixedVideoBillingSettingsStore } from "./fixed-billing-settings.js";
+import { assertCommercialConfig, isCommercialFlagEnabled } from "./production-config.js";
 
 const port = Number(process.env.CONTROL_API_PORT ?? 3032);
+assertCommercialConfig();
 const databaseUrl = process.env.DATABASE_URL;
 
 if (!databaseUrl) {
@@ -50,8 +52,8 @@ const storage = createS3StoragePort({
 const videoProviderMode = resolveVideoProviderRuntimeProfile(process.env.VIDEO_PROVIDER).mode;
 const referenceDeliverySigningKey = process.env.REFERENCE_DELIVERY_SIGNING_KEY;
 const referenceVisionAnalyzer = createReferenceVisionAnalyzerFromEnv();
-const veyraAuthEnabled = process.env.VEYRA_AUTH_ENABLED === "true";
-const veyraCreditEnabled = process.env.VEYRA_CREDIT_ENABLED === "true";
+const veyraAuthEnabled = isCommercialFlagEnabled(process.env.VEYRA_AUTH_ENABLED);
+const veyraCreditEnabled = isCommercialFlagEnabled(process.env.VEYRA_CREDIT_ENABLED);
 type VideoBillingMode = "fixed_tiers" | "usage_plus_service_fee" | "legacy_fixed_amount";
 const configuredVideoBillingMode = process.env.VIDEO_BILLING_MODE?.trim().toLowerCase();
 if (configuredVideoBillingMode && !["fixed_tiers", "usage_plus_service_fee", "legacy_fixed_amount"].includes(configuredVideoBillingMode)) {
@@ -99,8 +101,16 @@ if (veyraAuthEnabled) {
       }
     }
   }
-  videoSessionCodec = new VideoSessionCodec(sessionSecret);
-  identity = new VideoSessionIdentityAdapter(videoSessionCodec);
+  const sessionMaxAgeSeconds = Number(process.env.VIDEO_SESSION_MAX_AGE_SECONDS ?? 8 * 60 * 60);
+  videoSessionCodec = new VideoSessionCodec(sessionSecret, undefined, sessionMaxAgeSeconds);
+  identity = new VideoSessionIdentityAdapter(videoSessionCodec, async (sessionIdentity) => {
+    try {
+      const account = await veyraBridge!.getAccount({ externalUserId: sessionIdentity.externalUserId });
+      return account.externalUserId === sessionIdentity.externalUserId && isActiveVeyraAccountStatus(account.status);
+    } catch {
+      return false;
+    }
+  });
 } else if (veyraCreditEnabled) {
   throw new Error("VEYRA_AUTH_ENABLED=true is required when VEYRA_CREDIT_ENABLED=true.");
 }
@@ -140,6 +150,10 @@ const app = createApp({
   fixedVideoBillingSettings: createFixedVideoBillingSettingsStore(process.env.VIDEO_BILLING_SETTINGS_PATH),
   ...(referenceDeliverySigningKey ? { referenceDeliveryTokenCodec: new ReferenceDeliveryTokenCodec(referenceDeliverySigningKey) } : {}),
   ...(referenceVisionAnalyzer ? { referenceVisionAnalyzer } : {}),
+  ...(process.env.CONTROL_API_CORS_ORIGINS
+    ? { corsOrigins: process.env.CONTROL_API_CORS_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean) }
+    : {}),
+  commercialMode: isCommercialFlagEnabled(process.env.COMMERCIAL_MODE),
   pixabayMusic,
 });
 

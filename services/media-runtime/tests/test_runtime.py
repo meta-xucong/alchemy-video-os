@@ -1,8 +1,11 @@
 import asyncio
+from array import array
 import base64
 import hashlib
+from dataclasses import replace
 from io import BytesIO
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -13,7 +16,7 @@ from unittest.mock import patch
 import unittest
 import wave
 
-from main import boundary_frames, burn_captions, compose_video, encode_pixabay_header, health_live, health_ready, inspect_audio, inspect_video, final_review, pixabay_music, synthesize_narration, transcribe_video
+from main import boundary_frames, burn_captions, compose_video, encode_pixabay_header, forbidden_response, health_live, health_ready, inspect_audio, inspect_video, final_review, pixabay_music, synthesize_narration, transcribe_video
 import runtime
 from adapters.openmontage_audio.pixabay_music import PixabayMusicResult
 from runtime import (
@@ -21,6 +24,7 @@ from runtime import (
     COMPOSITION_PLAN_MAGIC,
     COMPOSITION_MUSIC_PLAN_MAGIC,
     COMPOSITION_COMPLETE_AUDIO_PLAN_MAGIC,
+    CompositionAudioPlan,
     CompositionAudioTrack,
     CompositionPlan,
     MediaRuntimeError,
@@ -269,15 +273,24 @@ def complete_section_audio_plan_bundle(*segments: bytes) -> bytes:
 
 def complete_section_audio_plan_with_music_bundle(
     *segments: bytes,
+    music_start_ms: int = 0,
     music_end_ms: int = 4_000,
     music_duck: int = 1,
     music_windows_ms: tuple[tuple[int, int], ...] = ((0, 4_000),),
+    include_source_track: bool = True,
 ) -> bytes:
     """Build the source-shaped ALCHMED8 section plan with one music track."""
     def text(value: str, width: int = 1) -> bytes:
         encoded = value.encode("utf-8")
         return len(encoded).to_bytes(width, "big") + encoded
 
+    track_facts = [
+        ("narration-ast-1", "ast-1", 0, 2_000, 0, 0, "0", 100, 100),
+        ("music", "ast-music", music_start_ms, music_end_ms, 4, music_duck, "-6", 100, 200),
+        ("narration-ast-2", "ast-2", 2_000, 4_000, 0, 0, "0", 100, 100),
+    ]
+    if include_source_track:
+        track_facts.insert(1, ("segment-1", "src-1", 0, 4_000, 6, 0, "0", 0xffff, 0xffff))
     tracks = b"".join(
         text(track_id)
         + bytes([ownership])
@@ -288,12 +301,7 @@ def complete_section_audio_plan_with_music_bundle(
         + text(gain_db)
         + fade_in_ms.to_bytes(2, "big")
         + fade_out_ms.to_bytes(2, "big")
-        for track_id, asset_id, start_ms, end_ms, ownership, duck, gain_db, fade_in_ms, fade_out_ms in (
-            ("narration-ast-1", "ast-1", 0, 2_000, 0, 0, "0", 100, 100),
-            ("segment-1", "src-1", 0, 4_000, 6, 0, "0", 0xffff, 0xffff),
-            ("music", "ast-music", 0, music_end_ms, 4, music_duck, "-6", 100, 200),
-            ("narration-ast-2", "ast-2", 2_000, 4_000, 0, 0, "0", 100, 100),
-        )
+        for track_id, asset_id, start_ms, end_ms, ownership, duck, gain_db, fade_in_ms, fade_out_ms in track_facts
     )
     plan = (
         bytes([1, 0])
@@ -303,7 +311,7 @@ def complete_section_audio_plan_with_music_bundle(
         + bytes([2])
         + text("sec_1") + bytes([0]) + (0).to_bytes(4, "big") + (2_000).to_bytes(4, "big")
         + text("sec_2") + bytes([0]) + (2_000).to_bytes(4, "big") + (4_000).to_bytes(4, "big")
-        + bytes([4])
+        + bytes([len(track_facts)])
         + tracks
     )
     return (
@@ -325,18 +333,30 @@ def complete_section_audio_plan_with_music_bundle(
     )
 
 
-def complete_music_only_audio_plan_bundle(*segments: bytes) -> bytes:
+def complete_music_only_audio_plan_bundle(
+    *segments: bytes,
+    include_source_audio: bool = False,
+    source_ownership_code: int = 2,
+    music_asset_id: str = "ast-music",
+    music_fade_in_ms: int = 100,
+    music_fade_out_ms: int = 200,
+) -> bytes:
     """Build an ALCHMED8 plan whose only authored track is source MUSIC."""
     def text(value: str, width: int = 1) -> bytes:
         encoded = value.encode("utf-8")
         return len(encoded).to_bytes(width, "big") + encoded
 
     # LEGACY_PRESERVE has no platform narration.  The HOLD section keeps the
-    # existing AudioPlan coverage fact explicit while the source full_mix
-    # consumes the music track.
+    # existing AudioPlan coverage fact explicit while the source route keeps
+    # native audio untouched when no independent payload is supplied.
+    source_track = (
+        text("segment-1") + bytes([source_ownership_code]) + (0).to_bytes(4, "big") + (2_000).to_bytes(4, "big") + bytes([0])
+        + text("ast-source") + text("0") + (0xFFFF).to_bytes(2, "big") * 2
+        if include_source_audio else b""
+    )
     track = (
         text("music") + bytes([4]) + (0).to_bytes(4, "big") + (2_000).to_bytes(4, "big") + bytes([1])
-        + text("ast-music") + text("-6") + (100).to_bytes(2, "big") + (200).to_bytes(2, "big")
+        + text(music_asset_id) + text("-6") + music_fade_in_ms.to_bytes(2, "big") + music_fade_out_ms.to_bytes(2, "big")
     )
     plan = (
         bytes([1, 2])
@@ -345,8 +365,8 @@ def complete_music_only_audio_plan_bundle(*segments: bytes) -> bytes:
         + text("", 2)
         + bytes([1])
         + text("tail") + bytes([2]) + (0).to_bytes(4, "big") + (2_000).to_bytes(4, "big")
-        + bytes([1])
-        + track
+        + bytes([1 + int(include_source_audio)])
+        + source_track + track
     )
     return (
         b"ALCHMED8" + bytes([len(segments), len(segments) - 1]) + bytes([0] * (len(segments) - 1))
@@ -357,6 +377,31 @@ def complete_music_only_audio_plan_bundle(*segments: bytes) -> bytes:
         + plan
         + (5).to_bytes(4, "big") + b"music"
         + b"".join(len(segment).to_bytes(4, "big") + segment for segment in segments)
+    )
+
+
+def music_replacement_bundle(video: bytes, music: bytes, *, target_duration_ms: int = 2_000) -> bytes:
+    def text(value: str, width: int = 1) -> bytes:
+        encoded = value.encode("utf-8")
+        return len(encoded).to_bytes(width, "big") + encoded
+
+    audio_plan = (
+        bytes([1, 2]) + text("") + text("") + text("", 2)
+        + bytes([1]) + text("hold") + bytes([2]) + (0).to_bytes(4, "big") + target_duration_ms.to_bytes(4, "big")
+        + bytes([1])
+        + text("music") + bytes([4]) + (0).to_bytes(4, "big") + target_duration_ms.to_bytes(4, "big")
+        + bytes([0]) + text("ast-music") + text("0") + (0xFFFF).to_bytes(2, "big") + (0xFFFF).to_bytes(2, "big")
+    )
+    advanced_audio = (
+        (120).to_bytes(2, "big") + bytes([8, 86]) + int(-15).to_bytes(2, "big", signed=True)
+        + bytes([3, 1]) + (1_500).to_bytes(2, "big") + (2_500).to_bytes(2, "big")
+        + bytes([1, 1]) + (0).to_bytes(4, "big") + target_duration_ms.to_bytes(4, "big")
+    )
+    return (
+        b"ALCHMED9\x02" + bytes([1, 0]) + target_duration_ms.to_bytes(4, "big")
+        + bytes([0, 0, 2]) + advanced_audio + audio_plan
+        + len(music).to_bytes(4, "big") + music
+        + len(video).to_bytes(4, "big") + video
     )
 
 
@@ -931,42 +976,64 @@ class MediaRuntimeTests(unittest.TestCase):
         self.assertIn("-ar", calls[0])
         self.assertIn("48000", calls[0])
 
-    def test_continuous_source_tracks_apply_gain_and_fades_before_concat(self) -> None:
-        calls: list[list[str]] = []
-        mix_inputs: dict[str, object] = {}
+    def test_compose_rejects_source_audio_with_independent_narration_before_mixing(self) -> None:
         inspection = complete_composition_inspection(duration_ms=1_000, has_audio=True)
-
-        def fake_run(_binary: str, args: list[str], *, timeout_seconds: int) -> str:
-            calls.append(args)
-            Path(args[-1]).write_bytes(b"composed")
-            return ""
-
-        def fake_full_mix(inputs: dict[str, object]) -> None:
-            mix_inputs.update(inputs)
-            Path(str(inputs["output_path"])).write_bytes(b"mixed")
-
         with patch("runtime._validated_video_bytes", return_value="0" * 64), \
              patch("runtime.configured_binary", return_value="ffmpeg"), \
              patch("runtime._inspect_path", return_value=inspection), \
              patch("runtime._has_audio_stream", return_value=True), \
-             patch("runtime.inspect_audio_bytes", return_value=runtime.AudioInspection("audio/wav", "1" * 64, 4, 2_000)) as inspect_audio, \
-             patch("runtime._run", side_effect=fake_run), \
-             patch("runtime.OpenMontageAudioMixer.full_mix", side_effect=fake_full_mix), \
-             patch("runtime._mix_narration_track") as legacy_narration, \
-             patch("runtime._mix_music_track") as legacy_music:
-            compose_video_bundle(
-                body=complete_audio_plan_bundle(b"one", b"two", include_source_track=True),
-                expected_sha256=None,
-            )
+             patch("runtime.inspect_audio_bytes") as inspect_audio, \
+             patch("runtime._run") as run, \
+             patch("runtime.OpenMontageAudioMixer.full_mix") as full_mix:
+            with self.assertRaisesRegex(MediaRuntimeError, "without proven role separation") as raised:
+                compose_video_bundle(
+                    body=complete_audio_plan_bundle(b"one", b"two", include_source_track=True),
+                    expected_sha256=None,
+                )
 
-        graph = calls[0][calls[0].index("-filter_complex") + 1]
-        self.assertIn("[0:a:0]aresample=48000,volume=-6dB,afade=t=in:st=0:d=0.120,afade=t=out:st=0.820:d=0.180,asetpts=PTS-STARTPTS[a0]", graph)
-        self.assertIn("[1:a:0]aresample=48000,volume=-3dB,asetpts=PTS-STARTPTS[a1]", graph)
-        self.assertIn("[a0][a1]concat=n=2:v=0:a=1", graph)
-        legacy_narration.assert_not_called()
-        legacy_music.assert_not_called()
-        inspect_audio.assert_called_once()
-        self.assertEqual([track["role"] for track in mix_inputs["tracks"]], ["speech", "sfx"])
+        self.assertEqual(raised.exception.code, "QC_FAILED")
+        inspect_audio.assert_not_called()
+        run.assert_not_called()
+        full_mix.assert_not_called()
+
+    def test_doubao_replacement_preserves_source_supported_nonzero_music_start(self) -> None:
+        inspection = runtime.VideoInspection(
+            mime_type="video/mp4",
+            sha256="0" * 64,
+            byte_size=3,
+            width=160,
+            height=90,
+            duration_ms=4_000,
+            has_audio=False,
+        )
+        audio_inspection = runtime.AudioInspection(
+            mime_type="audio/wav",
+            sha256="1" * 64,
+            byte_size=4,
+            duration_ms=2_000,
+        )
+        mix_inputs: dict[str, object] = {}
+        with patch("runtime._validated_video_bytes", return_value="0" * 64), \
+             patch("runtime.configured_binary", return_value="ffmpeg"), \
+             patch("runtime._inspect_path", return_value=inspection), \
+             patch("runtime._has_audio_stream", return_value=False), \
+             patch("runtime.inspect_audio_bytes", return_value=audio_inspection), \
+             patch("runtime._run", side_effect=lambda _binary, args, *, timeout_seconds: (Path(args[-1]).write_bytes(b"composed") and "")), \
+             patch("runtime.OpenMontageAudioMixer.full_mix", side_effect=lambda inputs: (mix_inputs.update(inputs), Path(str(inputs["output_path"])).write_bytes(b"mixed"))):
+            legacy = complete_section_audio_plan_with_music_bundle(
+                b"vid",
+                music_start_ms=1_000,
+                music_windows_ms=((1_000, 4_000),),
+                include_source_track=False,
+            )
+            alchmed9 = b"ALCHMED9\x01" + legacy[len(b"ALCHMED8"):]
+            _segments, decoded = decode_composition_bundle_with_plan(alchmed9)
+            self.assertEqual(decoded.audio_selection, "DOUBAO_TTS_REPLACE")
+            composed = compose_video_bundle(body=alchmed9, expected_sha256=None)
+
+        self.assertEqual(composed.bytes, b"composed")
+        music_input = next(track for track in mix_inputs["tracks"] if track["role"] == "music")
+        self.assertEqual(music_input["start_seconds"], 1.0)
 
     def test_compose_consumes_independent_speech_tracks_with_source_full_mix(self) -> None:
         calls: list[list[str]] = []
@@ -1077,6 +1144,8 @@ class MediaRuntimeTests(unittest.TestCase):
         self.assertEqual(len(music_tracks), 1)
         self.assertEqual(music_tracks[0]["start_seconds"], 0.0)
         self.assertAlmostEqual(music_tracks[0]["volume"], 0.12, places=8)
+        self.assertEqual(music_tracks[0]["fade_in_seconds"], 0.1)
+        self.assertEqual(music_tracks[0]["fade_out_seconds"], 0.2)
         self.assertEqual(mix_inputs["target_duration"], 2.0)
         self.assertTrue(any("composed-full-mix.mp4" in argument for argument in calls[-1]))
 
@@ -1138,9 +1207,9 @@ class MediaRuntimeTests(unittest.TestCase):
         inspect_audio.assert_called_once()
         full_mix.assert_not_called()
 
-    def test_compose_consumes_music_only_audio_plan_with_source_full_mix(self) -> None:
+    def test_compose_maps_music_defaults_only_for_absent_track_fades_and_preserves_zero(self) -> None:
         calls: list[list[str]] = []
-        mix_inputs: dict[str, object] = {}
+        mix_inputs: list[dict[str, object]] = []
         inspection = runtime.VideoInspection(
             mime_type="video/mp4",
             sha256="0" * 64,
@@ -1153,37 +1222,107 @@ class MediaRuntimeTests(unittest.TestCase):
 
         def fake_run(_binary: str, args: list[str], *, timeout_seconds: int) -> str:
             calls.append(args)
+            if _binary == "ffprobe":
+                return "2.0\n"
             Path(args[-1]).write_bytes(b"composed")
             return ""
 
-        def fake_full_mix(inputs: dict[str, object]) -> None:
-            mix_inputs.update(inputs)
-            Path(str(inputs["output_path"])).write_bytes(b"mixed")
+        real_full_mix = runtime.OpenMontageAudioMixer.full_mix
+
+        def capture_full_mix(mixer: object, inputs: dict[str, object]) -> Path:
+            mix_inputs.append({**inputs, "tracks": [dict(track) for track in inputs["tracks"]]})
+            return real_full_mix(mixer, inputs)
+
+        def fake_configured_binary(name: str) -> str:
+            return "ffprobe" if name == "MEDIA_RUNTIME_FFPROBE_PATH" else "ffmpeg"
 
         with patch("runtime._validated_video_bytes", return_value="0" * 64), \
-             patch("runtime.configured_binary", return_value="ffmpeg"), \
+             patch("runtime.configured_binary", side_effect=fake_configured_binary), \
              patch("runtime._inspect_path", return_value=inspection), \
              patch("runtime._has_audio_stream", return_value=False), \
              patch("runtime._run", side_effect=fake_run), \
-             patch("runtime.OpenMontageAudioMixer.full_mix", side_effect=fake_full_mix) as full_mix, \
+             patch("runtime.OpenMontageAudioMixer.full_mix", new=capture_full_mix), \
              patch("runtime._mix_narration_track") as legacy_narration, \
              patch("runtime._mix_music_track") as legacy_music:
-            artifact = compose_video_bundle(
-                body=complete_music_only_audio_plan_bundle(b"vid"),
-                expected_sha256=None,
-            )
+            for fade_in_ms, fade_out_ms, expected_in, expected_out in (
+                (0xFFFF, 0xFFFF, 1.5, 2.5),
+                (0, 0, 0.0, 0.0),
+            ):
+                first_call = len(calls)
+                bundle = complete_music_only_audio_plan_bundle(
+                    b"vid", music_asset_id="ast_native_manual_music",
+                    music_fade_in_ms=fade_in_ms, music_fade_out_ms=fade_out_ms,
+                )
+                decoded_plan = decode_composition_bundle_with_plan(bundle)[1]
+                self.assertEqual(decoded_plan.audio_plan.tracks[0].asset_id, "ast_native_manual_music")
+                artifact = compose_video_bundle(
+                    body=bundle,
+                    expected_sha256=None,
+                )
+                self.assertEqual(artifact.bytes, b"composed")
+                track = mix_inputs[-1]["tracks"][0]
+                self.assertEqual(track["fade_in_seconds"], expected_in)
+                self.assertEqual(track["fade_out_seconds"], expected_out)
+                filter_commands = [args for args in calls[first_call:] if "-filter_complex" in args]
+                self.assertEqual(len(filter_commands), 1)
+                graph = filter_commands[0][filter_commands[0].index("-filter_complex") + 1]
+                if fade_in_ms == 0xFFFF:
+                    self.assertIn("afade=t=in:d=1.5", graph)
+                    self.assertIn("afade=t=out:st=0.0:d=2.5", graph)
+                else:
+                    self.assertNotIn("afade", graph)
 
-        self.assertEqual(artifact.bytes, b"composed")
-        full_mix.assert_called_once()
         legacy_narration.assert_not_called()
         legacy_music.assert_not_called()
-        self.assertEqual(
-            [(track["role"], track["start_seconds"], track["volume"])
-             for track in mix_inputs["tracks"]],
-            [("music", 0.0, 0.12 * (10 ** (-6 / 20)))],
-        )
-        self.assertEqual(mix_inputs["target_duration"], 2.0)
         self.assertTrue(any("composed-full-mix.mp4" in argument for argument in calls[-1]))
+
+    def test_compose_rejects_source_audio_with_independent_music_without_proven_role_separation(self) -> None:
+        inspection = runtime.VideoInspection(
+            mime_type="video/mp4", sha256="0" * 64, byte_size=3,
+            width=160, height=90, duration_ms=2_000, has_audio=True,
+        )
+        with patch("runtime._validated_video_bytes", return_value="0" * 64), \
+             patch("runtime.configured_binary", return_value="ffmpeg"), \
+             patch("runtime._inspect_path", return_value=inspection), \
+             patch("runtime._has_audio_stream", return_value=True), \
+             patch("runtime._run") as run, \
+             patch("runtime.OpenMontageAudioMixer.full_mix") as full_mix:
+            for ownership_code in range(7):
+                with self.subTest(ownership_code=ownership_code):
+                    with self.assertRaises(MediaRuntimeError) as raised:
+                        compose_video_bundle(
+                            body=complete_music_only_audio_plan_bundle(
+                                b"vid", include_source_audio=True, source_ownership_code=ownership_code,
+                            ),
+                            expected_sha256=None,
+                        )
+                    self.assertEqual(raised.exception.code, "QC_FAILED")
+                    if ownership_code == 6:
+                        self.assertIn("without proven role separation", str(raised.exception))
+
+            run.assert_not_called()
+            full_mix.assert_not_called()
+
+    def test_compose_rejects_source_audio_with_independent_speech_and_music(self) -> None:
+        inspection = runtime.VideoInspection(
+            mime_type="video/mp4", sha256="0" * 64, byte_size=3,
+            width=160, height=90, duration_ms=4_000, has_audio=True,
+        )
+        with patch("runtime._validated_video_bytes", return_value="0" * 64), \
+             patch("runtime.configured_binary", return_value="ffmpeg"), \
+             patch("runtime._inspect_path", return_value=inspection), \
+             patch("runtime._has_audio_stream", return_value=True), \
+             patch("runtime._run") as run, \
+             patch("runtime.OpenMontageAudioMixer.full_mix") as full_mix:
+            with self.assertRaisesRegex(MediaRuntimeError, "without proven role separation") as raised:
+                compose_video_bundle(
+                    body=complete_section_audio_plan_with_music_bundle(b"vid"),
+                    expected_sha256=None,
+                )
+
+        self.assertEqual(raised.exception.code, "QC_FAILED")
+        run.assert_not_called()
+        full_mix.assert_not_called()
 
     def test_compose_rejects_overlong_independent_speech_before_source_full_mix(self) -> None:
         inspection = runtime.VideoInspection(
@@ -1579,7 +1718,7 @@ class MediaRuntimeTests(unittest.TestCase):
         self.assertIsNone(result["transcript_matches_script"])
         self.assertEqual(result["issues"], [])
 
-    def test_final_review_records_technical_pass_and_unavailable_semantic_checks(self) -> None:
+    def test_final_review_passes_executed_checks_and_discloses_unavailable_semantic_checks(self) -> None:
         body = b"mock-final"
         technical = {
             "valid_container": True,
@@ -1598,14 +1737,50 @@ class MediaRuntimeTests(unittest.TestCase):
              patch("runtime._probe_final_review_technical", return_value=technical), \
              patch("runtime._sample_review_frames", return_value=(4, False, [])), \
              patch("runtime._audio_review", return_value=(False, [])), \
+             patch("runtime._audio_loudness_metrics", return_value={"true_peak_db": -1.2}), \
              patch("runtime.visual_semantic_review", return_value={"status": "UNAVAILABLE", "issues": ["missing"]}), \
              patch("runtime.transcribe_video_bytes", return_value={"status": "UNAVAILABLE", "issues": ["missing"]}):
-            review = final_review_video_bytes(body=body, expected_sha256=hashlib.sha256(body).hexdigest()).payload
-        self.assertEqual(review["status"], "NEEDS_ATTENTION")
+            review = final_review_video_bytes(body=body, expected_sha256=hashlib.sha256(body).hexdigest(), music_applied=True).payload
+        self.assertEqual(review["status"], "PASS")
+        self.assertEqual(review["review_completeness"], "PARTIAL")
         self.assertEqual(review["visual_spotcheck"]["frames_sampled"], 4)
         self.assertEqual(review["semantic_evaluation"]["status"], "UNAVAILABLE")
         self.assertEqual(review["transcript_comparison"]["status"], "NOT_EXPECTED")
+        self.assertEqual(review["audio_spotcheck"]["true_peak_db"], -1.2)
+        self.assertEqual(review["audio_spotcheck"]["true_peak_limit_db"], -1.0)
+        self.assertTrue(any("未提供" in issue for issue in review["issues_found"]))
         self.assertEqual(review["recommended_action"], "PRESENT_WITH_REVIEW")
+
+    def test_final_review_keeps_music_peak_tolerance_scoped_and_measured_warnings_visible(self) -> None:
+        body = b"mock-final"
+        technical = {
+            "valid_container": True, "duration_seconds": 15.0, "resolution": "848x480", "fps": 24.0,
+            "has_audio": True, "codec": "h264", "file_size_bytes": len(body), "issues": [],
+            "audio_channels": 2, "audio_sample_rate": 48000,
+        }
+        for music_applied, measured_peak, expected_limit, expected_status in (
+            (False, -1.2, -1.5, "NEEDS_ATTENTION"),
+            (True, -1.0, -1.0, "PASS"),
+            (True, -0.9, -1.0, "NEEDS_ATTENTION"),
+            (True, None, -1.0, "NEEDS_ATTENTION"),
+        ):
+            with self.subTest(music_applied=music_applied, measured_peak=measured_peak), \
+                 patch("runtime._probe_final_review_technical", return_value=technical), \
+                 patch("runtime._sample_review_frames", return_value=(4, False, [])), \
+                 patch("runtime._audio_review", return_value=(False, [])), \
+                 patch("runtime._audio_loudness_metrics", return_value={} if measured_peak is None else {"true_peak_db": measured_peak}):
+                review = final_review_video_bytes(
+                    body=body,
+                    expected_sha256=hashlib.sha256(body).hexdigest(),
+                    music_applied=music_applied,
+                ).payload
+            self.assertEqual(review["audio_spotcheck"]["true_peak_limit_db"], expected_limit)
+            self.assertEqual(review["status"], expected_status)
+            if measured_peak is not None and measured_peak > expected_limit:
+                self.assertTrue(any("true peak" in issue for issue in review["audio_spotcheck"]["issues"]))
+            if measured_peak is None:
+                self.assertTrue(any("未能测量" in issue for issue in review["issues_found"]))
+                self.assertEqual(review["status"], "NEEDS_ATTENTION")
 
     def test_audio_review_marks_source_aligned_long_silence_for_review(self) -> None:
         with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe"}, clear=False), \
@@ -1670,12 +1845,13 @@ class MediaRuntimeTests(unittest.TestCase):
              patch("runtime._probe_final_review_technical", return_value=technical), \
              patch("runtime._sample_review_frames", return_value=(4, False, [])), \
              patch("runtime._audio_review", return_value=(False, [])), \
+             patch("runtime._audio_loudness_metrics", return_value={"true_peak_db": -1.5}), \
              patch("runtime.visual_semantic_review", return_value={"status": "CHECKED", "issues": []}) as fixed_categories, \
              patch("runtime.transcribe_video_bytes", return_value={"status": "CHECKED", "word_timestamps": [], "issues": []}):
             review = final_review_video_bytes(body=body, expected_sha256=hashlib.sha256(body).hexdigest()).payload
         fixed_categories.assert_not_called()
         self.assertEqual(review["semantic_evaluation"]["status"], "UNAVAILABLE")
-        self.assertEqual(review["status"], "NEEDS_ATTENTION")
+        self.assertEqual(review["status"], "PASS")
 
     def test_final_review_blocks_long_tail_silence(self) -> None:
         body = b"mock-final"
@@ -1691,6 +1867,7 @@ class MediaRuntimeTests(unittest.TestCase):
              patch("runtime.transcribe_video_bytes", return_value={"status": "UNAVAILABLE", "issues": []}):
             review = final_review_video_bytes(body=body, expected_sha256=hashlib.sha256(body).hexdigest()).payload
         self.assertEqual(review["recommended_action"], "BLOCK")
+        self.assertEqual(review["status"], "FAILED")
 
     def test_final_review_blocks_missing_audio_track(self) -> None:
         body = b"mock-final"
@@ -1702,6 +1879,7 @@ class MediaRuntimeTests(unittest.TestCase):
              patch("runtime.transcribe_video_bytes", return_value={"status": "NOT_EXPECTED", "issues": []}):
             review = final_review_video_bytes(body=body, expected_sha256=hashlib.sha256(body).hexdigest()).payload
         self.assertEqual(review["recommended_action"], "BLOCK")
+        self.assertEqual(review["status"], "FAILED")
 
     def test_final_review_blocks_required_captions_without_caption_artifact(self) -> None:
         body = b"mock-final"
@@ -1948,6 +2126,20 @@ class MediaRuntimeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         tool.return_value.execute.assert_not_called()
 
+    def test_pixabay_no_results_diagnostic_does_not_echo_search_query(self) -> None:
+        request = StreamRequest([json.dumps({"query": "private campaign phrase", "min_duration": 30, "max_duration": 60}).encode("utf-8")], "application/json")
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_TOKEN": "runtime-test-token"}, clear=False), patch("main.PixabayMusic") as tool:
+            tool.return_value.execute.side_effect = RuntimeError("No music found on Pixabay for query: private campaign phrase")
+            response = asyncio.run(pixabay_music(
+                request=request,
+                authorization="Bearer runtime-test-token",
+                x_media_operation_id="mop_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+            ))
+        error_body = response.body.decode("utf-8")
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("private campaign phrase", error_body)
+        self.assertNotIn("query:", error_body)
+
     def test_pixabay_handler_rejects_nonfinite_duration_without_running_source(self) -> None:
         for raw_payload in (
             b'{"query":"ambient","min_duration":NaN}',
@@ -2109,6 +2301,7 @@ class MediaRuntimeTests(unittest.TestCase):
              patch("runtime._probe_final_review_technical", return_value=technical), \
              patch("runtime._sample_review_frames", return_value=(4, False, [])), \
              patch("runtime._audio_review", return_value=(False, [])), \
+             patch("runtime._audio_loudness_metrics", return_value={"true_peak_db": -1.5}), \
              patch("runtime.visual_semantic_review", return_value={"status": "CHECKED", "issues": []}), \
              patch("runtime.transcribe_video_bytes", return_value=transcript) as transcriber:
             review = final_review_video_bytes(body=body, expected_sha256=hashlib.sha256(body).hexdigest(), script_text="你好").payload
@@ -2116,7 +2309,8 @@ class MediaRuntimeTests(unittest.TestCase):
         self.assertEqual(review["transcript_comparison"]["status"], "UNAVAILABLE")
         self.assertIsNone(review["transcript_comparison"]["transcript_matches_script"])
         self.assertIsNone(review["transcript_comparison"]["word_accuracy"])
-        self.assertEqual(review["status"], "NEEDS_ATTENTION")
+        self.assertEqual(review["status"], "PASS")
+        self.assertEqual(review["review_completeness"], "PARTIAL")
 
     def test_final_review_handler_returns_structured_payload(self) -> None:
         request = StreamRequest([b"mock-final"], "video/mp4")
@@ -2128,10 +2322,25 @@ class MediaRuntimeTests(unittest.TestCase):
                 x_media_operation_id="mop_01J4N8QZ8PCW2N2G6D2XJXJXJX",
                 x_media_expected_sha256=None,
                 x_media_caption_policy="REQUIRED",
+                x_media_music_applied="true",
             ))
         self.assertEqual(response, {"status": "NEEDS_ATTENTION"})
         assert review.call_args is not None
         self.assertEqual(review.call_args.kwargs["caption_policy"], "REQUIRED")
+        self.assertTrue(review.call_args.kwargs["music_applied"])
+
+    def test_final_review_handler_rejects_invalid_music_flag(self) -> None:
+        request = StreamRequest([b"mock-final"], "video/mp4")
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_TOKEN": "runtime-test-token"}, clear=False), patch("main.final_review_video_bytes") as review:
+            response = asyncio.run(final_review(
+                request=request,
+                authorization="Bearer runtime-test-token",
+                x_media_operation_id="mop_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+                x_media_expected_sha256=None,
+                x_media_music_applied="yes",
+            ))
+        self.assertEqual(response.status_code, 400)
+        review.assert_not_called()
 
     def test_final_review_rejects_oversized_script_context_without_truncating(self) -> None:
         request = StreamRequest([b"mock-final"], "video/mp4")
@@ -2425,6 +2634,53 @@ class MediaRuntimeTests(unittest.TestCase):
             decode_composition_bundle_with_plan(body[:marker])
         self.assertEqual(raised.exception.code, "MEDIA_RENDER_FAILED")
 
+    def test_unknown_composition_marker_fails_closed(self) -> None:
+        with self.assertRaises(MediaRuntimeError) as raised:
+            decode_composition_bundle_with_plan(b"ALCHMED9\x01\x00")
+        self.assertEqual(raised.exception.code, "MEDIA_RENDER_FAILED")
+        with self.assertRaisesRegex(MediaRuntimeError, "audio selection is invalid"):
+            decode_composition_bundle_with_plan(b"ALCHMED9\x03\x01\x00")
+
+    def test_complete_audio_plan_native_only_preserves_source_audio_without_full_mix(self) -> None:
+        def text(value: str, width: int = 1) -> bytes:
+            encoded = value.encode("utf-8")
+            return len(encoded).to_bytes(width, "big") + encoded
+
+        native_only_plan = (
+            b"ALCHMED8" + bytes([1, 0]) + (2_000).to_bytes(4, "big") + bytes([0, 0, 0])
+            + (120).to_bytes(2, "big") + bytes([8, 86]) + int(-15).to_bytes(2, "big", signed=True)
+            + bytes([3, 1]) + (1_500).to_bytes(2, "big") + (2_500).to_bytes(2, "big")
+            + bytes([1, 0])
+            + bytes([1, 2]) + text("") + text("") + text("", 2)
+            + bytes([1]) + text("hold") + bytes([2]) + (0).to_bytes(4, "big") + (2_000).to_bytes(4, "big")
+            + bytes([1]) + text("segment-1") + bytes([2]) + (0).to_bytes(4, "big") + (2_000).to_bytes(4, "big")
+            + bytes([0]) + text("native-audio") + text("0") + (0xFFFF).to_bytes(2, "big") * 2
+            + (3).to_bytes(4, "big") + b"vid"
+        )
+        inspection = complete_composition_inspection(duration_ms=2_000, has_audio=True)
+        calls: list[list[str]] = []
+        def fake_run(_binary: str, args: list[str], *, timeout_seconds: int) -> str:
+            calls.append(args)
+            if _binary == "ffprobe":
+                return "2.0\n"
+            Path(args[-1]).write_bytes(b"composed")
+            return ""
+
+        def fake_configured_binary(name: str) -> str:
+            return "ffprobe" if name == "MEDIA_RUNTIME_FFPROBE_PATH" else "ffmpeg"
+
+        with patch("runtime._validated_video_bytes", return_value="0" * 64), \
+             patch("runtime.configured_binary", side_effect=fake_configured_binary), \
+             patch("runtime._inspect_path", return_value=inspection), \
+             patch("runtime._has_audio_stream", return_value=True), \
+             patch("runtime._run", side_effect=fake_run), \
+             patch("runtime.OpenMontageAudioMixer.full_mix") as full_mix:
+            artifact = compose_video_bundle(body=native_only_plan, expected_sha256=None)
+
+        self.assertEqual(artifact.bytes, b"composed")
+        self.assertIn("0:a:0?", calls[0])
+        full_mix.assert_not_called()
+
     def test_complete_audio_plan_rejects_unsupported_segment_stitch_code(self) -> None:
         body = bytearray(complete_audio_plan_bundle(b"vid"))
         # ALCHMED8 plan metadata starts after the fixed advanced header; the
@@ -2578,6 +2834,28 @@ class MediaRuntimeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(json.loads(response.body), {"error": {"code": "MEDIA_RENDER_FAILED", "retryable": False}})
 
+    def test_qc_error_response_keeps_only_bounded_redacted_diagnostic(self) -> None:
+        response = forbidden_response(MediaRuntimeError(
+            "QC_FAILED",
+            "Music mix failed at C:\\private\\clip.mp4; see https://internal.example/path with token=secret-value Authorization: Bearer auth-secret password=local-secret",
+        ))
+        payload = json.loads(response.body)
+        self.assertEqual(payload["error"]["code"], "QC_FAILED")
+        self.assertLessEqual(len(payload["error"]["diagnostic"]), 240)
+        self.assertNotIn("C:\\private", payload["error"]["diagnostic"])
+        self.assertNotIn("https://", payload["error"]["diagnostic"])
+        self.assertNotIn("secret-value", payload["error"]["diagnostic"])
+        self.assertNotIn("auth-secret", payload["error"]["diagnostic"])
+        self.assertNotIn("local-secret", payload["error"]["diagnostic"])
+
+        render_response = forbidden_response(MediaRuntimeError(
+            "MEDIA_RENDER_FAILED",
+            "FFmpeg failed at C:\\private\\clip.mp4 with password=render-secret",
+        ), include_render_diagnostic=True)
+        render_diagnostic = json.loads(render_response.body)["error"]["diagnostic"]
+        self.assertNotIn("C:\\private", render_diagnostic)
+        self.assertNotIn("render-secret", render_diagnostic)
+
     def test_narration_handler_preserves_segment_delivery_metadata(self) -> None:
         request = StreamRequest([json.dumps({
             "segments": [{
@@ -2718,10 +2996,38 @@ class MediaRuntimeTests(unittest.TestCase):
             ))
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(json.loads(response.body), {"error": {"code": "MEDIA_RENDER_FAILED", "retryable": False}})
+        self.assertEqual(json.loads(response.body), {"error": {"code": "MEDIA_RENDER_FAILED", "retryable": False, "diagnostic": "Composition input is invalid."}})
 
     def test_compose_handler_allows_alchmed8_bundle_to_reach_runtime(self) -> None:
         request = StreamRequest([complete_audio_plan_bundle(b"vid")], "application/vnd.alchemy-media-bundle")
+        artifact = runtime.CompositionArtifact(
+            inspection=runtime.VideoInspection(
+                mime_type="video/mp4",
+                sha256="0" * 64,
+                byte_size=3,
+                width=160,
+                height=90,
+                duration_ms=2_000,
+                has_audio=True,
+            ),
+            bytes=b"mp4",
+        )
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_TOKEN": "runtime-test-token"}, clear=False), \
+             patch("main.compose_video_bundle", return_value=artifact) as compose:
+            response = asyncio.run(compose_video(
+                request=request,
+                authorization="Bearer runtime-test-token",
+                x_media_operation_id="mop_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+                x_media_expected_sha256=None,
+            ))
+        self.assertEqual(response.status_code, 200)
+        compose.assert_called_once()
+
+    def test_compose_handler_allows_alchmed9_music_replacement_bundle_to_reach_runtime(self) -> None:
+        request = StreamRequest(
+            [music_replacement_bundle(b"vid", b"music")],
+            "application/vnd.alchemy-media-bundle",
+        )
         artifact = runtime.CompositionArtifact(
             inspection=runtime.VideoInspection(
                 mime_type="video/mp4",
@@ -3270,6 +3576,262 @@ class MediaRuntimeTests(unittest.TestCase):
         self.assertAlmostEqual(float(facts["format"]["duration"]), 2.0, delta=0.15)
         self.assertEqual(composed.inspection.mime_type, "video/mp4")
         self.assertEqual(composed.inspection.duration_ms, 2_000)
+
+    def test_alchmed9_replaces_embedded_source_tone_with_approved_external_narration(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        ffmpeg = root / "node_modules" / ".pnpm" / "ffmpeg-static@5.3.0" / "node_modules" / "ffmpeg-static" / "ffmpeg.exe"
+        ffprobe = root / "node_modules" / ".pnpm" / "ffprobe-static@3.1.0" / "node_modules" / "ffprobe-static" / "bin" / "win32" / "x64" / "ffprobe.exe"
+        if not ffmpeg.is_file() or not ffprobe.is_file():
+            self.skipTest("local ffmpeg fixtures are unavailable")
+        with TemporaryDirectory(prefix="alchemy-alchmed9-audio-replacement-") as directory:
+            fixture_root = Path(directory)
+            video = fixture_root / "source-with-provider-tone.mp4"
+            narration = fixture_root / "approved-doubao.wav"
+            subprocess.run([
+                str(ffmpeg), "-y", "-f", "lavfi", "-i", "color=c=darkgreen:s=160x90:r=25:d=2",
+                "-f", "lavfi", "-i", "sine=frequency=110:sample_rate=48000:duration=2",
+                "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-shortest", str(video),
+            ], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run([
+                str(ffmpeg), "-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
+                "-c:a", "pcm_s16le", str(narration),
+            ], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            legacy = complete_audio_plan_bundle(video.read_bytes(), narration_payload=narration.read_bytes())
+            alchmed9 = b"ALCHMED9\x01" + legacy[len(b"ALCHMED8"):]
+            segments, decoded = decode_composition_bundle_with_plan(alchmed9)
+            self.assertEqual(len(segments), 1)
+            self.assertEqual(decoded.audio_selection, "DOUBAO_TTS_REPLACE")
+            with patch.dict(os.environ, {
+                "MEDIA_RUNTIME_FFMPEG_PATH": str(ffmpeg),
+                "MEDIA_RUNTIME_FFPROBE_PATH": str(ffprobe),
+            }, clear=False):
+                composed = compose_video_bundle(body=alchmed9, expected_sha256=None)
+            pcm = subprocess.check_output([
+                str(ffmpeg), "-v", "error", "-i", "pipe:0", "-map", "0:a:0", "-ac", "1",
+                "-ar", "48000", "-f", "s16le", "pipe:1",
+            ], input=composed.bytes, stderr=subprocess.DEVNULL)
+            samples = array("h")
+            samples.frombytes(pcm)
+            window = samples[4_800:86_400]
+            crossings = sum(1 for left, right in zip(window, window[1:]) if (left < 0 <= right) or (right < 0 <= left))
+            self.assertGreater(crossings, 900, "output must contain the 440 Hz approved narration, not the 110 Hz source tone")
+            self.assertEqual(composed.inspection.duration_ms, 2_000)
+
+    def test_alchmed9_multisegment_drops_each_embedded_source_tone(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        ffmpeg = root / "node_modules" / ".pnpm" / "ffmpeg-static@5.3.0" / "node_modules" / "ffmpeg-static" / "ffmpeg.exe"
+        ffprobe = root / "node_modules" / ".pnpm" / "ffprobe-static@3.1.0" / "node_modules" / "ffprobe-static" / "bin" / "win32" / "x64" / "ffprobe.exe"
+        if not ffmpeg.is_file() or not ffprobe.is_file():
+            self.skipTest("local ffmpeg fixtures are unavailable")
+        with TemporaryDirectory(prefix="alchemy-alchmed9-multisegment-replacement-") as directory:
+            fixture_root = Path(directory)
+            source_videos = [fixture_root / "source-110.mp4", fixture_root / "source-220.mp4"]
+            for video, frequency in zip(source_videos, (110, 220), strict=True):
+                subprocess.run([
+                    str(ffmpeg), "-y", "-f", "lavfi", "-i", "color=c=darkgreen:s=160x90:r=25:d=1",
+                    "-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=48000:duration=1",
+                    "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-shortest", str(video),
+                ], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            narration = fixture_root / "approved-doubao-440.wav"
+            subprocess.run([
+                str(ffmpeg), "-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
+                "-c:a", "pcm_s16le", str(narration),
+            ], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            legacy = complete_audio_plan_bundle(*(video.read_bytes() for video in source_videos), narration_payload=narration.read_bytes())
+            alchmed9 = b"ALCHMED9\x01" + legacy[len(b"ALCHMED8"):]
+            segments, decoded = decode_composition_bundle_with_plan(alchmed9)
+            self.assertEqual(len(segments), 2)
+            self.assertEqual(decoded.audio_selection, "DOUBAO_TTS_REPLACE")
+            with patch.dict(os.environ, {
+                "MEDIA_RUNTIME_FFMPEG_PATH": str(ffmpeg),
+                "MEDIA_RUNTIME_FFPROBE_PATH": str(ffprobe),
+            }, clear=False):
+                composed = compose_video_bundle(body=alchmed9, expected_sha256=None)
+            narration_pcm = subprocess.check_output([
+                str(ffmpeg), "-v", "error", "-i", "pipe:0", "-map", "0:a:0", "-ac", "1",
+                "-ar", "48000", "-f", "s16le", "pipe:1",
+            ], input=composed.bytes, stderr=subprocess.DEVNULL)
+            narration_samples = array("h")
+            narration_samples.frombytes(narration_pcm)
+            window = narration_samples[4_800:86_400]
+            crossings = sum(1 for left, right in zip(window, window[1:]) if (left < 0 <= right) or (right < 0 <= left))
+            self.assertGreater(crossings, 900, "both video segments must be replaced by the 440 Hz approved narration")
+            def tone_amplitude(samples: array, frequency: int) -> float:
+                # Project onto exact integer-cycle sine/cosine bases. A broad
+                # FFmpeg high/low-pass band leaks the 440 Hz narration into
+                # the lower bands because its default filter order is shallow.
+                sample_rate = 48_000
+                start = 4_800
+                end = 86_400
+                count = end - start
+                sine = cosine = 0.0
+                for index, sample in enumerate(samples[start:end]):
+                    angle = 2 * math.pi * frequency * index / sample_rate
+                    sine += sample * math.sin(angle)
+                    cosine += sample * math.cos(angle)
+                return math.hypot(sine, cosine) * 2 / count / 32_768
+
+            source_tone_amplitudes = {
+                frequency: tone_amplitude(narration_samples, frequency)
+                for frequency in (110, 220, 440)
+            }
+            self.assertGreater(source_tone_amplitudes[440], 0.1, f"formal narration tone missing: {source_tone_amplitudes}")
+            self.assertTrue(
+                all(source_tone_amplitudes[frequency] < 0.005 for frequency in (110, 220)),
+                f"source tones leaked into output: {source_tone_amplitudes}",
+            )
+            self.assertEqual(composed.inspection.duration_ms, 2_000)
+
+    def test_alchmed9_music_only_replaces_provider_audio_for_full_video(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        ffmpeg = root / "node_modules" / ".pnpm" / "ffmpeg-static@5.3.0" / "node_modules" / "ffmpeg-static" / "ffmpeg.exe"
+        ffprobe = root / "node_modules" / ".pnpm" / "ffprobe-static@3.1.0" / "node_modules" / "ffprobe-static" / "bin" / "win32" / "x64" / "ffprobe.exe"
+        if not ffmpeg.is_file() or not ffprobe.is_file():
+            self.skipTest("local ffmpeg fixtures are unavailable")
+        with TemporaryDirectory(prefix="alchemy-alchmed9-music-replacement-") as directory:
+            fixture_root = Path(directory)
+            source = fixture_root / "source-with-provider-tone.mp4"
+            music = fixture_root / "full-run-music.wav"
+            subprocess.run([
+                str(ffmpeg), "-y", "-f", "lavfi", "-i", "color=c=darkgreen:s=160x90:r=25:d=2",
+                "-f", "lavfi", "-i", "sine=frequency=110:sample_rate=48000:duration=2",
+                "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-shortest", str(source),
+            ], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run([
+                str(ffmpeg), "-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3",
+                "-c:a", "pcm_s16le", str(music),
+            ], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            body = music_replacement_bundle(source.read_bytes(), music.read_bytes())
+            segments, decoded = decode_composition_bundle_with_plan(body)
+            self.assertEqual(len(segments), 1)
+            self.assertEqual(decoded.audio_selection, "MUSIC_REPLACE_PROVIDER_AUDIO")
+            self.assertEqual([track.ownership for track in decoded.audio_plan.tracks], ["MUSIC"])
+            with patch.dict(os.environ, {
+                "MEDIA_RUNTIME_FFMPEG_PATH": str(ffmpeg),
+                "MEDIA_RUNTIME_FFPROBE_PATH": str(ffprobe),
+            }, clear=False):
+                composed = compose_video_bundle(body=body, expected_sha256=None)
+            pcm = subprocess.check_output([
+                str(ffmpeg), "-v", "error", "-i", "pipe:0", "-map", "0:a:0", "-ac", "1",
+                "-ar", "48000", "-f", "s16le", "pipe:1",
+            ], input=composed.bytes, stderr=subprocess.DEVNULL)
+            samples = array("h")
+            samples.frombytes(pcm)
+
+            def tone_amplitude(frequency: int) -> float:
+                start, end, sample_rate = 4_800, 86_400, 48_000
+                sine = cosine = 0.0
+                for index, sample in enumerate(samples[start:end]):
+                    angle = 2 * math.pi * frequency * index / sample_rate
+                    sine += sample * math.sin(angle)
+                    cosine += sample * math.cos(angle)
+                return math.hypot(sine, cosine) * 2 / (end - start) / 32_768
+
+            self.assertGreater(tone_amplitude(440), 0.01, "the selected full-run MUSIC asset must be audible")
+            self.assertLess(tone_amplitude(110), 0.002, "embedded Provider audio must be absent after explicit replacement")
+            self.assertEqual(composed.inspection.duration_ms, 2_000)
+            final_output = fixture_root / "composed.mp4"
+            final_output.write_bytes(composed.bytes)
+            audio_durations_ms = runtime._probe_audio_stream_durations_ms(final_output)
+            self.assertEqual(len(audio_durations_ms), 1)
+            self.assertLessEqual(composed.inspection.duration_ms - audio_durations_ms[0], 100)
+            probe = json.loads(subprocess.check_output([
+                str(ffprobe), "-v", "error", "-show_entries", "stream=codec_type,codec_name",
+                "-of", "json", "pipe:0",
+            ], input=composed.bytes, stderr=subprocess.DEVNULL))
+            audio_streams = [stream for stream in probe["streams"] if stream.get("codec_type") == "audio"]
+            self.assertEqual(audio_streams, [{"codec_type": "audio", "codec_name": "aac"}])
+
+    def test_music_output_coverage_accepts_user_baseline_and_rejects_material_tail_gap(self) -> None:
+        output = Path("final.mp4")
+        for audio_duration_ms in (30_052, 30_025):
+            with self.subTest(audio_duration_ms=audio_duration_ms), patch(
+                "runtime._probe_audio_stream_durations_ms", return_value=[audio_duration_ms]
+            ):
+                runtime._validate_music_output_audio_coverage(output, video_duration_ms=30_125)
+
+        with patch("runtime._probe_audio_stream_durations_ms", return_value=[30_024]):
+            with self.assertRaisesRegex(MediaRuntimeError, "does not cover"):
+                runtime._validate_music_output_audio_coverage(output, video_duration_ms=30_125)
+
+        for durations in ([], [30_125, 30_125]):
+            with self.subTest(durations=durations), patch(
+                "runtime._probe_audio_stream_durations_ms", return_value=durations
+            ):
+                with self.assertRaises(MediaRuntimeError):
+                    runtime._validate_music_output_audio_coverage(output, video_duration_ms=30_125)
+
+    def test_music_output_probe_uses_audio_stream_duration_not_container_duration(self) -> None:
+        probe = json.dumps({
+            "streams": [{"codec_type": "audio", "duration": "30.052"}],
+            "format": {"duration": "30.125"},
+        })
+        with patch("runtime.configured_binary", return_value="ffprobe"), patch("runtime._run", return_value=probe):
+            self.assertEqual(runtime._probe_audio_stream_durations_ms(Path("final.mp4")), [30_052])
+
+        duration_ts_probe = json.dumps({
+            "streams": [{"codec_type": "audio", "duration_ts": "1442496", "time_base": "1/48000"}],
+        })
+        with patch("runtime.configured_binary", return_value="ffprobe"), patch("runtime._run", return_value=duration_ts_probe):
+            self.assertEqual(runtime._probe_audio_stream_durations_ms(Path("final.mp4")), [30_052])
+
+        invalid_probes = (
+            "[]",
+            "null",
+            json.dumps({"streams": [{"codec_type": "audio", "duration": "N/A"}]}),
+            json.dumps({"streams": [{"codec_type": "audio", "duration_ts": "10", "time_base": "1/0"}]}),
+        )
+        for invalid_probe in invalid_probes:
+            with self.subTest(invalid_probe=invalid_probe), \
+                 patch("runtime.configured_binary", return_value="ffprobe"), \
+                 patch("runtime._run", return_value=invalid_probe):
+                with self.assertRaisesRegex(MediaRuntimeError, "duration could not be inspected"):
+                    runtime._probe_audio_stream_durations_ms(Path("final.mp4"))
+
+    def test_alchmed9_music_only_rejects_short_track_before_mixing(self) -> None:
+        body = music_replacement_bundle(b"video", b"music", target_duration_ms=2_000)
+        with patch("runtime._validated_video_bytes", return_value="0" * 64), \
+             patch("runtime.configured_binary", return_value="ffmpeg"), \
+             patch("runtime._inspect_path", return_value=complete_composition_inspection(duration_ms=2_000, has_audio=True)), \
+             patch("runtime._has_audio_stream", return_value=True), \
+             patch("runtime.inspect_audio_bytes", return_value=runtime.AudioInspection("audio/wav", "0" * 64, 5, 1_000)), \
+             patch("runtime._run") as run:
+            with self.assertRaises(MediaRuntimeError):
+                compose_video_bundle(body=body, expected_sha256=None)
+        run.assert_not_called()
+
+    def test_alchmed9_music_only_rejects_malformed_track_ownership_before_mixing(self) -> None:
+        body = music_replacement_bundle(b"video", b"music", target_duration_ms=2_000)
+        _segments, valid = decode_composition_bundle_with_plan(body)
+        self.assertIsNotNone(valid)
+        self.assertIsNotNone(valid.audio_plan)
+        music_track = valid.audio_plan.tracks[0]
+        invalid_plans = {
+            "missing MUSIC track": replace(valid, audio_plan=replace(valid.audio_plan, tracks=())),
+            "duplicate MUSIC track": replace(valid, audio_plan=replace(valid.audio_plan, tracks=(music_track, replace(music_track, track_id="music-2")))),
+            "partial MUSIC window": replace(valid, audio_plan=replace(valid.audio_plan, tracks=(replace(music_track, end_ms=1_999),))),
+            "nonzero MUSIC start": replace(valid, audio_plan=replace(valid.audio_plan, tracks=(replace(music_track, start_ms=1),))),
+            "narration track": replace(valid, audio_plan=replace(valid.audio_plan, tracks=(music_track, CompositionAudioTrack("narration", "PLATFORM_NARRATION", 0, 2_000, asset_id="ast-narration")))),
+            "missing MUSIC payload": replace(valid, music_bytes=None),
+        }
+        segments, _plan = decode_composition_bundle_with_plan(body)
+        inspection = complete_composition_inspection(duration_ms=2_000, has_audio=True)
+        for label, invalid in invalid_plans.items():
+            with self.subTest(case=label), \
+                 patch("runtime.decode_composition_bundle_with_plan", return_value=(segments, invalid)), \
+                 patch("runtime._validated_video_bytes", return_value="0" * 64), \
+                 patch("runtime.configured_binary", return_value="ffmpeg"), \
+                 patch("runtime._inspect_path", return_value=inspection), \
+                 patch("runtime._has_audio_stream", return_value=True), \
+                 patch("runtime.inspect_audio_bytes", return_value=runtime.AudioInspection("audio/wav", "0" * 64, 5, 2_000)), \
+                 patch("runtime._run") as run:
+                with self.assertRaises(MediaRuntimeError) as raised:
+                    compose_video_bundle(body=body, expected_sha256=None)
+                self.assertEqual(raised.exception.code, "QC_FAILED")
+                run.assert_not_called()
 
     def test_segment_music_video_bytes_uses_independent_source_operation(self) -> None:
         video_body = b"video-fixture"

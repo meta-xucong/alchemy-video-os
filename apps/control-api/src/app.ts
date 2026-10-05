@@ -111,6 +111,10 @@ type CreateAppOptions = {
   /** Explicitly select the server-owned fixed-tier billing mode. */
   videoBillingMode?: "fixed_tiers" | "usage_plus_service_fee" | "legacy_fixed_amount";
   fixedVideoBillingSettings?: FixedVideoBillingSettingsStore;
+  /** Public browser origins. Production must provide an explicit HTTPS list. */
+  corsOrigins?: readonly string[];
+  /** Enables the state-changing request Origin gate for cookie-auth deployments. */
+  commercialMode?: boolean;
   audioFreeOnly?: boolean;
   /** Inject the protected Media Runtime client; omit or pass null to disable. */
   pixabayMusic?: PixabayMusicPort | null;
@@ -119,7 +123,7 @@ type CreateAppOptions = {
 
 type ExternalEventAppender = (event: InternalEventEnvelope) => void;
 
-const response = <T>(context: HonoContext, data: T, status: 200 | 201 | 202 = 200) =>
+const response = <T>(context: HonoContext, data: T, status: 200 | 201 | 202 | 503 = 200) =>
   context.json({ data, request_id: context.get("requestId") }, status);
 
 type HonoContext = Context;
@@ -127,9 +131,13 @@ type HonoContext = Context;
 const parseBody = async <TSchema extends z.ZodTypeAny>(context: HonoContext, schema: TSchema): Promise<z.infer<TSchema>> => {
   let body: unknown;
   try {
-    body = await context.req.json();
+    const contentLength = Number(context.req.header("content-length") ?? "0");
+    if (Number.isFinite(contentLength) && contentLength > 2 * 1024 * 1024) throw new Error("body too large");
+    const bytes = await context.req.raw.arrayBuffer();
+    if (bytes.byteLength > 2 * 1024 * 1024) throw new Error("body too large");
+    body = JSON.parse(new TextDecoder().decode(bytes));
   } catch {
-    throw validationError("Request body must be valid JSON.");
+    throw validationError("Request body must be valid JSON and no larger than 2 MiB.");
   }
 
   const parsed = schema.safeParse(body);
@@ -228,6 +236,9 @@ const resolveWorkspaceAccess = async (
   try {
     identity = await identityPort.resolve(context.req.raw);
   } catch (error) {
+    if (error instanceof Error && error.message === "Video session has been revoked.") {
+      throw new ControlApiError(403, "AUTH_FORBIDDEN", "The video account is no longer active.");
+    }
     if (error instanceof Error && error.message === "Video session is missing or expired.") {
       throw new ControlApiError(503, "AUTH_FORBIDDEN", "Video account sign-in is required.");
     }
@@ -244,6 +255,7 @@ const resolveWorkspaceAccess = async (
   if (!user) {
     throw new ControlApiError(503, "AUTH_UNAVAILABLE", "The local development identity is unavailable.", true);
   }
+  if (user.status !== "ACTIVE") throw new ControlApiError(403, "AUTH_FORBIDDEN", "The current identity is disabled.");
   if (!(await store.hasWorkspaceMembership(identity.workspaceId, identity.userId))) {
     throw new ControlApiError(403, "WORKSPACE_FORBIDDEN", "The current identity cannot access this workspace.");
   }
@@ -359,7 +371,7 @@ const creativePlanStateInvalid = () => new ControlApiError(400, "CREATIVE_PLAN_S
 const storyboardStateInvalid = () => new ControlApiError(400, "STORYBOARD_SPEC_INVALID", "This storyboard cannot be approved from its current state.");
 const productionRunConflict = () => new ControlApiError(409, "PRODUCTION_RUN_ACTIVE_CONFLICT", "This project already has an active production plan.");
 const productionRunStateInvalid = () => new ControlApiError(400, "PRODUCTION_RUN_STATE_INVALID", "This storyboard must be approved before creating a production plan.");
-const deliveryPreflightBlocked = () => new ControlApiError(400, "DELIVERY_PREFLIGHT_BLOCKED", "This delivery plan is not approved for production.");
+const deliveryPreflightBlocked = () => new ControlApiError(400, "DELIVERY_PREFLIGHT_BLOCKED", "Production is blocked because the delivery plan or selected audio source is not fully approved.");
 const productionSegmentStateInvalid = () => new ControlApiError(400, "PRODUCTION_SEGMENT_STATE_INVALID", "This production segment cannot be retried from its current state.");
 const deliveryPlanStateInvalid = () => new ControlApiError(400, "DELIVERY_PLAN_STATE_INVALID", "This delivery preflight cannot be changed from its current state.");
 const narrationApprovalRequired = () => new ControlApiError(
@@ -950,11 +962,22 @@ export function createApp(options: CreateAppOptions = {}) {
   app.use(
     "*",
     cors({
-      origin: ["http://localhost:3031", "http://127.0.0.1:3031"],
-      credentials: true
+      origin: [...(options.corsOrigins ?? ["http://localhost:3031", "http://127.0.0.1:3031"])],
+      credentials: true,
     })
   );
   app.use("*", requestLogger);
+  app.use("*", async (context, next) => {
+    if (options.commercialMode && ["POST", "PUT", "PATCH", "DELETE"].includes(context.req.method) && context.req.path !== "/auth/veyra/callback") {
+      const origin = context.req.header("origin");
+      const allowed = new Set(options.corsOrigins ?? []);
+      if (!origin || !allowed.has(origin)) {
+        const requestId = (context as unknown as { get: (key: string) => unknown }).get("requestId");
+        return context.json({ error: { code: "CSRF_ORIGIN_INVALID", message: "The request origin is not allowed.", retryable: false, details: {} }, request_id: typeof requestId === "string" ? requestId : "req_unknown" }, 403);
+      }
+    }
+    return next();
+  });
   app.onError(errorHandler);
 
   const providerInputEmptyResponse = (status: 404 | 503) => new Response(null, {
@@ -1103,6 +1126,30 @@ export function createApp(options: CreateAppOptions = {}) {
       },
     }),
   );
+
+  app.get("/api/v1/health/live", (context) => response(context, { service: "control-api" as const, status: "ok" as const }));
+  app.get("/api/v1/health/ready", async (context) => {
+    const databaseStatus = await store.getDatabaseStatus();
+    const ready = databaseStatus === "ok";
+    if (!ready) {
+      const requestId = (context as unknown as { get: (key: string) => unknown }).get("requestId");
+      return context.json({
+        error: {
+          code: "INTERNAL_ERROR" as const,
+          message: "Control API dependencies are not ready.",
+          retryable: true,
+          details: { database: databaseStatus },
+        },
+        request_id: typeof requestId === "string" ? requestId : "req_unknown",
+      }, 503);
+    }
+    return response(context, {
+      service: "control-api" as const,
+      status: "ok" as const,
+      build_version: buildVersion,
+      dependencies: { database: databaseStatus },
+    });
+  });
 
   app.get("/api/v1/projects/:project_id/audio-capabilities", async (context) => {
     const identity = await resolveWorkspaceAccess(context, identityPort, store);
@@ -2226,6 +2273,7 @@ export function createApp(options: CreateAppOptions = {}) {
       storyboardRevisionId: command.storyboard_revision_id,
       deliveryPlanRevisionId: command.delivery_plan_revision_id,
       musicPlan: command.music_plan,
+      audioSelection: command.audio_selection,
       ...(pixabayFallbackMusicAssetId ? { pixabayFallbackMusicAssetId } : {}),
       ...(billing ? { billing } : {}),
       ...(fixedBillingPolicy ? { fixedBillingPolicy } : {}),

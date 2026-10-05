@@ -570,7 +570,7 @@ export function useControlApi() {
       body: {},
     });
 
-  const createProductionRun = (projectId: string, input: { storyboard_revision_id: string; delivery_plan_revision_id: string; music_plan: { mode: "AUTO" | "MANUAL" | "OFF"; asset_id?: string; style_hint?: string } }, idempotencyKey: string) =>
+  const createProductionRun = (projectId: string, input: { storyboard_revision_id: string; delivery_plan_revision_id: string; music_plan: { mode: "AUTO" | "MANUAL" | "OFF"; asset_id?: string; style_hint?: string }; audio_selection: "PRESERVE_PROVIDER_AUDIO" | "DOUBAO_TTS_REPLACE" | "MUSIC_REPLACE_PROVIDER_AUDIO" }, idempotencyKey: string) =>
     $fetch<ProductionRunResponse>(`/api/v1/projects/${projectId}/production-runs`, {
       method: "POST",
       headers: commandHeaders(idempotencyKey),

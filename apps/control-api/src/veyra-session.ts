@@ -6,15 +6,18 @@ import { createVeyraCurrentIdentity, type CurrentIdentity, type IdentityPort } f
 // Alchemy or the shared AISelf parent domain.  The cookie remains signed and
 // scoped to this application; it is never the Portal session.
 const COOKIE_NAME = "__Host-video_session";
+export const isActiveVeyraAccountStatus = (status: string) => status === "active";
 const encode = (value: string | Uint8Array) => Buffer.from(value).toString("base64url");
 const decode = (value: string) => Buffer.from(value, "base64url").toString("utf8");
 
 export class VideoSessionCodec {
-  constructor(private readonly secret: string, private readonly now: () => Date = () => new Date()) {
+  constructor(private readonly secret: string, private readonly now: () => Date = () => new Date(), private readonly maxAgeSeconds = 8 * 60 * 60) {
     if (secret.trim().length < 32) throw new Error("VIDEO_SESSION_SECRET must contain at least 32 characters.");
+    if (!Number.isSafeInteger(maxAgeSeconds) || maxAgeSeconds < 60 || maxAgeSeconds > 8 * 60 * 60) throw new Error("VIDEO_SESSION_MAX_AGE_SECONDS must be between 60 and 28800.");
   }
 
-  issue(identity: VeyraExternalIdentity, maxAgeSeconds = 8 * 60 * 60): string {
+  issue(identity: VeyraExternalIdentity, maxAgeSeconds = this.maxAgeSeconds): string {
+    if (!Number.isSafeInteger(maxAgeSeconds) || maxAgeSeconds < 1 || maxAgeSeconds > this.maxAgeSeconds) throw new Error("Session max age exceeds the configured limit.");
     const expiresAt = new Date(this.now().getTime() + maxAgeSeconds * 1000).toISOString();
     const payload = encode(JSON.stringify({ v: 1, externalUserId: identity.externalUserId, email: identity.email, role: identity.role, expiresAt }));
     return `v1.${payload}.${this.sign(payload)}`;
@@ -44,10 +47,11 @@ export class VideoSessionCodec {
 }
 
 export class VideoSessionIdentityAdapter implements IdentityPort {
-  constructor(private readonly codec: VideoSessionCodec) {}
+  constructor(private readonly codec: VideoSessionCodec, private readonly activeChecker?: (identity: VeyraExternalIdentity) => Promise<boolean>) {}
   async resolve(request: Request): Promise<CurrentIdentity> {
     const identity = this.codec.read(request);
     if (!identity) throw new Error("Video session is missing or expired.");
+    if (this.activeChecker && !(await this.activeChecker(identity))) throw new Error("Video session has been revoked.");
     return createVeyraCurrentIdentity(identity);
   }
 }

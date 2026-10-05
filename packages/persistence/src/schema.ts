@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   bigint,
   boolean,
   check,
@@ -10,6 +11,7 @@ import {
   numeric,
   pgEnum,
   pgTable,
+  type PgTableWithColumns,
   primaryKey,
   text,
   timestamp,
@@ -264,6 +266,10 @@ export const storyboardShotSpecs = pgTable(
     referencePolicy: referencePolicy("reference_policy").notNull(),
     dependsOnSequences: jsonb("depends_on_sequences").$type<number[]>().default(sql`'[]'::jsonb`).notNull(),
     narrativeBeatSequences: jsonb("narrative_beat_sequences").$type<number[]>().default(sql`'[]'::jsonb`).notNull(),
+    sceneId: text("scene_id"),
+    characterIds: text("character_ids").array().$type<string[]>().default(sql`'{}'::text[]`).notNull(),
+    propIds: text("prop_ids").array().$type<string[]>().default(sql`'{}'::text[]`).notNull(),
+    referenceAnchors: text("reference_anchors").array().$type<string[]>().default(sql`'{}'::text[]`).notNull(),
     continuityNote: text("continuity_note").notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -395,6 +401,110 @@ export const assets = pgTable(
     }).onDelete("cascade"),
     check("assets_object_key_scope_check", sql`${table.objectKey} like ${table.workspaceId} || '/' || ${table.projectId} || '/' || ${table.id} || '/%'`),
     check("assets_sha256_format_check", sql`${table.sha256} is null or ${table.sha256} ~ '^[a-f0-9]{64}$'`),
+  ],
+);
+
+export const canonicalVisualEntities = pgTable(
+  "canonical_visual_entities",
+  {
+    id: text().primaryKey(),
+    workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    projectId: text("project_id").notNull(),
+    entityKind: varchar("entity_kind", { length: 16 }).$type<"CHARACTER" | "SCENE" | "PROP">().notNull(),
+    normalizedIdentity: text("normalized_identity").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("canonical_visual_entities_scope_id_key").on(table.workspaceId, table.projectId, table.id),
+    uniqueIndex("canonical_visual_entities_identity_key").on(table.workspaceId, table.projectId, table.entityKind, table.normalizedIdentity),
+    foreignKey({ columns: [table.workspaceId, table.projectId], foreignColumns: [projects.workspaceId, projects.id], name: "canonical_visual_entities_workspace_project_fk" }).onDelete("cascade"),
+    check("canonical_visual_entities_kind_check", sql`${table.entityKind} in ('CHARACTER', 'SCENE', 'PROP')`),
+    check("canonical_visual_entities_identity_nonempty_check", sql`length(${table.normalizedIdentity}) > 0`),
+  ],
+);
+
+export const canonicalVisualEntityRevisions = pgTable(
+  "canonical_visual_entity_revisions",
+  {
+    id: text().primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    projectId: text("project_id").notNull(),
+    entityId: text("entity_id").notNull(),
+    revisionNumber: integer("revision_number").notNull(),
+    exactName: text("exact_name").notNull(),
+    contentHash: varchar("content_hash", { length: 64 }).notNull(),
+    role: text(),
+    description: text(),
+    appearance: text(),
+    styling: text(),
+    location: text(),
+    time: text(),
+    prompt: text(),
+    lighting: text(),
+    type: text(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("canonical_visual_entity_revisions_scope_id_key").on(table.workspaceId, table.projectId, table.id),
+    uniqueIndex("canonical_visual_entity_revisions_number_key").on(table.workspaceId, table.projectId, table.entityId, table.revisionNumber),
+    uniqueIndex("canonical_visual_entity_revisions_hash_key").on(table.workspaceId, table.projectId, table.entityId, table.contentHash),
+    foreignKey({ columns: [table.workspaceId, table.projectId, table.entityId], foreignColumns: [canonicalVisualEntities.workspaceId, canonicalVisualEntities.projectId, canonicalVisualEntities.id], name: "canonical_visual_entity_revisions_entity_fk" }).onDelete("cascade"),
+    check("canonical_visual_entity_revisions_number_positive_check", sql`${table.revisionNumber} > 0`),
+    check("canonical_visual_entity_revisions_hash_format_check", sql`${table.contentHash} ~ '^[a-f0-9]{64}$'`),
+  ],
+);
+
+export const canonicalVisualEntityRevisionAssets: PgTableWithColumns<{
+  name: "canonical_visual_entity_revision_assets";
+  schema: undefined;
+  columns: {
+    id: AnyPgColumn;
+    workspaceId: AnyPgColumn;
+    projectId: AnyPgColumn;
+    changeKind: AnyPgColumn;
+    entityId: AnyPgColumn;
+    revisionNumber: AnyPgColumn;
+    assetId: AnyPgColumn;
+    assetSha256: AnyPgColumn;
+    mappingEvidenceId: AnyPgColumn;
+    referenceEvidenceId: AnyPgColumn;
+    briefRevisionId: AnyPgColumn;
+    usage: AnyPgColumn;
+    revokedAddId: AnyPgColumn;
+    createdAt: AnyPgColumn;
+  };
+  dialect: "pg";
+}> = pgTable(
+  "canonical_visual_entity_revision_assets",
+  {
+    id: text().primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    projectId: text("project_id").notNull(),
+    changeKind: varchar("change_kind", { length: 8 }).$type<"ADD" | "REVOKE">().notNull(),
+    entityId: text("entity_id").notNull(),
+    revisionNumber: integer("revision_number").notNull(),
+    assetId: text("asset_id").notNull(),
+    assetSha256: varchar("asset_sha256", { length: 64 }).notNull(),
+    mappingEvidenceId: text("mapping_evidence_id").notNull(),
+    referenceEvidenceId: text("reference_evidence_id"),
+    briefRevisionId: text("brief_revision_id").notNull(),
+    usage: text().notNull(),
+    revokedAddId: text("revoked_add_id"),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex("canonical_visual_entity_revision_assets_scope_id_key").on(table.id, table.workspaceId, table.projectId, table.entityId, table.revisionNumber, table.assetId, table.assetSha256, table.briefRevisionId),
+    uniqueIndex("canonical_visual_entity_revision_assets_mapping_evidence_key").on(table.mappingEvidenceId),
+    uniqueIndex("canonical_visual_entity_revision_assets_revoked_add_key").on(table.revokedAddId).where(sql`${table.changeKind} = 'REVOKE'`),
+    index("canonical_visual_entity_revision_assets_brief_asset_idx").on(table.workspaceId, table.projectId, table.briefRevisionId, table.assetId, table.createdAt),
+    foreignKey({ columns: [table.workspaceId, table.projectId, table.entityId, table.revisionNumber], foreignColumns: [canonicalVisualEntityRevisions.workspaceId, canonicalVisualEntityRevisions.projectId, canonicalVisualEntityRevisions.entityId, canonicalVisualEntityRevisions.revisionNumber], name: "canonical_visual_entity_revision_assets_revision_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.workspaceId, table.projectId, table.assetId], foreignColumns: [assets.workspaceId, assets.projectId, assets.id], name: "canonical_visual_entity_revision_assets_asset_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.workspaceId, table.projectId, table.briefRevisionId], foreignColumns: [creativeBriefRevisions.workspaceId, creativeBriefRevisions.projectId, creativeBriefRevisions.id], name: "canonical_visual_entity_revision_assets_brief_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.revokedAddId, table.workspaceId, table.projectId, table.entityId, table.revisionNumber, table.assetId, table.assetSha256, table.briefRevisionId], foreignColumns: [canonicalVisualEntityRevisionAssets.id, canonicalVisualEntityRevisionAssets.workspaceId, canonicalVisualEntityRevisionAssets.projectId, canonicalVisualEntityRevisionAssets.entityId, canonicalVisualEntityRevisionAssets.revisionNumber, canonicalVisualEntityRevisionAssets.assetId, canonicalVisualEntityRevisionAssets.assetSha256, canonicalVisualEntityRevisionAssets.briefRevisionId], name: "canonical_visual_entity_revision_assets_revoke_scope_fk" }).onDelete("restrict"),
+    check("canonical_visual_entity_revision_assets_kind_check", sql`${table.changeKind} in ('ADD', 'REVOKE')`),
+    check("canonical_visual_entity_revision_assets_revoke_shape_check", sql`(${table.changeKind} = 'ADD' and ${table.revokedAddId} is null and ${table.referenceEvidenceId} is not null) or (${table.changeKind} = 'REVOKE' and ${table.revokedAddId} is not null and ${table.referenceEvidenceId} is null)`),
+    check("canonical_visual_entity_revision_assets_hash_format_check", sql`${table.assetSha256} ~ '^[a-f0-9]{64}$'`),
+    check("canonical_visual_entity_revision_assets_usage_nonempty_check", sql`length(trim(${table.usage})) > 0`),
   ],
 );
 

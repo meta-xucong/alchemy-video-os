@@ -56,9 +56,13 @@ COMPOSITION_NARRATION_PLAN_MAGIC = b"ALCHMED5"
 COMPOSITION_ADVANCED_AUDIO_PLAN_MAGIC = b"ALCHMED6"
 COMPOSITION_OWNERSHIP_AUDIO_PLAN_MAGIC = b"ALCHMED7"
 COMPOSITION_COMPLETE_AUDIO_PLAN_MAGIC = b"ALCHMED8"
+COMPOSITION_AUDIO_SELECTION_MAGIC = b"ALCHMED9"
 # Shared with the C12.7B measured-duration contract; this is a media-boundary
 # tolerance, not a subtitle timing adjustment.
 MEDIA_DURATION_TOLERANCE_SECONDS = 0.25
+# User-accepted 30.125s video / 30.052s AAC output leaves a 73ms packet-boundary
+# gap. Keep only a narrow product tolerance for final BGM-replacement AAC.
+MUSIC_AUDIO_COVERAGE_TOLERANCE_MS = 100
 MAX_SUBTITLE_WORDS = 20_000
 MAX_SUBTITLE_TEXT_CHARS = 20_000
 # OpenMontage ``video_stitch._stitch`` accepts one transition type and a
@@ -160,6 +164,7 @@ class CompositionPlan:
     target_duration_ms: int
     bridge_durations_ms: tuple[int, ...]
     audio_policy: str = "LEGACY_PRESERVE"
+    audio_selection: str = "PRESERVE_PROVIDER_AUDIO"
     music_bytes: bytes | None = None
     narration_bytes: bytes | None = None
     # ALCHMED8 private carrier for independently measured OpenMontage speech
@@ -978,6 +983,56 @@ def _has_audio_stream(path: Path) -> bool:
     return bool(streams and streams[0].get("codec_type") == "audio")
 
 
+def _probe_audio_stream_durations_ms(path: Path) -> list[int]:
+    """Read each encoded audio-stream duration without using container duration."""
+    ffprobe = configured_binary("MEDIA_RUNTIME_FFPROBE_PATH")
+    output = _run(
+        ffprobe,
+        [
+            "-v", "error", "-select_streams", "a",
+            "-show_entries", "stream=codec_type,duration,duration_ts,time_base",
+            "-of", "json", str(path),
+        ],
+        timeout_seconds=15,
+    )
+    try:
+        parsed = json.loads(output)
+        if not isinstance(parsed, dict):
+            raise ValueError("ffprobe response must be an object")
+        streams = parsed.get("streams", [])
+        if not isinstance(streams, list):
+            raise ValueError("audio stream list missing")
+        durations_ms: list[int] = []
+        for stream in streams:
+            if not isinstance(stream, dict) or stream.get("codec_type") != "audio":
+                raise ValueError("audio stream invalid")
+            duration = float(stream.get("duration", "nan"))
+            if not math.isfinite(duration) or duration <= 0:
+                duration_ts = int(stream["duration_ts"])
+                time_base = stream["time_base"]
+                if not isinstance(time_base, str):
+                    raise ValueError("audio time base missing")
+                numerator, denominator = time_base.split("/", 1)
+                denominator_value = int(denominator)
+                if denominator_value == 0:
+                    raise ValueError("audio time base invalid")
+                duration = duration_ts * int(numerator) / denominator_value
+            if not math.isfinite(duration) or duration <= 0:
+                raise ValueError("audio duration invalid")
+            durations_ms.append(round(duration * 1000))
+        return durations_ms
+    except (ValueError, TypeError, KeyError, IndexError, json.JSONDecodeError) as error:
+        raise MediaRuntimeError("QC_FAILED", "The final video audio duration could not be inspected.") from error
+
+
+def _validate_music_output_audio_coverage(path: Path, *, video_duration_ms: int) -> None:
+    durations_ms = _probe_audio_stream_durations_ms(path)
+    if len(durations_ms) != 1:
+        raise MediaRuntimeError("QC_FAILED", "The final BGM video must contain exactly one audio stream.")
+    if video_duration_ms - durations_ms[0] > MUSIC_AUDIO_COVERAGE_TOLERANCE_MS:
+        raise MediaRuntimeError("QC_FAILED", "The final BGM audio does not cover the video duration.")
+
+
 def inspect_video_bytes(*, body: bytes, expected_sha256: str | None) -> VideoInspection:
     digest = _validated_video_bytes(body, expected_sha256)
     with TemporaryDirectory(prefix="alchemy-c12-media-") as directory:
@@ -1343,7 +1398,7 @@ def _audio_loudness_metrics(path: Path) -> dict[str, float]:
     return metrics
 
 
-def final_review_video_bytes(*, body: bytes, expected_sha256: str | None, script_text: str | None = None, caption_policy: str = "OFF") -> FinalReview:
+def final_review_video_bytes(*, body: bytes, expected_sha256: str | None, script_text: str | None = None, caption_policy: str = "OFF", music_applied: bool = False) -> FinalReview:
     if caption_policy not in {"REQUIRED", "OPTIONAL", "OFF"}:
         raise MediaRuntimeError("MEDIA_RENDER_FAILED", "Caption policy is invalid.")
     digest = _validated_video_bytes(body, expected_sha256)
@@ -1359,8 +1414,13 @@ def final_review_video_bytes(*, body: bytes, expected_sha256: str | None, script
             authoritative_narration=bool(script_text and script_text.strip()),
         )
         audio_metrics = _audio_loudness_metrics(source) if technical.get("has_audio") else {}
-        if audio_metrics.get("true_peak_db", -99) > -1.5:
-            audio_issues.append("成片音频 true peak 超过 -1.5 dBTP。")
+        # Keep the source mixer ceiling at -1.5 dBTP. A music-bearing final
+        # AAC delivery may measure up to -1.0 dBTP after encode/decode; this is
+        # the explicitly authorized QC tolerance, not a change to mix policy.
+        true_peak_limit_db = -1.0 if music_applied else -1.5
+        measured_true_peak_db = audio_metrics.get("true_peak_db")
+        if measured_true_peak_db is not None and measured_true_peak_db > true_peak_limit_db:
+            audio_issues.append(f"成片音频 true peak 超过 {true_peak_limit_db:.1f} dBTP。")
     # No source-aligned multimodal evaluator or certified multilingual speech
     # comparer is supplied at this Runtime boundary. Fixed CLIP categories and
     # hand-tuned transcript overlap are diagnostics, not semantic acceptance.
@@ -1379,13 +1439,19 @@ def final_review_video_bytes(*, body: bytes, expected_sha256: str | None, script
     subtitles_expected = caption_policy == "REQUIRED"
     captions_present = bool(technical.get("captions_present"))
     subtitle_issues = ["交付策略要求字幕，但当前成片没有可验证的字幕轨或字幕资产。"] if subtitles_expected and not captions_present else []
+    coverage_issues = [
+        visual_capability_note,
+        *list(semantic_review["issues"]),
+        *transcript_issues,
+    ]
+    true_peak_measurement_unavailable = bool(technical.get("has_audio")) and measured_true_peak_db is None
+    if true_peak_measurement_unavailable:
+        coverage_issues.append("成片音频 true peak 未能测量，保持未知。")
     issues = [
         *visual_issues,
         *audio_issues,
         *subtitle_issues,
-        visual_capability_note,
-        *list(semantic_review["issues"]),
-        *transcript_issues,
+        *coverage_issues,
     ]
     issues = [issue for issue in issues if issue]
     technical_failed = bool(black_frames) or not bool(technical["valid_container"])
@@ -1394,9 +1460,20 @@ def final_review_video_bytes(*, body: bytes, expected_sha256: str | None, script
     # planned tail remains reviewable; authoritative narration has no such
     # private tail metadata at this boundary.
     audio_block = (not bool(technical.get("has_audio"))) or unexpected_silence
-    status = "FAILED" if technical_failed else "PASS" if not issues else "NEEDS_ATTENTION"
+    # PASS means the checks that actually ran found no actionable defect.
+    # Missing semantic/transcript evaluators remain visible as incomplete
+    # coverage and keep the recommendation reviewable; they are not defects.
+    status = (
+        "FAILED"
+        if technical_failed or audio_block or subtitle_issues
+        else "NEEDS_ATTENTION"
+        if visual_issues or audio_issues or true_peak_measurement_unavailable
+        else "PASS"
+    )
+    review_completeness = "PARTIAL" if coverage_issues else "COMPLETE"
     payload = {
         "status": status,
+        "review_completeness": review_completeness,
         "technical_probe": {key: value for key, value in technical.items() if key not in {"audio_channels", "audio_sample_rate"}},
         "visual_spotcheck": {
             "frames_sampled": frames_sampled,
@@ -1413,6 +1490,7 @@ def final_review_video_bytes(*, body: bytes, expected_sha256: str | None, script
             **({"audio_channels": technical["audio_channels"]} if technical.get("audio_channels") else {}),
             **({"audio_sample_rate": technical["audio_sample_rate"]} if technical.get("audio_sample_rate") else {}),
             "unexpected_silence": unexpected_silence,
+            **({"true_peak_limit_db": true_peak_limit_db} if technical.get("has_audio") else {}),
             **audio_metrics,
             "issues": audio_issues,
         },
@@ -1542,23 +1620,43 @@ def decode_composition_bundle(body: bytes) -> list[bytes]:
 def decode_composition_bundle_with_plan(body: bytes) -> tuple[list[bytes], CompositionPlan | None]:
     if body.startswith(COMPOSITION_MAGIC):
         return decode_composition_bundle(body), None
-    if body.startswith(COMPOSITION_COMPLETE_AUDIO_PLAN_MAGIC):
+    has_audio_selection = body.startswith(COMPOSITION_AUDIO_SELECTION_MAGIC)
+    if has_audio_selection:
         plan_magic = COMPOSITION_COMPLETE_AUDIO_PLAN_MAGIC
+        wire_magic = COMPOSITION_AUDIO_SELECTION_MAGIC
+    elif body.startswith(COMPOSITION_COMPLETE_AUDIO_PLAN_MAGIC):
+        plan_magic = COMPOSITION_COMPLETE_AUDIO_PLAN_MAGIC
+        wire_magic = plan_magic
     elif body.startswith(COMPOSITION_OWNERSHIP_AUDIO_PLAN_MAGIC):
         plan_magic = COMPOSITION_OWNERSHIP_AUDIO_PLAN_MAGIC
+        wire_magic = plan_magic
     elif body.startswith(COMPOSITION_ADVANCED_AUDIO_PLAN_MAGIC):
         plan_magic = COMPOSITION_ADVANCED_AUDIO_PLAN_MAGIC
+        wire_magic = plan_magic
     elif body.startswith(COMPOSITION_NARRATION_PLAN_MAGIC):
         plan_magic = COMPOSITION_NARRATION_PLAN_MAGIC
+        wire_magic = plan_magic
     elif body.startswith(COMPOSITION_MUSIC_PLAN_MAGIC):
         plan_magic = COMPOSITION_MUSIC_PLAN_MAGIC
+        wire_magic = plan_magic
     else:
         plan_magic = COMPOSITION_AUDIO_PLAN_MAGIC if body.startswith(COMPOSITION_AUDIO_PLAN_MAGIC) else COMPOSITION_PLAN_MAGIC
-    if len(body) > MAX_COMPOSITION_INPUT_BYTES or len(body) < len(plan_magic) + 2:
+        wire_magic = plan_magic
+    if len(body) > MAX_COMPOSITION_INPUT_BYTES or len(body) < len(wire_magic) + (1 if has_audio_selection else 0) + 2:
         raise MediaRuntimeError("MEDIA_RENDER_FAILED", "Composition input is outside the supported range.")
-    if body[: len(plan_magic)] != plan_magic:
+    if body[: len(wire_magic)] != wire_magic:
         raise MediaRuntimeError("MEDIA_RENDER_FAILED", "Composition input is invalid.")
-    cursor = len(plan_magic)
+    cursor = len(wire_magic)
+    audio_selection = "PRESERVE_PROVIDER_AUDIO"
+    if has_audio_selection:
+        if cursor >= len(body) or body[cursor] not in (0, 1, 2):
+            raise MediaRuntimeError("MEDIA_RENDER_FAILED", "Composition audio selection is invalid.")
+        audio_selection = {
+            0: "PRESERVE_PROVIDER_AUDIO",
+            1: "DOUBAO_TTS_REPLACE",
+            2: "MUSIC_REPLACE_PROVIDER_AUDIO",
+        }[body[cursor]]
+        cursor += 1
     count = body[cursor]
     cursor += 1
     transition_count = body[cursor]
@@ -1781,13 +1879,13 @@ def decode_composition_bundle_with_plan(body: bytes) -> tuple[list[bytes], Compo
             fade_in_raw = struct.unpack(">H", body[cursor : cursor + 2])[0]
             fade_out_raw = struct.unpack(">H", body[cursor + 2 : cursor + 4])[0]
             cursor += 4
-            fade_in_ms = None if fade_in_raw == 0xFFFF else fade_in_raw
-            fade_out_ms = None if fade_out_raw == 0xFFFF else fade_out_raw
             track_ids.add(track_id)
             previous_start = start_ms
             tracks.append(CompositionAudioTrack(
                 track_id, ownership, start_ms, end_ms, bool(duck_under_narration),
-                asset_id, gain_db, fade_in_ms, fade_out_ms,
+                asset_id, gain_db,
+                None if fade_in_raw == 0xFFFF else fade_in_raw,
+                None if fade_out_raw == 0xFFFF else fade_out_raw,
             ))
         if stitch_policy == "CONTINUOUS_NARRATION" and audio_policy != "CONTINUOUS_NARRATION":
             raise MediaRuntimeError("QC_FAILED", "AudioPlan stitch policy does not match the composition policy.")
@@ -2002,6 +2100,7 @@ def decode_composition_bundle_with_plan(body: bytes) -> tuple[list[bytes], Compo
         target_duration_ms=target_duration_ms,
         bridge_durations_ms=bridge_durations,
         audio_policy=audio_policy,
+        audio_selection=audio_selection,
         music_bytes=music_bytes,
         narration_bytes=narration_bytes,
         narration_tracks=narration_payloads,
@@ -2452,7 +2551,53 @@ def compose_video_bundle(*, body: bytes, expected_sha256: str | None) -> Composi
             if composition_plan and composition_plan.audio_plan is not None
             else composition_plan.audio_tracks if composition_plan else None
         )
-        if composition_plan and composition_plan.audio_policy == "CONTINUOUS_NARRATION":
+        replace_provider_audio = bool(composition_plan and composition_plan.audio_selection == "DOUBAO_TTS_REPLACE")
+        replace_source_audio = bool(composition_plan and composition_plan.audio_selection in {
+            "DOUBAO_TTS_REPLACE",
+            "MUSIC_REPLACE_PROVIDER_AUDIO",
+        })
+        if replace_provider_audio and (
+            composition_plan.audio_policy != "CONTINUOUS_NARRATION"
+            or composition_plan.audio_plan is None
+            or not any(track.ownership == "PLATFORM_NARRATION" for track in composition_plan.audio_plan.tracks)
+            or not (composition_plan.narration_bytes or composition_plan.narration_tracks)
+            or any(track.track_id.startswith("segment-") for track in composition_plan.audio_plan.tracks)
+        ):
+            raise MediaRuntimeError("QC_FAILED", "Doubao replacement requires a formal narration AudioPlan payload.")
+        if composition_plan and composition_plan.audio_selection == "MUSIC_REPLACE_PROVIDER_AUDIO":
+            music_tracks = [track for track in composition_audio_tracks or () if track.ownership == "MUSIC"]
+            if (
+                composition_plan.audio_policy == "CONTINUOUS_NARRATION"
+                or composition_plan.audio_plan is None
+                or len(composition_plan.audio_plan.tracks) != 1
+                or len(music_tracks) != 1
+                or composition_plan.narration_bytes is not None
+                or composition_plan.narration_tracks
+                or composition_plan.music_bytes is None
+                or composition_plan.target_duration_ms <= 0
+                or composition_plan.music_segments_ms != ((0, composition_plan.target_duration_ms),)
+                or music_tracks[0].track_id != "music"
+                or music_tracks[0].start_ms != 0
+                or music_tracks[0].end_ms != composition_plan.target_duration_ms
+                or not music_tracks[0].asset_id
+            ):
+                raise MediaRuntimeError(
+                    "QC_FAILED",
+                    "Music replacement requires one explicitly selected full-run MUSIC track and no narration.",
+                )
+            measured_music = inspect_audio_bytes(body=composition_plan.music_bytes, expected_sha256=None)
+            if measured_music.duration_ms < composition_plan.target_duration_ms:
+                raise MediaRuntimeError("QC_FAILED", "The selected MUSIC asset is shorter than the full video timeline.")
+        if composition_plan and any(audio_present) and (
+            composition_plan.narration_bytes is not None
+            or composition_plan.narration_tracks
+            or composition_plan.music_bytes is not None
+        ) and not replace_source_audio:
+            raise MediaRuntimeError(
+                "QC_FAILED",
+                "Source video audio cannot be mixed with independent narration or MUSIC without proven role separation.",
+            )
+        if composition_plan and composition_plan.audio_policy == "CONTINUOUS_NARRATION" and not replace_source_audio:
             if composition_plan.narration_bytes is None and not composition_plan.narration_tracks:
                 raise MediaRuntimeError("QC_FAILED", "Continuous narration requires an authoritative narration asset.")
             if composition_audio_tracks is None:
@@ -2480,6 +2625,8 @@ def compose_video_bundle(*, body: bytes, expected_sha256: str | None) -> Composi
         output = root / "composed.mp4"
         if len(paths) == 1:
             compose_args = ["-y", "-i", str(paths[0])]
+            if replace_source_audio:
+                compose_args.extend(["-map", "0:v:0", "-an"])
             single_track = next(
                 (track for track in (composition_audio_tracks or ()) if track.track_id == "segment-1"),
                 None,
@@ -2488,7 +2635,9 @@ def compose_video_bundle(*, body: bytes, expected_sha256: str | None) -> Composi
                 composition_plan
                 and composition_plan.audio_policy == "CONTINUOUS_NARRATION"
             )
-            if continuous_single:
+            if replace_source_audio:
+                pass
+            elif continuous_single:
                 if single_track is None:
                     raise MediaRuntimeError("QC_FAILED", "Continuous narration requires ownership for every source audio track.")
                 if single_track.ownership == "PROVIDER_DIALOGUE":
@@ -2608,7 +2757,7 @@ def compose_video_bundle(*, body: bytes, expected_sha256: str | None) -> Composi
                 ownership = None
                 if composition_audio_tracks:
                     ownership = next((track.ownership for track in composition_audio_tracks if track.track_id == f"segment-{index + 1}"), None)
-                if audio_present[index] and not (
+                if audio_present[index] and not replace_source_audio and not (
                     composition_plan
                     and composition_plan.audio_policy == "CONTINUOUS_NARRATION"
                     and ownership == "PROVIDER_DIALOGUE"
@@ -2675,7 +2824,10 @@ def compose_video_bundle(*, body: bytes, expected_sha256: str | None) -> Composi
             composition_plan.narration_tracks
             or (
                 composition_plan.audio_plan is not None
-                and (composition_plan.narration_bytes is not None or composition_plan.music_bytes is not None)
+                and (
+                    composition_plan.narration_bytes is not None
+                    or composition_plan.music_bytes is not None
+                )
             )
         ):
             if composition_plan.audio_plan is None:
@@ -2782,10 +2934,12 @@ def compose_video_bundle(*, body: bytes, expected_sha256: str | None) -> Composi
                     # dB-to-linear mapping used for speech tracks.
                     "volume": composition_plan.music_volume * _openmontage_track_volume(music_track.gain_db),
                 }
-                if music_track.fade_in_ms is not None:
-                    music_input["fade_in_seconds"] = music_track.fade_in_ms / 1000
-                if music_track.fade_out_ms is not None:
-                    music_input["fade_out_seconds"] = music_track.fade_out_ms / 1000
+                music_input["fade_in_seconds"] = (
+                    music_track.fade_in_ms if music_track.fade_in_ms is not None else composition_plan.fade_in_ms
+                ) / 1000
+                music_input["fade_out_seconds"] = (
+                    music_track.fade_out_ms if music_track.fade_out_ms is not None else composition_plan.fade_out_ms
+                ) / 1000
                 mixer_tracks.append(music_input)
             if complete_narration_inspection is not None:
                 _validate_narration_duration(
@@ -2795,11 +2949,6 @@ def compose_video_bundle(*, body: bytes, expected_sha256: str | None) -> Composi
                     music_segments_ms=music_tail_windows_ms,
                     visual_tail_windows_ms=visual_tail_windows_ms,
                 )
-            if _has_audio_stream(output):
-                # The preceding composition path has already removed only
-                # explicitly declared PROVIDER_DIALOGUE.  Feed the remaining
-                # source audio to the source mixer as its supported SFX role.
-                mixer_tracks.append({"path": str(output), "role": "sfx", "start_seconds": 0})
             mixer_output = root / "openmontage-full-mix.wav"
             try:
                 ffprobe = configured_binary("MEDIA_RUNTIME_FFPROBE_PATH")
@@ -2848,10 +2997,13 @@ def compose_video_bundle(*, body: bytes, expected_sha256: str | None) -> Composi
             preserved_source_tracks = tuple(
                 track
                 for track in (composition_audio_tracks or ())
-                if track.track_id.startswith("segment-")
+                if not replace_source_audio
+                and track.track_id.startswith("segment-")
                 and track.ownership in {"PROVIDER_AMBIENCE", "USER_SOURCE_AUDIO", "LEGACY_PRESERVE"}
             )
             preserve_source_audio = bool(
+                not replace_source_audio
+                and
                 composition_audio_tracks
                 and any(
                     audio_present[index]
@@ -2914,6 +3066,8 @@ def compose_video_bundle(*, body: bytes, expected_sha256: str | None) -> Composi
         if any(audio_present) and not _has_audio_stream(output):
             raise MediaRuntimeError("QC_FAILED", "The final video audio could not be inspected.")
         expected_duration_ms = round(narration_target_seconds * 1000) if composition_plan else sum(item.duration_ms for item in inspections)
+        if composition_plan and composition_plan.audio_selection == "MUSIC_REPLACE_PROVIDER_AUDIO":
+            _validate_music_output_audio_coverage(output, video_duration_ms=inspection.duration_ms)
         if abs(inspection.duration_ms - expected_duration_ms) > 1500:
             raise MediaRuntimeError("QC_FAILED", "The final video duration could not be verified.")
     return CompositionArtifact(inspection=inspection, bytes=composed)

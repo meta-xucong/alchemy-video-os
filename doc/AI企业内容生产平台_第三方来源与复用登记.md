@@ -611,3 +611,24 @@ E11 逐符号映射：`compose-director.md:80-107` 为时长预算→TTS 原始�
 - AUTO 预检优先复用同一 `pixabay_query` 且已完成时长/对象校验的既有 Pixabay 资产；没有可复用资产时仍只走既有受控 Runtime 单路径，外部 403/503 保持 fail-closed，不增加第二 scraper 或旁路下载。
 - 证据：Control API Pixabay AUTO `10/10`；Persistence native-audio focused `19/19`；Persistence 全包 `94 pass / 12 skip / 0 fail`；Production Worker `78/78`；Control API/Persistence typecheck 通过。真实本地 `sub2api` Grok 30 秒/480P 运行 `prd_01M3MQ6935NTJQ6D18QZMH3YY`，3/3 分段 `ACCEPTED`，compose HTTP 200，运行 `SUCCEEDED`；成片 `vvr_01M3MQ51ZGERJ6H6VC1J3HQQ1T`，848×480、30.125 秒，H.264/AAC，`music_applied=true`，字幕关闭。
 - 质量边界：最终 QC 为 `NEEDS_ATTENTION` 仅因语义 evaluator 未配置且 true peak 为 `-1.4 dBTP`（目标约 `-1.5 dBTP`）；没有生成/下载/合成失败。该条仍是本地技术证据，不升级完整生产验收，不执行 Git/VPS。
+
+### 2026-10-04 ADR-0078 ALCHMED9 窄例外（文档候选，尚未实施）
+
+- 本登记较早 E05/S03 行中的“不新增 ALCHMED9”是当时冻结写集的历史边界；该来源记录继续保留，不被反向改写。
+- 当前候选《AI企业内容生产平台_显式DOUBAO整轨替换同运行来源绑定开发文档_20261004.md》v1.0.1 提议新增只承载 `audio_selection` 的私有 ALCHMED9 carrier，以传递同一 ProductionRun 的明确替换选择。它不改变 OpenMontage source 行为、不扩展 AudioPlan，也不把 wire version 冒充来源功能。
+- 固定 OpenMontage `_mux_external_audio` 提供“视频流 + 外部音轨”的替换行为依据；该来源本身不规定 ALCHMED9。ALCHMED1–8 historical readers 需保持兼容，Preserve 默认值不得授权替换。
+- 本补记只是来源登记候选，只有 ADR-0078 v1.0.1 与 TaskSpec 文档独立审计 PASS 后才放行本任务代码；不改变 E05/S03、E12/R01、C12.4/C12.5 状态，不授权真实 Provider/TTS、Git 或部署。
+
+### 2026-10-04 ADR-0078 v1.0.2 evidence-boundary refinement
+
+- v1.0.1 未通过独立文档审计，不得实施；其 TaskSpec/ADR hash 不可复用。当前候选为 ADR-0078 与《显式 Doubao 整轨替换与 ProductionRun 来源绑定》v1.0.2。
+- 全链 ProductionRun/DeliveryPlan/TimelinePlan/ScriptRevision/NarrationAssetVersion/AUDIO Asset ID、SHA、时长和 provider/voice/settings 的校验责任在 Worker 编码前；ALCHMED9 实际只携带 selection，ALCHMED8 现有 track/asset identity 与音频 bytes 仍按原布局使用。不得声称 wire 携带 run/version ID。
+- 一条整轨正式音频仅限 TimelinePlan 单一 PRIMARY `0..target` 时间窗；多 PRIMARY windows 必须逐 section 使用独立正式资产，禁止自动偏移/切片。
+- 本例外仍是平台 provenance wire 变更候选，不修改历史 E05/S03 接受事实。只有对应完整冻结文档独立审计 PASS 后才授权本地代码；未批准真实 Provider/TTS、Git、部署或其它章节状态变更。
+
+### 2026-10-05 ALCHMED9 / BGM 与 Doubao 来源记录 supersession（保留历史范围）
+
+- 上述 ADR-0078 v1.0.2 “仍是候选、尚未实施”是历史状态快照；早期 E05/S03 “不新增 ALCHMED9”仅约束当时接受的 ALCHMED8 窄切片，继续保留，不覆盖后续独立任务。ALCHMED9 是平台私有 provenance carrier，不是 OpenMontage 来源能力；其中 `audio_selection` byte `0`/`1`/`2` 分别代表 Preserve/Doubao replacement/Music replacement。旧 ALCHMED1–8 兼容读取不因此改变。
+- 来源行为仍仅取自固定 OpenMontage commit `4eab34c5cfcccaa4f1970554928feccce73ee930`：`tools/audio/audio_mixer.py::AudioMixer._full_mix` 只混合显式传入的 tracks；`tools/video/video_compose.py::_mux_external_audio` 仅映射 stitched video `0:v:0` 和外部音轨 `1:a:0`，因此替换容器原音。ALCHMED9 不定义新媒体语义；平台适配只传递显式选择并在边界验证身份/bytes。BGM selector `2` 不映射 Provider segment audio 到 mixer；Doubao selector `1` 只使用同 run 已批准的 formal narration/TimelinePlan；两者均不得将源整轨改标 SFX、不得静默 fallback。
+- 当前完整本地候选 `f57d91cd538e6d8c90f3879c003947b498b828ec908dc085a45187168881e6bf` 的隔离克隆 direct-consumer replay 输出与接受样例字节一致，且五个运行包的构建绑定已独立复核；这些证据不等于 Source Fidelity 或普通代码审计。既有 A2 来源/普通审计收据绑定的是前一 30-path manifest `241cf89ceaf60765d87c999d2b67801d1159dc408b88126bfe13fb963e0d9299`，不得转绑到 f57。当前尚无可留档的 f57 正式 Source Fidelity/普通 Audit receipt；不证明历史生产进程加载版本、不证明 queue/relay 分发，也不等于新干净候选验收或章节验收。BGM 仍为 `IMPLEMENTED / LIMITED_FEATURE_ACCEPTANCE_PENDING`；不得将历史 Doubao `LIMITED_FEATURE_ACCEPTED` 收据转授给不同 manifest。
+- 本条不改变旧 E05/S03 来源记录，不增加 OpenMontage 算法，不改变音频选择默认值或 fail-closed 边界；新候选仍须依两份 TaskSpec 的最新独立文档准入复审和同一代码快照审计。

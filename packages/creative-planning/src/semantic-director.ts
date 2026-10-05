@@ -7,11 +7,16 @@ import {
   SemanticReferenceProjectionSchema,
   type CanonicalProviderCapability,
   type CanonicalReferenceSource,
+  type CanonicalVisualEntityContext,
   type CanonicalSourceBundle,
   type SemanticDirectorDecision,
   type SemanticEvidenceRef,
   type SemanticDialogueProjection,
   type SemanticReferenceProjection,
+  type SemanticNarrativeBeatLineage,
+  SemanticNarrativeBeatLineageSchema,
+  parseG02ApprovedBeatMarkers,
+  hasExactEntityNameMention,
 } from "@alchemy-video/contracts";
 import { canonicalJson } from "@alchemy-video/domain";
 export { extractDialogueLines, type SourceDialogueRecord } from "./source-dialogue.js";
@@ -20,7 +25,20 @@ const sha256 = (value: string) => createHash("sha256").update(value, "utf8").dig
 
 export const semanticValueHash = (value: unknown) => sha256(canonicalJson(value));
 
+export const normalizeName = (name: string) => (name || "")
+  .replace(/[（(][^（()）]*[）)]/gu, "")
+  .replace(/[（(].*$/u, "")
+  .replace(/[\s　]+/gu, "")
+  .toLowerCase()
+  .trim();
+
+export const normalizeLocation = (location: string) => (location || "")
+  .replace(/[\s　]+/gu, "")
+  .toLowerCase()
+  .trim();
+
 export type CanonicalSourceBundleInput = Readonly<{
+  briefRevisionId?: string;
   sourceText: string;
   stylePreferences: string;
   targetDurationSeconds: number;
@@ -31,6 +49,7 @@ export type CanonicalSourceBundleInput = Readonly<{
     content: string;
   }>[];
   references?: readonly CanonicalReferenceSource[];
+  visualEntities?: readonly CanonicalVisualEntityContext[];
   userDecisions?: readonly Readonly<{
     decisionId: string;
     field: string;
@@ -39,11 +58,49 @@ export type CanonicalSourceBundleInput = Readonly<{
   providerCapability: CanonicalProviderCapability;
 }>;
 
-export const createCanonicalSourceBundle = (input: CanonicalSourceBundleInput): CanonicalSourceBundle =>
-  CanonicalSourceBundleSchema.parse({
+export const createSemanticNarrativeBeatLineage = (input: Readonly<{
+  briefRevisionId?: string;
+  sourceText: string;
+  sourceHash?: string;
+}>): SemanticNarrativeBeatLineage | undefined => {
+  const sourceHash = input.sourceHash ?? sha256(input.sourceText);
+  const markers = parseG02ApprovedBeatMarkers(input.sourceText);
+  if (!markers) return undefined;
+  if (!input.briefRevisionId) {
+    throw new Error("G02 narrative beat markers require a frozen brief revision identity.");
+  }
+  const beats = markers.map((marker) => {
+    const exactQuoteSha256 = sha256(marker.span.quote);
+    return {
+      sequence: marker.sequence,
+      span: marker.span,
+      exact_quote_sha256: exactQuoteSha256,
+      identity_sha256: semanticValueHash({
+        brief_revision_id: input.briefRevisionId,
+        sequence: marker.sequence,
+        exact_quote_sha256: exactQuoteSha256,
+      }),
+    };
+  });
+  return SemanticNarrativeBeatLineageSchema.parse({
     version: 1,
+    brief_revision_id: input.briefRevisionId,
+    source_hash: sourceHash,
+    beats,
+  });
+};
+
+export const createCanonicalSourceBundle = (input: CanonicalSourceBundleInput): CanonicalSourceBundle => {
+  const narrativeBeatLineage = createSemanticNarrativeBeatLineage({
+    briefRevisionId: input.briefRevisionId,
+    sourceText: input.sourceText,
+  });
+  return CanonicalSourceBundleSchema.parse({
+    version: 1,
+    ...(input.briefRevisionId ? { brief_revision_id: input.briefRevisionId } : {}),
     source_text: input.sourceText,
     source_hash: sha256(input.sourceText),
+    ...(narrativeBeatLineage ? { semantic_narrative_beat_lineage: narrativeBeatLineage } : {}),
     style_preferences: input.stylePreferences,
     documents: (input.documents ?? []).map((document) => ({
       document_id: document.documentId,
@@ -53,6 +110,7 @@ export const createCanonicalSourceBundle = (input: CanonicalSourceBundleInput): 
       content: document.content,
     })),
     references: [...(input.references ?? [])],
+    ...(input.visualEntities ? { visual_entities: [...input.visualEntities] } : {}),
     user_decisions: (input.userDecisions ?? []).map((decision) => ({
       decision_id: decision.decisionId,
       field: decision.field,
@@ -62,6 +120,7 @@ export const createCanonicalSourceBundle = (input: CanonicalSourceBundleInput): 
     provider_capability: input.providerCapability,
     target_duration_seconds: input.targetDurationSeconds,
   });
+};
 
 export type SemanticDecisionVerificationErrorCode =
   | "CANONICAL_BUNDLE_INVALID"
@@ -111,6 +170,15 @@ const validateCanonicalBundle = (input: unknown): CanonicalSourceBundle => {
     if (semanticValueHash(decision.value) !== decision.value_hash) {
       return invalid("CANONICAL_BUNDLE_INVALID", "Canonical user decision hash does not match its frozen value.");
     }
+  }
+  const expectedBeatLineage = createSemanticNarrativeBeatLineage({
+    briefRevisionId: bundle.brief_revision_id,
+    sourceText: bundle.source_text,
+    sourceHash: bundle.source_hash,
+  });
+  if ((expectedBeatLineage === undefined) !== (bundle.semantic_narrative_beat_lineage === undefined)
+    || (expectedBeatLineage && canonicalJson(expectedBeatLineage) !== canonicalJson(bundle.semantic_narrative_beat_lineage))) {
+    return invalid("CANONICAL_BUNDLE_INVALID", "Canonical narrative beat lineage does not match the frozen brief source.");
   }
   if (bundle.target_duration_seconds < bundle.provider_capability.min_duration_seconds) {
     return invalid("PROVIDER_CAPABILITY_INVALID", "Requested duration is below the certified provider minimum.");
@@ -208,6 +276,50 @@ export const verifySemanticDirectorProvenance = (
   if (decision.source_hash !== bundle.source_hash
     || decision.target_duration_seconds !== bundle.target_duration_seconds) {
     return invalid("SEMANTIC_DECISION_MALFORMED", "Semantic director response does not target the frozen source bundle.");
+  }
+  if ((bundle.semantic_narrative_beat_lineage === undefined)
+    !== (decision.semantic_narrative_beat_lineage === undefined)
+    || (bundle.semantic_narrative_beat_lineage
+      && canonicalJson(bundle.semantic_narrative_beat_lineage) !== canonicalJson(decision.semantic_narrative_beat_lineage))) {
+    return invalid("SEMANTIC_DECISION_MALFORMED", "Semantic decision narrative lineage does not match the frozen source bundle.");
+  }
+  if (bundle.semantic_narrative_beat_lineage) {
+    if (decision.segments.length !== 3
+      || decision.segments.some((segment, index) => JSON.stringify(segment.source_narrative_beat_sequences) !== JSON.stringify([index + 1]))) {
+      return invalid("SEMANTIC_DECISION_MALFORMED", "G02 source beat boundaries must map one-to-one to three ordered segments.");
+    }
+    if (!decision.entity_candidates?.length) {
+      return invalid("REFERENCE_EVIDENCE_INVALID", "G02 semantic decisions require at least one source-backed entity candidate.");
+    }
+    const sourceLines = bundle.source_text.split(/\r\n|\r|\n/u).filter((line) => line.length > 0);
+    for (const candidate of decision.entity_candidates) {
+      if (candidate.reference_asset_ids.length === 0
+        || new Set(candidate.reference_asset_ids).size !== candidate.reference_asset_ids.length) {
+        return invalid("REFERENCE_EVIDENCE_INVALID", "Entity candidates require a non-empty, duplicate-free set of referenced assets.");
+      }
+      if (new Set(candidate.source_evidence_refs).size !== candidate.source_evidence_refs.length) {
+        return invalid("SOURCE_EVIDENCE_INVALID", "Entity candidate evidence references must be unique.");
+      }
+      for (const evidenceRef of candidate.source_evidence_refs) {
+        const sourceMatches = sourceLines.filter((line) => line === evidenceRef).length;
+        const decisionMatches = bundle.user_decisions.filter((userDecision) =>
+          typeof userDecision.value === "string" && userDecision.value === evidenceRef).length;
+        const referenceMatches = bundle.references.filter((reference) =>
+          reference.user_declared_usage === evidenceRef);
+        if (sourceMatches + decisionMatches + referenceMatches.length !== 1
+          || (referenceMatches.length === 1 && !candidate.reference_asset_ids.includes(referenceMatches[0]!.asset_id))) {
+          return invalid("SOURCE_EVIDENCE_INVALID", "Entity candidate evidence must uniquely match a complete source line, user-decision value, or referenced asset's exact frozen usage.");
+        }
+      }
+      if (candidate.reference_asset_ids.some((assetId) => {
+        const reference = bundle.references.find((item) => item.asset_id === assetId);
+        return !reference?.user_declared_usage
+          || !candidate.source_evidence_refs.includes(reference.user_declared_usage)
+          || !hasExactEntityNameMention(reference.user_declared_usage, candidate.exact_name);
+      })) {
+        return invalid("REFERENCE_EVIDENCE_INVALID", "Entity-to-image mapping requires the candidate's exact frozen usage evidence and entity-name support.");
+      }
+    }
   }
 
   const evidenceIdentities = new Map<string, string>();

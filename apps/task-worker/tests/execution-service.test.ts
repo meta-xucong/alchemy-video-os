@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { createPrefixedId } from "@alchemy-video/domain";
+import { createPrefixedId, fingerprintRequest } from "@alchemy-video/domain";
 import { StorageUnavailableError, createInMemoryStoragePort, type StoragePort } from "@alchemy-video/storage-client";
 import { MockVideoProvider, Sub2ApiVideoProvider, VideoProviderFailure, createMockMp4Fixture, resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import type { VideoProviderPort } from "@alchemy-video/provider-video";
@@ -293,7 +293,7 @@ const prepareTask = async (withBilling = false, model = "mock-video-v1") => {
   return { assets, store, workspaceId, taskRunId };
 };
 
-const prepareReferenceTask = async () => {
+const prepareReferenceTask = async (semanticSnapshot?: (references: Array<{ assetId: string; sha256: string; position: number }>) => Record<string, unknown>) => {
   const control = new InMemoryControlPlaneStore();
   const workspaceId = createPrefixedId("ws");
   const userId = createPrefixedId("usr");
@@ -367,6 +367,7 @@ const prepareReferenceTask = async () => {
         mode: "REFERENCE_SET",
         references: references.map((reference) => ({ asset_id: reference.assetId, sha256: reference.sha256, mime_type: "image/png" as const, position: reference.position })),
       },
+      ...(semanticSnapshot ? semanticSnapshot(references) : {}),
     },
     event: event(),
   });
@@ -383,6 +384,60 @@ const prepareReferenceTask = async () => {
   });
   return { assets, store, workspaceId, projectId, taskRunId, references };
 };
+
+test("G02 Worker preflight rejects a missing exact entity prompt anchor before an attempt or Provider submit", async () => {
+  const sourceText = [
+    "G02_APPROVED_BEAT_1:面霜罐与乳霜质地，肌肤舒缓。",
+    "G02_APPROVED_BEAT_2:新加坡天际线与研发灌装环境。",
+    "G02_APPROVED_BEAT_3:女性使用产品并以包装特写收尾。",
+  ].join("\n");
+  const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
+  const quote = sourceText.split("\n")[0]!;
+  const quoteHash = createHash("sha256").update(quote, "utf8").digest("hex");
+  const beat = {
+    sequence: 1 as const,
+    span: { start: 0, end: quote.length, quote },
+    exact_quote_sha256: quoteHash,
+    identity_sha256: fingerprintRequest({ brief_revision_id: "cbr_g02_attempt", sequence: 1, exact_quote_sha256: quoteHash }),
+  };
+  const lineage = { version: 1 as const, brief_revision_id: "cbr_g02_attempt", source_hash: sourceHash, beat };
+  const decisionHash = "d".repeat(64);
+  const { store, workspaceId, taskRunId } = await prepareReferenceTask((references) => {
+    const projection = {
+      version: 1 as const,
+      brief_revision_id: "cbr_g02_attempt",
+      source_hash: sourceHash,
+      decision_hash: decisionHash,
+      segment_id: "seg_g02_1",
+      prompt_package_id: "ppk_g02_worker_preflight",
+      bindings: references.map((reference, position) => ({
+        entity_kind: "PROP" as const,
+        entity_id: `cve_g02_${position}`,
+        entity_revision_id: `cvr_g02_${position}`,
+        exact_name: position === 0 ? "面霜罐" : "外包装盒",
+        asset_id: reference.assetId,
+        asset_sha256: reference.sha256,
+        provider_position: reference.position,
+        mapping_evidence_id: createPrefixedId("mpe"),
+      })),
+    };
+    return {
+      generation_segment_sequence: 1,
+      narrative_beat_sequences: [1],
+      semantic_entity_reference_projection: projection,
+      semantic_entity_reference_projection_hash: fingerprintRequest(projection),
+      semantic_narrative_beat_lineage: lineage,
+      semantic_narrative_beat_lineage_hash: fingerprintRequest(lineage),
+    };
+  });
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const result = await new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort())
+    .execute({ workspaceId, taskRunId });
+  assert.equal(result?.status, "FAILED");
+  assert.equal(result?.error?.code, "PROVIDER_REJECTED");
+  assert.equal(provider.submitCount, 0);
+  assert.equal((await store.listTaskRunAttempts(workspaceId, taskRunId)).length, 0);
+});
 
 test("C06 executor produces one immutable playable video asset and does not resubmit after recovery", async () => {
   const { store, workspaceId, taskRunId } = await prepareTask();
@@ -426,6 +481,75 @@ test("C06 executor persists the configured Mock provider failure without an asse
   assert.equal(result?.status, "FAILED");
   assert.equal(result?.error?.code, "PROVIDER_REJECTED");
   assert.equal(result?.resultAssetId, null);
+});
+
+test("Worker terminally fails a refused new G02 attempt without creating an attempt or submitting", async () => {
+  const sourceText = [
+    "G02_APPROVED_BEAT_1:面霜罐与乳霜质地，肌肤舒缓。",
+    "G02_APPROVED_BEAT_2:新加坡天际线与研发灌装环境。",
+    "G02_APPROVED_BEAT_3:女性使用产品并以包装特写收尾。",
+  ].join("\n");
+  const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
+  const quote = sourceText.split("\n")[0]!;
+  const quoteHash = createHash("sha256").update(quote, "utf8").digest("hex");
+  const beat = {
+    sequence: 1 as const,
+    span: { start: 0, end: quote.length, quote },
+    exact_quote_sha256: quoteHash,
+    identity_sha256: fingerprintRequest({ brief_revision_id: "cbr_g02_denied_attempt", sequence: 1, exact_quote_sha256: quoteHash }),
+  };
+  const lineage = { version: 1 as const, brief_revision_id: "cbr_g02_denied_attempt", source_hash: sourceHash, beat };
+  const { assets, store, workspaceId, projectId, taskRunId } = await prepareReferenceTask((references) => {
+    const projection = {
+      version: 1 as const,
+      brief_revision_id: lineage.brief_revision_id,
+      source_hash: sourceHash,
+      decision_hash: "d".repeat(64),
+      segment_id: "seg_g02_denied_attempt",
+      prompt_package_id: "ppk_g02_denied_attempt",
+      bindings: references.map((reference) => ({
+        entity_kind: "PROP" as const,
+        entity_id: `cve_g02_denied_${reference.position}`,
+        entity_revision_id: `cvr_g02_denied_${reference.position}`,
+        exact_name: reference.position === 0 ? "面霜罐" : "外包装盒",
+        asset_id: reference.assetId,
+        asset_sha256: reference.sha256,
+        provider_position: reference.position,
+        mapping_evidence_id: createPrefixedId("mpe"),
+      })),
+    };
+    return {
+      prompt: "展示 @面霜罐 与 @外包装盒 的产品画面。",
+      generation_segment_sequence: 1,
+      narrative_beat_sequences: [1],
+      semantic_entity_reference_projection: projection,
+      semantic_entity_reference_projection_hash: fingerprintRequest(projection),
+      semantic_narrative_beat_lineage: lineage,
+      semantic_narrative_beat_lineage_hash: fingerprintRequest(lineage),
+    };
+  });
+  const originalEnsureProviderAttempt = store.ensureProviderAttempt.bind(store);
+  store.ensureProviderAttempt = async () => undefined;
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    assetStore: assets,
+    referenceDelivery: {
+      async createVisualInput(input) {
+        return { mode: "REFERENCE_SET", urls: input.visualInput.references.map((reference) => `https://provider-input.invalid/${reference.asset_id}`) };
+      },
+    },
+  });
+
+  const result = await executor.execute({ workspaceId, taskRunId });
+
+  assert.equal(result?.status, "FAILED");
+  assert.equal(result?.error?.code, "PROVIDER_REJECTED");
+  assert.equal(provider.submitCount, 0);
+  assert.deepEqual(await store.listTaskRunAttempts(workspaceId, taskRunId), []);
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "FAILED");
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.error?.code, "PROVIDER_REJECTED");
+  assert.equal((await store.listWorkspaceEvents({ workspaceId, limit: 20 })).some((item) => item.event_type === "task_run.failed"), true);
+  store.ensureProviderAttempt = originalEnsureProviderAttempt;
 });
 
 test("failed video generation never enters billing even when a service-fee rule is frozen", async () => {

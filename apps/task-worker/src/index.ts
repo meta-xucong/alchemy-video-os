@@ -9,7 +9,9 @@ import { createWorkerVideoProviderRuntime } from "./provider-runtime.js";
 import { createWorkerReferenceDeliveryPort } from "./reference-delivery.js";
 import { VideoBillingExecutor } from "./billing-executor.js";
 import { OutboxRelay, TaskRunEventConsumer, recoverC06TaskRuns } from "./service.js";
+import { assertCommercialWorkerConfig } from "./production-config.js";
 
+assertCommercialWorkerConfig();
 const databaseUrl = process.env.DATABASE_URL;
 const redisUrl = process.env.REDIS_URL;
 if (!databaseUrl || !redisUrl) {
@@ -51,11 +53,21 @@ if (process.env.VEYRA_CREDIT_ENABLED === "true") {
   billingExecutor = new VideoBillingExecutor(new VeyraSub2ApiCreditAdapter({ transport, internalToken }), new BillingStoreAdapter(new DrizzleBillingRepository(database.db), store));
 }
 const runtime = await createWorkerVideoProviderRuntime({ environment: process.env });
+const configuredMaxDownloadBytes = Number(process.env.VIDEO_DOWNLOAD_MAX_BYTES ?? 50 * 1024 * 1024);
+const maxAllowedDownloadBytes = 500 * 1024 * 1024;
+if (
+  !Number.isSafeInteger(configuredMaxDownloadBytes) ||
+  configuredMaxDownloadBytes < 1_048_576 ||
+  configuredMaxDownloadBytes > maxAllowedDownloadBytes
+) {
+  throw new Error("VIDEO_DOWNLOAD_MAX_BYTES must be an integer between 1048576 and 524288000 bytes.");
+}
 const executor = new MockVideoTaskExecutor(store, runtime.provider, storage, {
   providerName: runtime.profile.provider,
   expectedModel: runtime.profile.model,
   pollIntervalMs: runtime.profile.pollIntervalMs,
   maxPollAttempts: runtime.profile.maxPollAttempts,
+  maxDownloadBytes: configuredMaxDownloadBytes,
   retryableStatusPolls: runtime.profile.mode === "sub2api" ? 4 : 0,
   assetStore,
   referenceDelivery: createWorkerReferenceDeliveryPort({ profile: runtime.profile, environment: process.env }),

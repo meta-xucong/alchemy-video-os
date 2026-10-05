@@ -264,6 +264,32 @@ test("C11 creative planning commands and public DTOs preserve user intent withou
   assert.throws(() => CreateCreativeBriefRevisionCommandSchema.parse({ ...brief, target_resolution: "1080p" }));
   assert.throws(() => CreateCreativeBriefRevisionCommandSchema.parse({ ...brief, provider: "internal" }));
   assert.throws(() => CreateProductionRunCommandSchema.parse({ storyboard_revision_id: "sbr_01J4N8QZ8PCW2N2G6D2XJXJXJX", prompt: "not public" }));
+  const productionCommand = {
+    storyboard_revision_id: "sbr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    delivery_plan_revision_id: "dpr_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    music_plan: { mode: "OFF" },
+  };
+  assert.equal(CreateProductionRunCommandSchema.parse(productionCommand).audio_selection, "PRESERVE_PROVIDER_AUDIO");
+  assert.equal(CreateProductionRunCommandSchema.parse({ ...productionCommand, audio_selection: "DOUBAO_TTS_REPLACE" }).audio_selection, "DOUBAO_TTS_REPLACE");
+  const musicReplacementCommand = {
+    ...productionCommand,
+    music_plan: { mode: "MANUAL", asset_id: "ast_music" },
+    audio_selection: "MUSIC_REPLACE_PROVIDER_AUDIO",
+  } as const;
+  assert.equal(CreateProductionRunCommandSchema.parse(musicReplacementCommand).audio_selection, "MUSIC_REPLACE_PROVIDER_AUDIO");
+  for (const mode of ["AUTO", "OFF"] as const) {
+    assert.throws(() => CreateProductionRunCommandSchema.parse({
+      ...productionCommand,
+      music_plan: { mode },
+      audio_selection: "MUSIC_REPLACE_PROVIDER_AUDIO",
+    }));
+  }
+  assert.throws(() => CreateProductionRunCommandSchema.parse({
+    ...productionCommand,
+    music_plan: { mode: "MANUAL" },
+    audio_selection: "MUSIC_REPLACE_PROVIDER_AUDIO",
+  }));
+  assert.throws(() => CreateProductionRunCommandSchema.parse({ ...productionCommand, audio_selection: "AUTO_TTS" }));
 });
 
 test("project history is a non-deleted public projection", () => {
@@ -676,6 +702,58 @@ test("C12 Media Runtime accepts only fixed local tools and durable scheduling id
     bridge_durations_ms: [],
     music_segments_ms: [{ start_ms: 0, end_ms: 11_000 }],
   }));
+  const replacementAudioPlan = {
+    target_duration_ms: 10_000,
+    transitions: [],
+    bridge_durations_ms: [],
+    audio_selection: "MUSIC_REPLACE_PROVIDER_AUDIO",
+    audio_plan: {
+      version: 1,
+      target_duration_ms: 10_000,
+      narration_sections: [{ section_id: "tail", start_ms: 0, end_ms: 10_000, visual_role: "HOLD" }],
+      stitch_policy: "LEGACY_PRESERVE",
+      tracks: [{ track_id: "music", ownership: "MUSIC", asset_id: "ast_music", start_ms: 0, end_ms: 10_000, gain_db: "0" }],
+    },
+    music_mix: { enabled: true },
+  } as const;
+  assert.equal(MediaRuntimeCompositionPlanSchema.parse(replacementAudioPlan).audio_selection, "MUSIC_REPLACE_PROVIDER_AUDIO");
+  assert.throws(() => MediaRuntimeCompositionPlanSchema.parse({
+    target_duration_ms: 10_000,
+    transitions: [],
+    bridge_durations_ms: [],
+    audio_selection: "MUSIC_REPLACE_PROVIDER_AUDIO",
+    audio_tracks: [{ track_id: "selected-music", ownership: "MUSIC", asset_id: "ast_music", start_ms: 0, end_ms: 10_000 }],
+    music_mix: { enabled: true },
+  }), "BGM replacement must not validate against the legacy ownership-only plan");
+  assert.throws(() => MediaRuntimeCompositionPlanSchema.parse({
+    ...replacementAudioPlan,
+    audio_plan: {
+      ...replacementAudioPlan.audio_plan,
+      tracks: [
+        ...replacementAudioPlan.audio_plan.tracks,
+        { track_id: "duplicate-music", ownership: "MUSIC", asset_id: "ast_music_2", start_ms: 0, end_ms: 10_000, gain_db: "0" },
+      ],
+    },
+  }));
+  assert.throws(() => MediaRuntimeCompositionPlanSchema.parse({
+    ...replacementAudioPlan,
+    audio_plan: { ...replacementAudioPlan.audio_plan, tracks: [{ ...replacementAudioPlan.audio_plan.tracks[0], end_ms: 9_999 }] },
+  }));
+  assert.throws(() => MediaRuntimeCompositionPlanSchema.parse({
+    ...replacementAudioPlan,
+    audio_plan: { ...replacementAudioPlan.audio_plan, tracks: [{ track_id: "music", ownership: "MUSIC", start_ms: 0, end_ms: 10_000, gain_db: "0" }] },
+  }));
+  assert.throws(() => MediaRuntimeCompositionPlanSchema.parse({
+    ...replacementAudioPlan,
+    audio_plan: {
+      ...replacementAudioPlan.audio_plan,
+      tracks: [
+        ...replacementAudioPlan.audio_plan.tracks,
+        { track_id: "source-audio", ownership: "PROVIDER_AMBIENCE", asset_id: "ast_provider", start_ms: 0, end_ms: 10_000, gain_db: "0" },
+      ],
+    },
+  }));
+  assert.throws(() => MediaRuntimeCompositionPlanSchema.parse({ ...replacementAudioPlan, music_mix: { enabled: false } }));
   assert.throws(() => MediaRuntimeNarrationRequestSchema.parse({
     text: "完整脚本",
     segments: [{ text: "分段脚本", start_ms: 0 }],
@@ -1119,6 +1197,8 @@ test("OpenAPI declares the C03 control-plane surface before later route implemen
     "/api/v1/document-knowledge-revisions/{knowledge_revision_id}/retry",
     "/api/v1/events",
     "/api/v1/health",
+    "/api/v1/health/live",
+    "/api/v1/health/ready",
     "/api/v1/me",
     "/api/v1/me/billing-policy",
     "/api/v1/me/credits",

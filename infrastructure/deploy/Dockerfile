@@ -16,4 +16,9 @@ WORKDIR /app
 
 COPY --from=build /app /app
 
+RUN useradd --system --uid 10001 --create-home app \
+  && mkdir -p /app/data \
+  && chown -R app:app /app
+USER app
+
 CMD ["node", "apps/control-api/dist/index.js"]

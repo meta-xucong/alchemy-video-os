@@ -63,13 +63,19 @@ export type CompiledVideoPrompt = Readonly<{
  * ordered URL list. This is provider-neutral and gives R2V models a clear
  * reason not to replace a submitted location with a generic background.
  */
-export const buildReferenceRoleDirective = (roles: readonly VisualReferenceRole[]) => {
+export const buildReferenceRoleDirective = (
+  roles: readonly VisualReferenceRole[],
+  semanticReferences: readonly Readonly<{ provider_role: VisualReferenceRole; usage: string }>[] = [],
+) => {
   // Keep the caller's role-to-image mapping intact. Role descriptions may be
   // deduplicated independently, but semantic labels must never reorder the
   // provider input positions.
   const present = roles.filter((role, index) => roles.indexOf(role) === index);
   if (present.length === 0) return "";
-  const inputOrder = roles.map((role, index) => `image ${index + 1} = ${role}`).join("; ");
+  const inputOrder = roles.map((role, index) => {
+    const usage = semanticReferences[index]?.usage;
+    return `image ${index + 1} = ${role}${usage === undefined ? "" : `; usage: ${usage}`}`;
+  }).join("; ");
   return `Reference images (input order): ${inputOrder}. Preserve the supplied reference roles and order.`;
 };
 
@@ -105,13 +111,21 @@ export const compileVideoPrompt = (input: Readonly<{
   generationSettings: Record<string, unknown>;
   profile: VideoProviderRuntimeProfile;
   referenceRoles?: readonly VisualReferenceRole[];
+  semanticReferences?: readonly Readonly<{
+    asset_id: string;
+    provider_role: VisualReferenceRole;
+    usage: string;
+  }>[];
   visualObjectLocks?: readonly KeyVisualObjectLock[];
   /** Exact, verified dialogue for this segment. Source prose is never reparsed here. */
   dialogueLines?: readonly string[];
 }>): CompiledVideoPrompt => {
   const sourcePrompt = input.sourcePrompt.trim();
   if (!sourcePrompt) throw new VideoPromptCompilationError("A video idea is required before generation.");
-  const referenceDirective = buildReferenceRoleDirective(input.referenceRoles ?? []);
+  const referenceDirective = buildReferenceRoleDirective(
+    input.semanticReferences?.map((reference) => reference.provider_role) ?? input.referenceRoles ?? [],
+    input.semanticReferences,
+  );
   const dialogueDirective = buildDialogueDirective(input.dialogueLines, input.profile.audioOwner);
   const captionSuppressionDirective = input.profile.mode === "sub2api"
     && !hasProviderCaptionSuppressionDirective(sourcePrompt)

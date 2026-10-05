@@ -32,7 +32,7 @@
     "@alchemy-video/reference-delivery": "workspace:*",
     "@alchemy-video/storage-client": "workspace:*",
     "@hono/node-server": "^1.19.11",
-    "hono": "^4.12.9",
+    "hono": "^4.13.7",
     "zod": "^3.24.2"
   },
   "devDependencies": {

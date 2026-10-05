@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { semanticPromptPackageIntegrityPayload } from "@alchemy-video/contracts";
+import {
+  MediaRuntimeCompositionPlanSchema,
+  semanticPromptPackageIntegrityPayload,
+} from "@alchemy-video/contracts";
 import { canonicalJson } from "@alchemy-video/domain";
 
 import {
@@ -11,8 +14,89 @@ import {
   measuredVisualSegmentMatchesRequest,
   resolveAudioOwnerForComposition,
   resolveAudioTrackGainDb,
+  compositionQcSafeSummary,
   validateSemanticPromptPackage,
+  isApprovedNarrationAuthoritative,
 } from "../src/production-repository.js";
+
+test("QC safe summary distinguishes a qualified PASS from complete review", () => {
+  assert.equal(compositionQcSafeSummary({ status: "PASS", review_completeness: "PARTIAL" }), "已执行的基础检查通过；部分检查未运行，建议人工复核。");
+  assert.equal(compositionQcSafeSummary({ status: "PASS", review_completeness: "COMPLETE" }), "成片检查通过。");
+  assert.equal(compositionQcSafeSummary({ status: "NEEDS_ATTENTION", review_completeness: "PARTIAL" }), "检查发现需要复核的质量项；部分检查未运行，建议人工复核。");
+});
+
+test("composition-plan schema rejects null track fades instead of treating them as absent", () => {
+  const result = MediaRuntimeCompositionPlanSchema.safeParse({
+    target_duration_ms: 1_000,
+    transitions: [],
+    audio_plan: {
+      version: 1,
+      target_duration_ms: 1_000,
+      narration_sections: [{ section_id: "hold", start_ms: 0, end_ms: 1_000, visual_role: "HOLD" }],
+      tracks: [{
+        track_id: "music",
+        ownership: "MUSIC",
+        asset_id: "ast_music",
+        start_ms: 0,
+        end_ms: 1_000,
+        gain_db: "0",
+        fade_in_ms: null,
+        fade_out_ms: null,
+      }],
+      stitch_policy: "LEGACY_PRESERVE",
+    },
+  });
+
+  assert.equal(result.success, false);
+});
+
+test("explicit Doubao replacement makes approved narration authoritative for native-owned video while Preserve stays closed", () => {
+  const preserveProviderAudio = true;
+  const selectedReplacement = "DOUBAO_TTS_REPLACE" as const;
+  assert.equal(isApprovedNarrationAuthoritative(preserveProviderAudio, selectedReplacement), true);
+  assert.equal(isApprovedNarrationAuthoritative(preserveProviderAudio, "PRESERVE_PROVIDER_AUDIO"), false);
+  assert.equal(isApprovedNarrationAuthoritative(false, "MUSIC_REPLACE_PROVIDER_AUDIO"), false, "BGM-only mode must never promote script text into narration");
+  const audioPlan = {
+    version: 1 as const,
+    target_duration_ms: 1_000,
+    narration_asset_id: "ast_doubao",
+    narration_sections: [{
+      section_id: "sec_full",
+      start_ms: 0,
+      end_ms: 1_000,
+      visual_role: "PRIMARY" as const,
+      narration_asset_version_id: "nav_doubao",
+    }],
+    tracks: [{
+      track_id: "platform-narration",
+      ownership: "PLATFORM_NARRATION" as const,
+      asset_id: "ast_doubao",
+      start_ms: 0,
+      end_ms: 1_000,
+      gain_db: "0",
+      duck_under_narration: false,
+    }],
+    stitch_policy: "CONTINUOUS_NARRATION" as const,
+    transcript_script: "approved speech",
+  };
+  const replacementPlan = MediaRuntimeCompositionPlanSchema.parse({
+    target_duration_ms: 1_000,
+    transitions: [],
+    audio_policy: "CONTINUOUS_NARRATION",
+    audio_selection: "DOUBAO_TTS_REPLACE",
+    audio_plan: audioPlan,
+  });
+  assert.equal(replacementPlan.audio_selection, "DOUBAO_TTS_REPLACE");
+  assert.equal(replacementPlan.audio_policy, "CONTINUOUS_NARRATION");
+  assert.equal(replacementPlan.audio_plan?.stitch_policy, "CONTINUOUS_NARRATION");
+  assert.equal(MediaRuntimeCompositionPlanSchema.safeParse({
+    target_duration_ms: 1_000,
+    transitions: [],
+    audio_policy: "LEGACY_PRESERVE",
+    audio_selection: "PRESERVE_PROVIDER_AUDIO",
+    audio_plan: audioPlan,
+  }).success, false);
+});
 
 const semanticHash = (value: unknown) =>
   createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");

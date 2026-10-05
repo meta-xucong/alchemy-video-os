@@ -2,6 +2,8 @@ import {
   createCanonicalSourceBundle,
   projectSemanticDialogues,
   projectSemanticReferences,
+  normalizeLocation,
+  normalizeName,
   semanticValueHash,
   type SemanticDirectorPort,
 } from "@alchemy-video/creative-planning/semantic-director";
@@ -10,6 +12,7 @@ import {
   type CanonicalReferenceSource,
   type SemanticDialogueProjection,
   type SemanticReferenceProjection,
+  type SemanticNarrativeBeatProjection,
   type VideoAudioOwner,
   type SemanticDirectorDecision,
 } from "@alchemy-video/contracts";
@@ -41,7 +44,7 @@ const providerRole = (role: SemanticReferenceProjection["references"][number]["p
 const idFactory = (prefix: "scr" | "sbr" | "ssp" | "ppk") => createPrefixedId(prefix);
 
 type SemanticPlanningStore = Pick<CreativePlanningStore, "completeCreativePlan">
-  & Partial<Pick<CreativePlanningStore, "resolveCanonicalReferenceSources">>;
+  & Partial<Pick<CreativePlanningStore, "resolveCanonicalReferenceSources" | "resolveCanonicalVisualEntityContext">>;
 
 /**
  * Real-provider creative planning path.
@@ -82,9 +85,14 @@ export class SemanticCreativePlanningExecutor {
       ? await this.readDocuments(input.brief)
       : [];
     const references = await this.readReferences(input.brief);
+    const isG02 = input.brief.sourceText.includes("G02_APPROVED_BEAT_");
+    const visualEntities = isG02
+      ? await this.readVisualEntities(input.brief)
+      : undefined;
     let bundle;
     try {
       bundle = createCanonicalSourceBundle({
+        briefRevisionId: input.brief.id,
         sourceText: input.brief.sourceText,
         stylePreferences: input.brief.stylePreferences,
         targetDurationSeconds: input.brief.targetDurationSeconds,
@@ -95,6 +103,7 @@ export class SemanticCreativePlanningExecutor {
           content: document.content,
         })),
         references,
+        ...(visualEntities ? { visualEntities } : {}),
         userDecisions: [
           {
             decisionId: "dec_target_resolution",
@@ -148,6 +157,9 @@ export class SemanticCreativePlanningExecutor {
       creativeBriefRevisionId: input.brief.id,
       draft,
       event: input.event,
+      ...(decision.semantic_narrative_beat_lineage ? {
+        semanticVisualEntitySemantics: { normalizeName, normalizeLocation, semanticValueHash },
+      } : {}),
     });
     if (!completed) {
       throw new SemanticPlanningExecutionError("PLANNING_PERSISTENCE_STATE_INVALID");
@@ -179,6 +191,13 @@ export class SemanticCreativePlanningExecutor {
     return references;
   }
 
+  private async readVisualEntities(brief: ControlCreativeBriefRevision) {
+    if (!this.store.resolveCanonicalVisualEntityContext) {
+      throw new SemanticPlanningExecutionError("CANONICAL_REFERENCE_FACTS_INVALID");
+    }
+    return this.store.resolveCanonicalVisualEntityContext(brief.workspaceId, brief.projectId);
+  }
+
   private buildDraft(
     brief: ControlCreativeBriefRevision,
     decision: SemanticDirectorDecision,
@@ -192,7 +211,7 @@ export class SemanticCreativePlanningExecutor {
       narrativeGoal: segment.visual_decision,
       referencePolicy: segment.reference_asset_ids.length > 0 ? "REFERENCE_SET" as const : "TEXT_TRANSITION" as const,
       dependsOnSequences: [],
-      narrativeBeatSequences: [segment.sequence],
+      narrativeBeatSequences: segment.source_narrative_beat_sequences ?? [segment.sequence],
     }));
     const promptPackages = shotSpecs.map((shotSpec, index) => {
       const segment = decision.segments[index]!;
@@ -217,8 +236,43 @@ export class SemanticCreativePlanningExecutor {
         maxReferenceImages: this.profile.maxReferenceImages,
         ...(segment.bgm_intent ? { bgmPrompt: segment.bgm_intent } : {}),
       }));
+      const promptPackageId = this.makeId("ppk");
+      const beatSequence = segment.source_narrative_beat_sequences?.[0];
+      const beat = beatSequence === undefined
+        ? undefined
+        : decision.semantic_narrative_beat_lineage?.beats.find((item) => item.sequence === beatSequence);
+      const semanticNarrativeBeatLineage: SemanticNarrativeBeatProjection | undefined = beat
+        && decision.semantic_narrative_beat_lineage
+        ? {
+          version: 1,
+          brief_revision_id: decision.semantic_narrative_beat_lineage.brief_revision_id,
+          source_hash: decision.semantic_narrative_beat_lineage.source_hash,
+          beat,
+        }
+        : undefined;
+      const semanticNarrativeBeatLineageHash = semanticNarrativeBeatLineage
+        ? semanticValueHash(semanticNarrativeBeatLineage)
+        : undefined;
+      const finalizedPackageIntegrityHash = semanticNarrativeBeatLineage
+        ? semanticValueHash(semanticPromptPackageIntegrityPayload({
+          shotSpecId: shotSpec.id,
+          prompt: compiled.prompt,
+          referencePolicy: shotSpec.referencePolicy,
+          sourcePrompt: compiled.sourcePrompt,
+          generatedPromptParts: compiled.generatedPromptParts,
+          evidenceIds,
+          dialogueProjection,
+          referenceProjection,
+          audioOwner,
+          maxDurationSeconds: this.profile.maxDurationSeconds,
+          maxReferenceImages: this.profile.maxReferenceImages,
+          semanticNarrativeBeatLineage,
+          semanticNarrativeBeatLineageHash,
+          ...(segment.bgm_intent ? { bgmPrompt: segment.bgm_intent } : {}),
+        }))
+        : packageIntegrityHash;
       return {
-        id: this.makeId("ppk"),
+        id: promptPackageId,
         shotSpecId: shotSpec.id,
         compilerVersion: SEMANTIC_PROJECTOR_VERSION,
         prompt: compiled.prompt,
@@ -231,13 +285,37 @@ export class SemanticCreativePlanningExecutor {
           reference_policy: shotSpec.referencePolicy,
           semantic_reference_projection: referenceProjection,
         },
+        ...(decision.semantic_narrative_beat_lineage ? {
+          semanticEntityCandidates: decision.entity_candidates ?? [],
+          semanticEntityCandidateBindings: {
+            ...(segment.scene_candidate_key ? { scene: segment.scene_candidate_key } : {}),
+            characters: segment.character_candidate_keys ?? [],
+            props: segment.prop_candidate_keys ?? [],
+          },
+          semanticReferenceSourceAssets: referenceProjection.references.map((reference) => {
+            const evidence = segment.evidence_refs.find((item) => item.kind === "REFERENCE_ASSET" && item.asset_id === reference.asset_id);
+            if (!evidence || evidence.kind !== "REFERENCE_ASSET") {
+              throw new SemanticPlanningExecutionError("SEMANTIC_DRAFT_INVALID");
+            }
+            return {
+              assetId: evidence.asset_id,
+              assetSha256: evidence.asset_sha256,
+              usage: reference.usage,
+              evidenceId: evidence.evidence_id,
+            };
+          }),
+        } : {}),
         capabilitySnapshot: {
           semantic_segment_id: segment.segment_id,
           semantic_decision_hash: decisionHash,
           semantic_dialogue_projection: dialogueProjection,
           semantic_dialogue_projection_hash: dialogueProjectionHash,
           semantic_reference_projection_hash: referenceProjectionHash,
-          semantic_prompt_package_integrity_hash: packageIntegrityHash,
+          semantic_prompt_package_integrity_hash: finalizedPackageIntegrityHash,
+          ...(semanticNarrativeBeatLineage ? {
+            semantic_narrative_beat_lineage: semanticNarrativeBeatLineage,
+            semantic_narrative_beat_lineage_hash: semanticNarrativeBeatLineageHash,
+          } : {}),
           authored_source_hash: decision.source_hash,
           prompt_source_kind: "SEMANTIC_VISUAL_PROJECTION",
           // Compatibility key for the outbound compactor. In the real path
@@ -254,14 +332,20 @@ export class SemanticCreativePlanningExecutor {
     return {
       scriptRevisionId: this.makeId("scr"),
       storyboardRevisionId: this.makeId("sbr"),
-      beats: decision.segments.map((segment) => ({
-        sequence: segment.sequence,
-        title: `片段 ${segment.sequence}`,
-        summary: `语义片段 ${segment.sequence} 已通过 ${segment.evidence_refs.length} 项来源引用校验。`,
-        narrative_goal: segment.visual_decision,
-        visible_facts: segment.evidence_refs.slice(0, 20).map((evidence) => evidence.evidence_id),
-        generation_segment_sequence: segment.sequence,
-      })),
+      beats: decision.segments.map((segment) => {
+        const sourceBeatSequence = segment.source_narrative_beat_sequences?.[0];
+        const sourceBeat = sourceBeatSequence === undefined
+          ? undefined
+          : decision.semantic_narrative_beat_lineage?.beats.find((item) => item.sequence === sourceBeatSequence);
+        return {
+          sequence: sourceBeatSequence ?? segment.sequence,
+          title: sourceBeat ? `节拍 ${sourceBeat.sequence}` : `片段 ${segment.sequence}`,
+          summary: sourceBeat?.span.quote ?? `语义片段 ${segment.sequence} 已通过 ${segment.evidence_refs.length} 项来源引用校验。`,
+          narrative_goal: segment.visual_decision,
+          visible_facts: segment.evidence_refs.slice(0, 20).map((evidence) => evidence.evidence_id),
+          generation_segment_sequence: segment.sequence,
+        };
+      }),
       title: "语义导演计划",
       summary: `${decision.segments.length} 个生成片段已通过来源引用与能力边界校验，总时长 ${decision.target_duration_seconds} 秒。`,
       totalDurationSeconds: decision.target_duration_seconds,
@@ -291,6 +375,11 @@ export class SemanticCreativePlanningExecutor {
       sourcePrompt: visualProjection,
       dialogueLines: dialogueProjection.dialogues.map((dialogue) => dialogue.exact_text),
       referenceRoles: referenceProjection.references.map((reference) => providerRole(reference.provider_role)),
+      semanticReferences: referenceProjection.references.map(({ asset_id, provider_role, usage }) => ({
+        asset_id,
+        provider_role,
+        usage,
+      })),
       generationSettings: {
         video_settings: {
           duration_seconds: durationSeconds,

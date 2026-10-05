@@ -165,6 +165,26 @@ export const VideoSettingsSchema = z.object({
 }).strict();
 
 export const GenerationSettingsSchema = JsonObjectSchema.superRefine((settings, context) => {
+  let serialized = "";
+  try {
+    serialized = JSON.stringify(settings);
+  } catch {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "Generation settings must be JSON serializable." });
+    return;
+  }
+  if (new TextEncoder().encode(serialized).byteLength > 64 * 1024) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "Generation settings must not exceed 64 KiB." });
+  }
+  const pending: Array<{ value: unknown; depth: number }> = [{ value: settings, depth: 0 }];
+  let tooDeep = false;
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (!current.value || typeof current.value !== "object") continue;
+    if (current.depth >= 8) { tooDeep = true; break; }
+    const entries = Array.isArray(current.value) ? current.value : Object.values(current.value as Record<string, unknown>);
+    for (const item of entries) pending.push({ value: item, depth: current.depth + 1 });
+  }
+  if (tooDeep) context.addIssue({ code: z.ZodIssueCode.custom, message: "Generation settings nesting is too deep." });
   if (!("video_settings" in settings)) return;
   const parsed = VideoSettingsSchema.safeParse(settings.video_settings);
   if (parsed.success) return;
@@ -180,7 +200,7 @@ export const ShotSchema = z.object({
   workspace_id: WorkspaceIdSchema,
   project_id: ProjectIdSchema,
   position: z.number().int().nonnegative(),
-  prompt: z.string(),
+  prompt: z.string().max(20_000),
   model: z.string().min(1).nullable(),
   generation_settings: GenerationSettingsSchema,
   status: ShotStatusSchema,
@@ -245,6 +265,42 @@ export const VideoGenerationInputSnapshotSchema = z.object({
   delivery_plan_revision_id: DeliveryPlanRevisionIdSchema.optional(),
   generation_segment_sequence: z.number().int().positive().optional(),
   narrative_beat_sequences: z.array(z.number().int().positive()).min(1).max(60).optional(),
+  // G02 private, immutable semantic identity projections; legacy TaskRuns omit them.
+  semantic_entity_reference_projection: z.object({
+    version: z.literal(1),
+    brief_revision_id: z.string().min(1).max(160),
+    source_hash: Sha256Schema,
+    decision_hash: Sha256Schema,
+    segment_id: z.string().min(1).max(160),
+    prompt_package_id: z.string().min(1).max(160),
+    bindings: z.array(z.object({
+      entity_kind: z.enum(["CHARACTER", "PROP", "SCENE"]),
+      entity_id: z.string().min(1).max(160),
+      entity_revision_id: z.string().min(1).max(160),
+      exact_name: z.string().min(1).max(160),
+      asset_id: AssetIdSchema,
+      asset_sha256: Sha256Schema,
+      provider_position: z.number().int().nonnegative().max(6),
+      mapping_evidence_id: z.string().min(1).max(160),
+    }).strict()).max(7),
+  }).strict().optional(),
+  semantic_entity_reference_projection_hash: Sha256Schema.optional(),
+  semantic_narrative_beat_lineage: z.object({
+    version: z.literal(1),
+    brief_revision_id: z.string().min(1).max(160),
+    source_hash: Sha256Schema,
+    beat: z.object({
+      sequence: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+      span: z.object({
+        start: z.number().int().min(0).max(50_000),
+        end: z.number().int().positive().max(50_000),
+        quote: z.string().min(1).max(50_000),
+      }).strict(),
+      exact_quote_sha256: Sha256Schema,
+      identity_sha256: Sha256Schema,
+    }).strict(),
+  }).strict().optional(),
+  semantic_narrative_beat_lineage_hash: Sha256Schema.optional(),
   // Private immutable planning facts. Historical snapshots may omit them during rollout.
   motion_plan_version: z.string().min(1).max(160).optional(),
   motion_plan_hash: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
@@ -258,6 +314,35 @@ export const VideoGenerationInputSnapshotSchema = z.object({
 }).superRefine((snapshot, context) => {
   if ((snapshot.motion_plan_version === undefined) !== (snapshot.motion_plan_hash === undefined)) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["motion_plan_version"], message: "Motion plan version and hash must be supplied together." });
+  }
+  if ((snapshot.semantic_entity_reference_projection === undefined)
+    !== (snapshot.semantic_entity_reference_projection_hash === undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["semantic_entity_reference_projection_hash"], message: "G02 entity projection and its hash must be supplied together." });
+  }
+  if ((snapshot.semantic_narrative_beat_lineage === undefined)
+    !== (snapshot.semantic_narrative_beat_lineage_hash === undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["semantic_narrative_beat_lineage_hash"], message: "G02 beat lineage and its hash must be supplied together." });
+  }
+  const projection = snapshot.semantic_entity_reference_projection;
+  if (projection) {
+    const references = snapshot.visual_input?.references ?? [];
+    const bindings = projection.bindings;
+    if (projection.segment_id.trim().length === 0
+      || bindings.some((binding) => {
+        const reference = references[binding.provider_position];
+        return !reference || reference.position !== binding.provider_position
+          || reference.asset_id !== binding.asset_id || reference.sha256 !== binding.asset_sha256;
+      })
+      || new Set(bindings.map((binding) => binding.asset_id)).size !== bindings.length
+      || new Set(bindings.map((binding) => binding.provider_position)).size !== bindings.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["semantic_entity_reference_projection"], message: "G02 entity bindings must match unique immutable visual input positions." });
+    }
+  }
+  if (snapshot.semantic_narrative_beat_lineage
+    && snapshot.narrative_beat_sequences
+    && (snapshot.narrative_beat_sequences.length !== 1
+      || snapshot.narrative_beat_sequences[0] !== snapshot.semantic_narrative_beat_lineage.beat.sequence)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["semantic_narrative_beat_lineage"], message: "G02 TaskRun beat lineage must match its single source beat sequence." });
   }
   const timeline = snapshot.motion_timeline;
   if (!timeline) return;
@@ -512,7 +597,7 @@ const ReferenceBindingsInputSchema = z.array(ReferenceBindingInputSchema).max(8)
 
 export const CreateShotCommandSchema = z.object({
   position: z.number().int().nonnegative(),
-  prompt: z.string().default(""),
+  prompt: z.string().max(20_000).default(""),
   model: z.string().min(1).nullable().optional(),
   generation_settings: GenerationSettingsSchema.default({}),
   reference_bindings: ReferenceBindingsInputSchema.default([]),
@@ -521,7 +606,7 @@ export const CreateShotCommandSchema = z.object({
 export const UpdateShotCommandSchema = z
   .object({
     position: z.number().int().nonnegative().optional(),
-    prompt: z.string().optional(),
+    prompt: z.string().max(20_000).optional(),
     model: z.string().min(1).nullable().optional(),
     generation_settings: GenerationSettingsSchema.optional(),
     status: z.enum(["DRAFT", "READY", "ARCHIVED"]).optional(),

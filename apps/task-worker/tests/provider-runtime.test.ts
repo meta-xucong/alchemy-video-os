@@ -110,23 +110,28 @@ test("reference delivery preserves one-to-seven image order in opaque HTTPS inpu
     position,
   }));
   const key = "reference-delivery-test-secret-with-at-least-32-characters";
+  const workspaceId = "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX";
+  const projectId = "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX";
   const port = createWorkerReferenceDeliveryPort({
     profile: { ...profile, mode: "sub2api", provider: "sub2api", model: "grok-imagine-video-1.5", inputMode: "multi_modal_video" },
      environment: { REFERENCE_DELIVERY_ORIGIN: "https://video.example.invalid", REFERENCE_DELIVERY_SIGNING_KEY: key, REFERENCE_DELIVERY_PREFLIGHT_ENABLED: "false" },
   });
   const resolved = await port.createVisualInput({
-    workspaceId: "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX",
-    projectId: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX",
+    workspaceId,
+    projectId,
     visualInput: { mode: "REFERENCE_SET", references },
   });
   assert.equal(resolved.mode, "REFERENCE_SET");
   if (resolved.mode !== "REFERENCE_SET") return;
   assert.equal(resolved.urls.length, 7);
   const codec = new ReferenceDeliveryTokenCodec(key);
+  const privateIds = [workspaceId, projectId, ...references.map((reference) => reference.asset_id)];
   assert.deepEqual(resolved.urls.map((url) => {
     assert.match(url, /^https:\/\/video\.example\.invalid\/provider-input\/v1\./);
-    assert.doesNotMatch(url, /ast_|ws_|prj_/);
-    return codec.verify(decodeURIComponent(new URL(url).pathname.split("/").at(-1)!))?.assetId;
+    for (const privateId of privateIds) assert.equal(url.includes(privateId), false, `Provider URL must not expose ${privateId.slice(0, 3)} ID`);
+    const token = decodeURIComponent(new URL(url).pathname.split("/").at(-1)!);
+    assert.notEqual(token, references[0]?.asset_id);
+    return codec.verify(token)?.assetId;
 }), references.map((reference) => reference.asset_id));
 });
 

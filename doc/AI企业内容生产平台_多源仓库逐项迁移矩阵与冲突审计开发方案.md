@@ -441,3 +441,31 @@ E01 裁定（历史状态对账）：总体 C12.4/C12.5 仍 `IMPLEMENTED_PENDING
 - 本轮审计修正：既有 duration-only trailing segment 没有 visual span 时，因现有 motion schema 要求非空 source sequence 而沿既有 `LlmSemanticPlanningError` fail-closed，不把前一段 beat 伪造注入；span 起止必须是 Unicode code-point 边界，保持 UTF-16 offset 契约并拒绝切入 surrogate pair。商品 `😀`/中文多 span 回归覆盖上述边界。
 - 本地定向证据：creative-planning `99/99 pass / 0 fail / 0 skip`；workflow-worker `38/38 pass / 0 fail / 0 skip`；两包 typecheck 通过；`git diff --check` 通过（仅既有 LF→CRLF 提示）。未调用真实 Provider/TTS/Veyra、网络、VPS 或 Git。
 - 本补记不改变公开 contracts/domain/persistence/provider/runtime、任务状态/事件、4096、音频/字幕/BGM，也不升级 `E12/R01=BLOCKED`、总体 `C12.4/C12.5=IMPLEMENTED_PENDING_AUDIT` 或其它 C12.4/C12.5 章节状态；完整 transition/section 时间窗仍 `DEFERRED/BLOCKED`。
+
+## 2026-10-02 原仓库偏差收敛执行状态更正（当前补记）
+
+- **G02 认证事实：** 2026-09-28 专项文档记录 `aiself-claude-sonnet-5-candidate-v3` 的三次真实 Semantic Director fixture 通过、A1 复核通过，认证面 `1489b5c8af684f9be32514799aa352d4420f21f6685ebdf41d7c4215915c64b5`。因此 2026-09-25 账本的“尚无认证 profile”陈述为历史快照。规划 profile 认证不等于旧护肤项目完成新规划；新 projection/DeliveryPlan 仍缺，项目仍阻止视频提交。
+- **SF-OM-02 / E05：** 旧窄切片 `ACCEPTED` 只覆盖当时已映射字段，不证明 composition 级 `music_mix.fade_in_ms/fade_out_ms` 已被传到 OpenMontage source track。Production Repository 将默认设为 1500/2500ms，Runtime full_mix 只读取 track 的 `fade_*_seconds`；未见二者映射。因此“E05 fade parity”范围描述过宽，本次登记为 `CONFIRMED_GAP`；只允许按当前 TaskSpec 补既有字段映射和跨层行为测试，不改变 E05 历史验收记录。
+- **SF-MD-01 / C10：** 固定 MarkItDown 以 `pdf/docx/pptx/xlsx` extras 声明四类解析依赖；document-runtime 当前只依赖基础 `markitdown`。因此 C10 六种格式 allowlist 的依赖闭包登记为 `CONFIRMED_PACKAGING_GAP`，仍只安装固定上游四个 extras，并保持现有六格式上限；不得扩展 CSV/XLS/HTML/URL/plugin。
+- **真实视频对照授权：** 2026-10-02 用户授权 Sonnet v3 一次重规划、Aiself Grok `grok-imagine-video-1.5` 最多 3 次分段提交、首个完整结果即停，仅限先前护肤项目 30秒/480P/BGM OFF；已确认画面为面霜质地/舒缓、新加坡天际线与研发灌装、女性使用产品并以包装特写收尾。这不解锁 `SF-HB-02/03`、`SF-SD-03` 或 G02 技术门。用户未提供总金额/积分上限，故为 `USER_QUOTA_CAP_MISSING / REAL_PROVIDER_BLOCKED`；不得调用真实服务。无正式 source/runtime receipts 时保持 `ROUTE_UNVERIFIED`。
+- 本补记只校正当前状态/证据范围，不更改源仓库、公开契约或历史验收结论。实施代码与测试状态以本资料包 2026-10-02 TaskSpec 和实施证据记录为准。
+
+## 2026-10-02 P6 OpenMontage full_mix 路由与兼容读路径补记（当前实现证据；不升级章节状态）
+
+- 固定来源为 OpenMontage `4eab34c5cfcccaa4f1970554928feccce73ee930` 的 `tools/audio/audio_mixer.py::AudioMixer._full_mix/_track_filters`。来源接受 `speech`、`music`、`sfx` tracks，并按各 track 的 fade/start/volume 输入构建 full-mix；本平台只在既有 ALCHMED8 source adapter 条件满足时构造这些输入，没有把 ALCHMED 私有 marker 当作 OpenMontage wire。
+- `services/media-runtime/runtime.py::decode_composition_bundle_with_plan/compose_video_bundle` 保留 ALCHMED1–7 的既有解码和兼容路径；ALCHMED8 的声明 narration/music payload 与现有 AudioPlan ownership 才进入来源 `full_mix`。无 authored narration/music payload 的 source-only AudioPlan 保留段内音轨，不被强制加入 mixer。unknown marker 与 malformed known payload 继续 fail-closed，不产生 fallback 解释。
+- 本轮只追加 `test_unknown_composition_marker_fails_closed` 与 `test_complete_audio_plan_native_only_preserves_source_audio_without_full_mix`，并覆盖 ALCHMED1–8 读路径/正反例、ALCHMED8 full_mix 路由、截断 metadata 和 P4 fade 映射。Media Runtime 定向核心测试 `13/13 pass / 0 fail / 0 skip`（隔离 main/FastAPI handler import 的进程内 shim；未改测试环境或依赖）；`py_compile` exit 0。完整 `unittest discover` 因当前解释器缺 `fastapi` 无法导入 `services/media-runtime/main.py`，记 `BLOCKED_ENV`，未安装依赖。
+- 现行证据不改变 ALCHMED1–7 历史读取语义、公开契约/事件、Worker/API、native audio ownership、P4/P6 章节审计结论或总体 C12.4/C12.5 状态；也不构成 OpenMontage full_mix 的真实媒体集成验收。
+
+### 2026-10-02 P4/P6 TaskSpec 1.1.0 当前规则更正（supersedes §453–458 的实现口径）
+
+- 本节取代上一节中仍可能被理解为当前路由规则的表述；上一节保留为历史实现/复验记录，不再授权把原生 Provider 视频的完整音轨标成 `sfx`，也不再授权在未证明音轨角色隔离时，将含音频的原生视频与独立 narration/music payload 一起送入 `_full_mix`。
+- P6 当前行为：ALCHMED8 envelope 只传递结构，不证明嵌入式 Provider 音轨是独立 speech/music/sfx。若输入视频含音轨，且 composition 另有独立 narration 或 MUSIC bytes、但没有来源证明其可安全混合/角色隔离，则 Runtime 在 composition/mix 前 `QC_FAILED`；不得把整个输出 MP4 追加为 `role=sfx`。仅 source/native 音轨且 MusicPlan OFF 时，保留既有 source audio 路径，不触发 `_full_mix`。独立且已证明角色的 narration bytes→OpenMontage `speech`，独立 MUSIC bytes→`music`；未知/损坏 marker fail-closed，ALCHMED1–7 读取兼容性保持不变。
+- P4 当前证据只主张分层对齐，不主张单条端到端 Persistence→Runtime 集成：相同 `ast_native_manual_music` ID 分别由 Persistence 默认值/AudioPlan identity 测试、Worker ALCHMED8 编码测试、Consumer 对 plan 与 MUSIC bytes 透传测试、Runtime decoder/source-mixer shim 测试核对；composition defaults `1500/2500ms`、缺省 track fade sentinel 与显式 `0` 分别覆盖。OpenMontage `_track_filters` 仅在 fade 大于 0 时生成 fade，Runtime 对缺省值映射到 composition defaults。
+- 当前代码/测试与执行步骤以《原仓库偏差收敛开发包_20261001/03-执行步骤与逐文件代码清单.md》TaskSpec 1.1.0、《原仓库偏差收敛开发包_20261001/05-验证矩阵与命令清单.md》和《原仓库偏差收敛开发包_20261001/07-实施证据记录模板.md》的 2026-10-02 更正记录为准。本补记只纠正当前来源映射/审计口径，不改公开契约、native audio owner、其它章节状态或总体 C12.4/C12.5；不构成真实媒体/Provider 验收。
+
+## 2026-10-04 PX-VIDEO-STATUS-01 实施登记（窄子任务；待独立审计）
+
+- 固定来源 `sub2api-video-mcp@3f2d885b79630f50b9cf4ae62251596cc37bbd18` 的 video submit/status response semantics 映射到 `SF-PROTO-02`；实施范围只限 Sub2API adapter、对应合同测试、CONTRACT-007 与两份映射记录。
+- 来源递归取值顺序、submit 原始 response ID 保留、status `data` wrapper-only、精确终态以及 unknown/missing status→PROCESSING 均以 PX TaskSpec 为准。平台严格 2xx gate、HTTP 错误归一化、非对象错误、持久化 ID 后仅查询和有限 worker budget 保持不变。
+- 不调用真实 Provider、网络、Veyra、共享积分或 VPS；不触及其它 dirty changes。此条仅记录待审计的当前子任务，不变更 C07/C12.4/C12.5/G02 或 E12/R01 状态。定向测试、命令、失败/skip 与最终代码快照 hash 由最终双审计通过后的 PX 实施证据补记绑定。

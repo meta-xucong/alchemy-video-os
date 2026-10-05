@@ -109,3 +109,17 @@ document_conversion.failed
 只有上述门禁通过、转换结果可追溯、没有网络/对象 key 泄露、默认 Mock 视频闭环不回归后，C10 才可标记 `ACCEPTED`。本章不包含 Veyra、SUB2API 视频 POST、SSH、VPS、DNS、TLS 或部署。
 
 > **2026-09-01 当前音频口径**：C10 资料转换不要求用户上传旁白/样音；自动视频音频由 Provider 原生或显式 Doubao 服务器资产路径产生。本文关于 Mock、Veyra/VPS 和外部调用的范围仍有效；当前本机对照按最新自动音频执行文档单独进行，不扩大 C10。
+
+## 2026-10-02 P5 离线依赖验证记录
+
+- 固定 MarkItDown 来源 `fd239d5d2be43d9b68329730206b9312c7d5a388` 的 `packages/markitdown/pyproject.toml` 声明四个所需 extras：`pdf = ["pdfminer.six>=20251230", "pdfplumber>=0.11.9"]`、`docx = ["mammoth~=1.11.0", "lxml"]`、`pptx = ["python-pptx"]`、`xlsx = ["pandas", "openpyxl"]`。没有扩大既有六种 C10 格式 allowlist。
+- 本机 uv 为 `0.12.5`；配置 cache 路径为 `C:\Users\T14S\AppData\Local\uv\cache`。本轮外部任务根目录为 `C:\Users\T14S\AppData\Local\Temp\alchemy-source-test-39b51b2edfe24950a8365da1c4fc6bdd`；未创建 document-runtime 环境，未使用项目 `.venv`、未修改或清理 cache。
+- 显式设置 `UV_PROJECT_ENVIRONMENT` 指向该任务根目录下新的 `document-runtime-venv` 并设置 `UV_OFFLINE=1` 后，`uv lock --offline` 退出码 1。uv 报告离线索引仅有 `markitdown[pdf]<0.1.7` 或 `>=0.2`，无法满足现有范围 `>=0.1.7,<0.2`；同时 `uvicorn==0.53.0`、`pydantic==2.13.5` 需从 registry 下载。按冻结验证规则记 `BLOCKED_LOCAL_CACHE` 并停止，不联网、不安装、不改 lock。
+- `services/document-runtime/pyproject.toml` 保持原值，`uv.lock` 未变化；四种 parser fixture 与完整 Runtime suite 未运行。因此 C10 当前章节状态仍受依赖闭包验证阻断，本记录不构成章节验收或 `ACCEPTED`。
+
+## 2026-10-02 P5 隔离包安装复验（TaskSpec 1.2.1 supersession）
+
+- 本节按《原仓库偏差收敛开发包_20261001》`03 §10.2–10.3` 窄范围覆盖上方历史离线缓存阻断记录：只为固定 MarkItDown `pdf/docx/pptx/xlsx` extras 下载 Python 包，并在仓库外全新隔离环境运行测试。此前 P5 cache miss 的失败事实保留为历史记录，不再代表当前 P5 状态。
+- document-runtime 锁定依赖已在任务隔离环境中安装；既有纯文本、Markdown、PDF/DOCX/PPTX/XLSX fixture 与 URL/错误扩展名/未知 MIME/超限负例 `8/8` 通过。media-runtime core 锁依赖在另一隔离环境中安装，完整 unittest `145/145` 通过、0 skip。两包 `uv lock --check --locked` 与 `uv sync --locked --no-dev` 均通过。
+- MarkItDown extras 名称及依赖均来自固定上游 commit `fd239d5d2be43d9b68329730206b9312c7d5a388`；C10 六种既有格式 allowlist、URL/路径安全边界和 Runtime 公开契约均未扩展。未改生产代码或 Dockerfile。真实业务外部服务均未调用。
+- P5 的固定来源/依赖闭包 Source Fidelity 与独立普通 Audit 均已 PASS，普通 Audit 在隔离环境复跑 `8/8` 与 `145/145`。这只关闭 P5 packaging/runtime 依赖门，不代表 C10 全部 API、持久化、Worker 恢复、Studio/E2E 等 Exit Gate 已通过；C10 章节仍不得据此标记 `ACCEPTED`，完整章节审计仍需单独决定。

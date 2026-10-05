@@ -35,6 +35,7 @@ const COMPOSITION_OWNERSHIP_AUDIO_PLAN_MAGIC = Buffer.from("ALCHMED7", "ascii");
 // ALCHMED8 carries the source-faithful AudioPlan identity/mix metadata.  The
 // ALCHMED7 ownership wire remains unchanged for historical snapshots.
 const COMPOSITION_COMPLETE_AUDIO_PLAN_MAGIC = Buffer.from("ALCHMED8", "ascii");
+const COMPOSITION_AUDIO_SELECTION_MAGIC = Buffer.from("ALCHMED9", "ascii");
 const MAX_SINGLE_VIDEO_BYTES = 50 * 1024 * 1024;
 const MAX_COMPOSITION_SEGMENTS = 12;
 const MAX_COMPOSITION_INPUT_BYTES = 160 * 1024 * 1024;
@@ -89,8 +90,9 @@ export class MediaRuntimeClientError extends Error {
   constructor(
     readonly code: "MEDIA_RUNTIME_UNAVAILABLE" | "MEDIA_RENDER_FAILED" | "QC_FAILED",
     readonly retryable: boolean,
+    diagnostic?: string,
   ) {
-    super(code);
+    super(diagnostic ? `${code}: ${diagnostic}` : code);
     this.name = "MediaRuntimeClientError";
   }
 }
@@ -104,11 +106,14 @@ const boundedHeaderNumber = (headers: Headers, name: string) => {
 };
 
 const responseError = async (response: Response): Promise<MediaRuntimeClientError> => {
-  const payload = await response.json().catch(() => undefined) as { error?: { code?: unknown; retryable?: unknown } } | undefined;
+  const payload = await response.json().catch(() => undefined) as { error?: { code?: unknown; retryable?: unknown; diagnostic?: unknown } } | undefined;
   const code = payload?.error?.code;
   const retryable = payload?.error?.retryable === true || response.status >= 500;
-  if (code === "QC_FAILED") return new MediaRuntimeClientError("QC_FAILED", retryable);
-  if (code === "MEDIA_RENDER_FAILED") return new MediaRuntimeClientError("MEDIA_RENDER_FAILED", retryable);
+  const diagnostic = typeof payload?.error?.diagnostic === "string"
+    ? payload.error.diagnostic.replace(/[\r\n\t\x00-\x1f\x7f]+/g, " ").slice(0, 240)
+    : undefined;
+  if (code === "QC_FAILED") return new MediaRuntimeClientError("QC_FAILED", retryable, diagnostic);
+  if (code === "MEDIA_RENDER_FAILED") return new MediaRuntimeClientError("MEDIA_RENDER_FAILED", retryable, diagnostic);
   return new MediaRuntimeClientError("MEDIA_RUNTIME_UNAVAILABLE", retryable);
 };
 
@@ -145,6 +150,9 @@ export const encodeMediaCompositionBundle = (
   const parsedPlan = MediaRuntimeCompositionPlanSchema.safeParse(plan);
   if (!parsedPlan.success) throw new MediaRuntimeClientError("QC_FAILED", false);
   plan = parsedPlan.data;
+  if (plan.audio_selection === "MUSIC_REPLACE_PROVIDER_AUDIO" && !plan.audio_plan) {
+    throw new MediaRuntimeClientError("QC_FAILED", false);
+  }
   if (
     plan.transitions.length !== segments.length - 1
     || plan.bridge_durations_ms.length !== plan.transitions.filter((transition) => transition === "BRIDGE").length
@@ -334,7 +342,9 @@ export const encodeMediaCompositionBundle = (
     || rawMix.ducking_enabled !== undefined
   ));
   const magic = audioPlan
-    ? COMPOSITION_COMPLETE_AUDIO_PLAN_MAGIC
+    ? (plan.audio_selection === "DOUBAO_TTS_REPLACE" || plan.audio_selection === "MUSIC_REPLACE_PROVIDER_AUDIO"
+      ? COMPOSITION_AUDIO_SELECTION_MAGIC
+      : COMPOSITION_COMPLETE_AUDIO_PLAN_MAGIC)
     : audioTracks.length > 0
     ? COMPOSITION_OWNERSHIP_AUDIO_PLAN_MAGIC
     : advancedAudio
@@ -345,14 +355,22 @@ export const encodeMediaCompositionBundle = (
     : plan.audio_policy === "CONTINUOUS_NARRATION" ? COMPOSITION_AUDIO_PLAN_MAGIC : COMPOSITION_PLAN_MAGIC;
   const advancedBytes = (advancedAudio || audioTracks.length > 0 || audioPlan) ? 2 + 1 + 1 + 2 + 1 + 1 + 2 + 2 + 1 + 1 + musicSegments.length * 8 : 0;
   const ownershipBytes = audioTracks.length > 0 && !audioPlan ? ownershipTrackBytes : 0;
-  const length = magic.byteLength + 1 + 1 + transitionBytes.byteLength + 4 + 1 + ((plan.audio_policy === "CONTINUOUS_NARRATION" || advancedAudio || audioTracks.length > 0 || audioPlan) ? 1 : 0) + ((magic === COMPOSITION_NARRATION_PLAN_MAGIC || advancedAudio || audioTracks.length > 0 || audioPlan) ? 1 : 0) + advancedBytes + ownershipBytes + completeAudioPlanBytes + narrationTrackPayloadBytes + (includeNarration ? 4 + narrationBytes!.byteLength : 0) + (includeMusic ? 4 + musicBytes!.byteLength : 0) + plan.bridge_durations_ms.length * 4
+  const hasAudioSelection = magic === COMPOSITION_AUDIO_SELECTION_MAGIC;
+  const length = magic.byteLength + (hasAudioSelection ? 1 : 0) + 1 + 1 + transitionBytes.byteLength + 4 + 1 + ((plan.audio_policy === "CONTINUOUS_NARRATION" || advancedAudio || audioTracks.length > 0 || audioPlan) ? 1 : 0) + ((magic === COMPOSITION_NARRATION_PLAN_MAGIC || advancedAudio || audioTracks.length > 0 || audioPlan) ? 1 : 0) + advancedBytes + ownershipBytes + completeAudioPlanBytes + narrationTrackPayloadBytes + (includeNarration ? 4 + narrationBytes!.byteLength : 0) + (includeMusic ? 4 + musicBytes!.byteLength : 0) + plan.bridge_durations_ms.length * 4
     + segments.reduce((total, segment) => total + 4 + segment.byteLength, 0);
   if (length > MAX_COMPOSITION_INPUT_BYTES) throw new MediaRuntimeClientError("MEDIA_RENDER_FAILED", false);
   const bundle = new Uint8Array(length);
   bundle.set(magic, 0);
-  bundle[magic.byteLength] = segments.length;
-  bundle[magic.byteLength + 1] = transitionBytes.byteLength;
-  let cursor = magic.byteLength + 2;
+  let cursor = magic.byteLength;
+  if (hasAudioSelection) {
+    bundle[cursor] = plan.audio_selection === "DOUBAO_TTS_REPLACE"
+      ? 1
+      : plan.audio_selection === "MUSIC_REPLACE_PROVIDER_AUDIO" ? 2 : 0;
+    cursor += 1;
+  }
+  bundle[cursor] = segments.length;
+  bundle[cursor + 1] = transitionBytes.byteLength;
+  cursor += 2;
   bundle.set(transitionBytes, cursor);
   cursor += transitionBytes.byteLength;
   new DataView(bundle.buffer, bundle.byteOffset + cursor, 4).setUint32(0, plan.target_duration_ms, false);
@@ -556,16 +574,17 @@ export class HttpMediaRuntimeClient {
     }
   }
 
-  async finalReview(input: { operationId: string; bytes: Uint8Array; expectedSha256: string; scriptText?: string; captionPolicy?: "REQUIRED" | "OPTIONAL" | "OFF" }): Promise<MediaRuntimeFinalReview> {
+  async finalReview(input: { operationId: string; bytes: Uint8Array; expectedSha256: string; scriptText?: string; captionPolicy?: "REQUIRED" | "OPTIONAL" | "OFF"; musicApplied?: boolean }): Promise<MediaRuntimeFinalReview> {
     const response = await this.request({
       path: "/internal/v1/media/final-review",
       operationId: input.operationId,
       contentType: "video/mp4",
       bytes: input.bytes,
       expectedSha256: input.expectedSha256,
-      extraHeaders: input.scriptText || input.captionPolicy ? {
+      extraHeaders: input.scriptText || input.captionPolicy || input.musicApplied !== undefined ? {
         ...(input.scriptText ? { "X-Media-Script-Text-Base64": Buffer.from(input.scriptText, "utf8").toString("base64url") } : {}),
         ...(input.captionPolicy ? { "X-Media-Caption-Policy": input.captionPolicy } : {}),
+        ...(input.musicApplied !== undefined ? { "X-Media-Music-Applied": String(input.musicApplied) } : {}),
       } : undefined,
     });
     if (!response.ok) throw await responseError(response);

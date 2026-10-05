@@ -16,6 +16,8 @@
 
 ### 0.1 当前口径（所有相关文档必须一致）
 
+2026-10-04 明确：现有 `CreateProductionRunCommand.audio_selection` 允许 Studio 用户逐次选择 `PRESERVE_PROVIDER_AUDIO` 或 `DOUBAO_TTS_REPLACE`。选择在 `production_runs.budget_guard` 私有冻结，并沿同 run 内部 Runtime 计划传递；不能更改 TaskRun `audio_owner` profile 事实，也不能从 `voice_mode`、对白标签或环境配置推断。OpenMontage `_mux_external_audio` 语义要求整轨替换时丢弃原 MP4 音轨，而不是混入/重分类。该窄功能已完成本地限定验收；不代表真实 Provider/TTS、中文听感或正式章节验收。实现和审计证据见《AI企业内容生产平台_显式DOUBAO整轨替换同运行来源绑定开发文档_20261004.md》§8。
+
 - 本项目当前业务是“自动生成视频，并由 Provider 原生音频或服务端 TTS 生成匹配音频”；用户不需要、也不会被要求上传旁白、样音或其它 spoken audio。通用图片、资料、Logo、MUSIC 上传不受影响。
 - `NARRATION_SAMPLE`、`USER_SOURCE_AUDIO` 只保留为兼容既有资产和跨角色隔离测试；它们不能触发自动旁白、不能进入 AUTO BGM，也不能代替服务器生成的样音/正式 `NarrationAssetVersion`。
 - 真实本机操作模式已获本轮授权：视频使用现有 Aiself `Sub2ApiVideoProvider`（`VIDEO_PROVIDER=sub2api`），优先保留 Grok 原生音频；只有操作者明确选择替换时，才使用 OpenMontage `DoubaoTTS`，当前语音 profile 为 `seed-tts-2.0` + `zh_female_meilinvyou_uranus_bigtts`。该模式不等于生产部署、共享积分或 Veyra 开启。
@@ -167,3 +169,17 @@ R01.2/R01.3 若发现公共命令或持久化字段不足，先在 `doc/AI企业
 5. 用户对真实产物的普通话口音、断句、语速、情绪、画面语义人工验收。一次 canary、结构性测试或静态文档命中均不能替代这些门。
 
 真实模式切换只代表本机可执行配置，不是章节状态升级。每次真实调用后必须回写产物事实、调用次数、失败原因和人工验收状态（不写密钥、原始 token、签名 URL 或完整 Provider payload），再由独立审计员决定是否推进。
+
+## 10. 2026-10-04 BGM-only 整轨替换（文档门 PASS，代码待实现）
+
+用户授权继续解决 BGM-on 视频组合阻断并再次生成测试视频。当前生效的 P6 规则禁止将来源角色不明的整段 Provider MP4 音轨重标为 SFX；因此 Preserve+Music ON 在无法证明 source role 时仍 fail-closed。
+
+候选 `MUSIC_REPLACE_PROVIDER_AUDIO` 是与 native Preserve、Doubao replacement 互斥的显式 ProductionRun 选择：首版只接受 MANUAL MusicPlan 并冻结用户精确选择的 MUSIC asset ID/hash/duration；AUTO/OFF 拒绝。它只用现有 OpenMontage `_full_mix` 的 MUSIC 输入与 `_mux_external_audio` 的整轨替换，输出只含一条覆盖全片的 MUSIC 音轨，明确丢弃 Provider 原音。不得自动选择、不得据此推断音轨可混，也不得宣称是原生音+BGM叠加。素材短于全片或错配时阻断，不回退。
+
+独立文档审计已对五份候选文档 PASS；该状态更新使五文件 hash/status binding 必须重新复核，复核通过前仍不得实施。后续实现只可按《AI企业内容生产平台_显式BGM整轨替换Provider原音开发文档_20261004.md》执行。代码通过也只接受这一窄功能，不关闭 E12/R01、C12.4/C12.5、G02 项目门或其它音频所有者/QC门。
+
+### 10.1 2026-10-05 BGM replacement 实施状态 supersession（不升级章节）
+
+第 10 节标题和“复核通过前代码待实现”均为实施前快照，现由本节及《显式 BGM 整轨替换 Provider 原音开发文档》§7.1 supersede：工作树已有该窄链路的实现；固定三段素材 + 已选 BGM 的隔离合成复现与用户认可成片字节一致，真实 ProductionRun/VideoVersion 成功。该证据只说明实现存在并复现了一个样例，不等于当前混合工作树的完整 source/audit Exit Gate。
+
+当前仍无冻结在干净基线上的精确 BGM write-set 及同版本 Source Fidelity/普通 Audit receipts，且全候选路径混有非 BGM 改动；所以 BGM 仅为 `IMPLEMENTED / LIMITED_FEATURE_ACCEPTANCE_PENDING`，不得记 `LIMITED_FEATURE_ACCEPTED`。C12.2 仍按正式总控标为 `NOT_ACTIVE_IN_THIS_SCOPE`；G02、C12.4/C12.5、E12/R01 状态不变。持久 QC `NEEDS_ATTENTION / COMPOSITION` 及 projection→实际 Provider 请求绑定缺口保留。已成功的视频不重生成；本补记不授权新的 Provider/Git/VPS/deploy 操作。

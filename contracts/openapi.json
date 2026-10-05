@@ -5,10 +5,16 @@
     "version": "1.0.0",
     "description": "C02 contract export. C03 implements the HTTP handlers."
   },
+  "security": [
+    {
+      "videoSessionCookie": []
+    }
+  ],
   "paths": {
     "/api/v1/health": {
       "get": {
         "operationId": "getHealth",
+        "security": [],
         "responses": {
           "200": {
             "description": "Control API health",
@@ -16,6 +22,52 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HealthSuccess"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/health/live": {
+      "get": {
+        "operationId": "getLiveness",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Control API process liveness",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthSuccess"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/health/ready": {
+      "get": {
+        "operationId": "getReadiness",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Control API readiness",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthSuccess"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Control API dependencies are not ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiFailure"
                 }
               }
             }
@@ -2348,6 +2400,14 @@
     }
   },
   "components": {
+    "securitySchemes": {
+      "videoSessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-video_session",
+        "description": "Production Veyra video session cookie. Local DevIdentity is not a commercial authentication mechanism."
+      }
+    },
     "parameters": {
       "IdempotencyKey": {
         "name": "Idempotency-Key",
@@ -9716,7 +9776,8 @@
             "minimum": 0
           },
           "prompt": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           },
           "model": {
             "type": "string",
@@ -9795,7 +9856,8 @@
                 "minimum": 0
               },
               "prompt": {
-                "type": "string"
+                "type": "string",
+                "maxLength": 20000
               },
               "model": {
                 "type": "string",
@@ -10652,6 +10714,7 @@
           },
           "prompt": {
             "type": "string",
+            "maxLength": 20000,
             "default": ""
           },
           "model": {
@@ -10711,7 +10774,8 @@
             "minimum": 0
           },
           "prompt": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20000
           },
           "model": {
             "type": "string",
@@ -11141,6 +11205,15 @@
               "mode"
             ],
             "additionalProperties": false
+          },
+          "audio_selection": {
+            "type": "string",
+            "enum": [
+              "PRESERVE_PROVIDER_AUDIO",
+              "DOUBAO_TTS_REPLACE",
+              "MUSIC_REPLACE_PROVIDER_AUDIO"
+            ],
+            "default": "PRESERVE_PROVIDER_AUDIO"
           }
         },
         "required": [
@@ -11223,7 +11296,8 @@
                       "minimum": 0
                     },
                     "prompt": {
-                      "type": "string"
+                      "type": "string",
+                      "maxLength": 20000
                     },
                     "model": {
                       "type": "string",

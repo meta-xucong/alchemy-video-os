@@ -95,6 +95,32 @@
             @remove="removeProjectAsset"
           />
 
+          <section class="music-plan-panel surface-panel" aria-labelledby="audio-selection-title">
+            <div class="music-plan-heading">
+              <div>
+                <p class="eyebrow">音轨来源</p>
+                <h2 id="audio-selection-title">成片音轨来源</h2>
+              </div>
+            </div>
+            <div class="music-plan-options" role="radiogroup" aria-label="成片音轨来源">
+              <label class="music-plan-option" :class="{ selected: audioSelection === 'PRESERVE_PROVIDER_AUDIO' }">
+                <input v-model="audioSelection" type="radio" value="PRESERVE_PROVIDER_AUDIO" />
+                <span class="music-plan-option-copy"><strong>保留视频原声</strong><small>默认方式，不额外替换音轨</small></span>
+              </label>
+              <label class="music-plan-option" :class="{ selected: audioSelection === 'DOUBAO_TTS_REPLACE' }">
+                <input v-model="audioSelection" type="radio" value="DOUBAO_TTS_REPLACE" />
+                <span class="music-plan-option-copy"><strong>使用已批准的豆包旁白替换原声</strong><small>必须已有与本次脚本和时间轴匹配的正式旁白资产，否则本次制作会被阻止</small></span>
+              </label>
+              <label class="music-plan-option" :class="{ selected: audioSelection === 'MUSIC_REPLACE_PROVIDER_AUDIO' }">
+                <input v-model="audioSelection" type="radio" value="MUSIC_REPLACE_PROVIDER_AUDIO" :disabled="musicPlan.mode !== 'MANUAL' || !selectedMusicAsset" />
+                <span class="music-plan-option-copy"><strong>仅使用指定背景音乐</strong><small>仅接受已选的工作区 MUSIC 曲目；会移除视频 Provider 原声，不保留原声对白或环境音</small></span>
+              </label>
+            </div>
+            <p v-if="audioSelection === 'MUSIC_REPLACE_PROVIDER_AUDIO'" class="music-plan-note" role="status">
+              本次成片将只保留完整背景音乐，并丢弃所有视频片段内嵌的 Provider 原声。请在“背景音乐”中保持“指定曲目”并选择覆盖全片的曲目。
+            </p>
+          </section>
+
           <section class="music-plan-panel surface-panel" aria-labelledby="music-plan-title">
             <div class="music-plan-heading">
               <div>
@@ -388,6 +414,7 @@ const planningDraft = reactive({
   sourceAssetIds: [] as string[],
 });
 const musicPlan = reactive({ mode: "OFF" as "AUTO" | "MANUAL" | "OFF", assetId: "", styleHint: "" });
+const audioSelection = ref<"PRESERVE_PROVIDER_AUDIO" | "DOUBAO_TTS_REPLACE" | "MUSIC_REPLACE_PROVIDER_AUDIO">("PRESERVE_PROVIDER_AUDIO");
 const captionPolicy = ref<"OFF" | "REQUIRED">("OFF");
 const deliverySettings = reactive({
   durationPolicy: "EXACT" as "EXACT" | "FLEXIBLE",
@@ -1206,6 +1233,7 @@ async function startAutomatedProduction(projectId: string) {
       ...(musicPlan.mode === "MANUAL" ? { asset_id: musicPlan.assetId } : {}),
       ...(musicPlan.mode === "AUTO" && musicPlan.styleHint.trim() ? { style_hint: musicPlan.styleHint.trim() } : {}),
     },
+    audio_selection: audioSelection.value,
   }, commandKey("studio-auto-production-start"));
   applyProductionRun(production.data);
   planningMessage.value = "AI 已开始制作视频。";
@@ -1279,6 +1307,13 @@ async function toggleArchive() {
 async function generateVideo() {
   const current = detail.value;
   if (!canStartGeneration.value || creationBusy.value || planningBusy.value || productionBusy.value || !current) return;
+  if (audioSelection.value === "MUSIC_REPLACE_PROVIDER_AUDIO"
+    && (musicPlan.mode !== "MANUAL" || !selectedMusicAsset.value)) {
+    const message = "仅使用背景音乐模式要求选择一首工作区 MUSIC 曲目；请切换到“指定曲目”并选择曲目，或改回保留视频原声。";
+    creationError.value = message;
+    planningError.value = message;
+    return;
+  }
   creationBusy.value = true;
   planningBusy.value = true;
   creationError.value = "";

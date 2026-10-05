@@ -49,7 +49,7 @@ export const semanticDirectorModelProfiles: readonly SemanticDirectorModelProfil
     maxInputUtf8Bytes: 16_777_216,
     maxOutputTokens: 32_000,
     fixtureId: "semantic-director-certification-v1",
-    certificationSurfaceHash: "1489b5c8af684f9be32514799aa352d4420f21f6685ebdf41d7c4215915c64b5",
+    certificationSurfaceHash: "b9a7ac3054686fdc0b0990c45efccd536c7e307ae315599bcb0543540b5fa9c1",
     certificationSource: "REGISTRY",
   },
   {

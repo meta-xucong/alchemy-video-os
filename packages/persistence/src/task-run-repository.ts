@@ -1,10 +1,12 @@
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
 
 import {
   InternalEventEnvelopeSchema,
   InternalTaskRunQueueMessageSchema,
   TASK_RUN_TERMINAL_STATUSES,
   VideoGenerationInputSnapshotSchema,
+  parseG02ApprovedBeatMarkers,
   type InternalEventEnvelope,
   type InternalTaskRunQueueMessage,
   type TaskRunStatus,
@@ -14,7 +16,19 @@ import { assertTaskRunTransition, BILLING_RETRY_ERROR_CODES, createPrefixedId, f
 
 import type { PlatformDatabase } from "./db.js";
 import type { ControlAsset } from "./asset-workspace-repository.js";
-import { assets, commandDeduplications, eventConsumptions, outboxEvents, providerAttempts, shots, taskRuns } from "./schema.js";
+import {
+  assets,
+  canonicalVisualEntities,
+  canonicalVisualEntityRevisionAssets,
+  canonicalVisualEntityRevisions,
+  commandDeduplications,
+  creativeBriefRevisions,
+  eventConsumptions,
+  outboxEvents,
+  providerAttempts,
+  shots,
+  taskRuns,
+} from "./schema.js";
 import { assetScope, shotScope, taskRunScope } from "./workspace-repositories.js";
 
 export type ControlTaskRun = {
@@ -303,6 +317,167 @@ const queuedSourceForTaskRun = async (executor: QueryExecutor, workspaceId: stri
 
 const lockTaskRun = (executor: QueryExecutor, workspaceId: string, taskRunId: string) =>
   executor.execute(sql`select pg_advisory_xact_lock(hashtext(${workspaceId} || ':' || ${taskRunId}))`);
+
+const rawSha256 = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
+
+const verifyG02ProviderAttemptSnapshot = async (
+  transaction: QueryExecutor,
+  taskRun: typeof taskRuns.$inferSelect,
+): Promise<boolean> => {
+  const rawSnapshot = taskRun.inputSnapshot;
+  const hasG02Field = rawSnapshot !== null && typeof rawSnapshot === "object" && !Array.isArray(rawSnapshot)
+    && [
+      "semantic_entity_reference_projection",
+      "semantic_entity_reference_projection_hash",
+      "semantic_narrative_beat_lineage",
+      "semantic_narrative_beat_lineage_hash",
+    ].some((field) => Object.hasOwn(rawSnapshot, field));
+  if (!hasG02Field) return true;
+
+  const parsed = VideoGenerationInputSnapshotSchema.safeParse(rawSnapshot);
+  if (!parsed.success) return false;
+  const snapshot = parsed.data;
+  const projection = snapshot.semantic_entity_reference_projection;
+  const projectionHash = snapshot.semantic_entity_reference_projection_hash;
+  const lineage = snapshot.semantic_narrative_beat_lineage;
+  const lineageHash = snapshot.semantic_narrative_beat_lineage_hash;
+  if (!projection || !projectionHash || !lineage || !lineageHash
+    || projection.brief_revision_id !== lineage.brief_revision_id
+    || projection.source_hash !== lineage.source_hash
+    || projectionHash !== fingerprintRequest(projection)
+    || lineageHash !== fingerprintRequest(lineage)
+    || !snapshot.visual_input
+    || snapshot.visual_input.references.length === 0
+    || projection.bindings.length !== snapshot.visual_input.references.length
+    || snapshot.reference_asset_ids.length !== snapshot.visual_input.references.length
+    || projection.bindings.length === 0
+    || snapshot.generation_segment_sequence !== lineage.beat.sequence
+    || !snapshot.narrative_beat_sequences
+    || snapshot.narrative_beat_sequences.length !== 1
+    || snapshot.narrative_beat_sequences[0] !== lineage.beat.sequence) return false;
+
+  const [brief] = await transaction
+    .select()
+    .from(creativeBriefRevisions)
+    .where(and(
+      eq(creativeBriefRevisions.workspaceId, taskRun.workspaceId),
+      eq(creativeBriefRevisions.projectId, taskRun.projectId),
+      eq(creativeBriefRevisions.id, projection.brief_revision_id),
+    ))
+    .limit(1)
+    .for("update");
+  if (!brief || lineage.source_hash !== rawSha256(brief.sourceText)) return false;
+  let approvedBeats: ReturnType<typeof parseG02ApprovedBeatMarkers>;
+  try {
+    approvedBeats = parseG02ApprovedBeatMarkers(brief.sourceText);
+  } catch {
+    return false;
+  }
+  if (!approvedBeats) return false;
+  const { start, end, quote } = lineage.beat.span;
+  const approvedBeat = approvedBeats[lineage.beat.sequence - 1];
+  if (start >= end || end > brief.sourceText.length || brief.sourceText.slice(start, end) !== quote
+    || lineage.beat.exact_quote_sha256 !== rawSha256(quote)
+    || !approvedBeat
+    || approvedBeat.sequence !== lineage.beat.sequence
+    || approvedBeat.span.start !== start
+    || approvedBeat.span.end !== end
+    || approvedBeat.span.quote !== quote
+    || lineage.beat.identity_sha256 !== fingerprintRequest({
+      brief_revision_id: projection.brief_revision_id,
+      sequence: lineage.beat.sequence,
+      exact_quote_sha256: lineage.beat.exact_quote_sha256,
+    })) return false;
+
+  const bindings = projection.bindings;
+  const references = snapshot.visual_input.references;
+  const bindingAssets = new Set<string>();
+  const bindingPositions = new Set<number>();
+  for (const binding of bindings) {
+    const reference = references[binding.provider_position];
+    if (!reference || reference.position !== binding.provider_position
+      || reference.asset_id !== binding.asset_id
+      || reference.sha256 !== binding.asset_sha256
+      || snapshot.reference_asset_ids[binding.provider_position] !== binding.asset_id
+      || bindingAssets.has(binding.asset_id)
+      || bindingPositions.has(binding.provider_position)) return false;
+    bindingAssets.add(binding.asset_id);
+    bindingPositions.add(binding.provider_position);
+  }
+  if (bindings.some((_binding, index) => !bindingPositions.has(index))) return false;
+
+  const assetIds = [...bindingAssets];
+  const assetRows = await transaction.select({ id: assets.id, status: assets.status, origin: assets.origin, kind: assets.kind, sha256: assets.sha256 })
+    .from(assets)
+    .where(and(
+      eq(assets.workspaceId, taskRun.workspaceId),
+      eq(assets.projectId, taskRun.projectId),
+      inArray(assets.id, assetIds),
+    ));
+  const mappingRows = await transaction.select().from(canonicalVisualEntityRevisionAssets)
+    .where(and(
+      eq(canonicalVisualEntityRevisionAssets.workspaceId, taskRun.workspaceId),
+      eq(canonicalVisualEntityRevisionAssets.projectId, taskRun.projectId),
+      eq(canonicalVisualEntityRevisionAssets.briefRevisionId, projection.brief_revision_id),
+      inArray(canonicalVisualEntityRevisionAssets.assetId, assetIds),
+    ))
+    .for("update");
+  if (assetRows.length !== assetIds.length) return false;
+  const assetById = new Map(assetRows.map((asset) => [asset.id, asset]));
+  const ledger = mappingRows as unknown as Array<{
+    id: string;
+    changeKind: "ADD" | "REVOKE";
+    entityId: string;
+    revisionNumber: number;
+    assetId: string;
+    assetSha256: string;
+    mappingEvidenceId: string;
+    referenceEvidenceId: string;
+    briefRevisionId: string;
+    revokedAddId: string | null;
+  }>;
+  const revokedIds = new Set(ledger.filter((row) => row.changeKind === "REVOKE" && row.revokedAddId).map((row) => row.revokedAddId!));
+
+  for (const binding of bindings) {
+    const asset = assetById.get(binding.asset_id);
+    if (!asset || asset.status !== "READY" || asset.origin !== "USER_UPLOAD" || asset.kind !== "IMAGE"
+      || asset.sha256 !== binding.asset_sha256) return false;
+    const activeAdds = ledger.filter((row) => row.changeKind === "ADD" && row.assetId === binding.asset_id && !revokedIds.has(row.id));
+    if (activeAdds.length !== 1) return false;
+    const mapping = activeAdds[0]!;
+    if (mapping.id !== binding.mapping_evidence_id
+      || mapping.mappingEvidenceId !== binding.mapping_evidence_id
+      || mapping.entityId !== binding.entity_id
+      || mapping.assetSha256 !== binding.asset_sha256
+      || mapping.briefRevisionId !== projection.brief_revision_id
+      || !mapping.referenceEvidenceId.trim()) return false;
+
+    const [revision] = await transaction
+      .select({
+        revisionId: canonicalVisualEntityRevisions.id,
+        revisionNumber: canonicalVisualEntityRevisions.revisionNumber,
+        exactName: canonicalVisualEntityRevisions.exactName,
+        entityKind: canonicalVisualEntities.entityKind,
+      })
+      .from(canonicalVisualEntityRevisions)
+      .innerJoin(canonicalVisualEntities, and(
+        eq(canonicalVisualEntities.workspaceId, canonicalVisualEntityRevisions.workspaceId),
+        eq(canonicalVisualEntities.projectId, canonicalVisualEntityRevisions.projectId),
+        eq(canonicalVisualEntities.id, canonicalVisualEntityRevisions.entityId),
+      ))
+      .where(and(
+        eq(canonicalVisualEntityRevisions.workspaceId, taskRun.workspaceId),
+        eq(canonicalVisualEntityRevisions.projectId, taskRun.projectId),
+        eq(canonicalVisualEntityRevisions.entityId, binding.entity_id),
+        eq(canonicalVisualEntityRevisions.id, binding.entity_revision_id),
+      ))
+      .limit(1);
+    if (!revision || revision.revisionNumber !== mapping.revisionNumber
+      || revision.exactName !== binding.exact_name
+      || revision.entityKind !== binding.entity_kind) return false;
+  }
+  return true;
+};
 
 export class DrizzleTaskRunRepository implements TaskRunStore {
   constructor(private readonly db: PlatformDatabase) {}
@@ -594,6 +769,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
       if (submitted) return toControlProviderAttempt(submitted);
       const [existing] = await transaction.select().from(providerAttempts).where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.taskRunId, input.taskRunId))).orderBy(sql`${providerAttempts.createdAt} desc`).limit(1);
       if (existing && !["FAILED", "DOWNLOAD_FAILED", "ABANDONED"].includes(existing.status)) return toControlProviderAttempt(existing);
+      if (!(await verifyG02ProviderAttemptSnapshot(transaction, taskRun))) return undefined;
       const [created] = await transaction.insert(providerAttempts).values({
         id: input.providerAttemptId,
         workspaceId: input.workspaceId,

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import test from "node:test";
+import { getTableConfig } from "drizzle-orm/pg-core";
 
 import {
   assetDerivations,
@@ -43,6 +44,9 @@ import {
   documentKnowledgeRevisions,
   documentKnowledgeSections,
   documentFacts,
+  canonicalVisualEntities,
+  canonicalVisualEntityRevisions,
+  canonicalVisualEntityRevisionAssets,
 } from "../src/schema.js";
 import { budgetReservationStatus, capabilityProfileStatus, captionPolicy, continuityStatus, durationPolicy, handoffReviewResult, lipSyncRequirement, policyRevisionStatus, preflightRevisionStatus, productionSegmentStatus, qcStatus, qualityGateAction, qualityGateSeverity, taskRunStatus, transitionRepairStatus, transitionRepairStrategy, videoVersionStatus, voiceAuthorizationStatus, voiceMode } from "../src/schema.js";
 import {
@@ -444,4 +448,131 @@ test("a blocked production run does not retain the project active-run lock", asy
   );
   assert.match(migration, /DROP INDEX "production_runs_one_active_project_key"/);
   assert.match(migration, /status.*not in.*'SUCCEEDED'.*'FAILED'.*'BLOCKED'/s);
+});
+
+test("G02 migration freezes append-only canonical entity revisions and mapping evidence", async () => {
+  const entityConfig = getTableConfig(canonicalVisualEntities);
+  const revisionConfig = getTableConfig(canonicalVisualEntityRevisions);
+  const mappingConfig = getTableConfig(canonicalVisualEntityRevisionAssets);
+  assert.equal(canonicalVisualEntities.normalizedIdentity.notNull, true);
+  assert.equal(canonicalVisualEntityRevisions.revisionNumber.notNull, true);
+  assert.equal(canonicalVisualEntityRevisions.contentHash.notNull, true);
+  assert.equal(canonicalVisualEntityRevisionAssets.changeKind.notNull, true);
+  assert.equal(canonicalVisualEntityRevisionAssets.referenceEvidenceId.notNull, false);
+  assert.equal(canonicalVisualEntityRevisionAssets.revokedAddId.notNull, false);
+  for (const [config, names] of [
+    [entityConfig, ["canonical_visual_entities_identity_key", "canonical_visual_entities_workspace_project_fk"]],
+    [revisionConfig, ["canonical_visual_entity_revisions_scope_id_key", "canonical_visual_entity_revisions_number_key", "canonical_visual_entity_revisions_hash_key", "canonical_visual_entity_revisions_entity_fk"]],
+    [mappingConfig, [
+      "canonical_visual_entity_revision_assets_scope_id_key",
+      "canonical_visual_entity_revision_assets_mapping_evidence_key",
+      "canonical_visual_entity_revision_assets_revoked_add_key",
+      "canonical_visual_entity_revision_assets_brief_asset_idx",
+      "canonical_visual_entity_revision_assets_revision_fk",
+      "canonical_visual_entity_revision_assets_asset_fk",
+      "canonical_visual_entity_revision_assets_brief_fk",
+      "canonical_visual_entity_revision_assets_revoke_scope_fk",
+      "canonical_visual_entity_revision_assets_kind_check",
+      "canonical_visual_entity_revision_assets_revoke_shape_check",
+      "canonical_visual_entity_revision_assets_hash_format_check",
+      "canonical_visual_entity_revision_assets_usage_nonempty_check",
+    ]],
+  ] as const) {
+    const actual = [...config.indexes.map((item) => item.config.name), ...config.foreignKeys.map((item) => item.getName()), ...config.checks.map((item) => item.name)];
+    for (const name of names) assert.ok(actual.includes(name), `${name} is absent from Drizzle schema metadata`);
+  }
+  assert.equal(mappingConfig.indexes.some((item) => item.config.name === "canonical_visual_entity_revision_assets_reference_evidence_key"), false,
+    "The same frozen REFERENCE_ASSET evidence may back a later ADD after REVOKE.");
+
+  const migration = await readFile(resolve(import.meta.dirname, "..", "drizzle", "0026_canonical_visual_entity_revisions.sql"), "utf8");
+  const journal = JSON.parse(await readFile(resolve(import.meta.dirname, "..", "drizzle", "meta", "_journal.json"), "utf8")) as { entries: Array<{ idx: number; tag: string }> };
+  const snapshot = JSON.parse(await readFile(resolve(import.meta.dirname, "..", "drizzle", "meta", "0026_snapshot.json"), "utf8")) as {
+    tables: Record<string, {
+      indexes: Record<string, { isUnique: boolean; columns: Array<{ expression: string }> }>;
+      foreignKeys: Record<string, { name: string; tableFrom: string; tableTo: string; columnsFrom: string[]; columnsTo: string[] }>;
+    }>;
+  };
+  for (const token of [
+    "CREATE TABLE \"canonical_visual_entities\"",
+    "CREATE TABLE \"canonical_visual_entity_revisions\"",
+    "CREATE TABLE \"canonical_visual_entity_revision_assets\"",
+    "canonical_visual_entities_identity_key",
+    "canonical_visual_entity_revisions_number_key",
+    "canonical_visual_entity_revision_assets_mapping_evidence_key",
+    "canonical_visual_entity_revision_assets_revoke_scope_fk",
+    "canonical_visual_entity_revision_assets_revoke_shape_check",
+    "reference_evidence_id",
+  ]) assert.ok(migration.includes(token), `${token} is absent from 0026 migration`);
+  assert.doesNotMatch(migration, /canonical_visual_entity_revision_assets_reference_evidence_key/u,
+    "A unique reference-evidence key would prevent append-only ADD → REVOKE → ADD history.");
+  assert.equal(journal.entries.at(-1)?.idx, 26);
+  assert.equal(journal.entries.at(-1)?.tag, "0026_canonical_visual_entity_revisions");
+  assert.ok(snapshot.tables["public.canonical_visual_entity_revision_assets"]);
+  assert.equal(snapshot.tables["public.canonical_visual_entity_revision_assets"]?.indexes.canonical_visual_entity_revision_assets_reference_evidence_key, undefined);
+
+  const newUniqueTargetForeignKeys = [
+    {
+      source: "public.canonical_visual_entity_revisions",
+      name: "canonical_visual_entity_revisions_entity_fk",
+      target: "public.canonical_visual_entities",
+      index: "canonical_visual_entities_scope_id_key",
+      from: ["workspace_id", "project_id", "entity_id"],
+      to: ["workspace_id", "project_id", "id"],
+    },
+    {
+      source: "public.canonical_visual_entity_revision_assets",
+      name: "canonical_visual_entity_revision_assets_revision_fk",
+      target: "public.canonical_visual_entity_revisions",
+      index: "canonical_visual_entity_revisions_number_key",
+      from: ["workspace_id", "project_id", "entity_id", "revision_number"],
+      to: ["workspace_id", "project_id", "entity_id", "revision_number"],
+    },
+    {
+      source: "public.canonical_visual_entity_revision_assets",
+      name: "canonical_visual_entity_revision_assets_revoke_scope_fk",
+      target: "public.canonical_visual_entity_revision_assets",
+      index: "canonical_visual_entity_revision_assets_scope_id_key",
+      from: ["revoked_add_id", "workspace_id", "project_id", "entity_id", "revision_number", "asset_id", "asset_sha256", "brief_revision_id"],
+      to: ["id", "workspace_id", "project_id", "entity_id", "revision_number", "asset_id", "asset_sha256", "brief_revision_id"],
+    },
+  ] as const;
+  for (const relation of newUniqueTargetForeignKeys) {
+    const targetSnapshot = snapshot.tables[relation.target];
+    const foreignKey = snapshot.tables[relation.source]?.foreignKeys[relation.name];
+    const targetIndex = targetSnapshot?.indexes[relation.index];
+    assert.ok(targetIndex, `${relation.index} must be present in the Drizzle snapshot before its FK is installed`);
+    assert.equal(targetIndex.isUnique, true, `${relation.index} must provide a unique FK target`);
+    assert.deepEqual(targetIndex.columns.map((column) => column.expression), relation.to,
+      `${relation.index} must cover the referenced columns in order`);
+    const targetSchema = relation.target === "public.canonical_visual_entities"
+      ? entityConfig
+      : relation.target === "public.canonical_visual_entity_revisions"
+        ? revisionConfig
+        : mappingConfig;
+    const schemaIndex = targetSchema.indexes.find((item) => item.config.name === relation.index);
+    assert.ok(schemaIndex, `${relation.index} must be present in Drizzle schema metadata`);
+    assert.equal(schemaIndex.config.unique, true, `${relation.index} must be unique in Drizzle schema metadata`);
+    assert.deepEqual(schemaIndex.config.columns.map((column) => column.name), relation.to,
+      `${relation.index} Drizzle columns must match the FK target columns`);
+    assert.deepEqual(foreignKey && {
+      tableFrom: foreignKey.tableFrom,
+      tableTo: foreignKey.tableTo,
+      columnsFrom: foreignKey.columnsFrom,
+      columnsTo: foreignKey.columnsTo,
+    }, {
+      tableFrom: relation.source.split(".")[1],
+      tableTo: relation.target.split(".")[1],
+      columnsFrom: relation.from,
+      columnsTo: relation.to,
+    }, `${relation.name} snapshot must point at its exact indexed target`);
+    const indexOffset = migration.indexOf(`CREATE UNIQUE INDEX "${relation.index}"`);
+    const foreignKeyOffset = migration.indexOf(`ADD CONSTRAINT "${relation.name}"`);
+    assert.ok(indexOffset >= 0, `${relation.index} must be present in the migration`);
+    assert.ok(foreignKeyOffset > indexOffset, `${relation.name} must be installed after its target unique index`);
+  }
+  const migrationIndexOffsets = [...migration.matchAll(/CREATE (?:UNIQUE )?INDEX "/gu)].map((match) => match.index!);
+  const migrationForeignKeyOffsets = [...migration.matchAll(/ALTER TABLE ".+" ADD CONSTRAINT ".+_fk"/gu)].map((match) => match.index!);
+  assert.ok(migrationIndexOffsets.length > 0 && migrationForeignKeyOffsets.length > 0);
+  assert.ok(Math.max(...migrationIndexOffsets) < Math.min(...migrationForeignKeyOffsets),
+    "All 0026 FK constraints must be created after all indexes, including its three new unique-key targets.");
 });

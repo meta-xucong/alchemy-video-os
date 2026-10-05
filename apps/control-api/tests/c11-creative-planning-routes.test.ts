@@ -499,13 +499,18 @@ test("C11.7 delivery preflight is approval-gated, fail-closed, and event-backed"
   assert.deepEqual(await taskStore.listProjectTaskRuns("ws_dev_default", projectId), []);
 });
 
-test("native provider audio bypasses the platform narration TimelinePlan gate while Mock remains fail-closed", async () => {
-  const createScenario = async (videoProviderMode: "mock" | "sub2api") => {
+test("native provider audio bypasses the platform narration TimelinePlan gate and keeps audio choice private", async () => {
+  const createScenario = async (
+    videoProviderMode: "mock" | "sub2api",
+    audioSelection = "DOUBAO_TTS_REPLACE",
+    musicPlan: { mode: "AUTO" | "MANUAL" | "OFF"; asset_id?: string } = { mode: "OFF" },
+  ) => {
     const store = createInMemoryControlPlaneStore();
     const assetStore = createInMemoryAssetWorkspaceStore(store);
     const taskStore = createInMemoryTaskRunStore(assetStore);
     let projectId = "";
     let createProductionRunCalls = 0;
+    let observedAudioSelection: string | undefined;
     let timelineReadinessChecks = 0;
     const deliveryPlanRevisionId = createPrefixedId("dpr");
     const creativeBriefRevisionId = createPrefixedId("cbr");
@@ -513,8 +518,9 @@ test("native provider audio bypasses the platform narration TimelinePlan gate wh
       async findCreativeBriefRevision() {
         return { projectId, sourceText: "旁白：Provider 原生音轨承载这段台词。" };
       },
-      async createProductionRun(input: { productionRunId: string; workspaceId: string; projectId: string; storyboardRevisionId: string; deliveryPlanRevisionId?: string }) {
+      async createProductionRun(input: { productionRunId: string; workspaceId: string; projectId: string; storyboardRevisionId: string; deliveryPlanRevisionId?: string; audioSelection?: string }) {
         createProductionRunCalls += 1;
+        observedAudioSelection = input.audioSelection;
         const timestamp = new Date().toISOString();
         return {
           kind: "NEW" as const,
@@ -589,15 +595,32 @@ test("native provider audio bypasses the platform narration TimelinePlan gate wh
     const response = await post(app, `/api/v1/projects/${projectId}/production-runs`, `native-gate-production-${videoProviderMode}`, {
       storyboard_revision_id: createPrefixedId("sbr"),
       delivery_plan_revision_id: deliveryPlanRevisionId,
-      music_plan: { mode: "OFF" },
+      music_plan: musicPlan,
+      audio_selection: audioSelection,
     });
-    return { response, timelineReadinessChecks, createProductionRunCalls };
+    return { response, timelineReadinessChecks, createProductionRunCalls, observedAudioSelection };
   };
 
   const native = await createScenario("sub2api");
   assert.equal(native.response.status, 202);
+  assert.equal((await readJson(native.response)).data.audio_selection, undefined);
   assert.equal(native.timelineReadinessChecks, 0);
   assert.equal(native.createProductionRunCalls, 1);
+  assert.equal(native.observedAudioSelection, "DOUBAO_TTS_REPLACE");
+
+  const musicReplacement = await createScenario("sub2api", "MUSIC_REPLACE_PROVIDER_AUDIO", { mode: "MANUAL", asset_id: "ast_selected_music" });
+  assert.equal(musicReplacement.response.status, 202);
+  assert.equal((await readJson(musicReplacement.response)).data.audio_selection, undefined);
+  assert.equal(musicReplacement.timelineReadinessChecks, 0);
+  assert.equal(musicReplacement.createProductionRunCalls, 1);
+  assert.equal(musicReplacement.observedAudioSelection, "MUSIC_REPLACE_PROVIDER_AUDIO");
+
+  for (const mode of ["AUTO", "OFF"] as const) {
+    const invalidMusicReplacement = await createScenario("sub2api", "MUSIC_REPLACE_PROVIDER_AUDIO", { mode });
+    assert.equal(invalidMusicReplacement.response.status, 400);
+    assert.equal((await readJson(invalidMusicReplacement.response)).error.code, "VALIDATION_FAILED");
+    assert.equal(invalidMusicReplacement.createProductionRunCalls, 0);
+  }
 
   const mock = await createScenario("mock");
   assert.equal(mock.response.status, 422);

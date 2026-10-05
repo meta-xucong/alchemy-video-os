@@ -623,9 +623,15 @@ test("MANUAL composition consumes only the explicitly selected MUSIC asset as on
   });
   assert.ok(result);
   assert.equal(result.musicAsset?.id, manualMusicAsset.id);
+  assert.equal(result.compositionPlan?.music_mix.fade_in_ms, 1_500);
+  assert.equal(result.compositionPlan?.music_mix.fade_out_ms, 2_500);
   assert.deepEqual(result.compositionPlan?.music_segments_ms, [
     { start_ms: 0, end_ms: 1_000 },
   ]);
+  const musicTrack = result.compositionPlan?.audio_plan?.tracks.find((track) => track.ownership === "MUSIC");
+  assert.ok(musicTrack);
+  assert.equal(musicTrack.fade_in_ms, undefined);
+  assert.equal(musicTrack.fade_out_ms, undefined);
   assert.deepEqual(
     result.compositionPlan?.audio_plan?.tracks
       .filter((track) => track.ownership === "MUSIC")

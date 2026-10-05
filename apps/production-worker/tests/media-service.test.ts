@@ -3,10 +3,71 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import type { InternalEventEnvelope, MediaRuntimeNarrationSegment } from "@alchemy-video/contracts";
-import { ProductionCompositionInputUnavailableError } from "@alchemy-video/persistence";
+import { ProductionCompositionInputUnavailableError, type ProductionCompositionInput } from "@alchemy-video/persistence";
 import { createInMemoryStoragePort } from "@alchemy-video/storage-client";
 
-import { MediaRuntimeEventConsumer, MediaRuntimeOutboxRelay, createMediaRuntimeQueueMessage } from "../src/media-service.js";
+import { MediaRuntimeEventConsumer, MediaRuntimeOutboxRelay, approvedDoubaoCompositionIdentityMatches, createMediaRuntimeQueueMessage } from "../src/media-service.js";
+
+test("worker rejects any drift in frozen Doubao asset-version, provider, voice, or settings identity", () => {
+  const provenance: NonNullable<ProductionCompositionInput["audioProvenance"]> = {
+    version: 1,
+    workspaceId: "ws_identity",
+    projectId: "prj_identity",
+    productionRunId: "prd_identity",
+    storyboardRevisionId: "sbr_identity",
+    deliveryPlanRevisionId: "dpr_identity",
+    timelinePlanId: "tlp_identity",
+    narrationScriptRevisionId: "nsr_identity",
+    effectiveDurationMs: 1_000,
+    narrationSections: [{ sectionId: "sec_identity", startMs: 0, endMs: 1_000, visualRole: "PRIMARY", narrationAssetVersionId: "nav_identity" }],
+    assetVersions: [{
+      sectionId: "sec_identity",
+      assetVersionId: "nav_identity",
+      narrationScriptRevisionId: "nsr_identity",
+      assetId: "ast_identity",
+      sha256: "a".repeat(64),
+      byteSize: 32,
+      mimeType: "audio/wav",
+      durationMs: 900,
+      provider: "doubao",
+      voiceId: "voice_identity",
+      providerSettings: { model: "doubao-model", speed: 1 },
+    }],
+  };
+  const asset = {
+    assetVersionId: "nav_identity",
+    id: "ast_identity",
+    workspaceId: "ws_identity",
+    projectId: "prj_identity",
+    objectKey: "ws_identity/prj_identity/ast_identity/audio.wav",
+    sha256: "a".repeat(64),
+    byteSize: 32,
+    mimeType: "audio/wav",
+    durationMs: 900,
+    provider: "doubao",
+    voiceId: "voice_identity",
+    providerSettings: { model: "doubao-model", speed: 1 },
+  };
+  const source = {
+    workspaceId: "ws_identity",
+    projectId: "prj_identity",
+    productionRunId: "prd_identity",
+    storyboardRevisionId: "sbr_identity",
+    deliveryPlanRevisionId: "dpr_identity",
+    compositionPlan: { target_duration_ms: 1_000 },
+    audioProvenance: provenance,
+  } as unknown as ProductionCompositionInput;
+  assert.equal(approvedDoubaoCompositionIdentityMatches({ source, narrationAssets: [asset] }), true);
+  for (const drift of [
+    { ...asset, assetVersionId: "nav_other" },
+    { ...asset, provider: "piper" },
+    { ...asset, voiceId: "voice_other" },
+    { ...asset, providerSettings: { model: "doubao-model", speed: 1.1 } },
+    { ...asset, sha256: "b".repeat(64) },
+  ]) {
+    assert.equal(approvedDoubaoCompositionIdentityMatches({ source, narrationAssets: [drift] }), false);
+  }
+});
 
 const readStoredBytes = async (storage: ReturnType<typeof createInMemoryStoragePort>, objectKey: string) => {
   const object = await storage.readObject({ objectKey });
@@ -755,6 +816,7 @@ test("approved narration asset is consumed without Piper synthesis and accepts a
   };
   let synthesizeCalls = 0;
   let composeNarration: Uint8Array | undefined;
+  let composeAudioSelection: string | undefined;
   let claimCalls = 0;
   let composeCalls = 0;
   let burnCaptionCalls = 0;
@@ -783,9 +845,37 @@ test("approved narration asset is consumed without Piper synthesis and accepts a
         projectId: event.project_id!,
         productionRunId: event.data.production_run_id,
         storyboardRevisionId: "sbr_approved_narration",
+        deliveryPlanRevisionId: "dpr_approved_narration",
+        audioSelection: "DOUBAO_TTS_REPLACE" as const,
+        audioProvenance: {
+          version: 1 as const,
+          workspaceId: event.workspace_id,
+          projectId: event.project_id!,
+          productionRunId: event.data.production_run_id,
+          deliveryPlanRevisionId: "dpr_approved_narration",
+          storyboardRevisionId: "sbr_approved_narration",
+          timelinePlanId: "tlp_approved_narration",
+          narrationScriptRevisionId: "nsr_approved_narration",
+          effectiveDurationMs: 1000,
+          narrationSections: [{ sectionId: "sec_approved", startMs: 0, endMs: 1000, visualRole: "PRIMARY" as const, narrationAssetVersionId: "nav_approved_narration" }],
+          assetVersions: [{
+            sectionId: "sec_approved",
+            assetVersionId: "nav_approved_narration",
+            narrationScriptRevisionId: "nsr_approved_narration",
+            assetId: "ast_approved_narration",
+            sha256: narrationSha256,
+            byteSize: narrationBytes.byteLength,
+            mimeType: "audio/mpeg",
+            durationMs: 1000,
+            provider: "doubao",
+            voiceId: "approved_voice",
+            providerSettings: {},
+          }],
+        },
         scriptText: "原始来源文本",
         narrationSegments: [{ text: "批准后的旁白文本", startMs: 0 }],
         narrationAsset: {
+          assetVersionId: "nav_approved_narration",
           id: "ast_approved_narration",
           workspaceId: event.workspace_id,
           projectId: event.project_id!,
@@ -794,6 +884,9 @@ test("approved narration asset is consumed without Piper synthesis and accepts a
           byteSize: narrationBytes.byteLength,
           mimeType: "audio/mpeg",
           durationMs: 1000,
+          provider: "doubao",
+          voiceId: "approved_voice",
+          providerSettings: {},
         },
         captionPolicy: "REQUIRED" as const,
         compositionPlan: {
@@ -801,6 +894,7 @@ test("approved narration asset is consumed without Piper synthesis and accepts a
           transitions: [],
           bridge_durations_ms: [],
           audio_policy: "CONTINUOUS_NARRATION",
+          audio_selection: "DOUBAO_TTS_REPLACE",
           audio_plan: {
             version: 1,
             target_duration_ms: 1000,
@@ -842,6 +936,7 @@ test("approved narration asset is consumed without Piper synthesis and accepts a
     async compose(input) {
       composeCalls += 1;
       composeNarration = input.narrationBytes;
+      composeAudioSelection = input.compositionPlan?.audio_selection;
       return { bytes: finalBytes, inspection: { sha256: finalSha256, byte_size: finalBytes.byteLength, duration_ms: 1000 } };
     },
     async burnCaptions(input) {
@@ -860,6 +955,7 @@ test("approved narration asset is consumed without Piper synthesis and accepts a
   // immutable artifact without replacing its bytes or changing its identity.
   await consumer.process(createMediaRuntimeQueueMessage({ id: event.event_id, workspaceId: event.workspace_id, event, publishAttempts: 1 })!);
   assert.deepEqual(composeNarration, narrationBytes);
+  assert.equal(composeAudioSelection, "DOUBAO_TTS_REPLACE");
   assert.equal(claimCalls, 2);
   assert.equal(composeCalls, 2);
   assert.equal(synthesizeCalls, 0);
@@ -948,6 +1044,354 @@ test("Media Runtime rejects a conflicting retry artifact before composition pers
   assert.equal(released.length, 1);
   assert.equal(released[0]?.deadLetter, false);
   assert.match(String(released[0]?.reason), /derived object conflicts with persisted media bytes/);
+});
+
+test("Media Runtime verifies and forwards the frozen composition plan with its selected MUSIC identity", async () => {
+  const storage = createInMemoryStoragePort();
+  const workspaceId = qcRequestedEvent.workspace_id;
+  const projectId = qcRequestedEvent.project_id!;
+  const sourceBytes = new TextEncoder().encode("frozen-music-composition-source");
+  const sourceSha256 = createHash("sha256").update(sourceBytes).digest("hex");
+  const sourceObjectKey = `${workspaceId}/${projectId}/ast_frozen_music_source/source.mp4`;
+  const musicBytes = new TextEncoder().encode("selected-independent-music");
+  const musicSha256 = createHash("sha256").update(musicBytes).digest("hex");
+  const musicObjectKey = `${workspaceId}/${projectId}/ast_native_manual_music/music.wav`;
+  await storage.putObject({ objectKey: sourceObjectKey, mimeType: "video/mp4", bytes: sourceBytes, ifNoneMatch: "*" });
+  await storage.putObject({ objectKey: musicObjectKey, mimeType: "audio/wav", bytes: musicBytes, ifNoneMatch: "*" });
+  const event: Extract<InternalEventEnvelope, { event_type: "video_version.composition_requested" }> = {
+    ...qcRequestedEvent,
+    message_id: "msg_frozen_music_composition",
+    event_id: "evt_frozen_music_composition",
+    event_type: "video_version.composition_requested",
+    aggregate: { type: "production_run", id: qcRequestedEvent.data.production_run_id },
+    data: { production_run_id: qcRequestedEvent.data.production_run_id },
+  };
+  const compositionPlan = {
+    target_duration_ms: 1_000,
+    transitions: [],
+    bridge_durations_ms: [],
+    audio_policy: "LEGACY_PRESERVE" as const,
+    audio_plan: {
+      version: 1 as const,
+      target_duration_ms: 1_000,
+      narration_sections: [{ section_id: "tail", start_ms: 0, end_ms: 1_000, visual_role: "HOLD" as const }],
+      stitch_policy: "LEGACY_PRESERVE" as const,
+      tracks: [{
+        track_id: "music",
+        ownership: "MUSIC" as const,
+        asset_id: "ast_native_manual_music",
+        start_ms: 0,
+        end_ms: 1_000,
+        gain_db: "-6",
+        duck_under_narration: true,
+      }],
+    },
+    music_mix: { enabled: true },
+    music_segments_ms: [{ start_ms: 0, end_ms: 1_000 }],
+  };
+  const finalBytes = new TextEncoder().encode("frozen-music-composition-result");
+  const finalSha256 = createHash("sha256").update(finalBytes).digest("hex");
+  let composeCalls = 0;
+  let persisted = 0;
+  const consumer = new MediaRuntimeEventConsumer({
+    async claimMediaRuntimeEvent() { return { kind: "CLAIMED" as const, event }; },
+    async findProductionSegmentQcInput() { throw new Error("QC should not run"); },
+    async findProductionCompositionInput() {
+      return {
+        workspaceId,
+        projectId,
+        productionRunId: event.data.production_run_id,
+        storyboardRevisionId: "sbr_frozen_music_composition",
+        compositionPlan,
+        musicAsset: {
+          id: "ast_native_manual_music",
+          workspaceId,
+          projectId,
+          objectKey: musicObjectKey,
+          sha256: musicSha256,
+          byteSize: musicBytes.byteLength,
+          mimeType: "audio/wav",
+        },
+        segments: [{
+          sequence: 1,
+          taskRunId: "tsk_frozen_music_source",
+          sourceAsset: {
+            id: "ast_frozen_music_source",
+            objectKey: sourceObjectKey,
+            sha256: sourceSha256,
+            byteSize: sourceBytes.byteLength,
+            mimeType: "video/mp4",
+          },
+        }],
+      };
+    },
+    async acceptProductionSegmentQc() { throw new Error("QC should not run"); },
+    async completeProductionComposition() { persisted += 1; },
+    async failMediaRuntimeEvent() { throw new Error("failure should not run"); },
+    async completeMediaRuntimeEvent() { return undefined; },
+    async releaseMediaRuntimeEvent() { throw new Error("release should not run"); },
+  }, storage, {
+    async inspect() { throw new Error("QC should not run"); },
+    async extractHandoffFrame() { throw new Error("handoff should not run"); },
+    async compose(input) {
+      composeCalls += 1;
+      assert.deepEqual(input.segments, [sourceBytes]);
+      assert.deepEqual(input.compositionPlan, compositionPlan);
+      assert.deepEqual(input.musicBytes, musicBytes);
+      const musicTrack = input.compositionPlan?.audio_plan?.tracks.find((track) => track.ownership === "MUSIC");
+      assert.equal(musicTrack?.asset_id, "ast_native_manual_music");
+      return { bytes: finalBytes, inspection: { sha256: finalSha256, byte_size: finalBytes.byteLength, duration_ms: 1_000 } };
+    },
+  }, { consumerName: "frozen-music-composition-test", workerId: "frozen-music-composition-worker", leaseMs: 100 });
+
+  await consumer.process(createMediaRuntimeQueueMessage({ id: event.event_id, workspaceId, event, publishAttempts: 0 })!);
+  assert.equal(composeCalls, 1);
+  assert.equal(persisted, 1);
+});
+
+test("explicit BGM-only replacement verifies full-track bytes and passes no Provider audio into the plan", async () => {
+  const storage = createInMemoryStoragePort();
+  const sourceBytes = new TextEncoder().encode("music-replacement-video-with-provider-audio");
+  const musicBytes = new TextEncoder().encode("frozen-full-run-music-bytes");
+  const finalBytes = new TextEncoder().encode("composed music-only result");
+  const sourceSha256 = createHash("sha256").update(sourceBytes).digest("hex");
+  const musicSha256 = createHash("sha256").update(musicBytes).digest("hex");
+  const finalSha256 = createHash("sha256").update(finalBytes).digest("hex");
+  const workspaceId = qcRequestedEvent.workspace_id;
+  const projectId = qcRequestedEvent.project_id!;
+  const sourceObjectKey = `${workspaceId}/${projectId}/ast_music_replacement_source/source.mp4`;
+  const musicObjectKey = `${workspaceId}/${projectId}/ast_music_replacement_track/music.wav`;
+  await storage.putObject({ objectKey: sourceObjectKey, mimeType: "video/mp4", bytes: sourceBytes, ifNoneMatch: "*" });
+  await storage.putObject({ objectKey: musicObjectKey, mimeType: "audio/wav", bytes: musicBytes, ifNoneMatch: "*" });
+  const event: Extract<InternalEventEnvelope, { event_type: "video_version.composition_requested" }> = {
+    ...qcRequestedEvent,
+    event_id: "evt_music_replacement_composition",
+    event_type: "video_version.composition_requested",
+    aggregate: { type: "production_run", id: qcRequestedEvent.data.production_run_id },
+    data: { production_run_id: qcRequestedEvent.data.production_run_id },
+  };
+  const compositionPlan = {
+    target_duration_ms: 2_000,
+    transitions: [],
+    bridge_durations_ms: [],
+    audio_policy: "LEGACY_PRESERVE" as const,
+    audio_selection: "MUSIC_REPLACE_PROVIDER_AUDIO" as const,
+    audio_plan: {
+      version: 1 as const,
+      target_duration_ms: 2_000,
+      narration_sections: [{ section_id: "hold", start_ms: 0, end_ms: 2_000, visual_role: "HOLD" as const }],
+      stitch_policy: "LEGACY_PRESERVE" as const,
+      tracks: [{ track_id: "music", ownership: "MUSIC" as const, asset_id: "ast_music_replacement_track", start_ms: 0, end_ms: 2_000, gain_db: "0", duck_under_narration: false }],
+    },
+    music_mix: { enabled: true },
+    music_segments_ms: [{ start_ms: 0, end_ms: 2_000 }],
+  };
+  let composed = 0;
+  let persisted = 0;
+  const consumer = new MediaRuntimeEventConsumer({
+    async claimMediaRuntimeEvent() { return { kind: "CLAIMED" as const, event }; },
+    async findProductionSegmentQcInput() { throw new Error("QC should not run"); },
+    async findProductionCompositionInput() {
+      return {
+        workspaceId,
+        projectId,
+        productionRunId: event.data.production_run_id,
+        storyboardRevisionId: "sbr_music_replacement",
+        audioSelection: "MUSIC_REPLACE_PROVIDER_AUDIO" as const,
+        compositionPlan,
+        musicAsset: { id: "ast_music_replacement_track", workspaceId, projectId, objectKey: musicObjectKey, sha256: musicSha256, byteSize: musicBytes.byteLength, mimeType: "audio/wav", durationMs: 2_000 },
+        segments: [{ sequence: 1, taskRunId: "tsk_music_replacement", sourceAsset: { id: "ast_music_replacement_source", objectKey: sourceObjectKey, sha256: sourceSha256, byteSize: sourceBytes.byteLength, mimeType: "video/mp4" } }],
+      };
+    },
+    async acceptProductionSegmentQc() { throw new Error("QC should not run"); },
+    async completeProductionComposition() { persisted += 1; },
+    async failMediaRuntimeEvent() { throw new Error("failure should not run"); },
+    async completeMediaRuntimeEvent() { return undefined; },
+    async releaseMediaRuntimeEvent() { throw new Error("release should not run"); },
+  }, storage, {
+    async inspect() { throw new Error("QC should not run"); },
+    async inspectAudio(input) {
+      assert.deepEqual(input.bytes, musicBytes);
+      assert.equal(input.expectedSha256, musicSha256);
+      return { mime_type: "audio/wav" as const, sha256: musicSha256, byte_size: musicBytes.byteLength, duration_ms: 2_000 };
+    },
+    async extractHandoffFrame() { throw new Error("handoff should not run"); },
+    async compose(input) {
+      composed += 1;
+      assert.deepEqual(input.segments, [sourceBytes]);
+      assert.deepEqual(input.musicBytes, musicBytes);
+      assert.equal(input.compositionPlan?.audio_selection, "MUSIC_REPLACE_PROVIDER_AUDIO");
+      assert.deepEqual(input.compositionPlan?.audio_plan?.tracks.map((track) => track.ownership), ["MUSIC"]);
+      return { bytes: finalBytes, inspection: { sha256: finalSha256, byte_size: finalBytes.byteLength, duration_ms: 2_000 } };
+    },
+  }, { consumerName: "music-replacement-test", workerId: "music-replacement-worker", leaseMs: 100 });
+
+  await consumer.process(createMediaRuntimeQueueMessage({ id: event.event_id, workspaceId, event, publishAttempts: 0 })!);
+  assert.equal(composed, 1);
+  assert.equal(persisted, 1);
+});
+
+test("BGM-only replacement rejects frozen identity, narration/extra tracks, and mismatched music probes before compose or completion", async () => {
+  const failureCases = [
+    { name: "frozen audio selection mismatch", kind: "selection" as const, expected: /frozen ProductionRun audio selection does not match/ },
+    { name: "frozen MUSIC asset ID mismatch", kind: "asset" as const, expected: /music track asset does not match the selected music asset/ },
+    { name: "narration track is present", kind: "narration" as const, expected: /BGM-only replacement requires the frozen full-run MUSIC asset and no narration tracks/ },
+    { name: "extra provider audio track is present", kind: "extra" as const, expected: /BGM-only replacement requires the frozen full-run MUSIC asset and no narration tracks/ },
+    { name: "inspected music hash differs", kind: "hash" as const, expected: /selected MUSIC bytes do not cover the frozen full video timeline/ },
+    { name: "inspected music MIME differs", kind: "mime" as const, expected: /selected MUSIC bytes do not cover the frozen full video timeline/ },
+    { name: "inspected music size differs", kind: "size" as const, expected: /selected MUSIC bytes do not cover the frozen full video timeline/ },
+    { name: "inspected music duration is too short", kind: "duration" as const, expected: /selected MUSIC bytes do not cover the frozen full video timeline/ },
+  ];
+
+  for (const [index, failureCase] of failureCases.entries()) {
+    const storage = createInMemoryStoragePort();
+    const sourceBytes = new TextEncoder().encode(`music-replacement-negative-video-${index}`);
+    const musicBytes = new TextEncoder().encode(`music-replacement-negative-track-${index}`);
+    const sourceSha256 = createHash("sha256").update(sourceBytes).digest("hex");
+    const musicSha256 = createHash("sha256").update(musicBytes).digest("hex");
+    const workspaceId = qcRequestedEvent.workspace_id;
+    const projectId = qcRequestedEvent.project_id!;
+    const sourceAssetId = `ast_music_replacement_negative_source_${index}`;
+    const musicAssetId = `ast_music_replacement_negative_music_${index}`;
+    const sourceObjectKey = `${workspaceId}/${projectId}/${sourceAssetId}/source.mp4`;
+    const musicObjectKey = `${workspaceId}/${projectId}/${musicAssetId}/music.wav`;
+    await storage.putObject({ objectKey: sourceObjectKey, mimeType: "video/mp4", bytes: sourceBytes, ifNoneMatch: "*" });
+    await storage.putObject({ objectKey: musicObjectKey, mimeType: "audio/wav", bytes: musicBytes, ifNoneMatch: "*" });
+
+    const event: Extract<InternalEventEnvelope, { event_type: "video_version.composition_requested" }> = {
+      ...qcRequestedEvent,
+      event_id: `evt_music_replacement_negative_${index}`,
+      event_type: "video_version.composition_requested",
+      aggregate: { type: "production_run", id: qcRequestedEvent.data.production_run_id },
+      data: { production_run_id: qcRequestedEvent.data.production_run_id },
+    };
+    const musicTrack = {
+      track_id: "music",
+      ownership: "MUSIC" as const,
+      asset_id: failureCase.kind === "asset" ? "ast_wrong_frozen_music" : musicAssetId,
+      start_ms: 0,
+      end_ms: 2_000,
+      gain_db: "0",
+      duck_under_narration: false,
+    };
+    const tracks = failureCase.kind === "narration"
+      ? [musicTrack, {
+        track_id: "platform-narration",
+        ownership: "PLATFORM_NARRATION" as const,
+        asset_id: `ast_negative_narration_${index}`,
+        start_ms: 0,
+        end_ms: 2_000,
+        gain_db: "0",
+        duck_under_narration: false,
+      }]
+      : failureCase.kind === "extra"
+        ? [musicTrack, {
+          track_id: "segment-1",
+          ownership: "USER_SOURCE_AUDIO" as const,
+          asset_id: sourceAssetId,
+          start_ms: 0,
+          end_ms: 2_000,
+          gain_db: "0",
+          duck_under_narration: false,
+        }]
+        : [musicTrack];
+    const compositionPlan = {
+      target_duration_ms: 2_000,
+      transitions: [],
+      bridge_durations_ms: [],
+      audio_policy: "LEGACY_PRESERVE" as const,
+      audio_selection: "MUSIC_REPLACE_PROVIDER_AUDIO" as const,
+      audio_plan: {
+        version: 1 as const,
+        target_duration_ms: 2_000,
+        narration_sections: [{ section_id: "hold", start_ms: 0, end_ms: 2_000, visual_role: "HOLD" as const }],
+        stitch_policy: "LEGACY_PRESERVE" as const,
+        tracks,
+      },
+      music_mix: { enabled: true },
+      music_segments_ms: [{ start_ms: 0, end_ms: 2_000 }],
+    };
+    let inspectCalls = 0;
+    let composeCalls = 0;
+    let compositionCompleteCalls = 0;
+    let eventCompleteCalls = 0;
+    const released: Array<Record<string, unknown>> = [];
+    const consumer = new MediaRuntimeEventConsumer({
+      async claimMediaRuntimeEvent() { return { kind: "CLAIMED" as const, event }; },
+      async findProductionSegmentQcInput() { throw new Error("QC should not run"); },
+      async findProductionCompositionInput() {
+        const source: ProductionCompositionInput = {
+          workspaceId,
+          projectId,
+          productionRunId: event.data.production_run_id,
+          storyboardRevisionId: `sbr_music_replacement_negative_${index}`,
+          audioSelection: failureCase.kind === "selection" ? "PRESERVE_PROVIDER_AUDIO" : "MUSIC_REPLACE_PROVIDER_AUDIO",
+          compositionPlan,
+          ...(failureCase.kind === "narration" ? {
+            narrationAsset: {
+              assetVersionId: `nav_negative_narration_${index}`,
+              id: `ast_negative_narration_${index}`,
+              workspaceId,
+              projectId,
+              objectKey: `${workspaceId}/${projectId}/ast_negative_narration_${index}/narration.wav`,
+              sha256: "a".repeat(64),
+              byteSize: 1,
+              mimeType: "audio/wav",
+              durationMs: 2_000,
+              provider: "doubao",
+              voiceId: "voice-negative",
+              providerSettings: {},
+            },
+          } : {}),
+          musicAsset: {
+            id: musicAssetId,
+            workspaceId,
+            projectId,
+            objectKey: musicObjectKey,
+            sha256: musicSha256,
+            byteSize: musicBytes.byteLength,
+            mimeType: "audio/wav",
+            durationMs: 2_000,
+          },
+          segments: [{
+            sequence: 1,
+            taskRunId: `tsk_music_replacement_negative_${index}`,
+            sourceAsset: { id: sourceAssetId, objectKey: sourceObjectKey, sha256: sourceSha256, byteSize: sourceBytes.byteLength, mimeType: "video/mp4", durationMs: 2_000 },
+          }],
+        };
+        return source;
+      },
+      async acceptProductionSegmentQc() { throw new Error("QC should not run"); },
+      async completeProductionComposition() { compositionCompleteCalls += 1; },
+      async failMediaRuntimeEvent() { throw new Error("dead-letter should not run"); },
+      async completeMediaRuntimeEvent() { eventCompleteCalls += 1; },
+      async releaseMediaRuntimeEvent(input) { released.push(input as unknown as Record<string, unknown>); },
+    }, storage, {
+      async inspect() { throw new Error("video inspect should not run"); },
+      async inspectAudio() {
+        inspectCalls += 1;
+        return {
+          mime_type: failureCase.kind === "mime" ? "audio/mpeg" as const : "audio/wav" as const,
+          sha256: failureCase.kind === "hash" ? "f".repeat(64) : musicSha256,
+          byte_size: musicBytes.byteLength + (failureCase.kind === "size" ? 1 : 0),
+          duration_ms: failureCase.kind === "duration" ? 1_999 : 2_000,
+        };
+      },
+      async extractHandoffFrame() { throw new Error("handoff should not run"); },
+      async compose() { composeCalls += 1; throw new Error("invalid music replacement must not compose"); },
+    }, { consumerName: `music-replacement-negative-${index}`, workerId: `music-replacement-negative-worker-${index}`, leaseMs: 100 });
+
+    await assert.rejects(
+      consumer.process(createMediaRuntimeQueueMessage({ id: event.event_id, workspaceId, event, publishAttempts: 0 })!),
+      failureCase.expected,
+      failureCase.name,
+    );
+    assert.equal(composeCalls, 0, `${failureCase.name}: compose must not run`);
+    assert.equal(compositionCompleteCalls, 0, `${failureCase.name}: video version must not complete`);
+    assert.equal(eventCompleteCalls, 0, `${failureCase.name}: event must not be acknowledged`);
+    assert.equal(released.length, 1, `${failureCase.name}: failed event lease must be released`);
+    assert.equal(inspectCalls, ["hash", "mime", "size", "duration"].includes(failureCase.kind) ? 1 : 0);
+  }
 });
 
 test("AudioPlan transcript drift from the approved narration script fails before composition", async () => {
@@ -1234,7 +1678,8 @@ test("E11 short narration with a declared MUSIC window reaches the existing cons
       assert.equal(input.compositionPlan?.audio_tracks?.find((track) => track.ownership === "MUSIC")?.asset_id, "ast_e11_music");
       return { bytes: finalBytes, inspection: { sha256: finalSha256, byte_size: finalBytes.byteLength, duration_ms: 2_000 } };
     },
-    async finalReview() {
+    async finalReview(input) {
+      assert.equal(input.musicApplied, true);
       return { status: "PASS" as const, issues_found: [], recommended_action: "PRESENT_WITH_REVIEW" as const };
     },
   }, { consumerName: "e11-short-music-test", workerId: "e11-short-music-worker", leaseMs: 100 });

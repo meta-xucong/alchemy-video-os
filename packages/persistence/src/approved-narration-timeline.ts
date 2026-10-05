@@ -3,9 +3,11 @@ import { and, desc, eq } from "drizzle-orm";
 import {
   MediaRuntimeAudioInspectionSchema,
   NarrationAssetVersionSchema,
+  NarrationAudioProviderSettingsSchema,
   NarrationScriptRevisionSchema,
   TimelinePlanSchema,
 } from "@alchemy-video/contracts";
+import { canonicalJson } from "@alchemy-video/domain";
 
 import type { PlatformDatabase } from "./db.js";
 import { assets, narrationAssetVersions, narrationScriptRevisions, outboxEvents, timelinePlans } from "./schema.js";
@@ -16,6 +18,10 @@ import { assets, narrationAssetVersions, narrationScriptRevisions, outboxEvents,
  * StoragePort and never receives a public URL or database row.
  */
 export type ApprovedNarrationTimeline = {
+  timelinePlanId: string;
+  narrationScriptRevisionId: string;
+  sourceScriptHash: string;
+  deliveryPlanRevisionId: string;
   /** Private absolute timing facts copied from the approved TimelinePlan. */
   narrationSections: Array<{
     sectionId: string;
@@ -37,6 +43,7 @@ export type ApprovedNarrationTimeline = {
   visualSegments: Array<{ sequence: number; start_ms: number; end_ms: number; provider_duration_seconds: number }>;
   effectiveDurationMs: number;
   narrationAsset?: {
+    assetVersionId: string;
     id: string;
     workspaceId: string;
     projectId: string;
@@ -45,6 +52,9 @@ export type ApprovedNarrationTimeline = {
     byteSize: number;
     mimeType: string;
     durationMs: number;
+    provider: string;
+    voiceId: string;
+    providerSettings: Record<string, unknown>;
     /** Optional persisted AudioTrackPlan mix facts; absence is not a default. */
     gainDb?: string;
     fadeInMs?: number;
@@ -62,6 +72,9 @@ export type ApprovedNarrationTimeline = {
     byteSize: number;
     mimeType: string;
     durationMs: number;
+    provider: string;
+    voiceId: string;
+    providerSettings: Record<string, unknown>;
     gainDb?: string;
     fadeInMs?: number;
     fadeOutMs?: number;
@@ -69,6 +82,109 @@ export type ApprovedNarrationTimeline = {
   transcriptTimingAssetId?: string;
   narrationScriptText: string;
 };
+
+/** Private, immutable source identity frozen with a ProductionRun selection. */
+export type FrozenDoubaoAudioSourceIdentity = {
+  version: 1;
+  workspaceId: string;
+  projectId: string;
+  deliveryPlanRevisionId: string;
+  storyboardRevisionId: string;
+  timelinePlanId: string;
+  narrationScriptRevisionId: string;
+  sourceScriptHash: string;
+  effectiveDurationMs: number;
+  narrationSections: ApprovedNarrationTimeline["narrationSections"];
+  assetVersions: Array<{
+    sectionId: string;
+    assetVersionId: string;
+    narrationScriptRevisionId: string;
+    assetId: string;
+    sha256: string;
+    byteSize: number;
+    mimeType: string;
+    durationMs: number;
+    provider: string;
+    voiceId: string;
+    providerSettings: Record<string, unknown>;
+  }>;
+};
+
+export function freezeDoubaoAudioSourceIdentity(input: {
+  timeline: ApprovedNarrationTimeline;
+  workspaceId: string;
+  projectId: string;
+  storyboardRevisionId: string;
+}): FrozenDoubaoAudioSourceIdentity | undefined {
+  const { timeline } = input;
+  const primarySections = timeline.narrationSections.filter((section) => section.visualRole === "PRIMARY");
+  const assetVersions = [
+    ...(timeline.narrationAsset && primarySections.length === 1 ? [{
+      sectionId: primarySections[0]!.sectionId,
+      ...timeline.narrationAsset,
+    }] : []),
+    ...(timeline.narrationAssets ?? []),
+  ].map((asset) => ({
+    sectionId: asset.sectionId,
+    assetVersionId: asset.assetVersionId,
+    narrationScriptRevisionId: timeline.narrationScriptRevisionId,
+    sourceScriptHash: timeline.sourceScriptHash,
+    assetId: asset.id,
+    sha256: asset.sha256,
+    byteSize: asset.byteSize,
+    mimeType: asset.mimeType,
+    durationMs: asset.durationMs,
+    provider: asset.provider,
+    voiceId: asset.voiceId,
+    providerSettings: asset.providerSettings,
+  }));
+  if (assetVersions.length === 0
+    || assetVersions.some((asset) => asset.provider !== "doubao" || !asset.voiceId)
+    || timeline.deliveryPlanRevisionId.length === 0
+    || timeline.timelinePlanId.length === 0
+    || timeline.narrationScriptRevisionId.length === 0) return undefined;
+  return {
+    version: 1,
+    workspaceId: input.workspaceId,
+    projectId: input.projectId,
+    deliveryPlanRevisionId: timeline.deliveryPlanRevisionId,
+    storyboardRevisionId: input.storyboardRevisionId,
+    timelinePlanId: timeline.timelinePlanId,
+    narrationScriptRevisionId: timeline.narrationScriptRevisionId,
+    sourceScriptHash: timeline.sourceScriptHash,
+    effectiveDurationMs: timeline.effectiveDurationMs,
+    narrationSections: timeline.narrationSections,
+    assetVersions,
+  };
+}
+
+export const matchesFrozenDoubaoAudioSourceIdentity = (
+  frozen: unknown,
+  current: FrozenDoubaoAudioSourceIdentity,
+) => canonicalJson(frozen) === canonicalJson(current);
+
+export function formalNarrationMatchesApprovedSample(input: {
+  sourceScriptHash: string;
+  sampleAssetId: string;
+  sampleGeneration: unknown;
+  formalAssetId: string;
+  formalProvider: string;
+  formalVoiceId: string;
+  formalProviderSettings: Record<string, unknown>;
+}) {
+  const sample = input.sampleGeneration && typeof input.sampleGeneration === "object" && !Array.isArray(input.sampleGeneration)
+    ? input.sampleGeneration as Record<string, unknown>
+    : undefined;
+  const settings = NarrationAudioProviderSettingsSchema.safeParse(sample?.provider_settings);
+  return Boolean(sample
+    && input.sampleAssetId !== input.formalAssetId
+    && sample.generation_kind === "SAMPLE"
+    && sample.canonical_script_hash === input.sourceScriptHash
+    && sample.provider === input.formalProvider
+    && sample.voice_id === input.formalVoiceId
+    && settings.success
+    && canonicalJson(settings.data) === canonicalJson(input.formalProviderSettings));
+}
 
 const sampleAssetIdFromApprovalPayload = (payload: unknown): string | undefined => {
   if (!payload || typeof payload !== "object") return undefined;
@@ -116,13 +232,20 @@ export async function findApprovedNarrationTimeline(
   workspaceId: string,
   projectId: string,
   deliveryPlanRevisionId: string,
+  timelinePlanId?: string,
+  requireApprovedSampleIdentity = false,
 ): Promise<ApprovedNarrationTimeline | undefined> {
-  const [timeline] = await db.select().from(timelinePlans).where(and(
+  const timelineConditions = [
     eq(timelinePlans.workspaceId, workspaceId),
     eq(timelinePlans.projectId, projectId),
     eq(timelinePlans.deliveryPlanRevisionId, deliveryPlanRevisionId),
     eq(timelinePlans.status, "READY"),
-  )).orderBy(desc(timelinePlans.createdAt)).limit(1);
+    ...(timelinePlanId ? [eq(timelinePlans.id, timelinePlanId)] : []),
+  ];
+  const timelineQuery = db.select().from(timelinePlans).where(and(...timelineConditions));
+  const [timeline] = timelinePlanId
+    ? await timelineQuery.limit(1)
+    : await timelineQuery.orderBy(desc(timelinePlans.createdAt)).limit(1);
   if (!timeline
     || timeline.workspaceId !== workspaceId
     || timeline.projectId !== projectId
@@ -170,6 +293,28 @@ export async function findApprovedNarrationTimeline(
     eq(outboxEvents.aggregateId, script.id),
     eq(outboxEvents.eventType, "narration_script.approved"),
   )).orderBy(desc(outboxEvents.occurredAt)).limit(1);
+  const approvedSampleAssetId = sampleAssetIdFromApprovalPayload(approvalEvent?.payload);
+  const [approvedSampleAsset] = approvedSampleAssetId
+    ? await db.select().from(assets).where(and(
+      eq(assets.workspaceId, workspaceId),
+      eq(assets.projectId, projectId),
+      eq(assets.id, approvedSampleAssetId),
+      eq(assets.kind, "AUDIO"),
+      eq(assets.status, "READY"),
+    )).limit(1)
+    : [];
+  const sampleGeneration = approvedSampleAsset?.metadata?.narration_generation;
+  if (assetVersion && approvedSampleAssetId === assetVersion.assetId) return undefined;
+  if (assetVersion && requireApprovedSampleIdentity
+    && (!approvedSampleAsset || !formalNarrationMatchesApprovedSample({
+      sourceScriptHash: script.sourceScriptHash,
+      sampleAssetId: approvedSampleAsset.id,
+      sampleGeneration,
+      formalAssetId: assetVersion.assetId,
+      formalProvider: assetVersion.provider,
+      formalVoiceId: assetVersion.voiceId,
+      formalProviderSettings: assetVersion.providerSettings,
+    }))) return undefined;
   if (assetVersion) {
     const payload = approvalEvent?.payload;
     const data = payload && typeof payload === "object" ? (payload as { data?: unknown }).data : undefined;
@@ -330,6 +475,18 @@ export async function findApprovedNarrationTimeline(
         || sectionVersion.sampleApproved
         || sampleAssetIdFromApprovalPayload(approvalEvent?.payload) === sectionVersion.assetId
         || !sectionDurationMatchesMeasuredAsset(section.end_ms - section.start_ms, sectionVersion.durationMs)) return undefined;
+      if (requireApprovedSampleIdentity
+        && (!approvedSampleAsset
+          || approvedSampleAsset.id === sectionVersion.assetId
+          || !formalNarrationMatchesApprovedSample({
+            sourceScriptHash: parsedScript.source_script_hash,
+            sampleAssetId: approvedSampleAsset.id,
+            sampleGeneration,
+            formalAssetId: sectionVersion.assetId,
+            formalProvider: sectionVersion.provider,
+            formalVoiceId: sectionVersion.voiceId,
+            formalProviderSettings: sectionVersion.providerSettings,
+          }))) return undefined;
       const [sectionAsset] = await db.select().from(assets).where(and(
         eq(assets.workspaceId, workspaceId),
         eq(assets.projectId, projectId),
@@ -380,6 +537,9 @@ export async function findApprovedNarrationTimeline(
         byteSize: sectionAsset.byteSize,
         mimeType: sectionAsset.mimeType,
         durationMs: sectionVersion.durationMs,
+        provider: sectionVersion.provider,
+        voiceId: sectionVersion.voiceId,
+        providerSettings: sectionVersion.providerSettings,
         ...(typeof metadata.audio_gain_db === "string" ? { gainDb: metadata.audio_gain_db } : {}),
         ...(typeof metadata.audio_fade_in_ms === "number" && Number.isInteger(metadata.audio_fade_in_ms) ? { fadeInMs: metadata.audio_fade_in_ms } : {}),
         ...(typeof metadata.audio_fade_out_ms === "number" && Number.isInteger(metadata.audio_fade_out_ms) ? { fadeOutMs: metadata.audio_fade_out_ms } : {}),
@@ -390,7 +550,7 @@ export async function findApprovedNarrationTimeline(
   // The legacy full-track path remains restricted to one contiguous PRIMARY
   // window.  Multi-section placement is only enabled when every PRIMARY
   // window has an independently measured section asset above.
-  if (assetVersion && !hasSectionAssets) {
+      if (assetVersion && !hasSectionAssets) {
     const [section] = parsedTimeline.narration_sections;
     if (parsedTimeline.narration_sections.length !== 1
       || !section
@@ -432,6 +592,10 @@ export async function findApprovedNarrationTimeline(
   if (narrationSegments.length !== spokenTimelineSections.length) return undefined;
 
   return {
+    timelinePlanId: parsedTimeline.id,
+    narrationScriptRevisionId: parsedScript.id,
+    sourceScriptHash: parsedScript.source_script_hash,
+    deliveryPlanRevisionId: parsedTimeline.delivery_plan_revision_id,
     narrationSections: parsedTimeline.narration_sections.map((section) => ({
       sectionId: section.section_id,
       startMs: section.start_ms,
@@ -446,6 +610,7 @@ export async function findApprovedNarrationTimeline(
     ...(assetVersion?.wordTimestampsAssetId ? { transcriptTimingAssetId: assetVersion.wordTimestampsAssetId } : {}),
     ...(asset && assetVersion ? {
       narrationAsset: {
+        assetVersionId: assetVersion.id,
         id: asset.id,
         workspaceId: asset.workspaceId,
         projectId: asset.projectId,
@@ -454,6 +619,9 @@ export async function findApprovedNarrationTimeline(
         byteSize: asset.byteSize!,
         mimeType: asset.mimeType!,
         durationMs: assetVersion.durationMs,
+        provider: assetVersion.provider,
+        voiceId: assetVersion.voiceId,
+        providerSettings: assetVersion.providerSettings,
         ...(typeof asset.metadata?.audio_gain_db === "string" ? { gainDb: asset.metadata.audio_gain_db } : {}),
         ...(typeof asset.metadata?.audio_fade_in_ms === "number" && Number.isInteger(asset.metadata.audio_fade_in_ms) ? { fadeInMs: asset.metadata.audio_fade_in_ms } : {}),
         ...(typeof asset.metadata?.audio_fade_out_ms === "number" && Number.isInteger(asset.metadata.audio_fade_out_ms) ? { fadeOutMs: asset.metadata.audio_fade_out_ms } : {}),

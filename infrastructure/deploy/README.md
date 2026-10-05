@@ -53,7 +53,20 @@ reference-image requests must remain disabled until HTTPS is active.
 
 1. Copy `.env.video.example` to a root-owned private directory outside this Git checkout, for example `/opt/alchemy-video/secrets/video.env`.
 2. Replace every placeholder with a unique value. Keep `AUDIO_FREE_ONLY=true` for the local MVP; workspace-owned READY MUSIC assets remain the only music source. Do not put the video Provider key in the Control API, and do not commit this file.
-4. For private verification mode, create the Basic Auth file at the absolute `VIDEO_EDGE_HTPASSWD_FILE` path. Use an interactive command so the password is never written into shell history or deployment logs:
+3. Keep `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` only on the MinIO server and the one-time admin provisioning tool. Set a separate `S3_ACCESS_KEY` and at least 32-character `S3_SECRET_KEY` for the app. The `alchemy-video-app-<bucket>` policy grants only bucket creation/location/list and object GET/PUT for `S3_BUCKET`; it does not grant MinIO admin, other-bucket, or object-delete access. MinIO bucket CORS is configured by the MinIO service; the app policy deliberately omits `PutBucketCORS`, which the pinned MinIO server rejects. Provision the identity with an authenticated `mc` admin alias before starting/recreating app services:
+
+```sh
+. /opt/alchemy-video/secrets/video.env
+export MINIO_ROOT_USER S3_BUCKET S3_ACCESS_KEY S3_SECRET_KEY
+export MINIO_ALIAS=<private-root-admin-alias>
+export MC_CONFIG_DIR=/opt/alchemy-video/secrets/mc-config
+install -d -m 0700 "$MC_CONFIG_DIR"
+bash infrastructure/deploy/ops/provision-minio-app-user.sh
+```
+
+Use the official `mc` client `RELEASE.2025-08-13T08-35-41Z`, tested against the pinned MinIO server image; set `MC_CONFIG_DIR` to a directory outside the repository with mode `0700`. Source the private env file rather than typing secrets in `export` commands. The provisioning script invokes `mc` with a scrubbed environment containing only `PATH`, `HOME`, and `MC_CONFIG_DIR`. It is intentionally create-once: it refuses an existing user or policy instead of inheriting/overwriting unknown permissions. If it fails partway through, stop and inspect the MinIO identity/policy before any manual cleanup; do not blindly rerun. For rotation, create a new unique access key and policy, update the private env file, recreate app services, run the storage smoke test, then remove the old identity after verification. The app secret is passed briefly to `mc` as a process argument during creation, so run the script on the protected host as an administrator and do not run concurrent untrusted processes there.
+4. Set `REDIS_PASSWORD` to a unique 64-character lowercase hexadecimal secret (for example, generate it inside the approved secret manager). This URL-safe form is embedded in the internal `REDIS_URL`; every Redis client and the health check authenticate. Compose keeps Redis private and does not publish its port.
+5. For private verification mode, create the Basic Auth file at the absolute `VIDEO_EDGE_HTPASSWD_FILE` path. Use an interactive command so the password is never written into shell history or deployment logs:
 
 ```sh
 install -d -m 0700 /opt/alchemy-video/secrets

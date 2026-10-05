@@ -141,6 +141,19 @@ TaskRun；降级到旧 ShotSpec 编译必须记录兼容版本和原因。
 已确认的 ProductionRun 创建符合前序条件的 Shot/TaskRun。相同幂等键的规划、审批和确认必须
 回放原结果，不能产生第二个 revision 或 ProductionRun。
 
+制作确认命令可携带 `audio_selection`：`PRESERVE_PROVIDER_AUDIO` 或
+`DOUBAO_TTS_REPLACE`。省略值按安全兼容缺省 `PRESERVE_PROVIDER_AUDIO` 处理。该用户选择随
+ProductionRun 冻结在服务端私有 `budget_guard.audio_selection`，不进入公开 ProductionRun、事件或
+SSE；它与 TaskRun 快照 `audio_owner`（Provider/profile 能力事实）语义独立。只有显式
+`DOUBAO_TTS_REPLACE` 且同 run 的 TTS/正式音频事实通过校验，媒体 Runtime 才可丢弃源视频内嵌
+音轨并使用替换轨。该窄功能已通过本地限定验收；这不代表正式章节状态或真实 Provider/TTS 验收。实现细则和证据见《AI企业内容生产平台_显式DOUBAO整轨替换同运行来源绑定开发文档_20261004.md》§8。
+
+**已过文档门、待代码实现（2026-10-04；不是已接受运行契约）**：用户授权处理 BGM-on composition 阻断后，TaskSpec 新增 `MUSIC_REPLACE_PROVIDER_AUDIO` 作为待实现值。文档审计 PASS；最新状态文本 hash/status binding 复核仍待完成，代码能力尚未开放。仅在用户显式选择、MusicPlan=`MANUAL` 且精确 READY MUSIC asset ID/SHA/scope/duration 已随 ProductionRun 冻结且实际 bytes 覆盖全片时，才丢弃 Provider 内嵌音轨并以该 MUSIC track 作为唯一输出音轨；AUTO/OFF 均拒绝。默认仍为 Preserve，未知值拒绝。Preserve+Music ON 在原音角色不明时继续按 P6 fail-closed。执行文档为《AI企业内容生产平台_显式BGM整轨替换Provider原音开发文档_20261004.md》；不得将文档授权解释为功能已实现。
+
+### 音频选择实现事实 supersession（2026-10-05；不改变验收状态）
+
+上段关于 BGM“待实现/代码能力尚未开放”的状态文字是实施前快照，现由本节 supersede：当前本地工作树已包含 `MUSIC_REPLACE_PROVIDER_AUDIO` 实现，且在候选 manifest `f57d91cd538e6d8c90f3879c003947b498b828ec908dc085a45187168881e6bf`（627 个 eligible paths）绑定的隔离克隆 direct-consumer composition replay 中复现了与已接受 MP4 字节一致的输出（4,147,528 bytes，SHA-256 `f2d7e8d255096994078da1a3d57cb88ee1a81feb6189f9835a440f1594424c1e7de`）。该候选仅证明当前本地合成路径的可复现性；**不表示第三个值已成为正式接受的公共功能**。当前功能仍为 `IMPLEMENTED / LIMITED_FEATURE_ACCEPTANCE_PENDING`，须按 BGM TaskSpec §7.2/§7.3 完成文档准入复审，并在同一冻结的最小代码候选上完成 Source Fidelity、普通代码审计和验证后，才可审议限定功能接受。此补记不升级 G02、C12.2、C12.4/C12.5、E12/R01 或发布状态，不授权 Provider、Git 或部署。
+
 浏览器可读取受控的 revision、段落摘要和 ProductionRun 进度，但不得读取原始规划输入、
 `PromptPackage.prompt`、Provider/模型、内部依赖图、对象 key、签名 URL、队列、Veyra 或 trace
 字段。规划命令在成功、失败和重试的任一路径中均为零次视频 Provider 调用。
@@ -303,7 +316,7 @@ envelope；SSE 投影只含 conversion/source/Markdown Asset ID、状态和 retr
 | `storyboard_revisions` | `id`, `workspace_id`, `project_id`, `script_revision_id`, `revision`, `total_duration_seconds`, `continuity_level`, `status` | 可审阅、可批准的故事计划 |
 | `storyboard_shot_specs` | `id`, `workspace_id`, `project_id`, `storyboard_revision_id`, `sequence`, `duration_seconds`, `start_state`, `end_state`, `reference_policy`, `depends_on_sequence` | 有序、不可变的可见段落规格 |
 | `prompt_packages` | `id`, `workspace_id`, `project_id`, `shot_spec_id`, `compiler_version`, `capability_snapshot`, `prompt` | 内部编译产物；prompt 不公开 |
-| `production_runs` | `id`, `workspace_id`, `project_id`, `storyboard_revision_id`, `status`, `total_shot_count`, `accepted_shot_count`, `budget_guard`, `max_auto_repair_count` | 已确认的整体制作意图，不替代 TaskRun |
+| `production_runs` | `id`, `workspace_id`, `project_id`, `storyboard_revision_id`, `status`, `total_shot_count`, `accepted_shot_count`, `budget_guard`, `max_auto_repair_count` | 已确认的整体制作意图，不替代 TaskRun；`budget_guard.audio_selection` 是仅服务端可见、随 run 冻结的音频输出选择 |
 | `production_segments` | `id`, `workspace_id`, `project_id`, `production_run_id`, `shot_spec_id`, `sequence`, `status`, `shot_id`, `task_run_id`, `handoff_asset_id`, `qc_report_id` | C12 每段调度与依赖完成事实；实际任务关联不向浏览器公开 |
 | `asset_derivations` | `id`, `workspace_id`, `project_id`, `derived_asset_id`, `source_asset_id`, `source_task_run_id`, `derivation_type`, `qc_report_id`, `accepted_at` | 派生交接帧及未来受控媒体派生的不可变来源关系 |
 | `qc_reports` | `id`, `workspace_id`, `project_id`, `subject_type`, `subject_id`, `kind`, `status`, `safe_summary` | 段和成片的安全、可追溯质量结论 |

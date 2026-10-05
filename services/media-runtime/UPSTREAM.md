@@ -1,5 +1,11 @@
 # C12 source record
 
+## 2026-10-05 BGM replacement mux delta
+
+- Fixed source: `calesthio/OpenMontage@4eab34c5cfcccaa4f1970554928feccce73ee930`, `tools/video/video_compose.py::_mux_external_audio`.
+- Source command maps `0:v:0` and `1:a:0`, copies video, encodes AAC at 192k, applies `-af apad -shortest`, and enables `+faststart`.
+- The current platform's explicit `MUSIC_REPLACE_PROVIDER_AUDIO` path preserves the stream mapping/video copy/AAC 192k/faststart boundary but uses frozen-target `-t` and AAC 48kHz; it intentionally does not use `apad -shortest`. The accepted sample's AAC is 73ms shorter than the measured video. The product therefore keeps this exact output policy and limits only the final AAC shortfall to 100ms, while requiring the frozen MUSIC input and OpenMontage `_full_mix` to cover the complete target. This is an explicit platform-output deviation, not an upstream threshold or claim of command-level equivalence. Changes to these flags require a separately audited behavior comparison and regression test.
+
 - Source repository: `calesthio/OpenMontage`
 - Fixed commit: `4eab34c5cfcccaa4f1970554928feccce73ee930`
 - Reused concepts: `BaseTool` fixed-tool contract, `ToolResult` artifact/result separation, the video composition/QC tool boundaries, and `tools/analysis/transcriber.py` faster-whisper/VAD/word timestamps. Historical CLIP keyframe classification is no longer an acceptance input; fixed categories cannot prove source-aligned semantic correctness.

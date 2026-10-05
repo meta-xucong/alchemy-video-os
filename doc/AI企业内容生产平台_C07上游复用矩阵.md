@@ -79,3 +79,11 @@
 - 扫描确认 adapter source 不含默认 fetch、env/dotenv、Key、Authorization/Bearer/Cookie、object key 或签名 query；`apps/` 对 adapter 的仅有引用在 Task Worker 测试中，非运行时装配。C07 已由独立审计接受，且 `origin/main` 与 `c07-accepted^{}` 已复核为 `41d414cf1b6767c39f251445278831328e1620cf`；旧 `IN_PROGRESS` 与 `READY_FOR_AUDIT` 叙述仅为历史审计轨迹。C08 只能在另行取得真实调用明确授权后认证 profile。
 
 > **2026-09-01 当前音频口径**：C07 的 Provider 认证准备不要求用户上传旁白/样音；当前自动视频优先保留 Grok 原生音轨，显式替换才走服务端 Doubao。本文旧的“另行授权后认证”是 C07 默认/历史边界；本轮用户授权仅用于最新自动音频文档限定的本机对照，不改 C07 的认证状态或默认禁用规则。
+
+## PX-VIDEO-STATUS-01 窄范围 CONTRACT-007 supersession（2026-10-04）
+
+- 本节仅对 C07 `CONTRACT-007` 中“缺少 status 必须协议失败”及其状态解析范围作窄 supersession；上方原始矩阵行保留为 C07 历史验收记录，不改写 C07 状态或重开其余 CONTRACT。
+- 固定来源为 `sub2api-video-mcp@3f2d885b79630f50b9cf4ae62251596cc37bbd18` 的 `server.py::find_string/extract_request_id/response_data/extract_status/wait_for_video`。目标 `Sub2ApiVideoProvider` 对 HTTP 2xx JSON object：submit 在原始对象递归按 `request_id`、`id` 顺序提取首个非空字符串；正文 `code` 或失败 status 不先行拒绝，找到的 ID 必须返回供既有持久化路径保存。只有 `task_id/taskId` 或无 ID 仍协议错误。
+- status 先选取 `data`（仅其为 object 时）或回退根 object，再以 `status`、`state` 名称优先序递归读取首个非空字符串；对象与数组按来源顺序遍历。仅 trim/lowercase；成功终态为 `completed/complete/succeeded/success/done`，失败终态为 `failed/error/cancelled/canceled/rejected`；缺状态、`unknown` 和其它非终态均映射 `PROCESSING`。`data:{}` 不读取外层状态；progress 不参与状态判断。
+- 非 JSON/非对象、HTTP 失败与严格 2xx adapter gate、缺 submit ID、download metadata 错误仍沿用既有错误处理。查询等待继续使用 C06 Worker 已有有限轮询/恢复预算；不增加 retry、状态、公开字段、API、事件、持久化语义或重复 POST 路径。
+- 该记录只界定 PX-VIDEO-STATUS-01 的实现差异；其代码、测试和映射证据需以该子任务最终冻结快照的双独立审计为准，不自动改变 C07 `ACCEPTED` 或任何当前总控章节状态。

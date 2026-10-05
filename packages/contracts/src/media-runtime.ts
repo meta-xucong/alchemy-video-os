@@ -164,6 +164,8 @@ export const MediaRuntimeNarrationDurationFeedbackSchema = z.object({
 // explicit when the local runtime has no transcript or visual evaluator.
 export const MediaRuntimeFinalReviewSchema = z.object({
   status: z.enum(["PASS", "NEEDS_ATTENTION", "FAILED"]),
+  // PASS describes executed checks only; PARTIAL keeps unavailable coverage explicit.
+  review_completeness: z.enum(["COMPLETE", "PARTIAL"]).optional(),
   technical_probe: z.object({
     valid_container: z.boolean(),
     duration_seconds: z.number().positive(),
@@ -192,6 +194,7 @@ export const MediaRuntimeFinalReviewSchema = z.object({
     unexpected_silence: z.boolean(),
     integrated_lufs: z.number().finite().optional(),
     true_peak_db: z.number().finite().optional(),
+    true_peak_limit_db: z.number().finite().optional(),
     loudness_range_lu: z.number().finite().nonnegative().optional(),
     issues: z.array(z.string().max(240)).max(20),
   }).strict(),
@@ -334,6 +337,12 @@ export const MediaRuntimeCompositionPlanSchema = z.object({
   transitions: z.array(MediaRuntimeCompositionTransitionSchema).max(11),
   bridge_durations_ms: z.array(z.number().int().min(1_000).max(3_000)).max(11).default([]),
   audio_policy: MediaRuntimeAudioPolicySchema.default("LEGACY_PRESERVE"),
+  /** Frozen ProductionRun choice; legacy composition payloads normalize to Preserve. */
+  audio_selection: z.enum([
+    "PRESERVE_PROVIDER_AUDIO",
+    "DOUBAO_TTS_REPLACE",
+    "MUSIC_REPLACE_PROVIDER_AUDIO",
+  ]).default("PRESERVE_PROVIDER_AUDIO"),
   /** Optional private ownership facts. Legacy ALCHMED bundles omit these. */
   audio_tracks: z.array(MediaRuntimeAudioTrackSchema).max(64).optional(),
   /** Complete private C12 AudioPlan; ALCHMED8 is the only wire version that carries it. */
@@ -345,6 +354,30 @@ export const MediaRuntimeCompositionPlanSchema = z.object({
     end_ms: z.number().int().positive(),
   }).strict()).max(32).default([]),
 }).strict().superRefine((value, context) => {
+  if (value.audio_selection === "DOUBAO_TTS_REPLACE"
+    && (value.audio_policy !== "CONTINUOUS_NARRATION" || !value.audio_plan
+      || !value.audio_plan.tracks.some((track) => track.ownership === "PLATFORM_NARRATION")
+      || value.audio_plan.tracks.some((track) => track.track_id.startsWith("segment-")
+        || !["PLATFORM_NARRATION", "MUSIC"].includes(track.ownership)))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["audio_selection"], message: "Doubao replacement requires an authoritative narration AudioPlan." });
+  }
+  if (value.audio_selection === "MUSIC_REPLACE_PROVIDER_AUDIO") {
+    const tracks = value.audio_plan?.tracks ?? [];
+    const musicTracks = tracks.filter((track) => track.ownership === "MUSIC");
+    if (!value.audio_plan
+      || musicTracks.length !== 1
+      || tracks.length !== 1
+      || !musicTracks[0]?.asset_id
+      || musicTracks[0]?.start_ms !== 0
+      || musicTracks[0]?.end_ms !== value.target_duration_ms
+      || !value.music_mix.enabled) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["audio_selection"],
+        message: "Music replacement requires a complete AudioPlan with exactly one full-target MUSIC track and no other audio tracks.",
+      });
+    }
+  }
   if (value.audio_plan && value.audio_tracks) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["audio_tracks"], message: "AudioPlan is the sole source of audio ownership facts; legacy audio_tracks cannot be supplied alongside it." });
   }

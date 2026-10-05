@@ -12,6 +12,7 @@ import {
   projectSemanticReferences,
   projectSemanticDialogues,
 } from "../src/index.js";
+import { parseG02ApprovedBeatMarkers } from "@alchemy-video/contracts";
 
 const sha = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 const sourceText = "雨夜的旧车站。林岚说：“你终于回来了。”两人隔着站台灯光相望。";
@@ -19,6 +20,30 @@ const dialogueText = "你终于回来了。";
 const dialogueStart = sourceText.indexOf(dialogueText);
 const visualQuote = "两人隔着站台灯光相望。";
 const visualStart = sourceText.indexOf(visualQuote);
+
+test("G02 Brief source marker authority is one strict shared parser", () => {
+  const source = [
+    "先有😀正文。",
+    "G02_APPROVED_BEAT_1:第一节拍。",
+    "G02_APPROVED_BEAT_2:第二节拍。",
+    "G02_APPROVED_BEAT_3:第三节拍。",
+  ].join("\r\n");
+  const markers = parseG02ApprovedBeatMarkers(source);
+  assert.deepEqual(markers?.map((marker) => marker.sequence), [1, 2, 3]);
+  assert.equal(source.slice(markers![0]!.span.start, markers![0]!.span.end), markers![0]!.span.quote);
+  assert.equal(markers![0]!.span.start, source.indexOf("G02_APPROVED_BEAT_1:"));
+  assert.equal(parseG02ApprovedBeatMarkers("Ordinary source without G02 authority."), undefined);
+
+  const invalid = [
+    "prefix G02_APPROVED_BEAT_1:伪marker。",
+    "G02_APPROVED_BEAT_1:第一节拍。\nG02_APPROVED_BEAT_2:第二节拍。",
+    "G02_APPROVED_BEAT_1:第一节拍。\nG02_APPROVED_BEAT_1:重复。\nG02_APPROVED_BEAT_3:第三节拍。",
+    "G02_APPROVED_BEAT_2:第二节拍。\nG02_APPROVED_BEAT_1:第一节拍。\nG02_APPROVED_BEAT_3:第三节拍。",
+    "G02_APPROVED_BEAT_1:第一节拍。\nG02_APPROVED_BEAT_2:第二节拍。\nG02_APPROVED_BEAT_3:第三节拍。\nG02_APPROVED_BEAT_4:越界。",
+    "G02_APPROVED_BEAT_1:第一节拍。\nG02_APPROVED_BEAT_2:   \nG02_APPROVED_BEAT_3:第三节拍。",
+  ];
+  for (const value of invalid) assert.throws(() => parseG02ApprovedBeatMarkers(value), value);
+});
 
 const bundle = createCanonicalSourceBundle({
   sourceText,
@@ -117,6 +142,190 @@ const readyDecision = () => ({
     reference_asset_ids: ["ast_reference_001", "ast_reference_002"],
   }],
   unresolved_items: [],
+});
+
+const g02SourceText = [
+  "G02_APPROVED_BEAT_1:面霜罐与乳霜质地，肌肤舒缓。",
+  "G02_APPROVED_BEAT_2:新加坡天际线与研发灌装环境。",
+  "G02_APPROVED_BEAT_3:女性使用产品并以包装特写收尾。",
+].join("\n");
+const g02JarUsage = "面霜罐主体产品图，用于乳霜质地的产品特写。";
+const g02BoxUsage = "外包装盒产品图，用于片尾包装特写。";
+const g02DecisionValue = "面霜罐采用克制产品画面。";
+const g02Bundle = createCanonicalSourceBundle({
+  briefRevisionId: "brief_g02_entity_evidence_001",
+  sourceText: g02SourceText,
+  stylePreferences: "",
+  targetDurationSeconds: 24,
+  references: [
+    {
+      asset_id: "ast_g02_jar",
+      asset_sha256: sha("g02-jar"),
+      mime_type: "image/png",
+      position: 0,
+      provider_role: "SUBJECT",
+      user_declared_usage: g02JarUsage,
+      objective_description: "面霜罐产品图。",
+    },
+    {
+      asset_id: "ast_g02_box",
+      asset_sha256: sha("g02-box"),
+      mime_type: "image/png",
+      position: 1,
+      provider_role: "SUBJECT",
+      user_declared_usage: g02BoxUsage,
+      objective_description: "外包装盒产品图。",
+    },
+  ],
+  userDecisions: [{
+    decisionId: "dec_g02_product_presentation",
+    field: "product_presentation",
+    value: g02DecisionValue,
+  }],
+  providerCapability: {
+    profile_id: "test-g02-video",
+    min_duration_seconds: 8,
+    max_duration_seconds: 15,
+    max_prompt_utf8_bytes: 4_096,
+    max_reference_images: 7,
+    audio_owner: "NATIVE_PROVIDER",
+  },
+});
+
+const g02ReadyDecision = (sourceBundle = g02Bundle) => ({
+  version: 1 as const,
+  source_hash: sourceBundle.source_hash,
+  semantic_narrative_beat_lineage: sourceBundle.semantic_narrative_beat_lineage,
+  target_duration_seconds: 24,
+  execution_status: "READY" as const,
+  dialogues: [],
+  reference_usages: sourceBundle.references.map((reference, index) => ({
+    asset_id: reference.asset_id,
+    provider_role: reference.provider_role!,
+    usage: reference.user_declared_usage!,
+    evidence_refs: [{
+      evidence_id: `evd_g02_reference_${index + 1}`,
+      kind: "REFERENCE_ASSET" as const,
+      asset_id: reference.asset_id,
+      asset_sha256: reference.asset_sha256,
+      user_declared_usage: reference.user_declared_usage,
+    }],
+  })),
+  segments: sourceBundle.semantic_narrative_beat_lineage!.beats.map((beat, index) => ({
+    segment_id: `seg_g02_entity_${index + 1}`,
+    sequence: index + 1,
+    duration_seconds: 8,
+    visual_decision: beat.span.quote,
+    evidence_refs: [
+      {
+        evidence_id: `evd_g02_source_${index + 1}`,
+        kind: "SOURCE_TEXT" as const,
+        source_hash: sourceBundle.source_hash,
+        span: beat.span,
+      },
+      ...(index === 0 ? [{
+        evidence_id: "evd_g02_product_presentation",
+        kind: "USER_DECISION" as const,
+        decision_id: "dec_g02_product_presentation",
+        field: "product_presentation",
+        value_hash: semanticValueHash(g02DecisionValue),
+      }] : []),
+    ],
+    dialogue_ids: [],
+    reference_asset_ids: sourceBundle.references.map((reference) => reference.asset_id),
+    source_narrative_beat_sequences: [index + 1],
+  })),
+  entity_candidates: [{
+    candidate_key: "entity-g02-jar",
+    kind: "PROP" as const,
+    exact_name: "面霜罐",
+    source_evidence_refs: [g02Bundle.semantic_narrative_beat_lineage!.beats[0]!.span.quote, g02DecisionValue, g02JarUsage],
+    reference_asset_ids: ["ast_g02_jar"],
+    type: "护肤品容器",
+    description: "面霜罐",
+  }],
+  unresolved_items: [],
+});
+
+test("G02 entity candidate provenance uses exact frozen evidence and each referenced asset's exact usage", () => {
+  const valid = verifySemanticDirectorProvenance(g02Bundle, g02ReadyDecision());
+  assert.equal(valid.execution_status, "READY");
+
+  const missingCandidateUsage = g02ReadyDecision();
+  missingCandidateUsage.entity_candidates[0]!.source_evidence_refs = [
+    g02Bundle.semantic_narrative_beat_lineage!.beats[0]!.span.quote,
+    g02DecisionValue,
+  ];
+  assert.equal(missingCandidateUsage.reference_usages[0]?.usage, g02JarUsage);
+  assert.throws(() => verifySemanticDirectorProvenance(g02Bundle, missingCandidateUsage),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "REFERENCE_EVIDENCE_INVALID");
+
+  const tamperedUsage = g02ReadyDecision();
+  tamperedUsage.entity_candidates[0]!.source_evidence_refs[2] = `${g02JarUsage}（已篡改）`;
+  assert.throws(() => verifySemanticDirectorProvenance(g02Bundle, tamperedUsage),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "SOURCE_EVIDENCE_INVALID");
+
+  const partialSourceQuote = g02ReadyDecision();
+  partialSourceQuote.entity_candidates[0]!.source_evidence_refs[0] = "面霜罐";
+  assert.throws(() => verifySemanticDirectorProvenance(g02Bundle, partialSourceQuote),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "SOURCE_EVIDENCE_INVALID");
+
+  const partialUsage = g02ReadyDecision();
+  partialUsage.entity_candidates[0]!.source_evidence_refs[2] = "面霜罐主体产品图";
+  assert.throws(() => verifySemanticDirectorProvenance(g02Bundle, partialUsage),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "SOURCE_EVIDENCE_INVALID");
+
+  const usageFromUnreferencedAsset = g02ReadyDecision();
+  usageFromUnreferencedAsset.entity_candidates[0]!.source_evidence_refs[2] = g02BoxUsage;
+  assert.throws(() => verifySemanticDirectorProvenance(g02Bundle, usageFromUnreferencedAsset),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "SOURCE_EVIDENCE_INVALID");
+
+  const duplicateUsageBundle = {
+    ...g02Bundle,
+    references: g02Bundle.references.map((reference) => reference.asset_id === "ast_g02_box"
+      ? { ...reference, user_declared_usage: g02JarUsage }
+      : reference),
+  };
+  assert.throws(() => verifySemanticDirectorProvenance(duplicateUsageBundle, g02ReadyDecision(duplicateUsageBundle)),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "SOURCE_EVIDENCE_INVALID");
+
+  const emptyEntityCandidates = g02ReadyDecision();
+  emptyEntityCandidates.entity_candidates = [];
+  assert.throws(() => verifySemanticDirectorProvenance(g02Bundle, emptyEntityCandidates),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "REFERENCE_EVIDENCE_INVALID");
+
+  const emptyCandidateAssets = g02ReadyDecision();
+  emptyCandidateAssets.entity_candidates[0]!.reference_asset_ids = [];
+  assert.throws(() => verifySemanticDirectorProvenance(g02Bundle, emptyCandidateAssets),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "REFERENCE_EVIDENCE_INVALID");
+
+  const duplicateCandidateAssets = g02ReadyDecision();
+  duplicateCandidateAssets.entity_candidates[0]!.reference_asset_ids = ["ast_g02_jar", "ast_g02_jar"];
+  assert.throws(() => verifySemanticDirectorProvenance(g02Bundle, duplicateCandidateAssets),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "REFERENCE_EVIDENCE_INVALID");
+
+  const duplicateCandidateEvidence = g02ReadyDecision();
+  duplicateCandidateEvidence.entity_candidates[0]!.source_evidence_refs.push(
+    duplicateCandidateEvidence.entity_candidates[0]!.source_evidence_refs[0]!,
+  );
+  assert.throws(() => verifySemanticDirectorProvenance(g02Bundle, duplicateCandidateEvidence),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "SOURCE_EVIDENCE_INVALID");
+
+  const substringUsage = "Carefully photographed moisturizer reference.";
+  const substringBundle = {
+    ...g02Bundle,
+    references: g02Bundle.references.map((reference) => reference.asset_id === "ast_g02_jar"
+      ? { ...reference, user_declared_usage: substringUsage }
+      : reference),
+  };
+  const substringDecision = g02ReadyDecision(substringBundle);
+  substringDecision.entity_candidates[0]!.exact_name = "Care";
+  substringDecision.entity_candidates[0]!.source_evidence_refs = [
+    g02Bundle.semantic_narrative_beat_lineage!.beats[0]!.span.quote,
+    substringUsage,
+  ];
+  assert.throws(() => verifySemanticDirectorProvenance(substringBundle, substringDecision),
+    (error) => error instanceof SemanticDecisionVerificationError && error.code === "REFERENCE_EVIDENCE_INVALID");
 });
 
 test("canonical bundle builder hashes source, documents, and user decisions without interpreting them", () => {
@@ -291,7 +500,18 @@ test("projects only the provenance-checked segment reference order and Provider 
   const projection = projectSemanticReferences(verified, "seg_station_001");
   assert.equal(projection.source_hash, bundle.source_hash);
   assert.equal(projection.segment_id, "seg_station_001");
-  assert.equal(projection.references[0]?.asset_id, "ast_reference_001");
-  assert.equal(projection.references[0]?.provider_role, "SCENE");
-  assert.deepEqual(projection.references[0]?.evidence_ids, ["evd_reference_001"]);
+  assert.deepEqual(projection.references, [
+    {
+      asset_id: "ast_reference_001",
+      provider_role: "SCENE",
+      usage: "保持旧式站台结构。",
+      evidence_ids: ["evd_reference_001"],
+    },
+    {
+      asset_id: "ast_reference_002",
+      provider_role: "STYLE",
+      usage: "保持第二张参考图的照明风格。",
+      evidence_ids: ["evd_reference_002"],
+    },
+  ]);
 });

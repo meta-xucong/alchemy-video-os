@@ -1184,3 +1184,186 @@ ADR-0069 只解决 Aiself 自有参考图交付链路的可达性与可审计性
 | 回滚 | 保留历史 review/repair/VideoVersion；若定向测试未通过，关闭本编排入口并保持 `BLOCKED`，不得恢复 all-PASS 伪通过或新增 evaluator/repair 算法。 |
 
 ADR-0076 只解决领域/API 契约中“未通过语义时淡变”与 C12.1 既有“UNAVAILABLE/FAILED 直切”文字冲突的唯一选择；它不授权扩展来源能力，也不把平台审计薄壳宣称为原仓库实现。
+
+## ADR-0077：G02 项目级视觉实体绑定与 Huobao 时间轴 fail-closed
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `PROPOSED_FOR_INDEPENDENT_DOC_AUDIT`；当前关联 TaskSpec v1.0.4 文档复审通过前仍不授权代码 |
+| 日期 | 2026-10-02 |
+| 关联任务 | `G02-VISUAL-ENTITY-TIMELINE-20261002`；只覆盖既有护肤广告项目本轮 G02。 |
+| 背景 | 固定 Huobao 来源要求分镜的可见角色、使用/特写道具和可匹配场景绑定到已有项目实体，单段 8–15 秒、2–4 个 2–6 秒子镜头、段内单一物理场景；提示词还需按连续时间行完整覆盖分段。现有平台 CanonicalSourceBundle/raw plan 不含结构化视觉实体和 marker 事实，数据库不保存 ShotSpec 的已有可选绑定字段；canonicalizer 只检查了部分时长。故不能将旧规划或普通文本冒充 source-compatible。 |
+| 核心决策 | 按平台总设计已规划的 CanonicalVisualEntityRevision 增加私有、workspace/project scoped、不可变版本实体事实；Semantic Director 只能提供有证据的临时候选键，服务端 dedup/reuse/保存并映射正式 revision ID；ShotSpec 持久化实体 revision 绑定。未知、跨项目、错误类型或无证据 ID 失败关闭。公开 API、事件、Provider wire 不增加字段。版本身份/hash 规则必须按本 ADR 附件明定，不可由实现者自行挑字段。 |
+| 来源语义 | Huobao extractor 的既有读取、名称归一、近名去重和 truthy-fallback 合并语义映射到平台 entity revision repository。来源是可变 update，本平台使用追加不可变 revision，保留历史且不得覆盖；身份键和更新字段完全遵循源规则，只有写入策略为 append-only。内容 hash 是平台版本化需要的确定性摘要，不宣称源算法。Huobao storyboard 的项目归属、可见角色/关键物件绑定语义、Huobao prompt 时间行、每段引用锚点、description marker 映射均由确定性拒绝门保留；平台私有 marker 校验后须剥除，Provider-facing 行仍使用来源格式。 |
+| 广告关键物件 | 来源 extractor 的“剧情关键且值得单独固定外观”按本次广告窄化为“用户明确确认的广告核心产品且会被使用/特写，并存在已批准参考图”。仅面霜罐和外盒可进入本任务；不能泛化到布景。storyboard 对使用/特写的绑定仍照原文执行。如独立 Source Fidelity 判此适配越权，保持 HOLD，不可仅凭本文宣称通过。 |
+| 创意边界 | 三节拍及产品/场景设置来自已批准 Brief 和用户确认。为同时满足 30 秒和每段单场景，将“新加坡天际线 + 研发灌装”置于同一研发设施内，窗外可见天际线；这是用户本轮授权自主处置后的显式构图推断，不是源仓库规则或事实陈述。不得添加具体地标、真实工厂、品牌/功效/人物外观等新事实。 |
+| 时间策略 | 不等分、不硬编码每段秒数。对本任务用户确认的三个节拍，本项目冻结为每个节拍一个 Provider 段；该拆分是任务级创意约束，不宣称是 Huobao 普遍硬规则。来源“节拍边界强制切段、同节拍镜头优先归并”和段数/时长启发式分开记载，本任务不以字数启发式替代冻结 Brief。规划须每段 8–15 秒、总计恰好 30 秒；若不能满足，阻断而不改时长或拆出越界 Provider task。子镜头标记、行映射、连续完整覆盖由纯确定性解析器验收；不可排序/补齐/修正后放行。 |
+| 引用锚点 | Huobao 要求每段至少一个 `@` 锚点，并要求出场角色、画面中可见/使用/特写道具逐项引用本段已绑定实体。平台保留精确 `@` 名称于 provider-neutral prompt，并逐实体绑定 revision ID、冻结 brief 批准图片和实际 Provider image；总锚点计数不能替代角色/道具的对应引用。引用实体缺少批准图或映射不清时在 READY/副作用前 fail-closed，不用无关产品图充数；复用现有 Provider adapter，不改 Provider wire。 |
+| 逐实体映射证据 | TaskSpec v1.0.4 冻结私有 `SemanticEntityReferenceProjectionV1`：每条关系绑定 Brief revision、source/decision hash、segment、PromptPackage、实体 kind/ID/revision/exact name、approved asset ID/SHA、段内零基 Provider image position 和可核验 mapping evidence ID。相同投影/hash 写入 PromptPackage integrity payload 及不可变 TaskRun 私有 input snapshot；排程事务和 Worker 在 `ensureProviderAttempt` 前分别核验，任一 mismatch fail-closed。现有 provider image 顺序原样复用，不改 Provider wire。当前三张已批准图片尚无逐实体用途证明，特别是女性参考图未验证，真实 Provider 仍 blocked。 |
+| 持久化闭环 | 0026 migration 新增私有实体 revision/asset evidence 表并为既有 ShotSpec 结构增加 persistence 列；Control 类型、draft、INSERT、serializer 必须一并 round-trip。实体图像关系是追加证据，不进入实体内容 hash；旧记录保留且不得追认为已验证。planning、schedule、Worker 三阶段负例均断言无对应事务/Attempt/submit 副作用。 |
+| 时间行标注 | Huobao 示例 Provider 行不含 `【镜头N】`；该标记属于输入 description 的子镜头标识。若内部 Semantic Director 候选行暂时带 `【镜头N】` 以证明映射，必须只在内部用于 1–2 行关联校验，canonicalizer 随后剥除且不得进入持久化/Provider prompt；对应测试验证除 marker 标签外画面/时间文本不变。 |
+| 版本身份与内容 hash | 角色/道具身份键精确取源 `normalizeName`；场景身份键为源 `normalizeLocation + exact time || ""`；禁止 fuzzy match，无法唯一定位现存 current revision 则阻断。匹配现有实体时保持其 name/location/time，按来源的 truthy fallback 生成 effective mutable fields。平台 hash 输入为固定序列 UTF-8 `JSON.stringify`：Character `['CHARACTER',role,description,appearance,styling]`；Scene `['SCENE',prompt,lighting]`；Prop `['PROP',type,description]`。角色 styling fallback 和各类型空值默认按来源实现；字段精确保留，不 trim、不额外 Unicode/case 规范化。ID、时间戳、证据、asset binding 不进入实体内容 hash。相同 hash 复用，变化 append-only；图像证据独立按 asset ID+SHA256 冻结。此摘要算法是平台实现适配，需正反测试，不得扩成新业务去重逻辑。 |
+| 认证 | 结构化输入/输出 schema 或 system prompt surface 改动会使旧 Sonnet v3 certification surface hash 失效。不得沿用旧 hash；须按项目原认证流程用原 Sonnet v3 profile 完成所有夹具并经独立复核后才允许登记新 surface。真实运行的模型/effort provenance 与 Hook 状态分别记录，配置/自述不算证明。 |
+| 外部授权 | 2026-10-02 用户在本任务明确取消本次 Sonnet/Grok 调用的次数与金额/积分上限，以首个完整有效成片成功为停止条件。仅当前已批准的项目、素材、模型、Provider、30 秒/480p、BGM/字幕/旁白 OFF 生效；无共享积分配置变更、其他 Provider、部署或 Git 写入授权。新产物一旦通过完整视频定义立即停止外部调用。 |
+| 契约/迁移 | 不改变 Public API、事件或 Provider wire。新增私有视觉实体 revision 表和 ShotSpec persistence 字段；迁移须可重复、保留既有数据，历史 ShotSpec 未绑实体仍可读取，但不得被追认为本轮 source-verified。Contract/API 文档的既有 scene_id/character_ids/prop_ids 保持稳定。 |
+| 验收 | 按 TaskSpec 的跨项目 ID、未知键、dedup/append-only、scene/character/prop绑定、marker漏缺/错序/时间gap/overlap/total mismatch、无副作用、旧数据兼容、认证 surface/hash、真实新规划和完整成片测试；Source Fidelity A2 与普通 Audit A2 分开。任何来源冲突或缺证据均 HOLD。 |
+| 回滚 | 新实体与 Storyboard revision 为追加事实；不删除旧 revisions/video versions。关闭 G02 新规划入口即可阻断新工作流，不能回写旧结果或复用旧认证。 |
+
+ADR-0077 需要独立文档审计通过后才转为 `APPROVED_FOR_THIS_TASK`；该状态不等于代码接受、真实模型认证、真实 Provider 可用或 G02 整体通过。
+
+### ADR-0078 v1.0.0 — 显式音频输出选择与同运行整轨替换（2026-10-04）
+
+状态：`PROPOSED_FOR_INDEPENDENT_DOC_AUDIT`。依据用户明确授权，新增任务文档《AI企业内容生产平台_显式DOUBAO整轨替换同运行来源绑定开发文档_20261004.md》；本 ADR 与其一同冻结审计。
+
+- 用户选择与 Provider 能力分开：现有 ProductionRun 命令字段 `audio_selection` 表示本次输出意图；TaskRun 中的 `audio_owner` 仍表示 profile/来源能力，不互相覆盖。
+- 使用现有 `production_runs.budget_guard` 冻结 `audio_selection`，不新增列或公开 DTO/event；历史缺省按 Preserve，未知值 fail-closed。幂等请求同键异值冲突。
+- 内部组合计划加入同一运行选择凭证并升至 ALCHMED9；ALCHMED1–8 历史读取保持。只有显式 `DOUBAO_TTS_REPLACE` 可丢弃 source video 的全部 embedded audio；不得把原 MP4 误标为 dialogue/SFX 或混入 `_full_mix`。
+- 执行仍复用固定 OpenMontage `_mux_external_audio` 与 `_full_mix` 语义；需要同运行 canonical script/approved formal audio、实际 Doubao adapter 和完整既有 TimelinePlan/AudioPlan 检查。不可用 Piper、未知 provider 或 silent fallback 替代。
+- 本任务只允许文档 §5 列明的本地代码和测试，不调用真实 Provider/TTS、Veyra/网络、部署、Git，不改全局 Hook，不升级 E12/R01 或 C12.4/C12.5 状态。
+
+本 ADR 独立文档审计通过前，不授权 writer。审计通过也只放行该窄写集；实现必须 source fidelity 审计、普通代码 audit 和测试全部通过后才可申请章节状态复核。
+
+### ADR-0078 v1.0.1 supersession addendum（2026-10-04）
+
+ADR-0078 v1.0.0 未获放行，独立文档审计为 FAIL/HOLD，禁止实施，原冻结 hash 不可复用。当前唯一候选为 TaskSpec/ADR-0078 v1.0.1。修正内容：
+
+1. 显式记录 ALCHMED9 是平台私有 provenance 扩展，不是 OpenMontage 来源行为；修订来源登记历史“不新增 ALCHMED9”条目的适用范围但保留原记录。
+2. DOUBAO selection 必须在 ProductionRun 创建前通过现有 approved formal Doubao NarrationAssetVersion 与 READY TimelinePlan 校验；只允许消费已持久化 asset，不在组合重试中调用 TTS。无相同 script/DeliveryPlan/timeline/asset 绑定时，run/outbox/TaskRun/ProviderAttempt 均为零。
+3. 明确 Preserve+Music OFF 保留原轨；Preserve+Music ON 在原嵌入音轨没有来源角色证据时沿既有 P6 规则 fail-closed，不将它扩展为混音。
+4. 增加日志错误脱敏和 ProductionRun→DeliveryPlan→TimelinePlan→script→formal asset→Runtime payload 全链 ID/hash 精确绑定测试。
+
+当前候选仍是 `PROPOSED_FOR_INDEPENDENT_DOC_AUDIT`；本补记不授权 writer 或外部调用。审计必须绑定新文档、新 ADR、来源登记、领域契约、正式音频文档及冲突/验证矩阵的冻结 hash。
+
+### ADR-0078 v1.0.2 supersession addendum（2026-10-04）
+
+ADR-0078 v1.0.1 的文档审计为 `FAIL/HOLD`，不得实施，原 hash/receipt 不可复用。当前唯一候选为 TaskSpec/ADR-0078 v1.0.2，仍待独立文档审计。仅修正以下来源/可验证性边界：
+
+1. Source Fidelity 全链 ID/SHA 验证由 Worker 在编码前负责。ALCHMED9 只携带 frozen `audio_selection`；Runtime wire 不携带、也不声称验证 `ProductionRun ID` 或 `NarrationAssetVersion ID`。Runtime 仅校验真实 wire 中存在的 selection、AudioPlan track/asset ID/window、payload 与整体请求哈希。
+2. 一份完整整轨正式音频只适用于 TimelinePlan 唯一 PRIMARY window 精确覆盖 `0..target_duration_ms`。多个 PRIMARY windows 必须分别绑定独立正式资产；禁止跨 section 整轨推导、自动偏移或切片。
+3. 其它 v1.0.1 修正与门禁保持：预先通过 formal Doubao asset/TimelinePlan preflight、Preserve+Music ON 保持既有 fail-closed、同 run identity and redaction tests。
+
+v1.0.2 文档审计 PASS 前不得派发 writer、真实 TTS/Provider 或更新章节状态。
+
+### ADR-0078 v1.0.2 实施与窄功能验收补记（2026-10-04）
+
+状态：`IMPLEMENTED / LIMITED_FEATURE_ACCEPTED`，仅对任务文档 §5 的实现写集和 §6 验收测试有效。独立文档审计、Source Fidelity 和普通代码 Audit 均 PASS。全新隔离 PostgreSQL 16 上迁移成功，Persistence 全套 124/124（0 skipped）；另有 Media Runtime 150/150、Worker 82/82、Contracts 35/35、Control API 8/8、Studio 47/47 及相关 typecheck 通过。具体命令、证据和测试库复用限制见《AI企业内容生产平台_显式DOUBAO整轨替换同运行来源绑定开发文档_20261004.md》§8。
+
+本补记不将 E12/R01、C12.4/C12.5 或任何正式章节设为 `ACCEPTED`；不代表真实 Provider/TTS、音频听感、profile/route provenance、VPS、部署或商用发布通过。未调用真实 Provider/TTS/Veyra，没有 Git 写入。
+
+### ADR-0077 v1.0.5 supersession addendum（2026-10-02）
+
+本补记取代上方 ADR 中所有指向 TaskSpec/mapping v1.0.4 的活动指针；旧文字和审计结果仍作为历史记录保留。当前唯一候选契约为 TaskSpec 与来源映射清单 v1.0.5，状态仍是 `PROPOSED_FOR_INDEPENDENT_DOC_AUDIT`。本补记不授权代码或外部调用，须待独立文档审计对 v1.0.5 的冻结字节返回 PASS。
+
+1. **素材映射证据唯一入口**：当前实现只接受同一冻结 Brief revision 中精确 `source_asset_roles[].usage` 所声明的实体-图片关系，并将它原样透传到 CanonicalSourceBundle；`provider_role`、metadata、文件名、模型自述和直接图像观察均不能创建 mapping evidence。Main 对实际字节/SHA 的检查只能否决与声明冲突的素材。既有三张产品图之外，最新用户授权仅容许为既定女性使用者和既定研发灌装/窗外天际线构图各补最小参考图，并经现有 asset/Brief 流程纳入；不得增添其他内容。
+2. **Beat lineage**：三个用户确认节拍必须由新 Brief source_text 的三个有序 marker 行精确提取；服务端派生 `(brief_revision_id, sequence, exact_quote_hash)` identity，并贯穿模型候选、Decision、ScriptBeat、ShotSpec、PromptPackage。模型只能回传 sequence/candidate key，不能回传正式 ID/hash；必须 exactly-once，禁止从分段顺序事后推断。
+3. **身份与并发**：拆分唯一 identity claim、append-only revision、append-only asset mapping 三张私有表。identity claim 唯一键为 workspace/project/kind/来源精确归一身份；事务锁定唯一 claim 后分配唯一递增 revision。Asset mapping 仅 ADD/REVOKE，REVOKE 必须精确指回同范围既有 ADD；无 update/delete。hash 使用既有 `semanticValueHash(canonicalJson(...))`，禁止平行编码算法。
+4. **副作用门**：planning transaction 只允许完整成功事实一起提交；失败仅允许既有 Brief FAILED 与 failure outbox。schedule 不一致不得留下 Shot/reference binding/TaskRun/queued success outbox；Worker 在创建 ProviderAttempt 前核对 active mapping、immutable snapshot、有序图片及 prompt anchors，失败时 Attempt=0、submit=0。现有 provider adapter/wire 保持不变。
+5. **向后兼容和成片条件**：新增私有 ShotSpec persistence 必须 round-trip 已有字段，历史 package 使用原 hash 分支；不得因缺列、旧字符串或旧 package 重写历史语义。真实调用只在新认证、source/audit、定向/回归测试、能力和新规划门均通过后进行；输出遵守 native audio owner，且只有本 TaskSpec 全部 30s/480p/三 beat/资产 READY 条件同时满足才算成功并立即停。
+
+具体字段、来源位置、精确写集、反例/副作用断言及审计哈希以 TaskSpec v1.0.5 与同版来源映射为唯一依据；两文档未通过独立复审前，本补记不改变 `G02 BLOCKED` 状态。
+
+### ADR-0077 v1.0.6 supersession addendum（2026-10-02）
+
+v1.0.5 文档稿未通过独立复核，不得实施，旧 receipt/hash 不可复用。当前唯一候选实现契约为 G02 TaskSpec 与来源映射清单 v1.0.6；状态 `DOC_AUDIT_PENDING`，须对新冻结字节重新完成独立审计。本补记不覆盖更高优先级领域/API 契约或已接受 ADR。
+
+1. **beat 与实际生成解耦**：严格遵守领域/API 契约 §1、ADR-0041 和通用叙事编排规范。三个用户确认 NarrativeBeat 只定义故事事实；Semantic Director 为各 GenerationSegment 声明 `source_narrative_beat_sequences[]`，相邻 beats 可以成组。Provider TaskRun 数按目标总时长、已认证 profile min/max、Huobao 单场景/镜头边界选择满足硬约束的最少分段，不得按 beat 数量计算。用户场景恰好要求三段时，三段是场景/能力结果而非 beat 数复制；新公开 DTO 不增加字段。
+2. **图片实体映射基数**：同一 Brief revision 内每个 asset 只能映射一个 logical entity；一实体可对应多张独立图片。组合图不得映射多个实体。每个 Provider position 只归一个实体，所有位置须逐项匹配 immutable asset ID/SHA/reference 顺序。此规则不允许以直接图像观察、metadata 或模型输出代替 usage 证据。
+3. **私有 beat lineage**：TaskSpec §3.1.9 冻结 `SemanticNarrativeBeatLineageV1` 字段、精确 UTF-8/SHA 与 `semanticValueHash(canonicalJson(...))` 算法，以及 Raw 序号、Decision 分配、既有 ScriptBeat/ShotSpec 字段、PromptPackage 私有 capability snapshot 和 TaskRun 私有 snapshot 的绑定路径。不增加公开 DTO、event、表或 Provider wire；模型不得提供 identity/hash。
+4. **身份并发**：只对 `(workspace_id,project_id,entity_kind,normalized_identity)` 预期 identity-key 使用 `INSERT ... ON CONFLICT DO NOTHING`。竞争者对同一键 `SELECT ... FOR UPDATE` 并复用唯一 claim/entity ID；找不到行或其他唯一约束冲突均 fail-closed、回滚。claim row lock 内 append revision。集成测试证明并发请求不会分裂 identity。
+5. **REVOKE 与实际提交意图**：Worker 的预检不能替代最终事务。`task-run-repository.ts` 在同一 transaction 中锁 Brief revision，复核 TaskRun snapshot 中的 active mapping 并创建 ProviderAttempt。REVOKE 先提交时不得创建 Attempt；Attempt 先提交即成为不可撤销的持久化提交意图，之后 REVOKE 只阻止后续 Attempt；已有 request ID 仍仅查询/下载恢复。两种顺序均需集成测试。
+6. **来源 prop prompt 失效语义**：Huobao `saveDedupProps` 在描述更新时清空 `finalPrompt`。平台无可变同名字段；以 append-only entity revision 与 revision-bound immutable PromptPackage 实现等价失效：描述变化必须创建新 revision/package，旧 package 不可用于新 revision，且测试覆盖此关系。
+
+### ADR-0077 v1.0.7 supersession addendum（2026-10-02）
+
+v1.0.6 的独立文档审计结论为 `FAIL`，其文档、hash 与 receipt 不可用于实施或放行。当前唯一候选是 G02 TaskSpec 与来源映射 v1.0.7，仍为 `DOC_AUDIT_PENDING`。本补记只消除审计指出的两项歧义，不覆盖领域/API 契约或其他已接受 ADR；独立文档审计 PASS 前仍不得写代码或调用生成服务。
+
+1. **实体字段 hash**：固定实体字段数组直接传给既有 `semanticValueHash(fixedArray)`，由 helper 内部对数组 canonicalize 并 SHA-256 一次。禁止调用方预先把数组变成 JSON 字符串再传入 helper。独立测试须对 `SHA-256(canonicalJson(fixedArray))` 与错误的 `semanticValueHash(canonicalJson(fixedArray))` 作对比，并证明错误值不能写入或放行；不得改变 helper。
+2. **GenerationSegment 边界**：本任务仅有用户明确批准的两个编辑性切点——“乳霜质地/肌肤舒缓”到“新加坡天际线与研发灌装环境”，以及该场景到“女性使用产品并以包装特写收尾”。三个 beat 可合并映射，不按 beat/entity/action/emotion/camera/shot/motion/subshot 数量增段。profile 已认证的安全时长硬约束可要求同一物理场景内作最小技术拆分；拆后仍必须满足 8–15 秒、总计 30 秒、单段单一物理场景和其余 ADR-0041 规则，否则 BLOCKED。两个场景切点来自用户确认，不是从 beat 个数推导出的通用规则。
+3. **任务范围与停止**：原仓库固定 commit、用户确认内容、允许的参考图补齐、写集、独立 source/audit、测试、新认证面、同一 Brief 的 usage 映射、新规划/DeliveryPlan、能力与音轨验证仍逐项为门禁。用户已授权本指定护肤广告不设尝试/额度上限，但首个完整、有效视频通过媒体与内容验收后必须停止；该授权不允许更换 profile/Provider、绕 Control API/Worker/既有计费路径、改 `.env`/密钥/Veyra/部署/Git 或跳过门禁。未获新增权限前不得扩展此边界。
+7. **用户授权**：本任务继续限于既有护肤广告、既定 Sonnet v3/Grok profile 与 TaskSpec 素材/内容边界；当前用户授权不设调用次数或金额/积分上限，首个完整有效视频成功即停。授权不放行技术门、不换 profile，也不授权 Veyra 配置、VPS/部署/Git 或其他项目外部调用。
+
+具体目标路径、顺序、测试和成功定义仅见 v1.0.6 TaskSpec 与映射清单。独立文档审计 PASS 前，不得派发代码 writer 或调用任何模型/视频生成服务；PASS 后也仍须通过 source fidelity、实现 audit、测试、新认证、素材/映射、重新规划、能力与媒体验收等门禁。
+
+### ADR-0077 v1.0.8 supersession addendum（2026-10-02）
+
+v1.0.7 在完成 hash 修订后、正式文档审计结束前的只读预审发现新的来源优先问题：它漏记 Huobao `storyboard-breaker/SKILL.md` 第 2 步“节拍边界强制切段”，并允许同场景跨 beat 合并；“不得新增片段”又与安全时长额外拆分例外冲突。v1.0.7 冻结稿已停止审查并不授权实施，原 hash 不可复用。此补记取代 ADR-0077 v1.0.7 补记中任何当前版本指针；v1.0.7 补记末尾曾误写目标只见 v1.0.6 的引用，按当时版本应为 v1.0.7，当前唯一活动候选则为 TaskSpec/mapping v1.0.8。v1.0.8 仍是 `DOC_AUDIT_PENDING`，未通过独立文档审计前不得改代码或调用生成服务。
+
+1. **来源 beat 边界优先**：固定 Huobao storyboard-breaker 明确要求节拍边界强制切段，同一节拍内的子镜头优先合并。G02 三条用户批准的 brief beat markers 与本任务两个用户批准的场景切点一一对齐；本任务每个来源 beat 必须映射到一个 GenerationSegment，不允许跨 beat 合并。marker 行格式是平台 task adaptation，但不得借此覆盖或弱化来源切段行为。平台 ADR-0041 关于通用 NarrativeBeat/TaskRun 解耦继续有效，但不作为本源迁移任务跨来源 beat 合并的授权。
+2. **固定三段、不可追加**：此任务输出恰为三个 segment。三段各 8–15 秒、总长精确 30 秒、每段单一物理场景，并且需符合该已登记 profile 的认证安全时长上限。若不能在三段中满足全部条件则 BLOCKED；不得合并 beat、增加第四段、增加编辑切点或改变总时长。普通 entity/action/emotion/camera/shot/motion/subshot 变化留在既有 segment 时间轴。
+3. **保留前版 hash 修正**：实体固定字段数组直接传入既有 `semanticValueHash(fixedArray)`，helper 仅 canonicalize 一次；将预序列化字符串再次传给 helper 的结果作为必须拒绝的负例，不改 helper 或新造 hash 算法。
+4. **授权及剩余门**：既有用户授权仍为该护肤广告不限提交尝试/金额或积分、首个完整有效视频后停止；只适用既有 Sonnet v3/Grok profile 与冻结素材/内容。此授权不豁免本版文档审计、source fidelity、普通审计、代码测试、新认证、素材 usage、重新规划/DeliveryPlan、能力及音频 owner 门，不授权换 provider/profile、绕 Control API/Worker/已有计费路径、`.env`/密钥/Veyra/部署/Git 操作。
+
+### ADR-0077 v1.0.9 supersession addendum（2026-10-02）
+
+v1.0.8 的独立文档审计未完成且不得放行。审计发现 TaskSpec §3.1.7.2 的 RawSemanticPlan 文字仍允许一个 segment 包含多个相邻 NarrativeBeat，与同文件后续的本任务 1:1 source beat mapping 冲突。v1.0.8 的 hash/receipt 不可复用；本补记取代 ADR-0077 v1.0.8 中的当前版本指针。当前唯一候选为 TaskSpec/source mapping v1.0.9，仍为 `DOC_AUDIT_PENDING`。
+
+1. **输入合同闭合**：RawSemanticPlan 的每个 GenerationSegment 必须且只能引用一个相邻 `source_narrative_beat_sequences[]` 值；本任务只接受 1、2、3，依次一对一映射三个固定 Huobao source beat。缺失、重复、乱序、一个 segment 多 beat 或跨 beat 合并均在任何持久化、排队或 Provider 副作用前拒绝。后续 canonicalizer 再验证全量 exactly-once partition；不能依赖下游验证来抵消上游模型输入合同的歧义。
+2. **规则范围**：这是由本任务具体 Huobao 来源行为和用户批准三段方案共同确定的 task-specific 映射，不改平台通用 ADR-0041，也不将 beat 数普遍等同于 TaskRun 数。
+3. **其余门禁**：三段总长 30 秒、单段 8–15 秒、profile 已认证安全时长与单一场景等条件仍须同时成立，否则 BLOCKED；不得跨 beat 合并、增加第四段或更换 profile。实体 fixed-array hash 修复、来源映射、资产 usage、私有 lineage、事务竞态、Source Fidelity、普通审计、测试、新认证与真实媒体验收要求全部保留。
+4. **冻结与授权**：本版重新计算八文件逐文件 hash 和 manifest，并经独立只读文档审计 PASS 前，不派发 writer，不调用模型或视频 Provider。用户不限调用次数/金额或积分、首个完整有效视频即停的授权不豁免任何技术门，也不扩大 profile、内容、计费、Veyra、部署或 Git 边界。
+
+### ADR-0077 v1.0.10 supersession addendum（2026-10-02）
+
+v1.0.9 的独立文档审计未完成且不得放行。已确认文档门缺陷：来源映射清单页眉落后于其正文活动版本；TaskSpec 只有 `§3.1` 标题和第 1–9 项，不存在 `§3.1.7` 小节；资料包 00 的状态头还会让人把 08 中旧 manifest 的 PASS 误认为覆盖当前 G02 补记。v1.0.9 hash/receipt 不可复用。当前唯一候选为 TaskSpec/source mapping v1.0.10，仍 `DOC_AUDIT_PENDING`。
+
+1. **准确版本绑定**：TaskSpec 与来源映射页眉、当前版本指针、ADR 与正式总控概览均须一致标为 v1.0.10；任何历史版本段落保留为追加式记录并清楚标记已 supersede。
+2. **准确条款定位**：当前实体 hash 规则引用为 TaskSpec §3.1 第9项；RawSemanticPlan 与 canonicalizer 历史问题对应 §3.1 第2项和第3项。§3.1.8 与 §3.1.9 是实际显式标题，继续按原编号引用。旧追加记录中的错误 subsection 字符串仅作审计历史，不可作为当前实现指针；本版新增记录使用准确条目号。
+3. **准确审计状态**：资料包 08 的 PASS 只绑定其写明的历史 manifest。00/01/03 后续 G02 增补和 v1.0.10 八文件必须重新独立审计；当前状态仍 `DOC_AUDIT_PENDING`，旧 PASS 不放行新版本。
+4. **技术与授权不变**：v1.0.9 规定的每个 Raw GenerationSegment 恰含一个 beat（1/2/3）、来源节拍强制切段、profile/时长/音轨/引用/竞态门和“不满足即 BLOCKED”全部保留。用户不限次数/额度、首次完整有效视频即停授权不豁免任何门。新八文件 hash/manifest 通过独立完整审计前不得 writer、模型或 Provider 调用。
+
+### ADR-0077 v1.0.11 supersession addendum（2026-10-02）
+
+独立只读文档审计对 v1.0.10 返回 `FAIL / HOLD`，仅发现以下文档状态问题：现行来源映射 HB-PROMPT-02 行的 TaskSpec 版本仍为 v1.0.9；00 索引仍称审计 hash“尚未生成”；章节审计记录当前总表仍将已撤销的额度上限缺失列为 blocker。v1.0.11 已将这些现行引用和状态陈述修正，并冻结以下要求：
+
+1. TaskSpec 与来源映射、ADR-0077 和正式总控文档的当前版本指针均为 v1.0.11；过去的版本与审计记录只作为历史，不得作为当前放行凭证。
+2. 用户对本任务授权不设次数或金额/积分上限，首个完整有效视频成功即停止。该授权状态须在章节审计当前总表准确表达；技术门仍未通过时继续 HOLD，不得再把额度缺失作为阻断理由，也不得以无限额授权绕过技术门。
+3. v1.0.11 只做文档一致性修订，不改变来源规则、技术契约、代码写集、任务范围、Provider/profile 或其他外部边界。八文件新 manifest 与逐文件 hash 经独立只读审计 PASS 前，不派发 writer、不调用模型或 Provider。
+
+### ADR-0077 v1.0.13 supersession addendum（2026-10-02）
+
+v1.0.11 对 Execute I2 `gpt-6-luna/xhigh` 的“不受支持”判断缺乏证据；v1.0.12 据此提出的 high/max 降档草稿未通过审计，不构成实施授权。该路由结论与降档均撤回。GPT-6 Luna 官方模型能力资料列有 `xhigh`；本机 V2 固定 role matrix 与 profile 也指定 Execute I2 使用 Luna/xhigh，相关 profile 测试通过且本次协作派发器接受过该请求。以上均不能证明任一子 Agent 实际运行档位，实际 route provenance 继续为 `ROUTE_UNVERIFIED`，Hook 状态单独记录。
+
+当前唯一候选为 TaskSpec、来源映射清单及本 ADR v1.0.13。Execute I2 请求 `gpt-6-luna/xhigh`；Source Fidelity A2 和普通 Audit A2 请求 `gpt-6-luna/max`。本版只纠正路由判断并同步当前版本指针，不改来源语义、技术方案、代码写集、外部授权或正式章节状态。新冻结字节和 manifest 经独立文档审计 PASS 前，不派发 writer，不调用 Semantic Director 或视频 Provider；PASS 后仍须按 TaskSpec 逐项通过来源审计、实现审计、测试、新认证、素材映射、重新规划与能力/媒体门禁。
+
+v1.0.13 冻结文档审计结论：独立只读审计 `PASS`，绑定初始 00–07 manifest `5e0dd54e91e9a438527da178884bec125b2d95c3963984033fe018838257448d` 及对应 TaskSpec/source-mapping/ADR/master/ledger SHA。该结果仅满足文档门；状态文本变更后的 hash/status binding、P0 re-freeze、全部代码/测试/认证/Provider 门仍须分别通过。ADR-0077 的本任务窄决策仅可在上述文档审计后用于实施，不表示 G02 或其他章节整体验收。
+
+### ADR-0078 v1.0.3 supersession addendum（2026-10-04；文档审计通过，状态绑定复核待完成）
+
+ADR-0078 v1.0.2 只授权显式 Doubao replacement。本补记提出另一个互斥的用户选择，限于 BGM-on 真实视频组合阻断；TaskSpec《AI企业内容生产平台_显式BGM整轨替换Provider原音开发文档_20261004.md》当前为 `APPROVED_FOR_IMPLEMENTATION_AFTER_INDEPENDENT_DOC_AUDIT`，状态文本 re-freeze 绑定待复核。
+
+1. `audio_selection` 扩充 `MUSIC_REPLACE_PROVIDER_AUDIO`，仅当该值显式冻结到同一 ProductionRun 且同 run `MANUAL` MusicPlan 的精确 MUSIC asset ID/hash/duration 已冻结时，才移除 Provider 音轨。首版拒绝 AUTO/OFF，不调用选曲算法。默认仍 Preserve；Music ON 不自动推断 replacement。
+2. 复用 OpenMontage `_full_mix` 的单 MUSIC track 与 `_mux_external_audio` 的整轨替换；不分类/混合 Provider MP4 音轨，不添加 loop、裁切、静音补齐或其它媒体算法。Studio 必须告知会丢弃原生对白/环境声。
+3. 保持 Preserve+Music ON 对未知来源角色继续 fail-closed，Doubao gate/行为不变。只扩展本次用户明确要求测试的显式路径。
+4. 沿用私有 JSONB 快照和 ALCHMED9 的 selection byte（2）；ALCHMED1–8 隐含 Preserve，未知值拒绝，worker/runtime 不兼容时不得静默 fallback。
+5. 文档独立审计 PASS 前不得实施；实现后 Source Fidelity、普通 Audit、真实 FFmpeg 夹具和相关全量测试须全部通过。仅接受本窄功能，不升级 G02、C12.4/C12.5、E12/R01 或发布状态。
+
+## ADR-0079：C12.2 BGM 最终编码容差与不完整 QC 覆盖语义
+
+状态：`IMPLEMENTED / LIMITED_QC_POLICY_ACCEPTED`
+
+日期：2026-10-05
+
+影响范围：C12.2 最终成片 QC；不改变 Provider、混音流程、公开 DTO、生产状态机或章节整体状态。
+
+决定：
+
+1. 遵循用户对本轮已接受 BGM 成片的明确指示，将“已应用项目 BGM 的最终 AAC 解码 true peak QC 上限”设为 `-1.0 dBTP`；没有 BGM 时仍使用 `-1.5 dBTP`。来源混音目标 `TP=-1.5` 不变。这是有界的最终编码验收容差，不是对来源混音标准的改写。
+2. QC `PASS` 表示实际执行且适用的可测检查未发现缺陷。语义/转写/素材身份等 evaluator 不可用时必须保持 `UNAVAILABLE` 与 `review_completeness=PARTIAL`，并以 `PRESENT_WITH_REVIEW` 和安全摘要提示人工复核；不得声称完整语义验收。
+3. 实测偏差超过本次适用 true-peak 上限、存在实测质量问题或触发既有技术硬门时，继续 `NEEDS_ATTENTION`/`FAILED`/`BLOCK`；人工喜欢成片不能覆盖可观测故障。
+
+来源与授权：OpenMontage `sound-design.md` 通用混音目标为 `-1.5 dBTP`；其短视频音频规格给出 `-1 dBTP`。用户明确授权放宽本项目 BGM QC 标准。实现将限于最终 AAC 检查，不修改 OpenMontage mixer 源码或 limiter 参数。
+
+验收证据：`-1.2 dBTP + music_applied=true` 应通过已执行的音频检查，报告阈值 `-1.0`；`-1.2 + music_applied=false` 仍触发原 `-1.5` 规则；BGM `-0.9` 仍产生可见 `NEEDS_ATTENTION`。语义 evaluator 仍必须是 `UNAVAILABLE`，覆盖不完整须通过安全摘要披露。黑帧、无效容器、缺音轨、异常静音与 REQUIRED 字幕缺失继续阻断。
+
+实施与审计证据：
+
+- Media Runtime：156/156；Production Worker：86/86；Persistence：105 passed、21 skipped；Python compileall 与 `git diff --check` 通过。
+- A2 独立只读代码审计：PASS（仅本 ADR QC 策略切片）；Source Fidelity 最新快照复核：PASS。
+- Persistence 数据库集成测试因未配置隔离 `DATABASE_URL` 而跳过；未重新生成视频、未调用 Provider、未操作数据库。
+- 此状态仅接受本 ADR 所述 BGM 最终编码容差与 QC 覆盖披露规则；不升级 C12.2、G02 或平台发布状态，也不表示重新对实际成片执行了 QC。
+
+### ADR-0078 v1.0.3 实施事实 supersession（2026-10-05；limited acceptance 仍待）
+
+ADR-0078 v1.0.3 appendendum 中“实施前状态绑定复核待完成、尚不得实施”的描述是实施前快照，现由《显式 BGM 整轨替换 Provider 原音开发文档》§7.1 的证据记录 supersede：代码已经存在，用户授权的视频已成功，且该输出成为行为验收样例。当前审计者检查的 627-path 工作树不是可直接发布的精确 feature write-set，BGM 所在文件与 G02/Persistence/Runtime 等改动交错；没有当前精确 patch 的同版本 Source Fidelity 与普通 Audit receipts。
+
+故 ADR-0078 BGM replacement 当前仅为 `IMPLEMENTED / LIMITED_FEATURE_ACCEPTANCE_PENDING`，不等于 `LIMITED_FEATURE_ACCEPTED`。ADR-0079 的 `LIMITED_QC_POLICY_ACCEPTED` 只接受最终 AAC true-peak 容差与 QC 覆盖语义，不验收 ADR-0078 功能。C12.2 仍 `NOT_ACTIVE_IN_THIS_SCOPE`，不升 G02、C12.4/C12.5、E12/R01 或平台发布状态；不放行新的真实调用、Git、VPS 或部署。

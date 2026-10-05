@@ -494,6 +494,8 @@ test("semantic director prompt is cross-domain and forbids output repair semanti
   assert.match(directorSystemPrompt, /plain JSON object/);
   assert.match(directorSystemPrompt, /raw semantic plan/i);
   assert.match(directorSystemPrompt, /reference_asset_ids/);
+  assert.match(directorSystemPrompt, /Use only these kind-specific fields: CHARACTER: role, description, appearance, styling; SCENE: location, time, prompt, description, lighting; PROP: type, description\. Do not emit any kind-specific field outside its listed kind\./);
+  assert.match(directorSystemPrompt, /Only include listed fields supported by the frozen source bundle; omit absent fields entirely \(never use null or placeholder values\)\. For SCENE, include prompt only when it is source-grounded\./);
   assert.match(directorSystemPrompt, /exact supplied canonical order; do not reverse or reorder them/);
   assert.match(directorSystemPrompt, /one-based physical source_text line number/);
   assert.match(directorSystemPrompt, /Do not renumber spoken lines densely/);
@@ -503,7 +505,19 @@ test("semantic director prompt is cross-domain and forbids output repair semanti
   assert.match(directorSystemPrompt, /narrative beats first.*beat, scene, and causal boundaries/);
   assert.match(directorSystemPrompt, /dialogue character count divided by 4\.5 plus 2 seconds/);
   assert.match(directorSystemPrompt, /3-second timeline rows.*same segment prompt.*never become additional Provider tasks/);
+  assert.match(directorSystemPrompt, /Apply the private .* timeline-marker format only when source_text contains all three G02_APPROVED_BEAT_1\/2\/3 markers\. For every other source, do not add these G02-only marker annotations\./);
+  assert.match(directorSystemPrompt, /For G02 visual_prompt, emit exactly 2-4 ordered consecutive internal sub-shot groups labeled `【镜头1】` through `【镜头N】`/);
+  assert.match(directorSystemPrompt, /Put the first timeline row on the same line as its marker .* never put a marker alone on a line/);
+  assert.match(directorSystemPrompt, /Additional rows in the same group must be plain `N-N秒：画面` continuation rows with no marker/);
+  assert.match(directorSystemPrompt, /Each marker group must map to 1-2 contiguous timeline rows and span 2-6 seconds/);
+  assert.match(directorSystemPrompt, /Timeline rows must start at 0, continue exactly from the prior row with no gaps or overlaps, and end exactly at segment duration; use 3-second rows except the final row, which may be the remaining 1-3 seconds/);
+  assert.match(directorSystemPrompt, /marker labels are private validation annotations only: the canonicalizer validates the mapping and strips them before persistence\/provider-facing prompts/);
   assert.match(directorSystemPrompt, /Do not use ceil\(target_duration_seconds \/ 12\), equal-duration splitting, or one Provider segment per sentence/);
+  assert.match(directorSystemPrompt, /A SCENE candidate must include a non-empty location, as required by the existing schema/);
+  assert.match(directorSystemPrompt, /For G02, exact_name must exactly equal location character-for-character/);
+  assert.match(directorSystemPrompt, /facts supported by the frozen source bundle: exact source_text lines, exact string values of frozen user decisions, or exact USER_DECLARED_USAGE on that candidate's referenced approved assets/);
+  assert.match(directorSystemPrompt, /For each referenced asset, include its exact USER_DECLARED_USAGE string verbatim in source_evidence_refs/);
+  assert.doesNotMatch(directorSystemPrompt, /together with the exact frozen source quote/);
   for (const forbidden of ["泛红", "护肤", "保险", "房地产", "温泉", "拂尘"]) {
     assert.equal(directorSystemPrompt.includes(forbidden), false);
   }

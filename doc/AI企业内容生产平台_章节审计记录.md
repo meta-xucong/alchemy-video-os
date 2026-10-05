@@ -22,15 +22,15 @@
 | C07 | SUB2API 离线 Adapter | `ACCEPTED` | C06 | 2026-08-14 | 2026-08-14 | `origin/main` 与 `c07-accepted^{}` 已独立复核为 `41d414cf1b6767c39f251445278831328e1620cf`；保持离线、disabled-only 边界 |
 | C08 | 真实 Provider 能力认证 | `ACCEPTED` | C07 | 2026-08-14 | 2026-08-14 | ADR-0030 受限认证已完成并复核；真实 profile 继续保持 disabled，未授权运行时装配或部署 |
 | C09 | 共享积分本地边界 | `ACCEPTED` | C08 | 2026-08-14 | 2026-08-16 | ADR-0039 后的本地 CreditPort、离线契约与 C09-C 本地运行时已独立复核；真实 Veyra/VPS 联动后移 C13-A |
-| C10 | MarkItDown 企业资料链路 | `ACCEPTED` | C06 | 2026-08-16 | 2026-08-16 | 独立审计已复核事务、公开边界、流式 Runtime、隔离浏览器验收和根级回归 |
+| C10 | MarkItDown 企业资料链路 | `BLOCKED / REMAINING_EXIT_GATES_AND_AUDIT` | C06 | 2026-08-16 |  | P5 固定 MarkItDown extras 锁、仓库外隔离安装及 Runtime fixtures 已于 2026-10-02 通过；C10 全章 HTTP/持久化/Worker 恢复/SSE/Studio E2E 与正式独立审计未由本轮证明，故继续 BLOCKED，不再以 parser extras 缺失作为当前原因；历史证据保留 |
 | C11 | Prompt、Script、Storyboard | `ACCEPTED` | C10 | 2026-08-16 | 2026-08-16 | 独立审计已复核本地创作版本、规划、审批、生产计划确认和零视频执行边界 |
 | C11.2 | 资料理解与按段事实包 | `ACCEPTED` | C11.1 | 2026-08-30 | 2026-08-30 | 本地范围的资料知识链路、恢复/隔离/公开边界和独立审计已完成；不代表真实外部系统完成 |
 | C12 | OpenMontage、QC、成片 | `ACCEPTED` | C11/C06 | 2026-08-16 | 2026-08-17 | 本地依赖调度、交接帧、QC、合成、成片版本及交接帧/用户参考素材一致性修订均已通过完整回归；外部边界继续关闭 |
 | C12.1 | 语义衔接质检与自动转场修复 | `ACCEPTED` | C12 | 2026-08-17 | 2026-08-17 | 独立复核契约、迁移、Worker/Runtime、活动租约恢复、三段混合转场夹具、隔离 E2E、根回归和公开投影；不触碰 C13-A 外部边界 |
 | C12.2 | OpenMontage 终检与真实成片质量门禁 | `NOT_ACTIVE_IN_THIS_SCOPE` | C12.1 | 2026-08-23 |  | 历史 `READY_FOR_AUDIT` 技术终检证据保留于下方快照；本轮不活动，语义 evaluator/transcriber 仍明确不可用 |
-| C12.4/C12.5 | 连续旁白、音频编排与口播时长 | `IMPLEMENTED_PENDING_AUDIT` | C12.1/C12.7B | 2026-08-30 |  | S01/E02、E03/HB-STORYBOARD-TIMING 8–15 秒、E04/Piper pace、E05 `_full_mix`/ALCHMED8、E06 approved full narration 窗口与 cue-only、E07 uniform transition/xfade、E08 segmented/HyperFrames、E09 source-expressed transcript/subtitle/FFmpeg fallback、E10 approval/formal asset/TimelinePlan identity-window、E11/S08 measured-duration feedback 均为已独立审计的窄切片 `ACCEPTED`；混合/连续非 cut、完整 section windows、Studio/REQUIRED 字幕、中文口音、自动重规划和其它硬门仍 `BLOCKED/DEFERRED`；E12 实测仍阻断总体硬门未收口 |
+| C12.4/C12.5 | 连续旁白、音频编排与口播时长 | `IMPLEMENTED_PENDING_AUDIT` | C12.1/C12.7B | 2026-08-30 |  | S01/E02、E03/HB-STORYBOARD-TIMING 8–15 秒、E04/Piper pace、E05 `_full_mix`/ALCHMED8 的既有窄切片、E06 approved full narration 窗口与 cue-only、E07 uniform transition/xfade、E08 segmented/HyperFrames、E09 source-expressed transcript/subtitle/FFmpeg fallback、E10 approval/formal asset/TimelinePlan identity-window、E11/S08 measured-duration feedback 均保留窄切片历史状态；**E05 未覆盖 project composition fade 到 full_mix track 的传递，该映射当前 `CONFIRMED_GAP`，不能称全量 fade parity**；混合/连续非 cut、完整 section windows、Studio/REQUIRED 字幕、中文口音、自动重规划和其它硬门仍 `BLOCKED/DEFERRED`；E12 实测仍阻断总体硬门未收口 |
 | G01 | 反自造语义治理与单一语义所有权 | `ACCEPTED`（范围限定） | C11/C12 | 2026-09-24 | 2026-09-24 | 独立审计确认本地治理与代码边界、历史安全处置、证据分层和验收交接均符合；不证明视觉语义正确或 source 完整覆盖；真实 LLM/Provider、VPS、成片语义 QC、人工质量、生产历史盘点和外部凭据轮换仍为发布前外部门 |
-| G02 | Semantic Director 真实模型能力门与规划阻断 | `BLOCKED / NOT_READY_FOR_PROVIDER_TEST` | G01 | 2026-09-25 |  | 严格 profile、JSON Schema、脱敏诊断、启动传递和旧 Worker 阻断已实现并通过定向门；尚无真实模型通过完整 fixture，护肤品旧项目尚未重新规划，禁止 Grok submit |
+| G02 | Semantic Director 真实模型能力门与规划阻断 | `PROFILE_CERTIFIED / PROJECT_BLOCKED` | G01 | 2026-09-25 |  | 2026-09-28 `aiself-claude-sonnet-5-candidate-v3`/`claude-sonnet-5` 通过 v3 fixture 三次认证并经 A1 复核，surface hash `1489b5c8af684f9be32514799aa352d4420f21f6685ebdf41d7c4215915c64b5`；认证只覆盖 Semantic Director 规划能力。护肤品旧项目尚未重新规划、尚无新 reference projection/DeliveryPlan，故仍 `BLOCKED / NOT_READY_FOR_PROVIDER_TEST`。用户已授权本任务不设次数或金额/积分上限、首个完整有效视频即停止；该授权不豁免 P2-S/P2-T/P3-P 等技术 blocker，真实调用仍 HOLD |
 | C13 | 发布前审计和部署准备 | `PENDING` | C09/C12/C12.1 |  |  |  |
 
 ### 2.1 当前窄范围审计账本（2026-09-10）
@@ -3128,3 +3128,140 @@ Exit Gate：当前只能提交代码审计，不能进入 Provider 测试。详�
 - 定向证据：Persistence `107/107`（本地 PostgreSQL 实际运行，0 skip）；Production Worker `78/78`；Media Runtime `141 passed + 7 subtests`；相关 typecheck 与 `git diff --check` 通过。
 - 真实产物证据：使用已成功生成的 Grok 片段，通过新 A 路径重试合成；`VideoVersion=vvr_01M3K3PN2JBH07EMXG6ATJEDD5` 为 `SUCCEEDED`，`30.125s`，`848x480`，H.264/AAC，下载对象可解码；公开 `continuity_status=NEEDS_ATTENTION`，符合不可用衔接检查不伪造通过的规则。
 - 独立纠察结论：实现语义和运行证据 `PASS`；本条仅提交 `READY_FOR_AUDIT` 候选，不升级为 `ACCEPTED`。人工审美、复杂转场、BGM/TTS、VPS、计费及其它章节硬门不属于本条证据。
+
+## 2026-10-02 G02 认证事实与本轮来源修复门补记
+
+- 更正状态依据：2026-09-25 条目中“尚无真实模型通过完整 fixture”已被 2026-09-28 更新的 Semantic Director 专项证据 supersede。精确 profile `aiself-claude-sonnet-5-candidate-v3` / `claude-sonnet-5` 已以 v3 认证器完成三次真实 Semantic Director fixture，通过 A1 复核；认证面 SHA-256 为 `1489b5c8af684f9be32514799aa352d4420f21f6685ebdf41d7c4215915c64b5`。它仅证明规划能力，不证明 provider route/account provenance、视频 Provider 能力或成片质量。
+- 护肤品旧项目仍未重新规划，尚无新的 `semantic_reference_projection` 与 DeliveryPlan；此前 user-authorized Sonnet v3 + Aiself Grok 对照可继续作为**待门禁授权**，最多一次新语义规划、最多 3 个 Grok 分段提交，首个完整成片即停；不能将认证证据当作本次规划输出，不能手工补齐旧 projection。
+- 2026-10-02 本地来源修复按开发包 TaskSpec 串行进行 P3-R/P4/P5/P6；这不是章节验收，不改 G02/E05/C10/C12.4-C12.5 状态。P2-S、P2-T、P3-P 与未冻结的 Sub2API/Alchemy source 仍各自按来源/契约 gate 处理。
+- 本轮真实视频授权上限为一次 Sonnet v3 重规划和最多 3 次 Grok 分段提交（首个完整成片即停止），但用户未提供总金额/积分额度；因此当前 `USER_QUOTA_CAP_MISSING / REAL_PROVIDER_BLOCKED`，不得发起真实调用。确切三段画面与 30 秒/480P/BGM OFF 以开发包 `00 §9` 为准。次数上限不替代金额/积分上限。
+- 当前实际状态：本补记建立时尚未进行本轮 Semantic Director、Grok、TTS、Pixabay、Veyra、网络、VPS 或 Git 外部调用。Runtime route provenance 缺少可观测 app-server settings/lifecycle event 时一律 `ROUTE_UNVERIFIED`。
+
+## 2026-10-02 P5 离线依赖验证阻断补记
+
+- P5 按固定 MarkItDown 来源 `fd239d5d2be43d9b68329730206b9312c7d5a388` 核对 `pdf/docx/pptx/xlsx` extras；C10 六种格式范围未扩大。uv `0.12.5` 的当前 cache 为 `C:\Users\T14S\AppData\Local\uv\cache`，任务临时根为 `C:\Users\T14S\AppData\Local\Temp\alchemy-source-test-39b51b2edfe24950a8365da1c4fc6bdd`，已强制 offline。
+- 在 `UV_PROJECT_ENVIRONMENT` 显式指向任务根下新路径后，`uv lock --offline` exit 1：本地索引无法提供满足 `markitdown[pdf]>=0.1.7,<0.2` 的 metadata（仅报告 `<0.1.7` 或 `>=0.2`），并提示锁中 `uvicorn==0.53.0`、`pydantic==2.13.5` 需要下载。归类 `BLOCKED_LOCAL_CACHE`；未创建 document-runtime 环境、未执行 sync/格式转换测试、未访问网络或安装依赖，`pyproject.toml` 已恢复与原 `uv.lock` 一致且 lock/cache 均未改动。
+- C10 仍保持 `BLOCKED / CONFIRMED_PACKAGING_GAP`；P5 未满足 clean isolated lock install，不变更章节状态。本轮其他章节和 P6 的来源/代码证据须独立记录，不由本条推定。
+
+## 2026-10-02 P3-R/P4/P6 独立代码复核与全仓验证补记
+
+- 依据《原仓库偏差收敛开发包_20261001》TaskSpec 1.1.0：P3-R、P4、P6 局部实现及 P4/P6 文档一致性已完成独立只读审计。P3-R 代码级窄范围 `PASS`；P4/P6 代码级窄范围 `PASS`；Source Fidelity 与 03/04/05/07/迁移矩阵文档一致性 `PASS`。这些结论不代表正式章节 `ACCEPTED`。
+- P3-R 只在既有调用期编译输入中传递冻结 reference 的 `{asset_id, provider_role, usage}`；usage 按序进入原有 required prompt directive，预算不足由既有 `PROMPT_BUDGET` 阻断，asset_id 不进入 Provider Prompt；未改 G02 system prompt/schema/certification surface、公开/持久化 DTO 或 Provider wire。
+- P4/P6 现行裁定：同一 `ast_native_manual_music` 的 Persistence/Worker/Runtime 分层测试绑定既有 fade defaults、absent sentinel 与显式 0；证据不冒充单进程端到端集成。不得将完整 Provider/source MP4 音轨标为 SFX；native-only + MusicPlan OFF 保留原音轨路径；无角色隔离证明的 source audio 与独立 narration/MUSIC payload 在 composition/mix 前 fail-closed；ALCHMED1–7 读取兼容保留。
+- 验证：全仓 `pnpm test`、`pnpm typecheck`、`pnpm build` 均 exit 0；Production Worker `79/79`，P4 两个 Worker 测试文件 `61/61`，P4/P6 Runtime shim `8/8`，Runtime Python `py_compile` exit 0。`git diff --check` 限定本轮 P4/P6 写集 exit 0；全工作区检查仍因 P0 已记录的 `AI企业内容生产平台_正式开发总控文档.md:36` trailing whitespace exit 1，未改动该非任务写集。测试框架明确跳过的基础设施集成不记作已运行。
+- 正式 Media Runtime 全套 unittest 仍 `BLOCKED_ENV`：本机缺 `fastapi`，未安装依赖。P5 保持 `BLOCKED_LOCAL_CACHE`；当前 P5 依赖/锁/测试路径无差异，但独立审计无法核验早前离线缓存失败的原始 stdout/stderr，因此 P5 blocker 审计为 `HOLD`，不能升级放行。
+- 总体结果 `HOLD / IMPLEMENTED_WITH_EXECUTION_BLOCKERS`。P2-S/P2-T/P3-P、G02 新规划、真实运行时路由凭证及明确总金额/积分 cap 均未解除；本轮未调用真实 LLM、视频 Provider、TTS、Pixabay、Veyra、外网或 VPS，未提交、推送或部署。G02、E05、C10、C12.4/C12.5 正式状态保持不变。
+
+## 2026-10-02 P5 Python 依赖隔离安装复验（不升级章节状态）
+
+- 按资料包 TaskSpec 1.2.1 `03 §10.2–10.3`，仅对固定 MarkItDown `pdf/docx/pptx/xlsx` extras 开放 Python 包索引下载；原离线 cache blocker 由新记录 supersede。所有包缓存、document-runtime 与 media-runtime 虚拟环境均位于本轮唯一仓库外临时根，不触碰项目/全局环境或共享 uv cache。
+- 固定来源 `fd239d5d2be43d9b68329730206b9312c7d5a388` extras 核对通过；document-runtime lock 新增 17 个 extras 传递依赖，无既有包版本升级/删除。document-runtime `8/8`、media-runtime core `145/145` unittest 通过；两个 lock check 与 locked sync 通过。C10 当前摘要已纠正为 P5 通过、其余 Exit Gates 尚未本轮验证且完整章节审计待执行，因此正式状态仍为 BLOCKED。
+- 此结果只闭合 P5 本地打包与 Runtime 依赖门，不等同 C10 全章 `ACCEPTED`，也不改变 G02/E05/C12.4-C12.5 状态。P5 窄范围 Source Fidelity 与普通 Audit 均 PASS；完整 C10 章节审计及实际 app-server route/model/effort 凭证仍未形成，记 `HOOK_UNVERIFIED / ROUTE_UNVERIFIED`。没有真实 Provider/LLM/TTS/Veyra/Pixabay/VPS 调用或 Git/deploy 写入。
+
+## 2026-10-02 G02 v1.0.5 当前授权与阶段状态 supersession
+
+- 用户最新明确授权本次指定护肤品 G02 任务不设调用次数或金额/积分上限，首个完整、有效且符合已批准三节拍的视频成功即停止；该授权仅限 v1.0.5 冻结的 Sonnet v3 + Grok 路线，不适用于其他任务。
+- 先前 G02 记录中的“最多一次 Sonnet、最多三次 Grok”及 `USER_QUOTA_CAP_MISSING / REAL_PROVIDER_BLOCKED` 是历史快照，现被本条 supersede。当前授权状态为 `USER_UNCAPPED_STOP_ON_FIRST_COMPLETE_SUCCESS`，执行阶段仍为 `DOC_AUDIT_PENDING`；在文档审计和后续全部技术门完成前，Provider 调用依然禁止。
+- 当前唯一活动 TaskSpec 和来源映射清单为 v1.0.5。此条仅同步授权及门禁状态；不把 G02 或任何其它章节升级为 `READY_FOR_AUDIT`、`ACCEPTED`，不改 C12.4/C12.5、E05 或其他章节状态，也不授权 Git、部署、Veyra、密钥或其他外部服务修改。
+
+## 2026-10-02 G02 v1.0.6 当前文档审计阶段 supersession
+
+- v1.0.5 独立文档审计结论为 `FAIL`，因 beat/segment 基数、asset/entity 基数、identity-key 并发、beat lineage 持久化、Worker Attempt 与 mapping REVOKE 竞态及来源 prompt 失效行为不完整而禁止实施；其 receipt/hash 不可复用。
+- 当前唯一候选技术契约为 `doc/AI企业内容生产平台_G02实体绑定与时间轴门禁修复开发文档_20261002.md` 与同日来源映射清单 v1.0.6，阶段 `DOC_AUDIT_PENDING`。完成字节/hash 绑定的独立文档审计前，禁止代码实现、Semantic Director 或视频 Provider 调用。
+- v1.0.6 明确：三个 NarrativeBeat 不决定 GenerationSegment/TaskRun 数；按领域/API 契约、ADR-0041、目标总时长、冻结 profile capability、Huobao 单场景/镜头边界取最少可行段数。Brief revision 内一张 asset 只映射一个 logical entity；beat identity 由服务端派生并留在私有快照；预期 identity-key 竞争用精确冲突目标复用 claim；Worker 在锁定 Brief revision 的 Attempt 创建事务中重新验证 active mapping，与 ADD/REVOKE 线性化；prop 描述变化以新 entity revision 和不可复用旧 revision 的 PromptPackage 体现来源 `finalPrompt` 失效行为。
+- 用户本任务不限次数或金额/积分且“首个完整有效视频即停”的授权继续有效；不豁免技术门或改变正式章节状态。G02 仍为 `PROFILE_CERTIFIED / PROJECT_BLOCKED`，本条不把 G02、C12.4/C12.5、E05 或其它章节升为 `READY_FOR_AUDIT`/`ACCEPTED`，不授权额外 Provider、Veyra/共享积分配置、密钥读取、部署或 Git 写入。
+
+## 2026-10-02 G02 v1.0.6 文档审计失败与 v1.0.7 重审
+
+- 独立只读审计已核对 v1.0.6 八份目标文件 hash 全匹配；审计结论仍为 `FAIL / HOLD`，发现两项 P1：实体内容 hash 双重 canonicalization 歧义；段数依据将普通 entity/action/camera/shot 变化也纳入，超出 ADR-0041“只有安全时长超限或用户明确编辑性场景切换才增加段”的规则。结论仅覆盖文件与已提供的 AGENTS.md，未测试代码或运行时。路由凭证仍 `ROUTE_UNVERIFIED`。
+- v1.0.6 不得实施，其 hash/receipt 不可复用。当前唯一候选 TaskSpec 与 mapping 为 v1.0.7，仍 `DOC_AUDIT_PENDING`。修订已冻结实体内容 hash 对固定数组直接调用现有 helper（只 canonicalize 一次），并将本任务两处用户已确认 scene cuts 明列为唯一编辑性切点；同场景内实体/动作/镜头/运镜变化须留在 segment 时间轴，同时新增对应负例。
+- 当前用户授权继续为不设次数或金额/积分上限、首个完整有效视频成功即停；审计/测试/认证/素材/映射/运行时 gate 均未因此豁免。G02 正式状态仍 `PROFILE_CERTIFIED / PROJECT_BLOCKED`，不得升级任何章节。
+
+## 2026-10-02 G02 v1.0.7 文档预审中止与 v1.0.8 重审
+
+- v1.0.7 的八文件 hash 与 manifest 初步核验匹配，但正式审计尚未完成时发现来源/范围 P1，主控中止该版本审计，不能记为 PASS。固定 Huobao `storyboard-breaker/SKILL.md` 第 2 步明定“节拍边界强制切段”；v1.0.7 HB-STORY-01 漏记此条，且 TaskSpec/mapping 允许同场景跨 beats 合并，缺少获授权的具体来源偏离。另有负目标禁止额外片段与 profile 安全时长额外切分例外的内部矛盾。
+- v1.0.7 不得实施，其预审 hash/receipt 不可复用。当前唯一候选升为 TaskSpec/mapping v1.0.8，仍 `DOC_AUDIT_PENDING`。v1.0.8 遵守原仓库优先：本任务三个已批准 source beat 边界各对应一个 segment，两处用户批准场景切点与之对齐；三段必须共同满足总时长30秒、每段8–15秒与已认证 profile安全时长，否则 BLOCKED，不合并、不追加第四段。上一版直接调用 `semanticValueHash(fixedArray)` 的单次 canonicalization 修复保留。
+- 用户授权仍为不限本任务调用次数/金额或积分、首个完整有效视频即停止；不豁免独立文档审计、Source Fidelity、普通代码审计、全量相关测试、新认证、素材 usage、规划/DeliveryPlan、能力及音频 owner 门。G02 与其他正式章节状态不变；在 v1.0.8 文档审计 PASS 前不派发 writer、不调用任何模型或视频 Provider。
+
+## 2026-10-02 G02 v1.0.8 文档审计中止与 v1.0.9 重审
+
+- v1.0.8 冻结包的八个单文件 hash 与 manifest 曾复算匹配；固定 Huobao commit `f04d705603bd0257bcec6b8f44fd04ea3ea9b795` 的 `storyboard-breaker/SKILL.md` 确实要求 beat boundary 强制切段。独立只读审计发现 TaskSpec §3.1.7.2 却允许一个 segment 承载一个或多个相邻 NarrativeBeat，与 §3.1.7.3、§3.1.9、§3.2 和映射清单的 task-specific 1:1 要求冲突。按门禁中止审计；无 PASS，旧 hash/receipt 不可复用。
+- v1.0.9 将 RawSemanticPlan 输入契约本身改为每个 segment 恰含一个 beat 序号（1/2/3），不能把正确性只寄托于下游 canonicalizer。它只收敛本任务的 Huobao source mapping，不修改通用 ADR-0041。当前状态为 `DOC_AUDIT_PENDING`；八文件新 hash/manifest 经独立完整复核前，不得改代码或调用模型/Provider。
+- 其他 G02 章节/总体状态保持不变。用户不限次数、费用/积分且首个有效完整视频即停止的授权继续有效，但不豁免来源、实现审计、测试、新认证、素材用途、规划、能力、音轨及真实媒体门禁。路由凭证仍 `ROUTE_UNVERIFIED`。
+
+## 2026-10-02 G02 v1.0.9 文档审计中止与 v1.0.10 重审
+
+- v1.0.9 独立只读审阅确认前版 RawSemanticPlan 多-beat segment 缺陷已修正，但发现三个文档门问题：映射清单页眉仍标 v1.0.8；映射/历史审计多处指向不存在的 TaskSpec §3.1.7 subsection；资料包 00 顶部把历史 08 manifest PASS 描述为当前 00–07 revision 已审计，易错误放行后续增补。审计未完成，不构成 PASS；v1.0.9 receipt/hash 不可复用。
+- v1.0.10 将两份活动 TaskSpec/mapping 版本号统一、现行 hash 规则引用到 §3.1 第9项，并明确旧审计只覆盖原记录 manifest。历史 append-only 文本中的 `§3.1.7.2/.3` 仅为错误的旧定位，分别对应第2/第3项；不得再作为当前代码指针。
+- v1.0.10 八文件重新冻结并经独立完整审计 PASS 前，继续 `DOC_AUDIT_PENDING`；不得派发 writer 或调用模型/Provider。G02 总体与章节状态不变；用户“不限额度、首个完整视频即停”授权不豁免任何技术门。路由状态仍 `ROUTE_UNVERIFIED`。
+
+## 2026-10-02 G02 v1.0.10 文档审计失败与 v1.0.11 重审
+
+- 独立只读复核已按 v1.0.10 冻结八文件 SHA/manifest 检查，结论 `FAIL / HOLD`。发现当前第 2 节总表 G02 行仍把已撤销的金额/积分上限缺失列为当前 blocker；该表是本记录唯一当前状态源，后附授权 supersession 不能替代修正该行。P2：现行 HB-PROMPT-02 使用过期 v1.0.9 TaskSpec 指针；P2：00 索引的“hash 尚未生成”时态陈述过期。
+- v1.0.11 已把当前表改为准确记录用户无限额授权，并明确技术 blocker 仍足以维持真实调用 HOLD；同时统一现行映射版本指针并修正索引状态措辞。无技术语义、写集、任务范围或授权变化。八文件新 hash/manifest 独立只读审计 PASS 前仍不得 writer、调用模型或 Provider；G02 继续 `PROFILE_CERTIFIED / PROJECT_BLOCKED`，路由为 `ROUTE_UNVERIFIED`，Hook 为 `HOOK_UNVERIFIED`。
+
+## 2026-10-02 G02 v1.0.13 路由判断纠正与文档审计候选
+
+- v1.0.11 曾将 Execute I2 的 `gpt-6-luna/xhigh` 判为当前派发不支持；依据只是有限的工具能力提示，不能证明模型或 Skill 不支持。v1.0.12 因此把 I2 改为 high/max 的草稿未通过审计并撤回，不是当前实施规则。官方 GPT-6 Luna 模型能力页列有 xhigh；本机 V2 矩阵与 profile 也规定 Execute I2 使用 Luna/xhigh，固定 profile 测试通过，当前派发器接受过请求。这些事实不证明子 Agent 实际运行档位。
+- 当前唯一文档候选为 TaskSpec、来源映射和 ADR-0077 v1.0.13，状态 `DOC_AUDIT_PENDING`：Execute I2 请求 `gpt-6-luna/xhigh`；Source Fidelity A2 与普通 Audit A2 请求 `gpt-6-luna/max`。缺独立运行事件时继续记 `ROUTE_UNVERIFIED`，Hook 为独立 `HOOK_UNVERIFIED`；不得将路由请求/配置、工具受理或模型自述当作运行凭证。
+- 本版不改变来源/技术契约、实现写集、用户授权或章节状态。独立文档审计 PASS 前不派发 writer、不调用规划模型或 Provider；PASS 后仍需完成独立 Source Fidelity、普通代码审计、相关测试、新认证 surface、批准素材 usage、新规划/DeliveryPlan、Provider capability 与完整媒体验收。G02 保持 `PROFILE_CERTIFIED / PROJECT_BLOCKED`。
+- 文档门状态更新：v1.0.13 独立只读文档审计已返回 `PASS`，审计绑定的初始 00–07 manifest 为 `5e0dd54e91e9a438527da178884bec125b2d95c3963984033fe018838257448d`。状态文本更新后的 final manifest 仍须由独立审阅者完成 hash/status binding。
+- 此 PASS 只开放当前目标/source manifest re-freeze 和 TaskSpec §4.2 限定单 writer 实施准备；writer 尚未启动，真实 Sonnet/Grok 仍禁用。实际路由与 Hook 分别保持 `ROUTE_UNVERIFIED / HOOK_UNVERIFIED`；实现、测试、新认证、新规划/DeliveryPlan、素材映射、capability 和媒体验收未因此通过。G02 正式状态仍为 `PROFILE_CERTIFIED / PROJECT_BLOCKED`。
+
+## 2026-10-02 G02 v1.0.13 实施/代码门阶段结果
+
+- 当前 TaskSpec §4.2 精确写集已实施。独立 Source Fidelity A2 和普通 Audit A2 均对同一代码快照 PASS，未确认须修复的 P0/P1/P2；P0 时既存 dirty baseline 均保留。测试/构建与审计依据见资料包 05–08、TaskSpec 实施补记。
+- 根目录测试 exit 0；全仓输出含 20 个因未配置 DB/queue 环境而 skip 的集成用例。隔离 PG16 migration 成功，DB-enabled Persistence 114/114、G02 race 1/1；workspace build 和 `git diff --check` 通过。临时数据库容器已删除。
+- 仅放行进入 TaskSpec §5.5 新认证 surface/Sonnet v3 认证夹具、§5.8 参考素材及 Brief usage 和 §5.9 新规划/DeliveryPlan 检查；在新认证、素材、计划、capability 与音频 owner 门均满足前，真实 Grok 仍禁止。
+- 本记录不把 G02 或任何其他正式章节升为 `ACCEPTED`；G02 继续 `PROFILE_CERTIFIED / PROJECT_BLOCKED`。实际路由与 Hook 仍 `ROUTE_UNVERIFIED / HOOK_UNVERIFIED`；未 stage、commit、push、merge 或 deploy。
+
+## 2026-10-03 G02 当前代码门/认证面阶段补记（append-only）
+
+- 当前 97-row snapshot `e16105fe5efd9e68435ab1a278d5c39b82f67d19461d9430a92b1744f66ef498` 已经 Source Fidelity A2 与普通 Audit A2 独立 PASS；新 prompt surface 的 Sonnet v3 候选认证 `CANDIDATE_PASS`，profile registry 精确绑定 `4e118883…`。测试结果、skip 和审计 P2 说明见资料包 05–08 与 TaskSpec 末尾。
+- 此补记只更新当前阶段，不替代正式章节 acceptance。Control API/Studio 未监听，未创建本轮新 Brief/规划、未提交视频 Provider；revision 9 不重放。下一步为本地应用恢复、readiness surface 核验、新 Brief 与计划门。G02 仍 `PROFILE_CERTIFIED / PROJECT_BLOCKED`；route/Hook 仍 `ROUTE_UNVERIFIED / HOOK_UNVERIFIED`。未 stage/commit/push/merge/deploy。
+
+## 2026-10-04 PX-VIDEO-STATUS-01 阶段性审计记录
+
+- 固定来源 `sub2api-video-mcp@3f2d885b79630f50b9cf4ae62251596cc37bbd18`。该窄子任务的开发文档独立审计 PASS；六文件 manifest `66bc3b3fce391ef3dfdb1a3bd56619ae33bff0b3bfc136142b68c36c5dc593fd` 下 Source Fidelity A2 与普通 Audit A2 均 PASS，审计前后快照指纹一致。实现、文件 hashes、测试命令及 skip 清单见 `AI企业内容生产平台_SUB2API视频状态响应来源对齐开发文档_20261004_v2.md` §7。
+- 测试：provider-video 80/80、contracts 50/50、production-worker 80/80；task-worker 54 通过、5 个既有集成用例因环境变量 guard 跳过。相关四包 typecheck 及自动依赖 build 通过；未运行根级全仓 test/build。`git diff --check` 对授权六文件通过。
+- 正式控制复核将 `PX-VIDEO-STATUS-01` 收口为 `ACCEPTED`（仅本 TaskSpec 六文件来源对齐窄切片）；不代表 C07 或任何章节升级。C07 原状态/验收范围不改；G02 维持 `PROFILE_CERTIFIED / PROJECT_BLOCKED` 并暂停 writer，C12.4/C12.5、E12/R01 等状态不变。未调用真实 Provider/TTS/Veyra/网络/VPS，未 stage/commit/push/merge/deploy；整体项目不因此成为可发布状态。
+
+## 2026-10-04 显式 Doubao 整轨替换：限定功能审计记录
+
+- TaskSpec v1.0.2 独立文档审计、Source Fidelity 与普通代码审计均 PASS；实现状态为 `LIMITED_FEATURE_ACCEPTED`，只接受该音频选择功能及其指定本地写集，不升级任何正式章节。
+- 全新隔离 PostgreSQL 16 从迁移开始运行 Persistence 全套 124/124、0 skipped；确认有效 Doubao 资产/TL 创建时的 JSONB 冻结身份、同事务 confirmed outbox、DeliveryPlan 消费、幂等 replay/conflict 与冻结 Timeline 重读。无 Timeline 负例不落 ProductionRun/outbox。
+- 组件验证：Runtime 150/150、Worker 82/82、Contracts 35/35、Control API 8/8、Studio 47/47；Persistence/Worker typecheck 与 `git diff --check` 通过。测试库复用导致一次既有 C11 消费状态断言失败；以全新一次性容器复跑完整套件 124/124 通过，因此后续 DB 集成应始终使用新建隔离库。
+- 不代表 E12/R01、C12.4/C12.5 或任何正式章节 `ACCEPTED`；真实 Provider/TTS/中文听感、route/Hook provenance、VPS、部署和商用发布均未验收。无真实 Provider/TTS 调用、无 Git 写入；临时测试容器已停止并自动移除。
+
+## 2026-10-04 G02 Codex 子 Agent 路由凭证风险接受（supersession）
+
+- 用户明确批准仅豁免 G02 Codex source_fidelity/audit 子任务因当前桌面运行时不暴露实际 model/effort 而导致的审计阻断效力；理由是该现象属于多 Agent Skill/Codex 运行观察限制，与 Video 项目功能逻辑无关。依据与精确边界见 `AI企业内容生产平台_G02路由凭证风险接受与验收门禁补充_20261004.md`。
+- 保留 `ROUTE_UNVERIFIED / HOOK_UNVERIFIED` 为运行时真实状态和风险项；不作为 G02 内容审计的单独失败理由。仍要求独立子任务身份、派发关联和终态、同一冻结版本绑定的正式 `SourceFidelityReceipt: PASS` 与普通 `AuditReceipt: PASS`、全部相关测试及剩余项目门通过。实际观察到的 route mismatch、身份/终态缺失、receipt 缺失均继续 HOLD。
+- 此例外不改变 G02 当前 `PROFILE_CERTIFIED / PROJECT_BLOCKED` 状态，不放行 Semantic Director、Grok、TTS、Veyra/共享积分或任何真实外部调用；新补充须经独立只读文档审计后成为有效门禁补充。
+- 独立文档政策审计 PASS；最终文件快照绑定见资料包 `08-资料包独立审计报告.md` 的 G02 路由豁免审计补记。
+
+### 2026-10-04 G02 scene-binding persistence fix — re-audit pending
+
+- 前一 30-path 目标上的 Source Fidelity 与普通 Audit 均指出 `completeG02PlanningDraft` 对显式 scene key 未作 candidate/canonical entity `SCENE` kind 复核，结论 HOLD。已补最小边界校验及内存/PG事务回滚负例。
+- 新目标 manifest `241cf89ceaf60765d87c999d2b67801d1159dc408b88126bfe13fb963e0d9299`；完整 Persistence 隔离 PG16 测试 124/124、0 skip，typecheck PASS。新快照 Source Fidelity A2 和普通 Audit A2 尚待独立完成。
+- 当前仅记实施与测试证据，不代表代码门已通过；G02 保持 `PROFILE_CERTIFIED / PROJECT_BLOCKED`，未放行运行时恢复或 Provider。
+
+### 2026-10-04 G02 修复快照独立代码门通过
+
+- 修复快照 30-path target/diff manifests `241cf89ceaf60765d87c999d2b67801d1159dc408b88126bfe13fb963e0d9299` / `c18a9fa93f04f0572a65208bda42a9f6bc2a078732f08191a0e8eed1176caba9` 已由独立 binding audit、Source Fidelity A2 与 ordinary Audit A2 分别 PASS，均未复用前一快照收据。
+- 测试证据：隔离 PostgreSQL 16 Persistence 124/124、0 skip，focused typecheck PASS；完整收据和测试边界见资料包 05/08。
+- 只放行 frozen 30-path G02 代码门；G02 章节仍 `PROFILE_CERTIFIED / PROJECT_BLOCKED`。新 Brief、Worker/API readiness、计划、profile/audio-owner、Provider preflight 和实际成片验收继续待办。
+- 随后的新鲜只读探测发现本机 Control API 3133/3134 均未监听，登记 PID 42156 仍运行但没有与当前 manifest 绑定的 reload/ready 证据。依据已审计的运行时恢复方案停止，不猜队列配置、不重启或新增 Worker、不重放 revision 12。
+## 2026-10-05 G02 已运行项目的持久状态事实更正（非 Exit Gate）
+
+- 独立只读审计复核了 `alchemy-video-local-postgres-1/video_local` 中项目 `prj_01M2YK2DXF6NMDNFJ0PM87VSXJ` 的 Brief、Storyboard、PromptPackage、DeliveryPlan、ProductionRun、VideoVersion、Asset、QC 记录。所有查询处于只读事务并以 `ROLLBACK` 结束；未读 prompt 内容或凭据，未写数据库。
+- Brief `cbr_01M4194HKDQJQ6KXDV4J4CNV43` rev14 与 Storyboard `sbr_01M4196A1AQ4QBSCNBYWSHR5FQ` rev1 均 `APPROVED`；3 个关联 PromptPackage 均存在 `semantic_reference_projection` 与 `semantic_entity_reference_projection` key/hash。DeliveryPlan `dpr_01M43R2M634C6JGTT87AF2CB8N` rev21 `CONSUMED`，由 ProductionRun `prd_01M43R309JXXS973H9SXQZ74GN` 消费；Run `SUCCEEDED`，accepted shots 3/3。VideoVersion `vvr_01M43SVVW6FCF7QQWYG07FPYGG` `SUCCEEDED`，duration 30,125ms；Asset `ast_01M43SVBPPZM7HD7VVE31VK2EZ` `READY`，4,147,528 bytes，SHA-256 `f2d7e8d255096994078da1a3d57cb88ee1a81feb6189ed5aa2f8c1f08de68fa7`；QC `qcr_01M43SVVW51YXJ3VH0N523SMGZ` 为 `NEEDS_ATTENTION / COMPOSITION`。
+- 两个保留 MP4（隔离重放输出与读取的已接受 DB 对象）由主控及独立审计员分别重算 SHA-256，大小和 hash 一致；隔离重放审计另见 `.codex-longrun/test-log.md`。本记录更正先前“尚无新规划/DeliveryPlan”的事实，不表示 source mapping 与实际 Provider 请求已逐项证明，也不表示 QC/全候选代码 Exit Gate 通过。
+- **正式状态不变**：G02 `PROFILE_CERTIFIED / PROJECT_BLOCKED`，C12.4/C12.5 `IMPLEMENTED_PENDING_AUDIT`，E12/R01 `BLOCKED`；未形成当前 627-path 候选快照的正式 Source Fidelity/普通 Audit receipts。无 Git、Provider、VPS 或部署操作；本补记不是章节 `ACCEPTED` 记录，不开放提交或发布。
+
+## 2026-10-05 BGM replacement 窄功能状态核对（事实记录，非审计放行）
+
+- BGM 整轨替换代码已存在；隔离重放复现用户认可的成片，但重放收据绑定文档状态更正前的候选 manifest，不得用于声称当前快照已审计。
+- 当前宽工作树混有多章改动，独立发布切片评估未找到可安全直接发布的已接受写集；BGM 精确实现尚无同快照 Source Fidelity 与普通 Audit 收据。按文件整段暂存不安全。
+- BGM 状态记录为 `IMPLEMENTED / LIMITED_FEATURE_ACCEPTANCE_PENDING`；目标视频 QC `NEEDS_ATTENTION / COMPOSITION`。此条不构成章节审计结论或 `ACCEPTED`，不提升 G02/C12.2/C12.4/C12.5/E12/R01 状态，也不授权 Git/VPS/部署。
+- 下一步仅可在干净 `origin/main` 基线上以符号/窄 hunk 重建 BGM 功能切片，冻结精确 patch 与来源清单，运行定向测试并取得同快照独立来源忠实度审计和普通代码审计；若无法无损分离，应继续 HOLD，不得用“视频已成功”替代代码门禁。

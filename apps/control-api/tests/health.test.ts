@@ -20,6 +20,20 @@ test("health endpoint returns the Control API and dependency status", async () =
   assert.match(body.request_id, /^req_[0-9A-HJKMNP-TV-Z]{26}$/);
 });
 
+test("readiness endpoint uses the documented failure envelope when dependencies are unavailable", async () => {
+  const response = await createApp().request("http://localhost/api/v1/health/ready");
+
+  assert.equal(response.status, 503);
+  const body = await response.json();
+  assert.deepEqual(body.error, {
+    code: "INTERNAL_ERROR",
+    message: "Control API dependencies are not ready.",
+    retryable: true,
+    details: { database: "not_configured" },
+  });
+  assert.match(body.request_id, /^req_[0-9A-HJKMNP-TV-Z]{26}$/);
+});
+
 test("error middleware returns the platform error envelope", async () => {
   const app = new Hono();
   app.onError(errorHandler);

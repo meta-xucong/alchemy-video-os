@@ -3,6 +3,15 @@
   "version": "0.0.0",
   "private": true,
   "packageManager": "pnpm@10.33.0",
+  "pnpm": {
+    "overrides": {
+      "fast-xml-parser": "5.7.0",
+      "brace-expansion@2": "2.1.7",
+      "brace-expansion@5": "5.0.12",
+      "svgo": "4.1.0",
+      "devalue": "5.9.2"
+    }
+  },
   "engines": {
     "node": ">=24.0.0",
     "pnpm": ">=10.0.0"

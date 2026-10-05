@@ -53,6 +53,27 @@ test("the compiler makes scene and subject reference semantics explicit to the p
   assert.match(compiled.prompt, /Preserve the supplied reference roles and order/);
 });
 
+test("the compiler preserves ordered semantic reference usage without emitting asset IDs", () => {
+  const sourcePrompt = "A woman walks through the resort entrance.";
+  const references = [
+    { asset_id: "ast_private_scene_001", provider_role: "SCENE" as const, usage: "仅作为旧式站台的场景锚点。" },
+    { asset_id: "ast_private_style_002", provider_role: "STYLE" as const, usage: "保持第二张参考图的照明风格。" },
+  ];
+  const compiled = compileVideoPrompt({
+    sourcePrompt,
+    generationSettings: {},
+    profile,
+    semanticReferences: references,
+  });
+
+  assert.equal(compiled.sourcePrompt, sourcePrompt);
+  assert.ok(compiled.prompt.includes("image 1 = SCENE; usage: 仅作为旧式站台的场景锚点。"));
+  assert.ok(compiled.prompt.includes("image 2 = STYLE; usage: 保持第二张参考图的照明风格。"));
+  assert.ok(compiled.prompt.indexOf(references[0]!.usage) < compiled.prompt.indexOf(references[1]!.usage));
+  assert.equal(compiled.prompt.includes(references[0]!.asset_id), false);
+  assert.equal(compiled.prompt.includes(references[1]!.asset_id), false);
+});
+
 test("the compiler never infers object locks from authored source prose", () => {
   const compiled = compileVideoPrompt({
     sourcePrompt: "道家女子手持白色拂尘走过庭院，保持拂尘清晰可见。",
@@ -240,5 +261,22 @@ test("prompt budget fails closed instead of dropping exact dialogue or reference
     }),
     (error: unknown) => error instanceof UnsupportedVideoGenerationInputError
       && error.code === "PROMPT_BUDGET",
+  );
+});
+
+test("prompt budget fails closed instead of dropping exact semantic reference usage", () => {
+  assert.throws(
+    () => compileVideoPrompt({
+      sourcePrompt: "x".repeat(3_900),
+      generationSettings: {},
+      profile,
+      referenceRoles: ["SCENE"],
+      semanticReferences: [{
+        asset_id: "ast_private_scene_001",
+        provider_role: "SCENE",
+        usage: "必须逐字保留的参考图用途。".repeat(30),
+      }],
+    }),
+    (error: unknown) => error instanceof UnsupportedVideoGenerationInputError && error.code === "PROMPT_BUDGET",
   );
 });

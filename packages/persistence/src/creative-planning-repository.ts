@@ -5,6 +5,8 @@ import {
   InternalEventEnvelopeSchema,
   type ContinuityLevel,
   type CanonicalReferenceSource,
+  type CanonicalVisualEntityContext,
+  type SemanticVisualEntityCandidate,
   type CreativeBriefTargetResolution,
   type CreativeRevisionStatus,
   type DeliveryPlanRevisionId,
@@ -15,12 +17,23 @@ import {
   type ProductionRunStatus,
   type ReferencePolicy,
   type MusicPlan,
+  type ProductionRunAudioSelection,
   type CreativeBriefFactContext,
   type FrozenDocumentFact,
   type VideoGenerationInputSnapshot,
   SemanticDialogueProjectionSchema,
+  SemanticEntityReferenceProjectionSchema,
+  SemanticNarrativeBeatProjectionSchema,
+  SemanticReferenceProjectionSchema,
+  SemanticVisualEntityCandidateSchema,
+  VideoAudioOwnerSchema,
   type SemanticDialogueProjection,
+  type SemanticEntityReferenceProjection,
   type FixedVideoBillingPolicySnapshot,
+  semanticPromptPackageIntegrityPayload,
+  parseG02ApprovedBeatMarkers,
+  findExactEntityAnchor,
+  hasExactEntityNameMention,
 } from "@alchemy-video/contracts";
 import {
   assertCreativeRevisionTransition,
@@ -28,10 +41,13 @@ import {
   assertProductionRunCreatable,
   assertProductionRunTransition,
   assertStoryboardPlan,
+  canonicalJson,
+  createPrefixedId,
   type StoryboardDurationPolicy,
 } from "@alchemy-video/domain";
 
 import type { PlatformDatabase } from "./db.js";
+import { findApprovedNarrationTimeline, freezeDoubaoAudioSourceIdentity } from "./approved-narration-timeline.js";
 import {
   assets,
   commandDeduplications,
@@ -50,6 +66,9 @@ import {
   scriptRevisions,
   storyboardRevisions,
   storyboardShotSpecs,
+  canonicalVisualEntities,
+  canonicalVisualEntityRevisionAssets,
+  canonicalVisualEntityRevisions,
 } from "./schema.js";
 
 export type CreativePlanningEvent = {
@@ -62,6 +81,7 @@ export type CreativePlanningEvent = {
 export const MAX_DOCUMENT_CONTEXTS_PER_BRIEF = 4;
 export const MAX_DOCUMENT_CONTEXT_CHARACTERS = 5_000;
 export const MAX_DOCUMENT_CONTEXT_TOTAL_CHARACTERS = 18_000;
+
 
 export type ControlPlanningDocumentContext = {
   documentId: string;
@@ -119,6 +139,10 @@ export type ControlStoryboardShotSpec = {
   dependsOnSequences: number[];
   continuityNote?: string;
   narrativeBeatSequences?: number[];
+  sceneId?: string;
+  characterIds?: string[];
+  propIds?: string[];
+  referenceAnchors?: string[];
 };
 
 export type ControlStoryboardRevision = {
@@ -172,6 +196,79 @@ export type PromptPackageDraft = {
   capabilitySnapshot: Record<string, unknown>;
   motionPlan?: GenerationSegmentMotionPlan;
   motionPlanHash?: string;
+  /** Internal raw source-backed entity candidates, consumed before package persistence. */
+  semanticEntityCandidates?: SemanticVisualEntityCandidate[];
+  /** Internal segment-local candidate keys; never persisted as canonical IDs. */
+  semanticEntityCandidateBindings?: {
+    scene?: string;
+    characters: string[];
+    props: string[];
+  };
+  /** Frozen server-owned REFERENCE_ASSET facts, stripped after projection construction. */
+  semanticReferenceSourceAssets?: Array<{
+    assetId: string;
+    assetSha256: string;
+    usage: string;
+    evidenceId: string;
+  }>;
+};
+
+export type SemanticVisualEntityPersistenceSemantics = Readonly<{
+  normalizeName: (name: string) => string;
+  normalizeLocation: (location: string) => string;
+  semanticValueHash: (value: unknown) => string;
+}>;
+
+type SemanticVisualEntityRevisionFields = Readonly<{
+  exactName: string;
+  normalizedIdentity: string;
+  contentHash: string;
+  role: string | null;
+  description: string | null;
+  appearance: string | null;
+  styling: string | null;
+  location: string | null;
+  time: string | null;
+  prompt: string | null;
+  lighting: string | null;
+  type: string | null;
+}>;
+
+const mergeSemanticVisualCandidate = (
+  candidate: SemanticVisualEntityCandidate,
+  existing: CanonicalVisualEntityContext | undefined,
+  semantics: SemanticVisualEntityPersistenceSemantics,
+): SemanticVisualEntityRevisionFields => {
+  const exactName = existing?.exact_name ?? candidate.exact_name;
+  if (candidate.kind === "CHARACTER") {
+    const role = candidate.role || existing?.role || "";
+    const description = candidate.description || existing?.description || "";
+    const appearance = candidate.appearance || existing?.appearance || "";
+    const styling = candidate.styling || candidate.description || existing?.styling || "";
+    const normalizedIdentity = semantics.normalizeName(candidate.exact_name);
+    const contentHash = semantics.semanticValueHash(["CHARACTER", role, description, appearance, styling]);
+    if (!normalizedIdentity || !/^[a-f0-9]{64}$/u.test(contentHash)) throw new Error("G02 character identity or content hash is invalid.");
+    return { exactName, normalizedIdentity, contentHash, role, description, appearance, styling, location: null, time: null, prompt: null, lighting: null, type: null };
+  }
+  if (candidate.kind === "SCENE") {
+    const location = existing ? existing.location ?? "" : candidate.location || "";
+    const time = existing ? existing.time ?? "" : candidate.time || "";
+    const prompt = existing
+      ? candidate.prompt || candidate.description || existing.prompt || ""
+      : candidate.prompt || candidate.description || candidate.location || "";
+    const lighting = candidate.lighting || existing?.lighting || "";
+    const normalizedLocation = semantics.normalizeLocation(candidate.location ?? "");
+    const normalizedIdentity = JSON.stringify([normalizedLocation, candidate.time || ""]);
+    const contentHash = semantics.semanticValueHash(["SCENE", prompt, lighting]);
+    if (!normalizedLocation || !/^[a-f0-9]{64}$/u.test(contentHash)) throw new Error("G02 scene identity or content hash is invalid.");
+    return { exactName, normalizedIdentity, contentHash, role: null, description: existing ? existing.description ?? null : candidate.description || null, appearance: null, styling: null, location, time, prompt, lighting, type: null };
+  }
+  const type = candidate.type || existing?.type || "";
+  const description = candidate.description || existing?.description || "";
+  const normalizedIdentity = semantics.normalizeName(candidate.exact_name);
+  const contentHash = semantics.semanticValueHash(["PROP", type, description]);
+  if (!normalizedIdentity || !/^[a-f0-9]{64}$/u.test(contentHash)) throw new Error("G02 prop identity or content hash is invalid.");
+  return { exactName, normalizedIdentity, contentHash, role: null, description, appearance: null, styling: null, location: null, time: null, prompt: null, lighting: null, type };
 };
 
 export type CreativePlanningDraft = {
@@ -236,6 +333,8 @@ export type ProductionRunCommandInput = {
   // Optional only for direct repository callers replaying pre-C11.7 history.
   deliveryPlanRevisionId?: DeliveryPlanRevisionId;
   musicPlan?: MusicPlan;
+  /** Private, immutable output audio choice for this ProductionRun. */
+  audioSelection?: ProductionRunAudioSelection;
   /** Private identity of the Pixabay fallback already accepted by Control API preflight. */
   pixabayFallbackMusicAssetId?: string;
   /** Private billing fact; persisted only inside production_runs.budget_guard. */
@@ -262,10 +361,11 @@ export interface CreativePlanningStore {
   /** Private, read-only music intent projection for AUTO preflight. */
   listStoryboardMusicIntentHints?(workspaceId: string, storyboardRevisionId: string): Promise<string[]>;
   resolveCanonicalReferenceSources?(workspaceId: string, projectId: string, sourceAssetIds: string[], sourceAssetRoles?: ControlCreativeBriefSourceAssetRole[]): Promise<CanonicalReferenceSource[] | undefined>;
+  resolveCanonicalVisualEntityContext?(workspaceId: string, projectId: string): Promise<CanonicalVisualEntityContext[]>;
   listProjectProductionRuns(workspaceId: string, projectId: string): Promise<ControlProductionRun[]>;
   createCreativeBriefRevision(input: CreativeBriefCommandInput): Promise<CreativePlanningCommandOutcome<ControlCreativeBriefRevision>>;
   requestCreativePlan(input: PlanningCommandInput): Promise<CreativePlanningCommandOutcome<ControlCreativeBriefRevision>>;
-  completeCreativePlan(input: { workspaceId: string; creativeBriefRevisionId: string; draft: CreativePlanningDraft; event: CreativePlanningEvent }): Promise<ControlStoryboardRevision | undefined>;
+  completeCreativePlan(input: { workspaceId: string; creativeBriefRevisionId: string; draft: CreativePlanningDraft; event: CreativePlanningEvent; semanticVisualEntitySemantics?: SemanticVisualEntityPersistenceSemantics }): Promise<ControlStoryboardRevision | undefined>;
   resolveVisualObjectLocks(input: { workspaceId: string; projectId: string; sourceAssetIds: string[]; sourcePrompt?: string }): Promise<KeyVisualObjectLock[]>;
   failCreativePlan(input: { workspaceId: string; creativeBriefRevisionId: string; code: string; event: CreativePlanningEvent }): Promise<ControlCreativeBriefRevision | undefined>;
   approveStoryboardRevision(input: ApproveStoryboardCommandInput): Promise<CreativePlanningCommandOutcome<ControlStoryboardRevision>>;
@@ -357,6 +457,10 @@ const serializeShotSpec = (value: typeof storyboardShotSpecs.$inferSelect): Cont
   dependsOnSequences: value.dependsOnSequences,
   ...(value.continuityNote.trim() ? { continuityNote: value.continuityNote } : {}),
   narrativeBeatSequences: value.narrativeBeatSequences,
+  ...(value.sceneId ? { sceneId: value.sceneId } : {}),
+  characterIds: value.characterIds,
+  propIds: value.propIds,
+  referenceAnchors: value.referenceAnchors,
 });
 
 const serializeStoryboard = (
@@ -403,6 +507,15 @@ const serializeProductionRun = (value: typeof productionRuns.$inferSelect): Cont
 });
 
 const commandKey = (scope: string, idempotencyKey: string) => `${scope}:${idempotencyKey}`;
+const hasG02SourceMarker = (sourceText: string) => parseG02ApprovedBeatMarkers(sourceText) !== undefined;
+const promptPackageHasG02Fields = (promptPackage: PromptPackageDraft) =>
+  promptPackage.semanticEntityCandidates !== undefined
+  || promptPackage.semanticEntityCandidateBindings !== undefined
+  || promptPackage.semanticReferenceSourceAssets !== undefined
+  || Object.hasOwn(promptPackage.capabilitySnapshot, "semantic_narrative_beat_lineage")
+  || Object.hasOwn(promptPackage.capabilitySnapshot, "semantic_narrative_beat_lineage_hash")
+  || Object.hasOwn(promptPackage.capabilitySnapshot, "semantic_entity_reference_projection_hash")
+  || Object.hasOwn(promptPackage.referenceMap, "semantic_entity_reference_projection");
 // BLOCKED is a historical run that is waiting for an explicit segment retry or a new version.
 // It must not prevent a revised storyboard from starting a separate production run.
 const activeProductionStatuses: ProductionRunStatus[] = ["DRAFT", "PLAN_READY", "CONFIRMED", "GENERATING", "REVIEWING", "RENDERING"];
@@ -435,6 +548,243 @@ const validatePromptPackages = (input: Pick<CreativePlanningDraft, "shotSpecs" |
     }
   }
   return input.promptPackages;
+};
+
+const completeG02PlanningDraft = async (input: {
+  brief: ControlCreativeBriefRevision;
+  draft: CreativePlanningDraft;
+  promptPackages: PromptPackageDraft[];
+  semantics: SemanticVisualEntityPersistenceSemantics;
+  resolveEntity: (candidate: SemanticVisualEntityCandidate) => Promise<CanonicalVisualEntityContext>;
+  resolveAsset: (assetId: string) => Promise<{ sha256: string } | undefined>;
+  resolveMapping: (input: {
+    entity: CanonicalVisualEntityContext;
+    assetId: string;
+    assetSha256: string;
+    referenceEvidenceId: string;
+    usage: string;
+  }) => Promise<string>;
+}): Promise<{ shotSpecs: CreativePlanningDraft["shotSpecs"]; promptPackages: PromptPackageDraft[] }> => {
+  if (input.promptPackages.length !== input.draft.shotSpecs.length || input.promptPackages.length !== 3) {
+    throw new Error("G02 requires one complete PromptPackage for each of the three source-bound ShotSpecs.");
+  }
+  const candidatesByKey = new Map<string, SemanticVisualEntityCandidate>();
+  for (const promptPackage of input.promptPackages) {
+    const parsedCandidates = (promptPackage.semanticEntityCandidates ?? []).map((candidate) => SemanticVisualEntityCandidateSchema.parse(candidate));
+    for (const candidate of parsedCandidates) {
+      const previous = candidatesByKey.get(candidate.candidate_key);
+      if (previous && canonicalJson(previous) !== canonicalJson(candidate)) {
+        throw new Error("G02 PromptPackages disagree on a source-backed candidate definition.");
+      }
+      candidatesByKey.set(candidate.candidate_key, candidate);
+    }
+  }
+  if (candidatesByKey.size === 0) throw new Error("G02 requires source-backed visual entity candidates.");
+  if ([...candidatesByKey.values()].some((candidate) => candidate.reference_asset_ids.length === 0)) {
+    throw new Error("Every used G02 visual entity candidate must map to at least one approved reference asset.");
+  }
+
+  const entitiesByCandidateKey = new Map<string, CanonicalVisualEntityContext>();
+  for (const candidate of candidatesByKey.values()) {
+    entitiesByCandidateKey.set(candidate.candidate_key, await input.resolveEntity(candidate));
+  }
+
+  const seenAssetOwners = new Map<string, string>();
+  const usedCandidateKeys = new Set<string>();
+  const shotSpecs = input.draft.shotSpecs.map((shotSpec) => ({ ...shotSpec }));
+  const shotSpecIndex = new Map(shotSpecs.map((shotSpec, index) => [shotSpec.id, index]));
+  const promptPackages: PromptPackageDraft[] = [];
+  for (const promptPackage of input.promptPackages) {
+    const rawBindings = promptPackage.semanticEntityCandidateBindings;
+    if (!rawBindings || !Array.isArray(rawBindings.characters) || !Array.isArray(rawBindings.props)) {
+      throw new Error("G02 PromptPackage is missing its segment-local candidate-key binding.");
+    }
+    if (rawBindings.scene) {
+      const sceneCandidate = candidatesByKey.get(rawBindings.scene);
+      const sceneEntity = entitiesByCandidateKey.get(rawBindings.scene);
+      if (!sceneCandidate || sceneCandidate.kind !== "SCENE" || !sceneEntity || sceneEntity.entity_kind !== "SCENE") {
+        throw new Error("G02 scene binding must resolve to a SCENE candidate and canonical entity.");
+      }
+    }
+    const candidateKeys = [
+      ...(rawBindings.scene ? [rawBindings.scene] : []),
+      ...rawBindings.characters,
+      ...rawBindings.props,
+    ];
+    if (candidateKeys.length === 0 || new Set(candidateKeys).size !== candidateKeys.length) {
+      throw new Error("Each G02 segment requires unique entity bindings and at least one reference anchor.");
+    }
+    for (const key of candidateKeys) {
+      if (!candidatesByKey.has(key)) throw new Error("G02 PromptPackage references an unknown candidate key.");
+      usedCandidateKeys.add(key);
+    }
+    const referenceMap = promptPackage.referenceMap;
+    const referenceProjection = SemanticReferenceProjectionSchema.parse(referenceMap.semantic_reference_projection);
+    const visualConstraints = promptPackage.visualConstraints;
+    const segmentId = visualConstraints.semantic_segment_id;
+    const decisionHash = visualConstraints.semantic_decision_hash;
+    if (typeof segmentId !== "string" || referenceProjection.segment_id !== segmentId
+      || typeof decisionHash !== "string" || referenceProjection.decision_hash !== decisionHash
+      || referenceProjection.source_hash.length !== 64) {
+      throw new Error("G02 PromptPackage reference evidence is not bound to its semantic segment.");
+    }
+    const candidatesForSegment = candidateKeys.map((key) => candidatesByKey.get(key)!);
+    const mappedAssets = candidatesForSegment.flatMap((candidate) => candidate.reference_asset_ids);
+    if (mappedAssets.length !== referenceProjection.references.length
+      || new Set(mappedAssets).size !== mappedAssets.length
+      || referenceProjection.references.some((reference) => !mappedAssets.includes(reference.asset_id))) {
+      throw new Error("Every G02 Provider reference position must map to exactly one candidate entity.");
+    }
+    const referenceBindings: SemanticEntityReferenceProjection["bindings"] = [];
+    const frozenReferenceAssets = promptPackage.semanticReferenceSourceAssets ?? [];
+    if (frozenReferenceAssets.length !== referenceProjection.references.length) {
+      throw new Error("G02 PromptPackage lacks the frozen canonical image evidence for its reference positions.");
+    }
+    for (const [providerPosition, reference] of referenceProjection.references.entries()) {
+      const owningCandidates = candidatesForSegment.filter((candidate) => candidate.reference_asset_ids.includes(reference.asset_id));
+      if (owningCandidates.length !== 1 || reference.evidence_ids.length !== 1) {
+        throw new Error("A G02 reference asset must resolve to one logical entity and one canonical REFERENCE_ASSET evidence.");
+      }
+      const candidate = owningCandidates[0]!;
+      const entity = entitiesByCandidateKey.get(candidate.candidate_key)!;
+      const declaredRole = input.brief.sourceAssetRoles?.find((role) => role.assetId === reference.asset_id);
+      if (!declaredRole?.usage || reference.usage !== declaredRole.usage || !hasExactEntityNameMention(declaredRole.usage, candidate.exact_name)) {
+        throw new Error("G02 visual entity mapping must use the exact frozen Brief usage for the same named entity.");
+      }
+      const sourceReference = frozenReferenceAssets[providerPosition];
+      if (!sourceReference
+        || sourceReference.assetId !== reference.asset_id
+        || sourceReference.usage !== reference.usage
+        || reference.evidence_ids.length !== 1
+        || sourceReference.evidenceId !== reference.evidence_ids[0]
+        || !Array.isArray(visualConstraints.evidence_ids)
+        || !visualConstraints.evidence_ids.includes(sourceReference.evidenceId)) {
+        throw new Error("G02 reference projection is not bound to the same canonical REFERENCE_ASSET evidence and order.");
+      }
+      const previousOwner = seenAssetOwners.get(reference.asset_id);
+      if (previousOwner && previousOwner !== entity.entity_id) {
+        throw new Error("One Brief image cannot map to different logical visual entities.");
+      }
+      seenAssetOwners.set(reference.asset_id, entity.entity_id);
+      const asset = await input.resolveAsset(reference.asset_id);
+      if (!asset || !/^[a-f0-9]{64}$/u.test(asset.sha256)
+        || !/^[a-f0-9]{64}$/u.test(sourceReference.assetSha256)
+        || asset.sha256 !== sourceReference.assetSha256) {
+        throw new Error("G02 visual entity mapping asset is missing or has no verified SHA-256.");
+      }
+      const mappingEvidenceId = await input.resolveMapping({
+        entity,
+        assetId: reference.asset_id,
+        assetSha256: asset.sha256,
+        referenceEvidenceId: sourceReference.evidenceId,
+        usage: declaredRole.usage,
+      });
+      referenceBindings.push({
+        entity_kind: entity.entity_kind,
+        entity_id: entity.entity_id,
+        entity_revision_id: entity.revision_id,
+        exact_name: entity.exact_name,
+        asset_id: reference.asset_id,
+        asset_sha256: asset.sha256,
+        provider_position: providerPosition,
+        mapping_evidence_id: mappingEvidenceId,
+      });
+    }
+    const projection = SemanticEntityReferenceProjectionSchema.parse({
+      version: 1,
+      brief_revision_id: input.brief.id,
+      source_hash: referenceProjection.source_hash,
+      decision_hash: referenceProjection.decision_hash,
+      segment_id: referenceProjection.segment_id,
+      prompt_package_id: promptPackage.id,
+      bindings: referenceBindings,
+    });
+    const projectionHash = input.semantics.semanticValueHash(projection);
+    if (!/^[a-f0-9]{64}$/u.test(projectionHash)) throw new Error("G02 entity projection hash is invalid.");
+
+    const capabilitySnapshot = promptPackage.capabilitySnapshot;
+    const dialogueProjection = SemanticDialogueProjectionSchema.parse(capabilitySnapshot.semantic_dialogue_projection);
+    const audioOwner = VideoAudioOwnerSchema.parse(capabilitySnapshot.audio_owner);
+    const sourcePrompt = capabilitySnapshot.source_prompt;
+    const generatedPromptParts = capabilitySnapshot.generated_prompt_parts;
+    const evidenceIds = visualConstraints.evidence_ids;
+    const maxDurationSeconds = capabilitySnapshot.max_duration_seconds;
+    const maxReferenceImages = capabilitySnapshot.max_reference_images;
+    const beatLineage = SemanticNarrativeBeatProjectionSchema.parse(capabilitySnapshot.semantic_narrative_beat_lineage);
+    const beatLineageHash = capabilitySnapshot.semantic_narrative_beat_lineage_hash;
+    if (beatLineage.brief_revision_id !== input.brief.id
+      || beatLineage.source_hash !== referenceProjection.source_hash
+      || !Array.isArray(generatedPromptParts)
+      || generatedPromptParts.some((part) => typeof part !== "string")
+      || !Array.isArray(evidenceIds)
+      || evidenceIds.some((id) => typeof id !== "string")
+      || typeof sourcePrompt !== "string"
+      || !Number.isSafeInteger(maxDurationSeconds)
+      || !Number.isSafeInteger(maxReferenceImages)
+      || typeof beatLineageHash !== "string"
+      || beatLineageHash !== input.semantics.semanticValueHash(beatLineage)) {
+      throw new Error("G02 PromptPackage beat lineage or integrity inputs are invalid.");
+    }
+    const referencePolicy = referenceMap.reference_policy;
+    if (typeof referencePolicy !== "string") throw new Error("G02 PromptPackage reference policy is missing.");
+    const packageIntegrityHash = input.semantics.semanticValueHash(semanticPromptPackageIntegrityPayload({
+      shotSpecId: promptPackage.shotSpecId,
+      prompt: promptPackage.prompt,
+      referencePolicy,
+      sourcePrompt,
+      generatedPromptParts,
+      evidenceIds,
+      dialogueProjection,
+      referenceProjection,
+      audioOwner,
+      maxDurationSeconds: maxDurationSeconds as number,
+      maxReferenceImages: maxReferenceImages as number,
+      promptPackageId: promptPackage.id,
+      semanticEntityReferenceProjection: projection,
+      semanticEntityReferenceProjectionHash: projectionHash,
+      semanticNarrativeBeatLineage: beatLineage,
+      semanticNarrativeBeatLineageHash: beatLineageHash,
+      ...(typeof capabilitySnapshot.bgm_prompt === "string" ? { bgmPrompt: capabilitySnapshot.bgm_prompt } : {}),
+    }));
+
+    const resolveIds = (keys: string[], kind: "CHARACTER" | "PROP") => keys.map((key) => {
+      const candidate = candidatesByKey.get(key);
+      const entity = entitiesByCandidateKey.get(key);
+      if (!candidate || candidate.kind !== kind || !entity || findExactEntityAnchor(promptPackage.prompt, entity.exact_name) < 0) {
+        throw new Error("G02 PromptPackage prompt and canonical entity binding disagree.");
+      }
+      return entity.entity_id;
+    });
+    const anchorEntities = candidateKeys.map((key) => {
+      const entity = entitiesByCandidateKey.get(key)!;
+      const promptIndex = findExactEntityAnchor(promptPackage.prompt, entity.exact_name);
+      if (promptIndex < 0) throw new Error("A bound G02 entity is missing its exact @ reference in the Provider-neutral prompt.");
+      return { entity, promptIndex };
+    }).sort((left, right) => left.promptIndex - right.promptIndex);
+    const referenceAnchors = [...new Set(anchorEntities.map(({ entity }) => `@${entity.exact_name}`))];
+    const shotIndex = shotSpecIndex.get(promptPackage.shotSpecId);
+    if (shotIndex === undefined) throw new Error("G02 PromptPackage is detached from its frozen ShotSpec.");
+    shotSpecs[shotIndex] = {
+      ...shotSpecs[shotIndex]!,
+      ...(rawBindings.scene ? { sceneId: entitiesByCandidateKey.get(rawBindings.scene)!.entity_id } : {}),
+      characterIds: resolveIds(rawBindings.characters, "CHARACTER"),
+      propIds: resolveIds(rawBindings.props, "PROP"),
+      referenceAnchors,
+    };
+    const { semanticEntityCandidates: _candidates, semanticEntityCandidateBindings: _bindings, ...persistablePackage } = promptPackage;
+    const { semanticReferenceSourceAssets: _referenceAssets, ...persistablePackageWithoutSourceRefs } = persistablePackage;
+      promptPackages.push({
+        ...persistablePackageWithoutSourceRefs,
+        referenceMap: { ...referenceMap, semantic_entity_reference_projection: projection },
+        capabilitySnapshot: {
+          ...capabilitySnapshot,
+          semantic_entity_reference_projection_hash: projectionHash,
+          semantic_prompt_package_integrity_hash: packageIntegrityHash,
+        },
+      });
+  }
+  if (usedCandidateKeys.size !== candidatesByKey.size) throw new Error("G02 contains an unused visual entity candidate.");
+  return { shotSpecs, promptPackages };
 };
 
 const eventRow = (input: {
@@ -484,6 +834,20 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
   private readonly promptPackages = new Map<string, PromptPackageDraft>();
   private readonly commands = new Map<string, StoredCommand>();
   private readonly consumedEvents = new Set<string>();
+  private readonly visualEntityContexts = new Map<string, CanonicalVisualEntityContext>();
+  private readonly visualEntityRevisionHistory = new Map<string, CanonicalVisualEntityContext[]>();
+  private readonly visualEntityMappings = new Map<string, {
+    workspaceId: string;
+    projectId: string;
+    briefRevisionId: string;
+    assetId: string;
+    entityId: string;
+    revisionId: string;
+    assetSha256: string;
+    referenceEvidenceId: string;
+    usage: string;
+    mappingEvidenceId: string;
+  }>();
 
   constructor(
     private readonly sourceAssetResolver?: {
@@ -589,10 +953,18 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
         mime_type: asset.mimeType,
         position: results.length,
         ...(providerRole ? { provider_role: providerRole } : {}),
+        ...(typeof declaredRole?.usage === "string" ? { user_declared_usage: declaredRole.usage } : {}),
         ...(objectiveDescription ? { objective_description: objectiveDescription } : {}),
       });
     }
     return results;
+  }
+
+  async resolveCanonicalVisualEntityContext(workspaceId: string, projectId: string) {
+    const prefix = `${workspaceId}\u0000${projectId}\u0000`;
+    return [...this.visualEntityContexts.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([, entity]) => entity);
   }
 
   async listProjectProductionRuns(workspaceId: string, projectId: string) {
@@ -655,7 +1027,7 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
     return { kind: "NEW", value, status: 202 };
   }
 
-  async completeCreativePlan(input: { workspaceId: string; creativeBriefRevisionId: string; draft: CreativePlanningDraft; event: CreativePlanningEvent }) {
+  async completeCreativePlan(input: { workspaceId: string; creativeBriefRevisionId: string; draft: CreativePlanningDraft; event: CreativePlanningEvent; semanticVisualEntitySemantics?: SemanticVisualEntityPersistenceSemantics }) {
     const current = await this.findCreativeBriefRevision(input.workspaceId, input.creativeBriefRevisionId);
     if (!current) return undefined;
     const existingScript = [...this.scripts.values()].find((value) => value.creativeBriefRevisionId === current.id);
@@ -666,6 +1038,113 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
     if (current.status !== "PLANNING" || current.targetDurationSeconds !== input.draft.totalDurationSeconds) return undefined;
     planIsValid(input.draft);
     const compiledPromptPackages = validatePromptPackages(input.draft);
+    let persistedShotSpecs = input.draft.shotSpecs;
+    let persistedPromptPackages = compiledPromptPackages;
+    let stagedVisualEntityContexts: Map<string, CanonicalVisualEntityContext> | undefined;
+    let stagedVisualEntityRevisionHistory: Map<string, CanonicalVisualEntityContext[]> | undefined;
+    let stagedVisualEntityMappings: Map<string, (typeof this.visualEntityMappings extends Map<string, infer T> ? T : never)> | undefined;
+    const isG02Source = hasG02SourceMarker(current.sourceText);
+    const hasG02Draft = compiledPromptPackages.some(promptPackageHasG02Fields);
+    if (!isG02Source && (hasG02Draft || input.semanticVisualEntitySemantics)) {
+      throw new Error("G02 private planning fields or callbacks cannot be applied without a locked Brief source marker.");
+    }
+    if (isG02Source) {
+      const semantics = input.semanticVisualEntitySemantics;
+      if (!semantics || !this.sourceAssetResolver) throw new Error("G02 persistence requires server-owned source semantics and scoped asset verification.");
+      stagedVisualEntityContexts = new Map(this.visualEntityContexts);
+      stagedVisualEntityRevisionHistory = new Map([...this.visualEntityRevisionHistory.entries()]
+        .map(([key, revisions]) => [key, [...revisions]]));
+      stagedVisualEntityMappings = new Map(this.visualEntityMappings);
+      const scopePrefix = `${current.workspaceId}\u0000${current.projectId}\u0000`;
+      const mappingPrefix = `${current.workspaceId}\u0000${current.projectId}\u0000${current.id}\u0000`;
+      const prepared = await completeG02PlanningDraft({
+        brief: current,
+        draft: input.draft,
+        promptPackages: compiledPromptPackages,
+        semantics,
+        resolveEntity: async (candidate) => {
+          const seed = mergeSemanticVisualCandidate(candidate, undefined, semantics);
+          const entityKey = `${scopePrefix}${candidate.kind}\u0000${seed.normalizedIdentity}`;
+          const existing = stagedVisualEntityContexts!.get(entityKey);
+          const merged = mergeSemanticVisualCandidate(candidate, existing, semantics);
+          const revisions = stagedVisualEntityRevisionHistory!.get(entityKey) ?? (existing ? [existing] : []);
+          stagedVisualEntityRevisionHistory!.set(entityKey, revisions);
+          const matchingRevision = revisions.find((revision) => revision.content_hash === merged.contentHash);
+          if (matchingRevision) return matchingRevision;
+          const context: CanonicalVisualEntityContext = {
+            entity_id: existing?.entity_id ?? createPrefixedId("cve"),
+            entity_kind: candidate.kind,
+            normalized_identity: merged.normalizedIdentity,
+            revision_id: createPrefixedId("cvr"),
+            revision_number: (revisions.at(-1)?.revision_number ?? existing?.revision_number ?? 0) + 1,
+            content_hash: merged.contentHash,
+            exact_name: merged.exactName,
+            ...(merged.role !== null ? { role: merged.role } : {}),
+            ...(merged.description !== null ? { description: merged.description } : {}),
+            ...(merged.appearance !== null ? { appearance: merged.appearance } : {}),
+            ...(merged.styling !== null ? { styling: merged.styling } : {}),
+            ...(merged.location !== null ? { location: merged.location } : {}),
+            ...(merged.time !== null ? { time: merged.time } : {}),
+            ...(merged.prompt !== null ? { prompt: merged.prompt } : {}),
+            ...(merged.lighting !== null ? { lighting: merged.lighting } : {}),
+            ...(merged.type !== null ? { type: merged.type } : {}),
+          };
+          stagedVisualEntityContexts!.set(entityKey, context);
+          revisions.push(context);
+          return context;
+        },
+        resolveAsset: async (assetId) => {
+          const asset = await this.sourceAssetResolver!.findAsset(current.workspaceId, assetId);
+          return asset
+            && asset.projectId === current.projectId
+            && asset.status === "READY"
+            && asset.origin === "USER_UPLOAD"
+            && asset.kind === "IMAGE"
+            && typeof asset.sha256 === "string"
+            ? { sha256: asset.sha256 }
+            : undefined;
+        },
+        resolveMapping: async ({ entity, assetId, assetSha256, referenceEvidenceId, usage }) => {
+          const existing = [...stagedVisualEntityMappings!.values()].find((mapping) => mapping.workspaceId === current.workspaceId
+            && mapping.projectId === current.projectId
+            && mapping.briefRevisionId === current.id
+            && mapping.assetId === assetId
+            && mapping.entityId === entity.entity_id
+            && mapping.revisionId === entity.revision_id
+            && mapping.assetSha256 === assetSha256
+            && mapping.referenceEvidenceId === referenceEvidenceId);
+          if (existing) return existing.mappingEvidenceId;
+          const activeForAsset = [...stagedVisualEntityMappings!.values()].filter((mapping) => mapping.workspaceId === current.workspaceId
+            && mapping.projectId === current.projectId
+            && mapping.briefRevisionId === current.id
+            && mapping.assetId === assetId);
+          if (activeForAsset.length > 1 || activeForAsset.some((mapping) => mapping.entityId !== entity.entity_id
+            || mapping.revisionId !== entity.revision_id
+            || mapping.assetSha256 !== assetSha256
+            || mapping.referenceEvidenceId !== referenceEvidenceId
+            || mapping.usage !== usage)) {
+            throw new Error("A G02 approved image is already mapped to different entity revision or evidence in this Brief revision.");
+          }
+          const mappingEvidenceId = createPrefixedId("mpe");
+          const mappingKey = `${mappingPrefix}${mappingEvidenceId}`;
+          stagedVisualEntityMappings!.set(mappingKey, {
+            workspaceId: current.workspaceId,
+            projectId: current.projectId,
+            briefRevisionId: current.id,
+            assetId,
+            entityId: entity.entity_id,
+            revisionId: entity.revision_id,
+            assetSha256,
+            referenceEvidenceId,
+            usage,
+            mappingEvidenceId,
+          });
+          return mappingEvidenceId;
+        },
+      });
+      persistedShotSpecs = prepared.shotSpecs;
+      persistedPromptPackages = prepared.promptPackages;
+    }
     assertCreativeRevisionTransition(current.status, "READY_FOR_REVIEW");
     const timestamp = now();
     this.scripts.set(input.draft.scriptRevisionId, { id: input.draft.scriptRevisionId, creativeBriefRevisionId: current.id, status: "READY_FOR_REVIEW" });
@@ -681,7 +1160,7 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
       continuityLevel: input.draft.continuityLevel,
       continuityNote: input.draft.continuityNote,
       status: "READY_FOR_REVIEW",
-      shotSpecs: input.draft.shotSpecs.map(({ id, narrativeBeatSequences, ...shotSpec }) => ({
+      shotSpecs: persistedShotSpecs.map(({ id, narrativeBeatSequences, ...shotSpec }) => ({
         id,
         ...shotSpec,
         narrativeBeatSequences: narrativeBeatSequences?.length ? narrativeBeatSequences : [shotSpec.sequence],
@@ -691,8 +1170,20 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
+    if (stagedVisualEntityContexts) {
+      this.visualEntityContexts.clear();
+      for (const [key, context] of stagedVisualEntityContexts) this.visualEntityContexts.set(key, context);
+    }
+    if (stagedVisualEntityRevisionHistory) {
+      this.visualEntityRevisionHistory.clear();
+      for (const [key, revisions] of stagedVisualEntityRevisionHistory) this.visualEntityRevisionHistory.set(key, revisions);
+    }
+    if (stagedVisualEntityMappings) {
+      this.visualEntityMappings.clear();
+      for (const [key, mapping] of stagedVisualEntityMappings) this.visualEntityMappings.set(key, mapping);
+    }
     this.storyboards.set(storyboard.id, storyboard);
-    for (const promptPackage of compiledPromptPackages) this.promptPackages.set(promptPackage.id, { ...promptPackage });
+    for (const promptPackage of persistedPromptPackages) this.promptPackages.set(promptPackage.id, { ...promptPackage });
     this.creativeBriefs.set(current.id, { ...current, status: "READY_FOR_REVIEW", updatedAt: timestamp });
     return storyboard;
   }
@@ -730,6 +1221,12 @@ export class InMemoryCreativePlanningStore implements CreativePlanningStore {
   async createProductionRun(input: ProductionRunCommandInput): Promise<CreativePlanningCommandOutcome<ControlProductionRun>> {
     const replay = await this.replayProductionRun(input);
     if (replay) return replay;
+    // This adapter has no durable narration timeline or asset snapshot, so it
+    // cannot prove either replacement source. Keep both capabilities closed
+    // rather than accepting a request that PostgreSQL would validate/freeze.
+    if (input.audioSelection === "DOUBAO_TTS_REPLACE" || input.audioSelection === "MUSIC_REPLACE_PROVIDER_AUDIO") {
+      return this.store(input, { kind: "PREFLIGHT_BLOCKED" });
+    }
     const storyboard = await this.findStoryboardRevision(input.workspaceId, input.storyboardRevisionId);
     if (!storyboard || storyboard.projectId !== input.projectId) return this.store(input, { kind: "NOT_FOUND" });
     if (input.deliveryPlanRevisionId && this.deliveryPlanResolver) {
@@ -1242,10 +1739,71 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
         mime_type: asset.mimeType,
         position: results.length,
         ...(providerRole ? { provider_role: providerRole } : {}),
+        ...(typeof declaredRole?.usage === "string" ? { user_declared_usage: declaredRole.usage } : {}),
         ...(objectiveDescription ? { objective_description: objectiveDescription } : {}),
       });
     }
     return results;
+  }
+
+  async resolveCanonicalVisualEntityContext(workspaceId: string, projectId: string) {
+    const rows = await this.db
+      .select({
+        entityId: canonicalVisualEntities.id,
+        entityKind: canonicalVisualEntities.entityKind,
+        normalizedIdentity: canonicalVisualEntities.normalizedIdentity,
+        revisionId: canonicalVisualEntityRevisions.id,
+        revisionNumber: canonicalVisualEntityRevisions.revisionNumber,
+        contentHash: canonicalVisualEntityRevisions.contentHash,
+        exactName: canonicalVisualEntityRevisions.exactName,
+        role: canonicalVisualEntityRevisions.role,
+        description: canonicalVisualEntityRevisions.description,
+        appearance: canonicalVisualEntityRevisions.appearance,
+        styling: canonicalVisualEntityRevisions.styling,
+        location: canonicalVisualEntityRevisions.location,
+        time: canonicalVisualEntityRevisions.time,
+        prompt: canonicalVisualEntityRevisions.prompt,
+        lighting: canonicalVisualEntityRevisions.lighting,
+        type: canonicalVisualEntityRevisions.type,
+      })
+      .from(canonicalVisualEntities)
+      .innerJoin(canonicalVisualEntityRevisions, and(
+        eq(canonicalVisualEntityRevisions.workspaceId, canonicalVisualEntities.workspaceId),
+        eq(canonicalVisualEntityRevisions.projectId, canonicalVisualEntities.projectId),
+        eq(canonicalVisualEntityRevisions.entityId, canonicalVisualEntities.id),
+      ))
+      .where(and(
+        eq(canonicalVisualEntities.workspaceId, workspaceId),
+        eq(canonicalVisualEntities.projectId, projectId),
+      ))
+      .orderBy(
+        asc(canonicalVisualEntities.entityKind),
+        asc(canonicalVisualEntities.normalizedIdentity),
+        desc(canonicalVisualEntityRevisions.revisionNumber),
+      );
+    const latestByEntity = new Map<string, CanonicalVisualEntityContext>();
+    for (const row of rows) {
+      if (latestByEntity.has(row.entityId)) continue;
+      latestByEntity.set(row.entityId, {
+        entity_id: row.entityId,
+        entity_kind: row.entityKind,
+        normalized_identity: row.normalizedIdentity,
+        revision_id: row.revisionId,
+        revision_number: row.revisionNumber,
+        content_hash: row.contentHash,
+        exact_name: row.exactName,
+        ...(row.role !== null ? { role: row.role } : {}),
+        ...(row.description !== null ? { description: row.description } : {}),
+        ...(row.appearance !== null ? { appearance: row.appearance } : {}),
+        ...(row.styling !== null ? { styling: row.styling } : {}),
+        ...(row.location !== null ? { location: row.location } : {}),
+        ...(row.time !== null ? { time: row.time } : {}),
+        ...(row.prompt !== null ? { prompt: row.prompt } : {}),
+        ...(row.lighting !== null ? { lighting: row.lighting } : {}),
+        ...(row.type !== null ? { type: row.type } : {}),
+      });
+    }
+    return [...latestByEntity.values()];
   }
 
   async listProjectProductionRuns(workspaceId: string, projectId: string) {
@@ -1387,7 +1945,7 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
     });
   }
 
-  async completeCreativePlan(input: { workspaceId: string; creativeBriefRevisionId: string; draft: CreativePlanningDraft; event: CreativePlanningEvent }) {
+  async completeCreativePlan(input: { workspaceId: string; creativeBriefRevisionId: string; draft: CreativePlanningDraft; event: CreativePlanningEvent; semanticVisualEntitySemantics?: SemanticVisualEntityPersistenceSemantics }) {
     return this.db.transaction(async (transaction) => {
       const [brief] = await transaction
         .select()
@@ -1415,6 +1973,238 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
       if (brief.status !== "PLANNING" || brief.targetDurationSeconds !== input.draft.totalDurationSeconds) return undefined;
       planIsValid(input.draft);
       const compiledPromptPackages = validatePromptPackages(input.draft);
+      let persistedShotSpecs = input.draft.shotSpecs;
+      let persistedPromptPackages = compiledPromptPackages;
+      const isG02Source = hasG02SourceMarker(brief.sourceText);
+      const hasG02Draft = compiledPromptPackages.some(promptPackageHasG02Fields);
+      if (isG02Source && (!hasG02Draft || !input.semanticVisualEntitySemantics)) {
+        throw new Error("G02 persistence requires the validated source semantic callbacks.");
+      }
+      if (!isG02Source && (hasG02Draft || input.semanticVisualEntitySemantics)) {
+        throw new Error("G02 private planning fields or callbacks cannot be applied without a locked Brief source marker.");
+      }
+      if (input.semanticVisualEntitySemantics) {
+        if (!hasG02Draft) throw new Error("G02 semantic callbacks cannot be applied to a legacy planning draft.");
+        const prepared = await completeG02PlanningDraft({
+          brief: serializeCreativeBrief(brief),
+          draft: input.draft,
+          promptPackages: compiledPromptPackages,
+          semantics: input.semanticVisualEntitySemantics,
+          resolveEntity: async (candidate) => {
+            const seed = mergeSemanticVisualCandidate(candidate, undefined, input.semanticVisualEntitySemantics!);
+            const [claimedEntity] = await transaction
+              .insert(canonicalVisualEntities)
+              .values({
+                id: createPrefixedId("cve"),
+                workspaceId: brief.workspaceId,
+                projectId: brief.projectId,
+                entityKind: candidate.kind,
+                normalizedIdentity: seed.normalizedIdentity,
+              })
+              .onConflictDoNothing({ target: [
+                canonicalVisualEntities.workspaceId,
+                canonicalVisualEntities.projectId,
+                canonicalVisualEntities.entityKind,
+                canonicalVisualEntities.normalizedIdentity,
+              ] })
+              .returning();
+            const [entity] = claimedEntity
+              ? [claimedEntity]
+              : await transaction
+                .select()
+                .from(canonicalVisualEntities)
+                .where(and(
+                  eq(canonicalVisualEntities.workspaceId, brief.workspaceId),
+                  eq(canonicalVisualEntities.projectId, brief.projectId),
+                  eq(canonicalVisualEntities.entityKind, candidate.kind),
+                  eq(canonicalVisualEntities.normalizedIdentity, seed.normalizedIdentity),
+                ))
+                .limit(1)
+                .for("update");
+            if (!entity
+              || entity.workspaceId !== brief.workspaceId
+              || entity.projectId !== brief.projectId
+              || entity.entityKind !== candidate.kind
+              || entity.normalizedIdentity !== seed.normalizedIdentity) {
+              throw new Error("G02 canonical entity identity claim could not be resolved in the frozen project scope.");
+            }
+            const [latestRevision] = await transaction
+              .select()
+              .from(canonicalVisualEntityRevisions)
+              .where(and(
+                eq(canonicalVisualEntityRevisions.workspaceId, brief.workspaceId),
+                eq(canonicalVisualEntityRevisions.projectId, brief.projectId),
+                eq(canonicalVisualEntityRevisions.entityId, entity.id),
+              ))
+              .orderBy(desc(canonicalVisualEntityRevisions.revisionNumber))
+              .limit(1)
+              .for("update");
+            const existingContext: CanonicalVisualEntityContext | undefined = latestRevision ? {
+              entity_id: entity.id,
+              entity_kind: entity.entityKind,
+              normalized_identity: entity.normalizedIdentity,
+              revision_id: latestRevision.id,
+              revision_number: latestRevision.revisionNumber,
+              content_hash: latestRevision.contentHash,
+              exact_name: latestRevision.exactName,
+              ...(latestRevision.role !== null ? { role: latestRevision.role } : {}),
+              ...(latestRevision.description !== null ? { description: latestRevision.description } : {}),
+              ...(latestRevision.appearance !== null ? { appearance: latestRevision.appearance } : {}),
+              ...(latestRevision.styling !== null ? { styling: latestRevision.styling } : {}),
+              ...(latestRevision.location !== null ? { location: latestRevision.location } : {}),
+              ...(latestRevision.time !== null ? { time: latestRevision.time } : {}),
+              ...(latestRevision.prompt !== null ? { prompt: latestRevision.prompt } : {}),
+              ...(latestRevision.lighting !== null ? { lighting: latestRevision.lighting } : {}),
+              ...(latestRevision.type !== null ? { type: latestRevision.type } : {}),
+            } : undefined;
+            const merged = mergeSemanticVisualCandidate(candidate, existingContext, input.semanticVisualEntitySemantics!);
+            if (!/^[a-f0-9]{64}$/u.test(merged.contentHash)) throw new Error("G02 canonical entity content hash is invalid.");
+            if (latestRevision?.contentHash === merged.contentHash && existingContext) return existingContext;
+            const [matchingRevision] = await transaction
+              .select()
+              .from(canonicalVisualEntityRevisions)
+              .where(and(
+                eq(canonicalVisualEntityRevisions.workspaceId, brief.workspaceId),
+                eq(canonicalVisualEntityRevisions.projectId, brief.projectId),
+                eq(canonicalVisualEntityRevisions.entityId, entity.id),
+                eq(canonicalVisualEntityRevisions.contentHash, merged.contentHash),
+              ))
+              .limit(1)
+              .for("update");
+            if (matchingRevision) {
+              return {
+                entity_id: entity.id,
+                entity_kind: entity.entityKind,
+                normalized_identity: entity.normalizedIdentity,
+                revision_id: matchingRevision.id,
+                revision_number: matchingRevision.revisionNumber,
+                content_hash: matchingRevision.contentHash,
+                exact_name: matchingRevision.exactName,
+                ...(matchingRevision.role !== null ? { role: matchingRevision.role } : {}),
+                ...(matchingRevision.description !== null ? { description: matchingRevision.description } : {}),
+                ...(matchingRevision.appearance !== null ? { appearance: matchingRevision.appearance } : {}),
+                ...(matchingRevision.styling !== null ? { styling: matchingRevision.styling } : {}),
+                ...(matchingRevision.location !== null ? { location: matchingRevision.location } : {}),
+                ...(matchingRevision.time !== null ? { time: matchingRevision.time } : {}),
+                ...(matchingRevision.prompt !== null ? { prompt: matchingRevision.prompt } : {}),
+                ...(matchingRevision.lighting !== null ? { lighting: matchingRevision.lighting } : {}),
+                ...(matchingRevision.type !== null ? { type: matchingRevision.type } : {}),
+              };
+            }
+            const [revision] = await transaction
+              .insert(canonicalVisualEntityRevisions)
+              .values({
+                id: createPrefixedId("cvr"),
+                workspaceId: brief.workspaceId,
+                projectId: brief.projectId,
+                entityId: entity.id,
+                revisionNumber: (latestRevision?.revisionNumber ?? 0) + 1,
+                exactName: merged.exactName,
+                contentHash: merged.contentHash,
+                role: merged.role,
+                description: merged.description,
+                appearance: merged.appearance,
+                styling: merged.styling,
+                location: merged.location,
+                time: merged.time,
+                prompt: merged.prompt,
+                lighting: merged.lighting,
+                type: merged.type,
+              })
+              .returning();
+            if (!revision) throw new Error("G02 canonical entity revision append did not return a row.");
+            return {
+              entity_id: entity.id,
+              entity_kind: entity.entityKind,
+              normalized_identity: entity.normalizedIdentity,
+              revision_id: revision.id,
+              revision_number: revision.revisionNumber,
+              content_hash: revision.contentHash,
+              exact_name: revision.exactName,
+              ...(revision.role !== null ? { role: revision.role } : {}),
+              ...(revision.description !== null ? { description: revision.description } : {}),
+              ...(revision.appearance !== null ? { appearance: revision.appearance } : {}),
+              ...(revision.styling !== null ? { styling: revision.styling } : {}),
+              ...(revision.location !== null ? { location: revision.location } : {}),
+              ...(revision.time !== null ? { time: revision.time } : {}),
+              ...(revision.prompt !== null ? { prompt: revision.prompt } : {}),
+              ...(revision.lighting !== null ? { lighting: revision.lighting } : {}),
+              ...(revision.type !== null ? { type: revision.type } : {}),
+            };
+          },
+          resolveAsset: async (assetId) => {
+            const [asset] = await transaction
+              .select({ id: assets.id, sha256: assets.sha256, status: assets.status, origin: assets.origin, kind: assets.kind })
+              .from(assets)
+              .where(and(
+                eq(assets.workspaceId, brief.workspaceId),
+                eq(assets.projectId, brief.projectId),
+                eq(assets.id, assetId),
+              ))
+              .limit(1)
+              .for("update");
+            return asset?.status === "READY"
+              && asset.origin === "USER_UPLOAD"
+              && asset.kind === "IMAGE"
+              && typeof asset.sha256 === "string"
+              ? { sha256: asset.sha256 }
+              : undefined;
+          },
+          resolveMapping: async ({ entity, assetId, assetSha256, referenceEvidenceId, usage }) => {
+            const mappingRows = await transaction
+              .select()
+              .from(canonicalVisualEntityRevisionAssets)
+              .where(and(
+                eq(canonicalVisualEntityRevisionAssets.workspaceId, brief.workspaceId),
+                eq(canonicalVisualEntityRevisionAssets.projectId, brief.projectId),
+                eq(canonicalVisualEntityRevisionAssets.briefRevisionId, brief.id),
+                eq(canonicalVisualEntityRevisionAssets.assetId, assetId),
+              ))
+              .orderBy(asc(canonicalVisualEntityRevisionAssets.createdAt), asc(canonicalVisualEntityRevisionAssets.id))
+              .for("update");
+            const revokedAddIds = new Set<string>();
+            for (const mapping of mappingRows) {
+              if (mapping.changeKind === "REVOKE" && typeof mapping.revokedAddId === "string") revokedAddIds.add(mapping.revokedAddId);
+            }
+            const activeAdds = mappingRows.filter((mapping) => mapping.changeKind === "ADD" && !revokedAddIds.has(mapping.id as string));
+            if (activeAdds.some((mapping) => (mapping.entityId as string) !== entity.entity_id
+              || (mapping.revisionNumber as number) !== entity.revision_number
+              || (mapping.assetSha256 as string) !== assetSha256
+              || (mapping.referenceEvidenceId as string) !== referenceEvidenceId
+              || (mapping.usage as string) !== usage)) {
+              throw new Error("A G02 Brief image is already actively mapped to different entity revision or evidence.");
+            }
+            if (activeAdds.length > 1) throw new Error("G02 Brief image has multiple active entity mapping ADD rows.");
+            const existing = activeAdds[0];
+            if (existing) return existing.mappingEvidenceId as string;
+            const mappingEvidenceId = createPrefixedId("mpe");
+            const [mapping] = await transaction
+              .insert(canonicalVisualEntityRevisionAssets)
+              .values({
+                id: mappingEvidenceId,
+                workspaceId: brief.workspaceId,
+                projectId: brief.projectId,
+                changeKind: "ADD",
+                entityId: entity.entity_id,
+                revisionNumber: entity.revision_number,
+                assetId,
+                assetSha256,
+                mappingEvidenceId,
+                referenceEvidenceId,
+                briefRevisionId: brief.id,
+                usage,
+                revokedAddId: null,
+              })
+              .returning({ id: canonicalVisualEntityRevisionAssets.id, mappingEvidenceId: canonicalVisualEntityRevisionAssets.mappingEvidenceId });
+            if (!mapping || (mapping.id as string) !== mappingEvidenceId || (mapping.mappingEvidenceId as string) !== mappingEvidenceId) {
+              throw new Error("G02 mapping ADD evidence append did not return the bound evidence row.");
+            }
+            return mapping.mappingEvidenceId as string;
+          },
+        });
+        persistedShotSpecs = prepared.shotSpecs;
+        persistedPromptPackages = prepared.promptPackages;
+      }
       assertCreativeRevisionTransition(brief.status, "READY_FOR_REVIEW");
       const timestamp = now();
       const [script] = await transaction
@@ -1451,7 +2241,7 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
         .returning();
       const specs = await transaction
         .insert(storyboardShotSpecs)
-        .values(input.draft.shotSpecs.map((shotSpec) => ({
+        .values(persistedShotSpecs.map((shotSpec) => ({
           id: shotSpec.id,
           workspaceId: brief.workspaceId,
           projectId: brief.projectId,
@@ -1467,12 +2257,16 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
           dependsOnSequences: shotSpec.dependsOnSequences,
           continuityNote: shotSpec.continuityNote ?? "",
           narrativeBeatSequences: shotSpec.narrativeBeatSequences?.length ? shotSpec.narrativeBeatSequences : [shotSpec.sequence],
+          sceneId: shotSpec.sceneId ?? null,
+          characterIds: shotSpec.characterIds ?? [],
+          propIds: shotSpec.propIds ?? [],
+          referenceAnchors: shotSpec.referenceAnchors ?? [],
           createdAt: timestamp,
           updatedAt: timestamp,
         })))
         .returning();
-      if (compiledPromptPackages.length > 0) {
-        await transaction.insert(promptPackages).values(compiledPromptPackages.map((promptPackage) => ({
+      if (persistedPromptPackages.length > 0) {
+        await transaction.insert(promptPackages).values(persistedPromptPackages.map((promptPackage) => ({
           id: promptPackage.id,
           workspaceId: brief.workspaceId,
           projectId: brief.projectId,
@@ -1511,6 +2305,95 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
         },
       }));
       return serializeStoryboard(storyboard, specs, script.beats.length);
+    });
+  }
+
+  async appendG02EntityMappingRevoke(input: {
+    workspaceId: string;
+    projectId: string;
+    briefRevisionId: string;
+    addMappingEvidenceId: string;
+    entityId: string;
+    revisionNumber: number;
+    assetId: string;
+    assetSha256: string;
+  }) {
+    return this.db.transaction(async (transaction) => {
+      const [brief] = await transaction
+        .select({ id: creativeBriefRevisions.id, sourceText: creativeBriefRevisions.sourceText })
+        .from(creativeBriefRevisions)
+        .where(and(
+          eq(creativeBriefRevisions.workspaceId, input.workspaceId),
+          eq(creativeBriefRevisions.projectId, input.projectId),
+          eq(creativeBriefRevisions.id, input.briefRevisionId),
+        ))
+        .limit(1)
+        .for("update");
+      if (!brief || !hasG02SourceMarker(brief.sourceText)) {
+        throw new Error("G02 mapping REVOKE requires its locked source-marked Brief revision.");
+      }
+      const [add] = await transaction
+        .select()
+        .from(canonicalVisualEntityRevisionAssets)
+        .where(and(
+          eq(canonicalVisualEntityRevisionAssets.workspaceId, input.workspaceId),
+          eq(canonicalVisualEntityRevisionAssets.projectId, input.projectId),
+          eq(canonicalVisualEntityRevisionAssets.briefRevisionId, input.briefRevisionId),
+          eq(canonicalVisualEntityRevisionAssets.id, input.addMappingEvidenceId),
+          eq(canonicalVisualEntityRevisionAssets.changeKind, "ADD"),
+        ))
+        .limit(1)
+        .for("update");
+      if (!add
+        || typeof add.id !== "string"
+        || add.entityId !== input.entityId
+        || add.revisionNumber !== input.revisionNumber
+        || add.assetId !== input.assetId
+        || add.assetSha256 !== input.assetSha256
+        || add.briefRevisionId !== brief.id
+        || !add.referenceEvidenceId) {
+        throw new Error("G02 mapping REVOKE must exactly bind an existing same-scope ADD row and asset SHA.");
+      }
+      const rows = await transaction
+        .select()
+        .from(canonicalVisualEntityRevisionAssets)
+        .where(and(
+          eq(canonicalVisualEntityRevisionAssets.workspaceId, input.workspaceId),
+          eq(canonicalVisualEntityRevisionAssets.projectId, input.projectId),
+          eq(canonicalVisualEntityRevisionAssets.briefRevisionId, input.briefRevisionId),
+          eq(canonicalVisualEntityRevisionAssets.assetId, input.assetId),
+        ))
+        .for("update");
+      const revokedAddIds = new Set<string>(rows
+        .filter((row) => row.changeKind === "REVOKE" && row.revokedAddId)
+        .map((row) => row.revokedAddId as string));
+      const activeAdds = rows.filter((row) => row.changeKind === "ADD" && !revokedAddIds.has(row.id as string));
+      if (revokedAddIds.has(add.id) || activeAdds.length !== 1 || activeAdds[0]?.id !== add.id) {
+        throw new Error("G02 mapping REVOKE target must be the unique active ADD and cannot be revoked twice.");
+      }
+      const revokeId = createPrefixedId("mpe");
+      const [revoke] = await transaction
+        .insert(canonicalVisualEntityRevisionAssets)
+        .values({
+          id: revokeId,
+          workspaceId: input.workspaceId,
+          projectId: input.projectId,
+          changeKind: "REVOKE",
+          entityId: add.entityId,
+          revisionNumber: add.revisionNumber,
+          assetId: add.assetId,
+          assetSha256: add.assetSha256,
+          mappingEvidenceId: revokeId,
+          referenceEvidenceId: null,
+          briefRevisionId: add.briefRevisionId,
+          usage: add.usage,
+          revokedAddId: add.id,
+        })
+        .returning({ id: canonicalVisualEntityRevisionAssets.id, revokedAddId: canonicalVisualEntityRevisionAssets.revokedAddId });
+      if (!revoke || revoke.id !== revokeId || revoke.revokedAddId !== add.id) {
+        throw new Error("G02 mapping REVOKE append did not return the exact revocation row.");
+      }
+      return revoke.id;
     });
   }
 
@@ -1632,6 +2515,87 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
           return this.storeOutcome(transaction, input, { kind: "PREFLIGHT_BLOCKED" });
         }
       }
+      let audioSelectionSource: ReturnType<typeof freezeDoubaoAudioSourceIdentity>;
+      let musicReplacementSource: {
+        version: 1;
+        assetId: string;
+        workspaceId: string;
+        projectId: string;
+        sha256: string;
+        byteSize: number;
+        mimeType: string;
+        durationMs: number;
+      } | undefined;
+      if ((input.audioSelection ?? "PRESERVE_PROVIDER_AUDIO") === "DOUBAO_TTS_REPLACE") {
+        const approvedTimeline = input.deliveryPlanRevisionId
+          ? await findApprovedNarrationTimeline(
+            transaction as unknown as PlatformDatabase,
+            input.workspaceId,
+            input.projectId,
+            input.deliveryPlanRevisionId,
+            undefined,
+            true,
+          )
+          : undefined;
+        audioSelectionSource = approvedTimeline ? freezeDoubaoAudioSourceIdentity({
+          timeline: approvedTimeline,
+          workspaceId: input.workspaceId,
+          projectId: input.projectId,
+          storyboardRevisionId: loaded.storyboard.id,
+        }) : undefined;
+        if (!audioSelectionSource
+          || audioSelectionSource.deliveryPlanRevisionId !== input.deliveryPlanRevisionId
+          || audioSelectionSource.storyboardRevisionId !== loaded.storyboard.id) {
+          return this.storeOutcome(transaction, input, { kind: "PREFLIGHT_BLOCKED" });
+        }
+      }
+      if (input.audioSelection === "MUSIC_REPLACE_PROVIDER_AUDIO") {
+        const manualAssetId = input.musicPlan?.mode === "MANUAL" ? input.musicPlan.asset_id : undefined;
+        const targetDurationMs = loaded.storyboard.totalDurationSeconds * 1_000;
+        if (!manualAssetId || !Number.isSafeInteger(targetDurationMs) || targetDurationMs <= 0) {
+          return this.storeOutcome(transaction, input, { kind: "PREFLIGHT_BLOCKED" });
+        }
+        const [musicAsset] = await transaction
+          .select()
+          .from(assets)
+          .where(and(
+            eq(assets.workspaceId, input.workspaceId),
+            eq(assets.projectId, input.projectId),
+            eq(assets.id, manualAssetId),
+            eq(assets.kind, "AUDIO"),
+            eq(assets.status, "READY"),
+          ))
+          .limit(1)
+          .for("update");
+        const metadata = musicAsset?.metadata && typeof musicAsset.metadata === "object"
+          ? musicAsset.metadata
+          : undefined;
+        if (!musicAsset
+          || metadata?.audio_role !== "MUSIC"
+          || typeof musicAsset.sha256 !== "string"
+          || !/^[a-f0-9]{64}$/u.test(musicAsset.sha256)
+          || typeof musicAsset.byteSize !== "number"
+          || !Number.isSafeInteger(musicAsset.byteSize)
+          || musicAsset.byteSize <= 0
+          || typeof musicAsset.mimeType !== "string"
+          || !musicAsset.mimeType.toLowerCase().startsWith("audio/")
+          || typeof musicAsset.durationMs !== "number"
+          || !Number.isSafeInteger(musicAsset.durationMs)
+          || musicAsset.durationMs < targetDurationMs
+          || !musicAsset.objectKey.startsWith(`${musicAsset.workspaceId}/${musicAsset.projectId}/${musicAsset.id}/`)) {
+          return this.storeOutcome(transaction, input, { kind: "PREFLIGHT_BLOCKED" });
+        }
+        musicReplacementSource = {
+          version: 1,
+          assetId: musicAsset.id,
+          workspaceId: musicAsset.workspaceId,
+          projectId: musicAsset.projectId,
+          sha256: musicAsset.sha256,
+          byteSize: musicAsset.byteSize,
+          mimeType: musicAsset.mimeType,
+          durationMs: musicAsset.durationMs,
+        };
+      }
       const [active] = await transaction
         .select({ id: productionRuns.id })
         .from(productionRuns)
@@ -1662,6 +2626,9 @@ export class DrizzleCreativePlanningRepository implements CreativePlanningStore 
           autoRepairCount: 0,
           budgetGuard: {
             music_plan: input.musicPlan ?? { mode: "OFF", style_hint: "" },
+            audio_selection: input.audioSelection ?? "PRESERVE_PROVIDER_AUDIO",
+            ...(audioSelectionSource ? { audio_selection_source: audioSelectionSource } : {}),
+            ...(musicReplacementSource ? { music_replacement_source: musicReplacementSource } : {}),
             ...(input.pixabayFallbackMusicAssetId ? { pixabay_fallback_music_asset_id: input.pixabayFallbackMusicAssetId } : {}),
             ...(input.billing ? { billing: input.billing } : {}),
             ...(input.fixedBillingPolicy ? { fixed_billing_policy: input.fixedBillingPolicy } : {}),

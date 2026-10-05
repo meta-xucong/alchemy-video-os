@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   InternalMediaRuntimeQueueMessageSchema,
@@ -7,11 +8,13 @@ import {
 } from "@alchemy-video/contracts";
 import type { MediaRuntimeCompositionPlan, MediaRuntimeNarrationSegment } from "@alchemy-video/contracts";
 import type { MediaRuntimeNarrationTrackBytes } from "./media-runtime-client.js";
+import { MediaRuntimeClientError } from "./media-runtime-client.js";
 import {
   NARRATION_MEASURED_DURATION_TOLERANCE_MS,
   type OutboxRelayStore,
   type PersistedOutboxEvent,
   type ProductionStore,
+  type ProductionCompositionInput,
   type NarrationAudioGenerationEvent,
   type NarrationAudioGenerationInput,
   type NarrationQualityStore,
@@ -44,6 +47,40 @@ const failureReason = (error: unknown) =>
   (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/g, " ").slice(0, 500);
 
 const NATIVE_PROVIDER_ZERO_WORD_QC_FAILURE = "QC_FAILED: native provider speech transcript returned zero words.";
+
+export function approvedDoubaoCompositionIdentityMatches(input: {
+  source: ProductionCompositionInput;
+  narrationAssets: Array<NonNullable<ProductionCompositionInput["narrationAsset"]>>;
+}) {
+  const provenance = input.source.audioProvenance;
+  if (!provenance
+    || provenance.version !== 1
+    || provenance.workspaceId !== input.source.workspaceId
+    || provenance.projectId !== input.source.projectId
+    || provenance.productionRunId !== input.source.productionRunId
+    || provenance.storyboardRevisionId !== input.source.storyboardRevisionId
+    || !input.source.deliveryPlanRevisionId
+    || provenance.deliveryPlanRevisionId !== input.source.deliveryPlanRevisionId
+    || !provenance.timelinePlanId
+    || !provenance.narrationScriptRevisionId
+    || provenance.effectiveDurationMs !== input.source.compositionPlan?.target_duration_ms
+    || !provenance.assetVersions.length
+    || provenance.assetVersions.some((asset) => asset.narrationScriptRevisionId !== provenance.narrationScriptRevisionId
+      || asset.provider !== "doubao" || !asset.voiceId || !asset.sha256 || !asset.assetVersionId)) return false;
+  return input.narrationAssets.length === provenance.assetVersions.length
+    && provenance.assetVersions.every((version) => input.narrationAssets.some((asset) =>
+      asset.assetVersionId === version.assetVersionId
+      && asset.id === version.assetId
+      && asset.workspaceId === provenance.workspaceId
+      && asset.projectId === provenance.projectId
+      && asset.sha256 === version.sha256
+      && asset.byteSize === version.byteSize
+      && asset.mimeType === version.mimeType
+      && asset.durationMs === version.durationMs
+      && asset.provider === version.provider
+      && asset.voiceId === version.voiceId
+      && isDeepStrictEqual(asset.providerSettings, version.providerSettings)));
+}
 
 const terminalFailure = (reason: string) => {
   if (reason.includes("MEDIA_RENDER_FAILED")) return { errorCode: "MEDIA_RENDER_FAILED" as const, retryable: false };
@@ -99,8 +136,10 @@ type MediaRuntimeClient = {
     expectedSha256: string;
     scriptText?: string;
     captionPolicy?: "REQUIRED" | "OPTIONAL" | "OFF";
+    musicApplied?: boolean;
   }): Promise<{
     status: "PASS" | "NEEDS_ATTENTION" | "FAILED";
+    review_completeness?: "COMPLETE" | "PARTIAL";
     issues_found: string[];
     recommended_action: "PRESENT_WITH_REVIEW" | "REVISE" | "BLOCK";
     audio_spotcheck?: {
@@ -469,6 +508,29 @@ export class MediaRuntimeEventConsumer {
         // UnavailableError in persistence, reaches this catch, and is
         // released for retry/dead-letter instead of being acknowledged.
       } else {
+        const frozenAudioSelection = source.audioSelection ?? "PRESERVE_PROVIDER_AUDIO";
+        if (frozenAudioSelection !== (source.compositionPlan?.audio_selection ?? "PRESERVE_PROVIDER_AUDIO")) {
+          throw new Error("QC_FAILED: frozen ProductionRun audio selection does not match the composition plan.");
+        }
+        if (frozenAudioSelection === "DOUBAO_TTS_REPLACE") {
+          const provenance = source.audioProvenance;
+          const availableNarrationAssets = [
+            ...(source.narrationAsset ? [source.narrationAsset] : []),
+            ...(source.narrationAssets ?? []),
+          ];
+          if (!provenance || !approvedDoubaoCompositionIdentityMatches({ source, narrationAssets: availableNarrationAssets })) {
+            throw new Error("QC_FAILED: same-run approved Doubao narration provenance does not match the frozen formal asset identities.");
+          }
+          const narrationTrackAssetIds = (source.compositionPlan?.audio_plan?.tracks ?? [])
+            .filter((track) => track.ownership === "PLATFORM_NARRATION")
+            .map((track) => track.asset_id)
+            .sort();
+          const frozenAssetIds = provenance.assetVersions.map((version) => version.assetId).sort();
+          if (narrationTrackAssetIds.length !== frozenAssetIds.length
+            || narrationTrackAssetIds.some((assetId, index) => assetId !== frozenAssetIds[index])) {
+            throw new Error("QC_FAILED: Runtime narration tracks do not match the frozen formal asset identities.");
+          }
+        }
         const compositionTracks = source.compositionPlan?.audio_plan?.tracks ?? source.compositionPlan?.audio_tracks ?? [];
         const narrationDurationMeasurements: MediaRuntimeNarrationDurationMeasurement[] = [];
         let sectionNarrationWindowMismatch = false;
@@ -502,7 +564,8 @@ export class MediaRuntimeEventConsumer {
         // preserving the source track could double-speak and replacing it
         // could discard ambience or user audio.  Stop before synthesis and
         // composition until the source clip is explicitly classified.
-        if (source.compositionPlan?.audio_policy === "CONTINUOUS_NARRATION"
+        if (frozenAudioSelection !== "DOUBAO_TTS_REPLACE"
+          && source.compositionPlan?.audio_policy === "CONTINUOUS_NARRATION"
           && compositionTracks.some((track) =>
             track.track_id.startsWith("segment-") && track.ownership === "LEGACY_PRESERVE")) {
           throw new Error("QC_FAILED: continuous narration requires explicit source audio ownership for every segment.");
@@ -515,6 +578,45 @@ export class MediaRuntimeEventConsumer {
               expectedObjectKeyPrefix: `${source.musicAsset.workspaceId}/${source.musicAsset.projectId}/${source.musicAsset.id}/`,
             })
           : undefined;
+        if (frozenAudioSelection === "MUSIC_REPLACE_PROVIDER_AUDIO") {
+          const audioPlan = source.compositionPlan?.audio_plan;
+          const musicTracks = audioPlan?.tracks.filter((track) => track.ownership === "MUSIC") ?? [];
+          const musicTrack = musicTracks[0];
+          const targetDurationMs = source.compositionPlan?.target_duration_ms;
+          if (!source.musicAsset
+            || !musicBytes
+            || !audioPlan
+            || source.compositionPlan?.audio_policy === "CONTINUOUS_NARRATION"
+            || audioPlan.tracks.length !== 1
+            || musicTracks.length !== 1
+            || musicTrack?.track_id !== "music"
+            || musicTrack.asset_id !== source.musicAsset.id
+            || musicTrack.start_ms !== 0
+            || musicTrack.end_ms !== targetDurationMs
+            || source.narrationAsset
+            || (source.narrationAssets?.length ?? 0) > 0
+            || (source.compositionPlan?.audio_plan?.tracks.some((track) => track.ownership === "PLATFORM_NARRATION") ?? false)
+            || !Number.isSafeInteger(targetDurationMs)
+            || typeof source.musicAsset.durationMs !== "number"
+            || source.musicAsset.durationMs < targetDurationMs!) {
+            throw new Error("QC_FAILED: BGM-only replacement requires the frozen full-run MUSIC asset and no narration tracks.");
+          }
+          if (!this.runtime.inspectAudio) {
+            throw new Error("MEDIA_RUNTIME_UNAVAILABLE: selected MUSIC duration probe is unavailable.");
+          }
+          const measuredMusic = await this.runtime.inspectAudio({
+            operationId: mediaOperationId(claim.event.event_id, "music-inspect"),
+            bytes: musicBytes,
+            expectedSha256: source.musicAsset.sha256,
+          });
+          if (measuredMusic.mime_type !== source.musicAsset.mimeType
+            || measuredMusic.byte_size !== musicBytes.byteLength
+            || measuredMusic.sha256 !== source.musicAsset.sha256
+            || !Number.isSafeInteger(measuredMusic.duration_ms)
+            || measuredMusic.duration_ms < targetDurationMs!) {
+            throw new Error("QC_FAILED: selected MUSIC bytes do not cover the frozen full video timeline.");
+          }
+        }
         const approvedNarrationBytes = source.narrationAsset
           ? source.narrationAsset.workspaceId !== source.workspaceId || source.narrationAsset.projectId !== source.projectId
             ? (() => { throw new Error("QC_FAILED: narration asset workspace/project scope does not match the production run."); })()
@@ -667,6 +769,10 @@ export class MediaRuntimeEventConsumer {
           && (Boolean(authoritativeNarrationText?.trim()) || (source.narrationSegments?.length ?? 0) > 0)
           && !this.runtime.narrationProvider) {
           throw new Error("QC_FAILED: continuous narration requires explicit source audio ownership for every segment.");
+        }
+        if (frozenAudioSelection === "DOUBAO_TTS_REPLACE"
+          && !approvedNarrationBytes && approvedNarrationTrackBytes.length === 0) {
+          throw new Error("QC_FAILED: frozen Doubao replacement cannot invoke TTS during composition or retry.");
         }
         const singleNarrationSegment = !approvedNarrationBytes
           && approvedNarrationTrackBytes.length === 0
@@ -828,6 +934,7 @@ export class MediaRuntimeEventConsumer {
             // must not be upgraded to REQUIRED implicitly. Only an explicit
             // persisted policy can trigger caption burning and its hard gate.
             captionPolicy: source.captionPolicy ?? "OFF",
+            musicApplied: Boolean(source.musicAsset),
           })
           : { status: "NEEDS_ATTENTION" as const, issues_found: ["成片终检工具不可用。"], recommended_action: "PRESENT_WITH_REVIEW" as const };
         if (finalReview.status === "FAILED" || finalReview.recommended_action === "BLOCK") {
@@ -873,6 +980,15 @@ export class MediaRuntimeEventConsumer {
       });
       return claim.kind;
     } catch (error) {
+      if (error instanceof MediaRuntimeClientError) {
+        console.error(JSON.stringify({
+          event: "media_runtime.operation.failed",
+          event_id: message.event_id,
+          code: error.code,
+          retryable: error.retryable,
+          diagnostic: error.message.slice(0, 260),
+        }));
+      }
       // Release the durable lease before BullMQ retries. Without this, the
       // short retry backoff sees BUSY and masks the original QC/runtime error.
       await this.store.releaseMediaRuntimeEvent({

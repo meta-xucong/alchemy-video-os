@@ -489,23 +489,34 @@ test("C08-OFF-07 records only normalized rejection and protocol-drift evidence",
 
   const driftPaths = await createTemporaryPaths(t);
   const driftTransport = new FakeTransport({
-    statusPayloads: [{
-      message: `Bearer synthetic-test-key ${rawProviderRequestId} paper kite`,
-      detail: "https://example.invalid/content?signature=synthetic",
-      object_key: "private/object",
-    }],
+    statusPayloads: [
+      `Bearer synthetic-test-key ${rawProviderRequestId} paper kite https://example.invalid/content?signature=synthetic object_key private/object message detail`,
+    ],
   });
   const driftDependencies = createDependencies(driftPaths, driftTransport, { environmentReads: 0, transportCreates: 0 });
   assert.equal((await runCertification(exactArguments("--stop-after-submit"), driftDependencies)).outcome, "SUBMITTED_STOPPED");
+  assert.equal(driftTransport.requests.filter((request) => request.method === "POST").length, 1);
   assert.equal((await runCertification(exactArguments("--resume"), driftDependencies)).outcome, "FAILED");
+  assert.equal(driftTransport.requests.filter((request) => request.method === "POST").length, 1);
+  assert.equal(driftTransport.requests.filter((request) => request.method === "GET" && !request.path.endsWith("/content")).length, 1);
 
   const driftReport = (await readReports(driftPaths)).find((report) => report.includes('"classification": "PROTOCOL_DRIFT"'));
   assert.ok(driftReport);
   assert.match(driftReport, /"code": "PROVIDER_PROTOCOL_INVALID"/);
   assert.match(driftReport, /"stage": "PROVIDER"/);
   assert.match(driftReport, /"retryable": false/);
-  assert.doesNotMatch(driftReport, new RegExp(rawProviderRequestId));
-  assert.doesNotMatch(driftReport, /synthetic-test-key|example\.invalid|content_url|object_key|paper kite|"message"|"detail"/i);
+  for (const sentinel of [
+    rawProviderRequestId,
+    "synthetic-test-key",
+    "example.invalid",
+    "object_key",
+    "private/object",
+    "paper kite",
+    "message",
+    "detail",
+  ]) {
+    assert.doesNotMatch(driftReport, new RegExp(sentinel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+  }
 });
 
 test("C08-OFF-07 keeps fixed recovery and report paths ignored and forbids source default transport wiring", async () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { VideoSessionCodec, VideoSessionIdentityAdapter } from "../src/veyra-session.js";
+import { isActiveVeyraAccountStatus, VideoSessionCodec, VideoSessionIdentityAdapter } from "../src/veyra-session.js";
 
 const identity = { externalUserId: 42, intent: "video" as const, email: "user@example.com", role: "user", expiresAt: "2026-08-16T00:00:00.000Z" };
 
@@ -23,4 +23,11 @@ test("tampered or expired sessions are rejected", async () => {
   const expiredCodec = new VideoSessionCodec("01234567890123456789012345678901", () => new Date("2026-08-15T13:00:02.000Z"));
   const original = expiredIssuer.issue(identity, 1);
   assert.equal(expiredCodec.read(new Request("https://video.example", { headers: { cookie: `${expiredCodec.cookieName()}=${original}` } })), undefined);
+});
+
+test("Veyra account activity follows the source's exact active status value", () => {
+  assert.equal(isActiveVeyraAccountStatus("active"), true);
+  for (const status of ["Active", " active ", "ACTIVE", "enabled", "disabled"]) {
+    assert.equal(isActiveVeyraAccountStatus(status), false, `${JSON.stringify(status)} must not be normalized to active`);
+  }
 });

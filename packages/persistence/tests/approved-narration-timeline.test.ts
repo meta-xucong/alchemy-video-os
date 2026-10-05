@@ -310,6 +310,26 @@ test("formal version reusing the approved sample object is rejected by the loade
   assert.equal(result, undefined);
 });
 
+test("sample provenance is optional for legacy narration reads but mandatory for explicit Doubao replacement", async () => {
+  const rows = {
+    timeline_plans: [timelineRow()],
+    narration_script_revisions: [scriptRow()],
+    narration_asset_versions: [assetVersionRow({ provider: "doubao", voiceId: "voice-approved", providerSettings: {} })],
+    assets: [audioAssetRow()],
+    outbox_events: [],
+  };
+
+  const preserveCompatible = await findApprovedNarrationTimeline(
+    fakeDatabase(rows), workspaceId, projectId, deliveryPlanRevisionId,
+  );
+  const explicitDoubao = await findApprovedNarrationTimeline(
+    fakeDatabase(rows), workspaceId, projectId, deliveryPlanRevisionId, undefined, true,
+  );
+
+  assert.ok(preserveCompatible?.narrationAsset, "legacy/Preserve reads remain compatible without sample provenance");
+  assert.equal(explicitDoubao, undefined, "Doubao replacement fails closed without approved sample identity");
+});
+
 test("timeline without an asset version stays on cue synthesis and does not attach another sample", async () => {
   const result = await findApprovedNarrationTimeline(fakeDatabase({
     timeline_plans: [timelineRow({ narrationAssetVersionId: null })],

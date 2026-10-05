@@ -1,5 +1,5 @@
-import { createPrefixedId, isBillingRetryErrorCode, isVideoUsageModelCompatible } from "@alchemy-video/domain";
-import { VideoGenerationInputSnapshotSchema } from "@alchemy-video/contracts";
+import { createPrefixedId, fingerprintRequest, isBillingRetryErrorCode, isVideoUsageModelCompatible } from "@alchemy-video/domain";
+import { findExactEntityAnchor, VideoGenerationInputSnapshotSchema } from "@alchemy-video/contracts";
 import type { AssetWorkspaceStore, TaskRunStore } from "@alchemy-video/persistence";
 import { StorageObjectAlreadyExistsError, createGeneratedVideoObjectKey, type StoragePort } from "@alchemy-video/storage-client";
 import type { VideoProviderPort } from "@alchemy-video/provider-video";
@@ -9,7 +9,7 @@ import { VideoProviderFailure, VideoProviderProtocolError, validateMp4Bytes } fr
 
 import type { ReferenceDeliveryPort } from "./reference-delivery.js";
 
-const readStream = async (stream: ReadableStream<Uint8Array>) => {
+const readStream = async (stream: ReadableStream<Uint8Array>, maximumBytes = 50 * 1024 * 1024) => {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let length = 0;
@@ -17,6 +17,10 @@ const readStream = async (stream: ReadableStream<Uint8Array>) => {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (length + value.byteLength > maximumBytes) {
+        await reader.cancel("download exceeds configured safety limit").catch(() => undefined);
+        throw new VideoProviderProtocolError("Downloaded media exceeds the configured size limit.");
+      }
       chunks.push(value);
       length += value.byteLength;
     }
@@ -60,6 +64,43 @@ const downloadStageError = (error: unknown) => {
   } as const;
 };
 
+const hasG02TaskSnapshot = (snapshot: ReturnType<typeof VideoGenerationInputSnapshotSchema.parse>) =>
+  snapshot.semantic_entity_reference_projection !== undefined
+  || snapshot.semantic_entity_reference_projection_hash !== undefined
+  || snapshot.semantic_narrative_beat_lineage !== undefined
+  || snapshot.semantic_narrative_beat_lineage_hash !== undefined;
+
+const hasValidG02WorkerPreflight = (snapshot: ReturnType<typeof VideoGenerationInputSnapshotSchema.parse>) => {
+  if (!hasG02TaskSnapshot(snapshot)) return true;
+  const projection = snapshot.semantic_entity_reference_projection;
+  const projectionHash = snapshot.semantic_entity_reference_projection_hash;
+  const lineage = snapshot.semantic_narrative_beat_lineage;
+  const lineageHash = snapshot.semantic_narrative_beat_lineage_hash;
+  const visualInput = snapshot.visual_input;
+  if (!projection || !projectionHash || !lineage || !lineageHash || !visualInput
+    || projectionHash !== fingerprintRequest(projection)
+    || lineageHash !== fingerprintRequest(lineage)
+    || projection.brief_revision_id !== lineage.brief_revision_id
+    || projection.source_hash !== lineage.source_hash
+    || projection.bindings.length === 0
+    || projection.bindings.length !== visualInput.references.length
+    || snapshot.reference_asset_ids.length !== visualInput.references.length
+    || snapshot.generation_segment_sequence !== lineage.beat.sequence
+    || !snapshot.narrative_beat_sequences
+    || snapshot.narrative_beat_sequences.length !== 1
+    || snapshot.narrative_beat_sequences[0] !== lineage.beat.sequence) return false;
+  return projection.bindings.every((binding, index) => {
+    const reference = visualInput.references[index];
+    return binding.provider_position === index
+      && reference?.position === index
+      && binding.asset_id === reference.asset_id
+      && binding.asset_sha256 === reference.sha256
+      && snapshot.reference_asset_ids[index] === reference.asset_id
+      && binding.mapping_evidence_id.trim().length > 0
+      && findExactEntityAnchor(snapshot.prompt, binding.exact_name) >= 0;
+  });
+};
+
 class RetryableTaskExecutionError extends Error {
   constructor(message: string) {
     super(message);
@@ -86,6 +127,7 @@ export class MockVideoTaskExecutor {
       allowLegacyReferenceAssets?: boolean;
       billingExecutor?: VideoBillingExecutor;
       videoUsage?: VideoUsagePort;
+      maxDownloadBytes?: number;
     }> = {},
   ) {}
 
@@ -135,6 +177,16 @@ export class MockVideoTaskExecutor {
         now: new Date(),
       });
     }
+    if (!hasValidG02WorkerPreflight(inputSnapshot)) {
+      return this.store.failTaskRun({
+        workspaceId: input.workspaceId,
+        taskRunId: taskRun.id,
+        code: "PROVIDER_REJECTED",
+        message: "The immutable G02 entity, beat, or ordered reference bindings failed Worker preflight.",
+        retryable: false,
+        now: new Date(),
+      });
+    }
     let providerAttemptId: string | undefined;
     try {
       const visualInput = await this.resolveVisualInput({
@@ -150,7 +202,16 @@ export class MockVideoTaskExecutor {
         model: inputSnapshot.model,
         now: new Date(),
       });
-      if (!attempt) return this.store.findTaskRun(input.workspaceId, input.taskRunId);
+      if (!attempt) {
+        return this.store.failTaskRun({
+          workspaceId: input.workspaceId,
+          taskRunId: taskRun.id,
+          code: "PROVIDER_REJECTED",
+          message: "The frozen G02 mapping was revoked before a new Provider attempt could be created.",
+          retryable: false,
+          now: new Date(),
+        });
+      }
       providerAttemptId = attempt.id;
       if (attempt.provider !== providerName || attempt.model !== inputSnapshot.model) {
         return this.store.failTaskRun({
@@ -269,7 +330,7 @@ export class MockVideoTaskExecutor {
       const attempt = (await this.store.listTaskRunAttempts(input.workspaceId, input.taskRunId)).find((item) => item.id === input.attemptId);
       if (!attempt?.providerRequestId) throw new VideoProviderProtocolError("Provider request was not persisted before download.");
       const download = await this.provider.download({ providerRequestId: attempt.providerRequestId });
-      const bytes = await readStream(download.stream);
+      const bytes = await readStream(download.stream, this.options.maxDownloadBytes ?? 50 * 1024 * 1024);
       if (download.contentLength !== undefined && download.contentLength !== bytes.byteLength) {
         throw new VideoProviderProtocolError("Downloaded media length does not match Content-Length.");
       }
