@@ -67,7 +67,7 @@ jobs:
             --env MINIO_ROOT_USER=ci-minio-user \
             --env MINIO_ROOT_PASSWORD=ci-minio-password \
             --env MINIO_API_CORS_ALLOW_ORIGIN=http://127.0.0.1:3031 \
-            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data --console-address :9001
+            quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data --console-address :9001
           for attempt in {1..30}; do
             if curl --fail --silent --show-error http://127.0.0.1:9000/minio/health/live >/dev/null; then
               exit 0
@@ -112,12 +112,19 @@ jobs:
   media-runtime:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      MEDIA_RUNTIME_FFMPEG_PATH: /usr/bin/ffmpeg
+      MEDIA_RUNTIME_FFPROBE_PATH: /usr/bin/ffprobe
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v6
+      - name: Install FFmpeg for media integration tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
       - name: Install locked media runtime dependencies
         run: uv sync --project services/media-runtime --locked --no-dev
       - name: Python syntax check
