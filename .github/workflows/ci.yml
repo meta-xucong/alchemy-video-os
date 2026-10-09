@@ -131,6 +131,42 @@ jobs:
       - name: Production dependency audit
         run: pnpm audit --prod --audit-level=high --json
 
+  docker-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and verify production runtime image
+        run: docker build --pull --file infrastructure/deploy/Dockerfile --tag alchemy-video-os-ci:${GITHUB_SHA} .
+      - name: Smoke test standalone Studio on loopback
+        shell: bash
+        run: |
+          container="alchemy-video-os-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          image="alchemy-video-os-ci:${GITHUB_SHA}"
+          trap 'docker rm --force "$container" >/dev/null 2>&1 || true' EXIT
+          docker run --detach \
+            --name "$container" \
+            --publish 127.0.0.1::3031/tcp \
+            --env HOST=0.0.0.0 \
+            --env PORT=3031 \
+            --env NITRO_HOST=0.0.0.0 \
+            --env NITRO_PORT=3031 \
+            --entrypoint node \
+            "$image" apps/studio-web/.output/server/index.mjs
+          host_port="$(docker port "$container" 3031/tcp | awk -F: '{print $NF}')"
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error "http://127.0.0.1:${host_port}/" >/dev/null; then
+              exit 0
+            fi
+            if [[ "$(docker inspect --format='{{.State.Running}}' "$container")" != "true" ]]; then
+              docker logs "$container"
+              exit 1
+            fi
+            sleep 2
+          done
+          docker logs "$container"
+          exit 1
+
   media-runtime:
     runs-on: ubuntu-latest
     timeout-minutes: 30

@@ -10,7 +10,7 @@ test("studio retains the Huobao Nuxt app layout and local API proxy shape", () =
   const config = read("nuxt.config.ts");
   const localServer = read("scripts/serve-local.mjs");
 
-  assert.equal(packageJson.dependencies.nuxt, "^3.17.5");
+  assert.equal(packageJson.devDependencies.nuxt, "^3.17.5");
   assert.match(config, /srcDir:\s*"app\//);
   assert.match(config, /buildDir:\s*localBuildDirectory/);
   assert.match(config, /dir:\s*localNitroOutputDirectory/);
