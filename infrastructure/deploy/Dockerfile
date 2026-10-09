@@ -16,7 +16,7 @@ ENV NODE_ENV=production
 # Re-link only locked production dependencies after the build has populated the
 # pnpm store. Build tools remain available in the build stage but are not copied
 # into the runtime image.
-RUN pnpm install --prod --offline --frozen-lockfile --ignore-scripts \
+RUN CI=true pnpm install --prod --offline --frozen-lockfile --ignore-scripts \
   && node tools/ci/verify-production-image.mjs
 
 FROM node:24-bookworm-slim AS runtime
