@@ -20,12 +20,13 @@
     "@alchemy-video/domain": "workspace:*",
     "@alchemy-video/persistence": "workspace:*",
     "@alchemy-video/provider-video": "workspace:*",
-    "@alchemy-video/task-queue": "workspace:*",
     "@alchemy-video/storage-client": "workspace:*",
+    "@alchemy-video/task-queue": "workspace:*",
     "dotenv": "^17.4.2"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "pg": "^8.23.0",
     "tsx": "^4.21.0",
     "typescript": "^5.8.3"
   }
