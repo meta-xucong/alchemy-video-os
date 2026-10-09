@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { lstat, readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 
 const root = '/app';
 const forbiddenRuntimePackages = new Set(['nuxt', 'node-forge', 'braces']);
@@ -21,13 +21,10 @@ for (const workspaceRoot of workspaceRoots) {
       throw error;
     }
 
-    const parentUrl = pathToFileURL(
-      path.join(path.dirname(packageJsonPath), '__runtime_probe__.mjs'),
-    ).href;
+    const resolveFromWorkspace = createRequire(packageJsonPath).resolve;
     for (const dependency of Object.keys(manifest.dependencies ?? {})) {
       try {
-        const resolvedUrl = import.meta.resolve(dependency, parentUrl);
-        if (resolvedUrl.startsWith('file:')) await lstat(fileURLToPath(resolvedUrl));
+        await lstat(resolveFromWorkspace(dependency));
       } catch (error) {
         throw new Error(
           `Production dependency ${dependency} from ${manifest.name} is not resolvable: ${error.message}`,
