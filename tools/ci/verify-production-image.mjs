@@ -141,6 +141,7 @@ assert.equal(
   resolvedWorkspaceDependencies.length,
   'Not every declared workspace production dependency was ESM-resolved',
 );
+
 console.log(JSON.stringify({
   directProductionDependencyCount: checkedDependencies.length,
   installedPackageCount: installedPackages.size,

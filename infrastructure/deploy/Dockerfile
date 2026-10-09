@@ -14,9 +14,10 @@ FROM build AS production-dependencies
 ENV NODE_ENV=production
 
 # Re-link only locked production dependencies after the build has populated the
-# pnpm store. pnpm's allowlist runs the required ffmpeg-static artifact hook;
-# build tools remain available in the build stage but are not copied to runtime.
-RUN CI=true pnpm install --prod --offline --frozen-lockfile
+# pnpm store. Skip workspace hooks such as Studio's Nuxt prepare, then rebuild
+# only provider-video's required ffmpeg-static binary dependency.
+RUN CI=true pnpm install --prod --offline --frozen-lockfile --ignore-scripts \
+  && pnpm --filter @alchemy-video/provider-video rebuild ffmpeg-static
 
 FROM node:24-bookworm-slim AS runtime
 
