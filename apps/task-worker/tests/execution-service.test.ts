@@ -293,7 +293,10 @@ const prepareTask = async (withBilling = false, model = "mock-video-v1") => {
   return { assets, store, workspaceId, taskRunId };
 };
 
-const prepareReferenceTask = async (semanticSnapshot?: (references: Array<{ assetId: string; sha256: string; position: number }>) => Record<string, unknown>) => {
+const prepareReferenceTask = async (
+  semanticSnapshot?: (references: Array<{ assetId: string; sha256: string; position: number }>) => Record<string, unknown>,
+  prompt = "Generate a reference-set Mock video.",
+) => {
   const control = new InMemoryControlPlaneStore();
   const workspaceId = createPrefixedId("ws");
   const userId = createPrefixedId("usr");
@@ -340,7 +343,7 @@ const prepareReferenceTask = async (semanticSnapshot?: (references: Array<{ asse
     projectId,
     shotId,
     position: 0,
-    prompt: "Generate a reference-set Mock video.",
+    prompt,
     model: "mock-video-v1",
     generationSettings: {},
     referenceBindings: references.map((reference) => ({ assetId: reference.assetId, role: reference.position === 0 ? "STYLE" : "SUBJECT", position: reference.position })),
@@ -358,7 +361,7 @@ const prepareReferenceTask = async (semanticSnapshot?: (references: Array<{ asse
     kind: "VIDEO_GENERATION",
     inputSnapshot: {
       model: "mock-video-v1",
-      prompt: "Generate a reference-set Mock video.",
+      prompt,
       duration: 1,
       resolution: "160x90",
       ratio: "16:9",
@@ -384,6 +387,69 @@ const prepareReferenceTask = async (semanticSnapshot?: (references: Array<{ asse
   });
   return { assets, store, workspaceId, projectId, taskRunId, references };
 };
+
+test("G02 scheduled TaskRun with an ordered identity projection passes Worker preflight", async () => {
+  const sourceText = [
+    "G02_APPROVED_BEAT_1: Snowy picks up Copper Flask.",
+    "G02_APPROVED_BEAT_2: Snowy turns toward the window.",
+  ].join("\n");
+  const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
+  const quote = sourceText.split("\n")[0]!;
+  const quoteHash = createHash("sha256").update(quote, "utf8").digest("hex");
+  const beat = {
+    sequence: 1 as const,
+    span: { start: 0, end: quote.length, quote },
+    exact_quote_sha256: quoteHash,
+    identity_sha256: fingerprintRequest({ brief_revision_id: "cbr_g02_positive", sequence: 1, exact_quote_sha256: quoteHash }),
+  };
+  const lineage = { version: 1 as const, brief_revision_id: "cbr_g02_positive", source_hash: sourceHash, beat };
+  const decisionHash = "e".repeat(64);
+  const prompt = "@Snowy picks up @Copper Flask.";
+  const { assets, store, workspaceId, taskRunId } = await prepareReferenceTask((references) => {
+    const projection = {
+      version: 1 as const,
+      brief_revision_id: "cbr_g02_positive",
+      source_hash: sourceHash,
+      decision_hash: decisionHash,
+      segment_id: "seg_g02_positive_1",
+      prompt_package_id: "ppk_g02_positive",
+      bindings: references.map((reference, position) => ({
+        entity_kind: position === 0 ? "CHARACTER" as const : "PROP" as const,
+        entity_id: `cve_g02_positive_${position}`,
+        entity_revision_id: `cvr_g02_positive_${position}`,
+        exact_name: position === 0 ? "Snowy" : "Copper Flask",
+        asset_id: reference.assetId,
+        asset_sha256: reference.sha256,
+        provider_position: reference.position,
+        mapping_evidence_id: createPrefixedId("mpe"),
+      })),
+    };
+    return {
+      generation_segment_sequence: 1,
+      narrative_beat_sequences: [1],
+      semantic_entity_reference_projection: projection,
+      semantic_entity_reference_projection_hash: fingerprintRequest(projection),
+      semantic_narrative_beat_lineage: lineage,
+      semantic_narrative_beat_lineage_hash: fingerprintRequest(lineage),
+    };
+  }, prompt);
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const deliveryInputs: string[][] = [];
+  const result = await new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    assetStore: assets,
+    referenceDelivery: {
+      async createVisualInput(input) {
+        deliveryInputs.push(input.visualInput.references.map((reference) => reference.asset_id));
+        return { mode: "REFERENCE_SET", urls: input.visualInput.references.map((reference) => `https://provider-input.invalid/${reference.asset_id}`) };
+      },
+    },
+  }).execute({ workspaceId, taskRunId });
+
+  assert.equal(result?.status, "SUCCEEDED", JSON.stringify(result?.error));
+  assert.equal(provider.submitCount, 1);
+  assert.deepEqual(deliveryInputs, [[...(result?.inputSnapshot.reference_asset_ids ?? [])]]);
+  assert.equal((await store.listTaskRunAttempts(workspaceId, taskRunId)).length, 1);
+});
 
 test("G02 Worker preflight rejects a missing exact entity prompt anchor before an attempt or Provider submit", async () => {
   const sourceText = [

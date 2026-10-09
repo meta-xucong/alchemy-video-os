@@ -19,7 +19,7 @@
   "scripts": {
     "dev": "pnpm --parallel --filter @alchemy-video/studio-web --filter @alchemy-video/control-api dev",
     "build": "pnpm -r --if-present build",
-    "typecheck": "pnpm -r --if-present typecheck",
+    "typecheck": "pnpm -r --filter \"./packages/**\" --workspace-concurrency=1 --if-present build && pnpm -r --workspace-concurrency=1 --if-present typecheck",
     "test": "pnpm -r --workspace-concurrency=1 --if-present test",
     "contracts:generate": "pnpm --filter @alchemy-video/contracts generate",
     "db:generate": "pnpm --filter @alchemy-video/persistence db:generate",

@@ -8,6 +8,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import subprocess
 from tempfile import TemporaryDirectory
 import sys
@@ -45,6 +46,37 @@ from runtime import (
 
 
 PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x02\x00\x00\x00\x03\x08\x02\x00\x00\x00\x12\x16\xf1M"
+
+
+def media_tool_paths(
+    root: Path,
+    *,
+    ffmpeg_override: str | None = None,
+    ffprobe_override: str | None = None,
+) -> tuple[Path, Path]:
+    """Resolve the lockfile-installed media binaries on the current platform."""
+    suffix = ".exe" if os.name == "nt" else ""
+    package_store = root / "node_modules" / ".pnpm"
+    ffmpeg_candidates = sorted(package_store.glob("ffmpeg-static@*/node_modules/ffmpeg-static/ffmpeg*"))
+    ffprobe_candidates = sorted(package_store.glob("ffprobe-static@*/node_modules/ffprobe-static/bin/*/*/ffprobe*"))
+    ffmpeg = Path(ffmpeg_override) if ffmpeg_override is not None else next(
+        (path for path in ffmpeg_candidates if path.name == f"ffmpeg{suffix}" and path.is_file()), None
+    )
+    ffprobe = Path(ffprobe_override) if ffprobe_override is not None else next(
+        (path for path in ffprobe_candidates if path.name == f"ffprobe{suffix}" and path.is_file()), None
+    )
+    if ffmpeg is None:
+        found = shutil.which("ffmpeg")
+        ffmpeg = Path(found) if found else None
+    if ffprobe is None:
+        found = shutil.which("ffprobe")
+        ffprobe = Path(found) if found else None
+    if ffmpeg is None or ffprobe is None:
+        message = "FFmpeg/ffprobe are required for media integration fixtures."
+        if os.environ.get("CI", "").lower() == "true":
+            raise AssertionError(message)
+        raise unittest.SkipTest(message)
+    return ffmpeg, ffprobe
 
 
 class StreamRequest:
@@ -380,7 +412,13 @@ def complete_music_only_audio_plan_bundle(
     )
 
 
-def music_replacement_bundle(video: bytes, music: bytes, *, target_duration_ms: int = 2_000) -> bytes:
+def music_replacement_bundle(
+    video: bytes,
+    music: bytes,
+    *,
+    additional_videos: tuple[bytes, ...] = (),
+    target_duration_ms: int = 2_000,
+) -> bytes:
     def text(value: str, width: int = 1) -> bytes:
         encoded = value.encode("utf-8")
         return len(encoded).to_bytes(width, "big") + encoded
@@ -397,11 +435,15 @@ def music_replacement_bundle(video: bytes, music: bytes, *, target_duration_ms: 
         + bytes([3, 1]) + (1_500).to_bytes(2, "big") + (2_500).to_bytes(2, "big")
         + bytes([1, 1]) + (0).to_bytes(4, "big") + target_duration_ms.to_bytes(4, "big")
     )
+    videos = (video, *additional_videos)
     return (
-        b"ALCHMED9\x02" + bytes([1, 0]) + target_duration_ms.to_bytes(4, "big")
+        b"ALCHMED9\x02"
+        + bytes([len(videos), len(videos) - 1])
+        + bytes([0] * (len(videos) - 1))
+        + target_duration_ms.to_bytes(4, "big")
         + bytes([0, 0, 2]) + advanced_audio + audio_plan
         + len(music).to_bytes(4, "big") + music
-        + len(video).to_bytes(4, "big") + video
+        + b"".join(len(segment).to_bytes(4, "big") + segment for segment in videos)
     )
 
 
@@ -1947,14 +1989,11 @@ class MediaRuntimeTests(unittest.TestCase):
 
     def test_caption_burn_real_bundled_mp4_preserves_audio_and_marker(self) -> None:
         repository_root = Path(__file__).resolve().parents[3]
-        ffmpeg_path = Path(os.environ.get(
-            "N04_BUNDLED_FFMPEG_PATH",
-            repository_root / "node_modules/.pnpm/ffmpeg-static@5.3.0/node_modules/ffmpeg-static/ffmpeg.exe",
-        ))
-        ffprobe_path = Path(os.environ.get(
-            "N04_BUNDLED_FFPROBE_PATH",
-            repository_root / "node_modules/.pnpm/ffprobe-static@3.1.0/node_modules/ffprobe-static/bin/win32/x64/ffprobe.exe",
-        ))
+        ffmpeg_path, ffprobe_path = media_tool_paths(
+            repository_root,
+            ffmpeg_override=os.environ.get("N04_BUNDLED_FFMPEG_PATH"),
+            ffprobe_override=os.environ.get("N04_BUNDLED_FFPROBE_PATH"),
+        )
         self.assertTrue(ffmpeg_path.is_file(), f"bundled ffmpeg is unavailable: {ffmpeg_path}")
         self.assertTrue(ffprobe_path.is_file(), f"bundled ffprobe is unavailable: {ffprobe_path}")
 
@@ -3053,10 +3092,7 @@ class MediaRuntimeTests(unittest.TestCase):
 
     def test_compose_uses_source_crossfade_graph_and_effective_duration(self) -> None:
         root = Path(__file__).resolve().parents[3]
-        ffmpeg = root / "node_modules" / ".pnpm" / "ffmpeg-static@5.3.0" / "node_modules" / "ffmpeg-static" / "ffmpeg.exe"
-        ffprobe = root / "node_modules" / ".pnpm" / "ffprobe-static@3.1.0" / "node_modules" / "ffprobe-static" / "bin" / "win32" / "x64" / "ffprobe.exe"
-        if not ffmpeg.is_file() or not ffprobe.is_file():
-            self.skipTest("local ffmpeg fixtures are unavailable")
+        ffmpeg, ffprobe = media_tool_paths(root)
 
         with TemporaryDirectory(prefix="alchemy-runtime-test-") as directory:
             left = Path(directory) / "left.mp4"
@@ -3114,10 +3150,7 @@ class MediaRuntimeTests(unittest.TestCase):
 
     def test_compose_normalizes_heterogeneous_cut_to_first_clip_canvas(self) -> None:
         root = Path(__file__).resolve().parents[3]
-        ffmpeg = root / "node_modules" / ".pnpm" / "ffmpeg-static@5.3.0" / "node_modules" / "ffmpeg-static" / "ffmpeg.exe"
-        ffprobe = root / "node_modules" / ".pnpm" / "ffprobe-static@3.1.0" / "node_modules" / "ffprobe-static" / "bin" / "win32" / "x64" / "ffprobe.exe"
-        if not ffmpeg.is_file() or not ffprobe.is_file():
-            self.skipTest("local ffmpeg fixtures are unavailable")
+        ffmpeg, ffprobe = media_tool_paths(root)
 
         with TemporaryDirectory(prefix="alchemy-runtime-heterogeneous-cut-") as directory:
             fixture_root = Path(directory)
@@ -3185,10 +3218,7 @@ class MediaRuntimeTests(unittest.TestCase):
 
     def test_compose_normalizes_heterogeneous_xfade_with_mixed_audio(self) -> None:
         root = Path(__file__).resolve().parents[3]
-        ffmpeg = root / "node_modules" / ".pnpm" / "ffmpeg-static@5.3.0" / "node_modules" / "ffmpeg-static" / "ffmpeg.exe"
-        ffprobe = root / "node_modules" / ".pnpm" / "ffprobe-static@3.1.0" / "node_modules" / "ffprobe-static" / "bin" / "win32" / "x64" / "ffprobe.exe"
-        if not ffmpeg.is_file() or not ffprobe.is_file():
-            self.skipTest("local ffmpeg fixtures are unavailable")
+        ffmpeg, ffprobe = media_tool_paths(root)
 
         with TemporaryDirectory(prefix="alchemy-runtime-heterogeneous-xfade-") as directory:
             fixture_root = Path(directory)
@@ -3516,10 +3546,7 @@ class MediaRuntimeTests(unittest.TestCase):
 
     def test_compose_complete_audio_plan_full_mix_produces_verified_av_fixture(self) -> None:
         root = Path(__file__).resolve().parents[3]
-        ffmpeg = root / "node_modules" / ".pnpm" / "ffmpeg-static@5.3.0" / "node_modules" / "ffmpeg-static" / "ffmpeg.exe"
-        ffprobe = root / "node_modules" / ".pnpm" / "ffprobe-static@3.1.0" / "node_modules" / "ffprobe-static" / "bin" / "win32" / "x64" / "ffprobe.exe"
-        if not ffmpeg.is_file() or not ffprobe.is_file():
-            self.skipTest("local ffmpeg fixtures are unavailable")
+        ffmpeg, ffprobe = media_tool_paths(root)
 
         with TemporaryDirectory(prefix="alchemy-runtime-full-mix-test-") as directory:
             fixture_root = Path(directory)
@@ -3579,10 +3606,7 @@ class MediaRuntimeTests(unittest.TestCase):
 
     def test_alchmed9_replaces_embedded_source_tone_with_approved_external_narration(self) -> None:
         root = Path(__file__).resolve().parents[3]
-        ffmpeg = root / "node_modules" / ".pnpm" / "ffmpeg-static@5.3.0" / "node_modules" / "ffmpeg-static" / "ffmpeg.exe"
-        ffprobe = root / "node_modules" / ".pnpm" / "ffprobe-static@3.1.0" / "node_modules" / "ffprobe-static" / "bin" / "win32" / "x64" / "ffprobe.exe"
-        if not ffmpeg.is_file() or not ffprobe.is_file():
-            self.skipTest("local ffmpeg fixtures are unavailable")
+        ffmpeg, ffprobe = media_tool_paths(root)
         with TemporaryDirectory(prefix="alchemy-alchmed9-audio-replacement-") as directory:
             fixture_root = Path(directory)
             video = fixture_root / "source-with-provider-tone.mp4"
@@ -3620,10 +3644,7 @@ class MediaRuntimeTests(unittest.TestCase):
 
     def test_alchmed9_multisegment_drops_each_embedded_source_tone(self) -> None:
         root = Path(__file__).resolve().parents[3]
-        ffmpeg = root / "node_modules" / ".pnpm" / "ffmpeg-static@5.3.0" / "node_modules" / "ffmpeg-static" / "ffmpeg.exe"
-        ffprobe = root / "node_modules" / ".pnpm" / "ffprobe-static@3.1.0" / "node_modules" / "ffprobe-static" / "bin" / "win32" / "x64" / "ffprobe.exe"
-        if not ffmpeg.is_file() or not ffprobe.is_file():
-            self.skipTest("local ffmpeg fixtures are unavailable")
+        ffmpeg, ffprobe = media_tool_paths(root)
         with TemporaryDirectory(prefix="alchemy-alchmed9-multisegment-replacement-") as directory:
             fixture_root = Path(directory)
             source_videos = [fixture_root / "source-110.mp4", fixture_root / "source-220.mp4"]
@@ -3686,10 +3707,7 @@ class MediaRuntimeTests(unittest.TestCase):
 
     def test_alchmed9_music_only_replaces_provider_audio_for_full_video(self) -> None:
         root = Path(__file__).resolve().parents[3]
-        ffmpeg = root / "node_modules" / ".pnpm" / "ffmpeg-static@5.3.0" / "node_modules" / "ffmpeg-static" / "ffmpeg.exe"
-        ffprobe = root / "node_modules" / ".pnpm" / "ffprobe-static@3.1.0" / "node_modules" / "ffprobe-static" / "bin" / "win32" / "x64" / "ffprobe.exe"
-        if not ffmpeg.is_file() or not ffprobe.is_file():
-            self.skipTest("local ffmpeg fixtures are unavailable")
+        ffmpeg, ffprobe = media_tool_paths(root)
         with TemporaryDirectory(prefix="alchemy-alchmed9-music-replacement-") as directory:
             fixture_root = Path(directory)
             source = fixture_root / "source-with-provider-tone.mp4"
@@ -3735,7 +3753,11 @@ class MediaRuntimeTests(unittest.TestCase):
             self.assertEqual(composed.inspection.duration_ms, 2_000)
             final_output = fixture_root / "composed.mp4"
             final_output.write_bytes(composed.bytes)
-            audio_durations_ms = runtime._probe_audio_stream_durations_ms(final_output)
+            with patch.dict(os.environ, {
+                "MEDIA_RUNTIME_FFMPEG_PATH": str(ffmpeg),
+                "MEDIA_RUNTIME_FFPROBE_PATH": str(ffprobe),
+            }, clear=False):
+                audio_durations_ms = runtime._probe_audio_stream_durations_ms(final_output)
             self.assertEqual(len(audio_durations_ms), 1)
             self.assertLessEqual(composed.inspection.duration_ms - audio_durations_ms[0], 100)
             probe = json.loads(subprocess.check_output([
@@ -3744,6 +3766,75 @@ class MediaRuntimeTests(unittest.TestCase):
             ], input=composed.bytes, stderr=subprocess.DEVNULL))
             audio_streams = [stream for stream in probe["streams"] if stream.get("codec_type") == "audio"]
             self.assertEqual(audio_streams, [{"codec_type": "audio", "codec_name": "aac"}])
+
+    def test_alchmed9_multisegment_music_replacement_normalizes_without_source_audio(self) -> None:
+        root = Path(__file__).resolve().parents[3]
+        ffmpeg, ffprobe = media_tool_paths(root)
+        with TemporaryDirectory(prefix="alchemy-alchmed9-multisegment-music-replacement-") as directory:
+            fixture_root = Path(directory)
+            source_videos = (fixture_root / "source-110.mp4", fixture_root / "source-220.mp4")
+            for video, frequency, size, fps in zip(
+                source_videos,
+                (110, 220),
+                ("160x90", "176x100"),
+                (25, 30),
+                strict=True,
+            ):
+                subprocess.run([
+                    str(ffmpeg), "-y", "-f", "lavfi", "-i", f"color=c=darkgreen:s={size}:r={fps}:d=1",
+                    "-f", "lavfi", "-i", f"sine=frequency={frequency}:sample_rate=48000:duration=1",
+                    "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-shortest", str(video),
+                ], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            music = fixture_root / "full-run-music.wav"
+            subprocess.run([
+                str(ffmpeg), "-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3",
+                "-c:a", "pcm_s16le", str(music),
+            ], check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            body = music_replacement_bundle(
+                source_videos[0].read_bytes(),
+                music.read_bytes(),
+                additional_videos=(source_videos[1].read_bytes(),),
+            )
+            segments, decoded = decode_composition_bundle_with_plan(body)
+            self.assertEqual(len(segments), 2)
+            self.assertEqual(decoded.audio_selection, "MUSIC_REPLACE_PROVIDER_AUDIO")
+
+            with (
+                patch.dict(os.environ, {
+                    "MEDIA_RUNTIME_FFMPEG_PATH": str(ffmpeg),
+                    "MEDIA_RUNTIME_FFPROBE_PATH": str(ffprobe),
+                }, clear=False),
+                patch.object(runtime, "_normalize_composition_clip", wraps=runtime._normalize_composition_clip) as normalize,
+            ):
+                composed = compose_video_bundle(body=body, expected_sha256=None)
+
+            self.assertEqual(normalize.call_count, 2, "heterogeneous source clips must exercise normalization")
+            self.assertEqual(
+                [call.kwargs["has_audio"] for call in normalize.call_args_list],
+                [False, False],
+                "explicit MUSIC replacement must exclude provider audio during source normalization",
+            )
+            pcm = subprocess.check_output([
+                str(ffmpeg), "-v", "error", "-i", "pipe:0", "-map", "0:a:0", "-ac", "1",
+                "-ar", "48000", "-f", "s16le", "pipe:1",
+            ], input=composed.bytes, stderr=subprocess.DEVNULL)
+            samples = array("h")
+            samples.frombytes(pcm)
+
+            def tone_amplitude(frequency: int) -> float:
+                start, end, sample_rate = 4_800, 86_400, 48_000
+                sine = cosine = 0.0
+                for index, sample in enumerate(samples[start:end]):
+                    angle = 2 * math.pi * frequency * index / sample_rate
+                    sine += sample * math.sin(angle)
+                    cosine += sample * math.cos(angle)
+                return math.hypot(sine, cosine) * 2 / (end - start) / 32_768
+
+            self.assertGreater(tone_amplitude(440), 0.01, "selected MUSIC must remain audible")
+            for frequency in (110, 220):
+                self.assertLess(tone_amplitude(frequency), 0.002, f"provider tone {frequency} Hz leaked into output")
+            self.assertEqual(composed.inspection.duration_ms, 2_000)
 
     def test_music_output_coverage_accepts_user_baseline_and_rejects_material_tail_gap(self) -> None:
         output = Path("final.mp4")

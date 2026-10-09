@@ -12,6 +12,32 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: alchemy_video_os
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: alchemy_video_os_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U alchemy_video_os -d alchemy_video_os_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://alchemy_video_os:ci-only@127.0.0.1:5432/alchemy_video_os_test
+      REDIS_URL: redis://127.0.0.1:6379/15
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -21,10 +47,18 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
+      - name: Install locked media runtime dependencies
+        run: uv sync --project services/media-runtime --locked --no-dev
       - name: Typecheck
         run: pnpm typecheck
+      - name: Migrate isolated integration database
+        run: pnpm --filter @alchemy-video/persistence db:migrate
       - name: Unit and contract tests
         run: pnpm test
       - name: Production dependency audit
@@ -32,6 +66,9 @@ jobs:
       - name: Python syntax check
         shell: bash
         run: python -m compileall -q services tools
+      - name: Media runtime tests with installed FFmpeg
+        working-directory: services/media-runtime
+        run: uv run --project . --locked python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Diff hygiene
         run: git diff --check
 
