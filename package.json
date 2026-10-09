@@ -9,7 +9,20 @@
       "brace-expansion@2": "2.1.7",
       "brace-expansion@5": "5.0.12",
       "svgo": "4.1.0",
-      "devalue": "5.9.2"
+      "devalue": "5.9.3",
+      "shell-quote": "1.11.0",
+      "seroval": "1.6.3",
+      "source-map-js": "1.2.2",
+      "vue": "3.5.42",
+      "@vue/compiler-core": "3.5.42",
+      "@vue/compiler-dom": "3.5.42",
+      "@vue/compiler-sfc": "3.5.42",
+      "@vue/compiler-ssr": "3.5.42",
+      "@vue/reactivity": "3.5.42",
+      "@vue/runtime-core": "3.5.42",
+      "@vue/runtime-dom": "3.5.42",
+      "@vue/server-renderer": "3.5.42",
+      "@vue/shared": "3.5.42"
     }
   },
   "engines": {
