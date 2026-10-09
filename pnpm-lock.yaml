@@ -188,6 +188,9 @@ importers:
       '@alchemy-video/credit-veyra':
         specifier: workspace:*
         version: link:../../packages/credit-veyra
+      '@alchemy-video/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@alchemy-video/persistence':
         specifier: workspace:*
         version: link:../../packages/persistence
@@ -207,9 +210,6 @@ importers:
         specifier: ^17.4.2
         version: 17.4.2
     devDependencies:
-      '@alchemy-video/domain':
-        specifier: workspace:*
-        version: link:../../packages/domain
       '@aws-sdk/client-s3':
         specifier: 3.750.0
         version: 3.750.0
