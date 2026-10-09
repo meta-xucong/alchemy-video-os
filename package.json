@@ -13,6 +13,7 @@
       "shell-quote": "1.11.0",
       "seroval": "1.6.3",
       "source-map-js": "1.2.2",
+      "nuxt@3.21.11>@nuxt/devtools": "-",
       "vue": "3.5.42",
       "@vue/compiler-core": "3.5.42",
       "@vue/compiler-dom": "3.5.42",

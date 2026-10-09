@@ -8,6 +8,9 @@ import { createS3StoragePort } from "../src/index.js";
 
 const requiredEnvironment = ["S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "S3_ACCESS_KEY", "S3_SECRET_KEY"] as const;
 const hasMinioConfiguration = requiredEnvironment.every((name) => process.env[name]);
+if (process.env.CI && !hasMinioConfiguration) {
+  throw new Error("CI must provide isolated MinIO configuration for the presigned upload integration test.");
+}
 
 test("MinIO presigned uploads allow a browser CORS PUT once and reject overwrites", { skip: !hasMinioConfiguration }, async () => {
   const endpoint = process.env.S3_ENDPOINT;

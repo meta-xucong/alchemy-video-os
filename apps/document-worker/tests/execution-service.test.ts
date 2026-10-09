@@ -26,7 +26,14 @@ const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest(
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const runtimeDirectory = join(projectRoot, "services", "document-runtime");
-const runtimePython = join(projectRoot, ".codex-longrun", "c10-document-runtime-venv", "Scripts", "python.exe");
+const runtimePython = process.env.DOCUMENT_RUNTIME_PYTHON ?? join(
+  runtimeDirectory,
+  ".venv",
+  process.platform === "win32" ? "Scripts/python.exe" : "bin/python",
+);
+if (process.env.CI && !existsSync(runtimePython)) {
+  throw new Error("CI must install the locked document runtime and set DOCUMENT_RUNTIME_PYTHON before running the loopback integration test.");
+}
 
 const waitForRuntime = async (
   endpoint: string,

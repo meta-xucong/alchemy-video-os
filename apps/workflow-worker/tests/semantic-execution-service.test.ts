@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { normalizeLocation, semanticValueHash } from "@alchemy-video/creative-planning/semantic-director";
 import {
+  hasExactEntityNameMention,
   semanticPromptPackageIntegrityPayload,
   type SemanticDialogueProjection,
   type SemanticDirectorDecision,
@@ -11,8 +12,18 @@ import {
 } from "@alchemy-video/contracts";
 import type { ControlCreativeBriefRevision, CreativePlanningDraft } from "@alchemy-video/persistence";
 import { createPrefixedId, fingerprintRequest } from "@alchemy-video/domain";
-import { createDatabase, DrizzleControlPlaneRepository, DrizzleCreativePlanningRepository } from "@alchemy-video/persistence";
-import { resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
+import {
+  createDatabase,
+  DrizzleAssetWorkspaceRepository,
+  DrizzleControlPlaneRepository,
+  DrizzleCreativePlanningRepository,
+  DrizzleProductionRepository,
+  DrizzleTaskRunRepository,
+} from "@alchemy-video/persistence";
+import { createMockMp4Fixture, MockVideoProvider, resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
+import { createInMemoryStoragePort } from "@alchemy-video/storage-client";
+import { MockVideoTaskExecutor } from "../../task-worker/src/execution-service.js";
+import { createTaskRunQueueMessage, TaskRunEventConsumer } from "../../task-worker/src/service.js";
 import {
   assets,
   canonicalVisualEntities,
@@ -25,6 +36,10 @@ import {
 import { SemanticPlanningExecutionError } from "../src/creative-planning-failure.js";
 import { SemanticDirectorCanonicalizationError } from "../src/semantic-director-canonicalizer.js";
 import { SemanticCreativePlanningExecutor } from "../src/semantic-execution-service.js";
+
+if (process.env.CI && !process.env.DATABASE_URL) {
+  throw new Error("CI must provide isolated PostgreSQL for the G02 planner-to-Worker integration test.");
+}
 
 const sourceText = "她走进旧式站台，说：“我回来了。”";
 const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
@@ -231,7 +246,7 @@ test("real semantic executor blocks when a source asset cannot be resolved canon
   );
 });
 
-test("G02 entity aliases become canonical prompt anchors before planning persistence", async () => {
+test("G02 alias-only frozen usage cannot persist a mapping to an existing canonical identity", async () => {
   const beatQuotes = [
     "G02_APPROVED_BEAT_1:面霜罐展示乳霜。",
     "G02_APPROVED_BEAT_2:North Factory内的窗外天际线。",
@@ -293,7 +308,11 @@ test("G02 entity aliases become canonical prompt anchors before planning persist
   ];
   const timeline = (first: string, second: string) => `【镜头1】0-3秒：${first}\n3-6秒：细节延续。\n【镜头2】6-9秒：${second}\n9-10秒：画面停留。`;
   const director = {
-    async decide() {
+    async decide(bundle) {
+      assert.equal(bundle.references.find((item) => item.asset_id === assetIds[1])?.user_declared_usage, usages[1],
+        "the planner receives the frozen alias-only usage unchanged");
+      assert.equal(bundle.visual_entities?.find((item) => item.entity_id === "cve_existing_north_factory")?.exact_name, "North Factory",
+        "the frozen project registry provides the existing canonical identity");
       return {
         execution_status: "READY" as const,
         entity_candidates: candidates,
@@ -306,7 +325,7 @@ test("G02 entity aliases become canonical prompt anchors before planning persist
       };
     },
   };
-  let captured: CreativePlanningDraft | undefined;
+  let persisted = false;
   const executor = new SemanticCreativePlanningExecutor({
     async resolveCanonicalReferenceSources() { return sourceReferences; },
     async resolveCanonicalVisualEntityContext() {
@@ -323,12 +342,7 @@ test("G02 entity aliases become canonical prompt anchors before planning persist
       }];
     },
     async completeCreativePlan(input) {
-      captured = input.draft;
-      const scenePackage = input.draft.promptPackages?.[1];
-      assert.ok(scenePackage);
-      assert.match(scenePackage!.prompt, /@North Factory/u, "the provider-facing package uses the frozen canonical anchor");
-      assert.doesNotMatch(scenePackage!.prompt, /@north  factory/u);
-      assert.equal(scenePackage!.semanticEntityCandidates?.find((candidate) => candidate.candidate_key === "entity-scene")?.exact_name, "north  factory", "the source candidate remains unchanged");
+      persisted = true;
       return { id: input.draft.storyboardRevisionId } as never;
     },
   }, director, {
@@ -338,13 +352,16 @@ test("G02 entity aliases become canonical prompt anchors before planning persist
     maxReferenceImages: 7,
   }, undefined, ((prefix) => `${prefix}_g02_alias`) as never);
 
-  const result = await executor.execute({
-    brief: g02Brief,
-    event: { eventId: "evt_g02_alias", messageId: "msg_g02_alias", traceId: "trc_g02_alias", correlationId: "cor_g02_alias" },
-  });
-  assert.ok(result);
-  assert.ok(captured);
-  assert.match(captured!.promptPackages?.[1]?.capabilitySnapshot.source_prompt as string, /@North Factory/u);
+  await assert.rejects(
+    () => executor.execute({
+      brief: g02Brief,
+      event: { eventId: "evt_g02_alias", messageId: "msg_g02_alias", traceId: "trc_g02_alias", correlationId: "cor_g02_alias" },
+    }),
+    (error) => error instanceof SemanticDirectorCanonicalizationError
+      && error.message.includes("reference usage")
+      && error.message.includes("canonical exact_name"),
+  );
+  assert.equal(persisted, false, "a noncanonical model candidate must fail before planning persistence");
 });
 
 test("G02 canonical reference-order failure occurs before any successful planning persistence", async () => {
@@ -487,7 +504,7 @@ test("real semantic executor rejects BLOCKED director output without a determini
   assert.equal(persisted, false);
 });
 
-test("G02 PostgreSQL preserves normalized identity aliases through executor and canonical PromptPackage persistence", { skip: !process.env.DATABASE_URL }, async () => {
+test("G02 PostgreSQL planning, active identity mapping, scheduler TaskRun, and Worker preflight stay connected", { skip: !process.env.DATABASE_URL }, async () => {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) return;
 
@@ -506,7 +523,12 @@ test("G02 PostgreSQL preserves normalized identity aliases through executor and 
     "G02_APPROVED_BEAT_3:女性在第三节拍自然使用产品。",
   ].join("\n");
   const sceneAlias = "north  factory";
-  const sceneUsage = "north  factory 单体场景参考图，用于该地点身份和画面用途。";
+  const aliasOnlySceneUsage = `${sceneAlias} standalone scene reference for place identity and visual purpose.`;
+  const sceneUsage = "North Factory（north  factory）单体场景参考图，用于该地点身份和画面用途。";
+  assert.equal(hasExactEntityNameMention(aliasOnlySceneUsage, sceneAlias), true);
+  assert.equal(hasExactEntityNameMention(aliasOnlySceneUsage, "North Factory"), false,
+    "alias-only frozen usage cannot satisfy the later scheduler's exact canonical-name preflight");
+  assert.equal(hasExactEntityNameMention(sceneUsage, "North Factory"), true);
   const jarUsage = "面霜罐单体参考图，用于该产品身份和画面用途。";
   const womanUsage = "女性单体参考图，用于该人物身份和画面用途。";
   const beatLines = sourceText.split("\n");
@@ -613,7 +635,9 @@ test("G02 PostgreSQL preserves normalized identity aliases through executor and 
       { candidate_key: "entity-woman", kind: "CHARACTER" as const, exact_name: "女性", source_evidence_refs: [bindings[2]!.beatQuote, womanUsage], reference_asset_ids: [bindings[2]!.assetId], role: "产品使用者", description: "自然状态的成年女性" },
     ];
     const director = {
-      async decide() {
+      async decide(bundle) {
+        assert.equal(bundle.references.find((item) => item.asset_id === bindings[1]!.assetId)?.user_declared_usage, sceneUsage,
+          "the planning executor passes frozen usage through unchanged; this positive path explicitly supplies the canonical name");
         return {
           execution_status: "READY" as const,
           entity_candidates: candidates,
@@ -692,6 +716,107 @@ test("G02 PostgreSQL preserves normalized identity aliases through executor and 
     }]);
     assert.equal(loaded.shotSpecs.find((shot) => shot.sequence === 2)?.sceneId, canonicalSceneId);
     assert.deepEqual(loaded.shotSpecs.find((shot) => shot.sequence === 2)?.referenceAnchors, ["@North Factory"]);
+
+    const approved = await planning.approveStoryboardRevision({
+      scope: `${scope}:approve`,
+      idempotencyKey: "approve",
+      requestHash: fingerprintRequest({ approved: storyboard.id }),
+      workspaceId,
+      storyboardRevisionId: storyboard.id,
+      event: {
+        eventId: createPrefixedId("evt"), messageId: createPrefixedId("msg"),
+        traceId: createPrefixedId("trc"), correlationId: createPrefixedId("cor"),
+      },
+    });
+    assert.equal(approved.kind, "NEW");
+    const productionRunId = createPrefixedId("prd");
+    const createdRun = await planning.createProductionRun({
+      scope: `${scope}:production-run`,
+      idempotencyKey: "production-run",
+      requestHash: fingerprintRequest({ storyboardRevisionId: storyboard.id }),
+      workspaceId,
+      projectId,
+      productionRunId,
+      storyboardRevisionId: storyboard.id,
+      musicPlan: { mode: "OFF" },
+      event: {
+        eventId: createPrefixedId("evt"), messageId: createPrefixedId("msg"),
+        traceId: createPrefixedId("trc"), correlationId: createPrefixedId("cor"),
+      },
+    });
+    assert.equal(createdRun.kind, "NEW");
+
+    const taskStore = new DrizzleTaskRunRepository(database.db);
+    const confirmation = (await taskStore.listWorkspaceEvents({ workspaceId, limit: 100 }))
+      .find((event) => event.event_type === "production_run.confirmed"
+        && event.data.production_run_id === productionRunId);
+    assert.ok(confirmation?.event_type === "production_run.confirmed");
+    if (!confirmation || confirmation.event_type !== "production_run.confirmed") {
+      throw new Error("The persisted production confirmation event is missing.");
+    }
+
+    const production = new DrizzleProductionRepository(database.db);
+    const scheduled = await production.initializeProductionRun({ event: confirmation, now: new Date() });
+    const firstSegment = scheduled?.segments.find((segment) => segment.sequence === 1);
+    assert.equal(scheduled?.productionRun.status, "GENERATING");
+    assert.equal(firstSegment?.status, "GENERATING", "the scheduler must create a TaskRun only after the active G02 mappings pass");
+
+    const scheduledQueueEvent = (await taskStore.listWorkspaceEvents({ workspaceId, limit: 100 }))
+      .find((event) => event.event_type === "task_run.queued"
+        && event.data.input_snapshot.generation_segment_sequence === 1);
+    assert.ok(scheduledQueueEvent?.event_type === "task_run.queued");
+    if (!scheduledQueueEvent || scheduledQueueEvent.event_type !== "task_run.queued") {
+      throw new Error("The scheduler did not persist a queued TaskRun for the first G02 segment.");
+    }
+    const taskRunId = scheduledQueueEvent.data.task_run_id;
+
+    const queuedOutbox = (await taskStore.claimOutboxEvents({
+      relayId: `${scope}:outbox-relay`,
+      now: new Date(),
+      leaseMs: 30_000,
+      limit: 20,
+      workspaceId,
+      eventTypes: ["task_run.queued"],
+    })).find((outbox) => outbox.event.event_type === "task_run.queued"
+      && outbox.event.data.task_run_id === taskRunId);
+    assert.ok(queuedOutbox);
+    if (!queuedOutbox) throw new Error("The scheduler did not persist a task_run.queued outbox event.");
+    const queueMessage = createTaskRunQueueMessage(queuedOutbox);
+    assert.ok(queueMessage);
+    if (!queueMessage) throw new Error("The persisted queue event did not produce a Worker message.");
+
+    const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+    const deliveredReferenceIds: string[][] = [];
+    const workerExecutor = new MockVideoTaskExecutor(taskStore, provider, createInMemoryStoragePort(), {
+      assetStore: new DrizzleAssetWorkspaceRepository(database.db),
+      referenceDelivery: {
+        async createVisualInput(input) {
+          const referenceIds = input.visualInput.references.map((reference) => reference.asset_id);
+          deliveredReferenceIds.push(referenceIds);
+          return { mode: "REFERENCE_SET", urls: referenceIds.map((assetId) => `https://provider-input.invalid/${assetId}`) };
+        },
+      },
+    });
+    const consumer = new TaskRunEventConsumer(taskStore, {
+      consumerName: `${scope}:task-consumer`,
+      workerId: `${scope}:worker`,
+      leaseMs: 30_000,
+    }, workerExecutor);
+    assert.equal(await consumer.process(queueMessage), "PROCESSED");
+    await taskStore.markOutboxPublished({
+      eventId: queuedOutbox.id,
+      workspaceId,
+      relayId: `${scope}:outbox-relay`,
+      now: new Date(),
+    });
+
+    const completedTask = await taskStore.findTaskRun(workspaceId, taskRunId);
+    assert.equal(completedTask?.status, "SUCCEEDED");
+    assert.equal(provider.submitCount, 1);
+    assert.equal(deliveredReferenceIds.length, 1);
+    assert.deepEqual(deliveredReferenceIds[0], completedTask?.inputSnapshot.reference_asset_ids);
+    assert.ok(completedTask?.inputSnapshot.semantic_entity_reference_projection_hash);
+    assert.ok(completedTask?.inputSnapshot.semantic_narrative_beat_lineage_hash);
   } finally {
     const { Client } = await import("pg");
     const client = new Client({ connectionString: databaseUrl });

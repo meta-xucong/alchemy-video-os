@@ -100,7 +100,12 @@ export const storageDiagnostic = (error: unknown): StorageDiagnostic => {
 
 const isMinioCorsNotImplemented = (error: unknown) => {
   const diagnostic = storageDiagnostic(error);
-  return diagnostic.name === "NotImplemented" && diagnostic.code === "NotImplemented" && diagnostic.httpStatusCode === 501;
+  const server = (error as { $response?: { headers?: { server?: unknown } } } | undefined)?.$response?.headers?.server;
+  const minioServerCorsIsExternal = diagnostic.httpStatusCode === 501
+    && typeof server === "string"
+    && server.toLowerCase() === "minio";
+  return (diagnostic.name === "NotImplemented" && diagnostic.code === "NotImplemented" && diagnostic.httpStatusCode === 501)
+    || minioServerCorsIsExternal;
 };
 
 export class StorageObjectAlreadyExistsError extends Error {
