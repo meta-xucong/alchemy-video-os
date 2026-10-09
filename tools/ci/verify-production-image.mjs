@@ -13,7 +13,7 @@ const verifiedWorkerModules = [];
 let verifiedMediaTools;
 
 async function verifyWorkspaceImports(packageJsonPath, packageName, dependencies) {
-  if (dependencies.length === 0) return;
+  if (dependencies.length === 0) return [];
   const probePath = path.join(
     path.dirname(packageJsonPath),
     `.runtime-dependency-probe-${process.pid}.mjs`,
@@ -46,6 +46,7 @@ async function verifyWorkspaceImports(packageJsonPath, packageName, dependencies
   try {
     const result = await import(pathToFileURL(probePath).href);
     resolvedWorkspaceDependencies.push(...result.resolutions);
+    return result.resolutions;
   } catch (error) {
     throw new Error(
       `Production ESM dependency verification failed for ${packageName}: ${error.message}`,
@@ -92,6 +93,35 @@ for (const workspaceRoot of workspaceRoots) {
     for (const dependency of dependencies) checkedDependencies.push(`${manifest.name}:${dependency}`);
   }
 }
+
+const studioPackageJsonPath = path.join(root, 'apps/studio-web/package.json');
+const studioManifest = JSON.parse(await readFile(studioPackageJsonPath, 'utf8'));
+const standaloneManifest = JSON.parse(
+  await readFile(path.join(root, 'apps/studio-web/.output/server/package.json'), 'utf8'),
+);
+const standaloneRuntimeDependencyVersions = standaloneManifest.dependencies ?? {};
+const standaloneRuntimeDependencies = Object.keys(standaloneRuntimeDependencyVersions);
+for (const dependency of standaloneRuntimeDependencies) {
+  assert.ok(
+    studioManifest.dependencies?.[dependency],
+    `Studio production dependencies must declare standalone runtime dependency ${dependency}`,
+  );
+}
+const standaloneResolutions = await verifyWorkspaceImports(
+  studioPackageJsonPath,
+  '@alchemy-video/studio-web .output/server',
+  standaloneRuntimeDependencies,
+);
+for (const resolution of standaloneResolutions) {
+  assert.equal(
+    resolution.version,
+    standaloneRuntimeDependencyVersions[resolution.name],
+    `Standalone Studio expects ${resolution.name}@${standaloneRuntimeDependencyVersions[resolution.name]}, resolved ${resolution.version}`,
+  );
+}
+checkedDependencies.push(
+  ...standaloneRuntimeDependencies.map((dependency) => `@alchemy-video/studio-web .output/server:${dependency}`),
+);
 
 assert.ok(checkedDependencies.length > 0, 'No workspace production dependencies were checked');
 

@@ -157,15 +157,66 @@ importers:
 
   apps/studio-web:
     dependencies:
+      '@babel/parser':
+        specifier: 7.29.8
+        version: 7.29.8
+      '@vue/compiler-core':
+        specifier: 3.5.42
+        version: 3.5.42
+      '@vue/compiler-dom':
+        specifier: 3.5.42
+        version: 3.5.42
+      '@vue/compiler-ssr':
+        specifier: 3.5.42
+        version: 3.5.42
+      '@vue/reactivity':
+        specifier: 3.5.42
+        version: 3.5.42
+      '@vue/runtime-core':
+        specifier: 3.5.42
+        version: 3.5.42
+      '@vue/runtime-dom':
+        specifier: 3.5.42
+        version: 3.5.42
+      '@vue/server-renderer':
+        specifier: 3.5.42
+        version: 3.5.42
+      '@vue/shared':
+        specifier: 3.5.42
+        version: 3.5.42
+      devalue:
+        specifier: 5.9.3
+        version: 5.9.3
+      entities:
+        specifier: 7.0.1
+        version: 7.0.1
+      estree-walker:
+        specifier: 2.0.2
+        version: 2.0.2
       h3:
         specifier: ^1.15.11
         version: 1.15.11
+      hookable:
+        specifier: 6.1.1
+        version: 6.1.1
       lucide-vue-next:
         specifier: ^0.511.0
         version: 0.511.0(vue@3.5.42(typescript@5.9.3))
+      source-map-js:
+        specifier: 1.2.2
+        version: 1.2.2
+      ufo:
+        specifier: 1.6.4
+        version: 1.6.4
+      unhead:
+        specifier: 2.1.17
+        version: 2.1.17
       vue:
         specifier: 3.5.42
         version: 3.5.42(typescript@5.9.3)
+      vue-bundle-renderer:
+        specifier: 2.3.2
+        version: 2.3.2
       vue-router:
         specifier: ^4.5.1
         version: 4.6.4(vue@3.5.42(typescript@5.9.3))
