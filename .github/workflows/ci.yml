@@ -59,22 +59,40 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.8"
+      - name: Build pinned MinIO test server
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/minio-bin"
+          GOBIN="$RUNNER_TEMP/minio-bin" go install github.com/minio/minio@RELEASE.2025-10-15T17-29-55Z
+          "$RUNNER_TEMP/minio-bin/minio" --version
       - name: Start isolated MinIO
         shell: bash
         run: |
-          docker run --detach --rm --name alchemy-video-os-ci-minio \
-            --publish 127.0.0.1:9000:9000 \
-            --env MINIO_ROOT_USER=ci-minio-user \
-            --env MINIO_ROOT_PASSWORD=ci-minio-password \
-            --env MINIO_API_CORS_ALLOW_ORIGIN=http://127.0.0.1:3031 \
-            quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z server /data --console-address :9001
+          mkdir -p "$RUNNER_TEMP/minio-data"
+          MINIO_ROOT_USER=ci-minio-user \
+          MINIO_ROOT_PASSWORD=ci-minio-password \
+          MINIO_API_CORS_ALLOW_ORIGIN=http://127.0.0.1:3031 \
+          MINIO_UPDATE=off \
+            nohup "$RUNNER_TEMP/minio-bin/minio" server \
+              --address 127.0.0.1:9000 \
+              --console-address 127.0.0.1:9001 \
+              "$RUNNER_TEMP/minio-data" \
+              > "$RUNNER_TEMP/minio.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/minio.pid"
           for attempt in {1..30}; do
             if curl --fail --silent --show-error http://127.0.0.1:9000/minio/health/live >/dev/null; then
               exit 0
             fi
+            if ! kill -0 "$(cat "$RUNNER_TEMP/minio.pid")" 2>/dev/null; then
+              cat "$RUNNER_TEMP/minio.log"
+              exit 1
+            fi
             sleep 2
           done
-          docker logs alchemy-video-os-ci-minio
+          cat "$RUNNER_TEMP/minio.log"
           exit 1
       - name: Install locked media runtime dependencies
         run: uv sync --project services/media-runtime --locked --no-dev
@@ -90,7 +108,11 @@ jobs:
         run: pnpm test
       - name: Stop isolated MinIO
         if: always()
-        run: docker rm --force alchemy-video-os-ci-minio || true
+        shell: bash
+        run: |
+          if [[ -f "$RUNNER_TEMP/minio.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/minio.pid")" 2>/dev/null || true
+          fi
 
   dependency-audit:
     runs-on: ubuntu-latest
@@ -112,9 +134,6 @@ jobs:
   media-runtime:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      MEDIA_RUNTIME_FFMPEG_PATH: /usr/bin/ffmpeg
-      MEDIA_RUNTIME_FFPROBE_PATH: /usr/bin/ffprobe
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -46,6 +46,8 @@ from runtime import (
 
 
 PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x02\x00\x00\x00\x03\x08\x02\x00\x00\x00\x12\x16\xf1M"
+TEST_FFMPEG_PATH = str(Path.cwd() / "test-ffmpeg")
+TEST_FFPROBE_PATH = str(Path.cwd() / "test-ffprobe")
 
 
 def media_tool_paths(
@@ -477,7 +479,7 @@ class MediaRuntimeTests(unittest.TestCase):
 
     def test_inspect_audio_reports_ffprobe_duration_and_hash(self) -> None:
         body = b"wav-fixture"
-        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": "C:\\tools\\ffprobe.exe"}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", return_value=json.dumps({"streams": [{"codec_type": "audio", "codec_name": "pcm_s16le", "duration": "1.25"}], "format": {"format_name": "wav", "duration": "1.25"}})):
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": TEST_FFPROBE_PATH}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", return_value=json.dumps({"streams": [{"codec_type": "audio", "codec_name": "pcm_s16le", "duration": "1.25"}], "format": {"format_name": "wav", "duration": "1.25"}})):
             result = inspect_audio_bytes(body=body, expected_sha256=hashlib.sha256(body).hexdigest())
         self.assertEqual(result.mime_type, "audio/wav")
         self.assertEqual(result.byte_size, len(body))
@@ -487,10 +489,10 @@ class MediaRuntimeTests(unittest.TestCase):
         body = b"audio-fixture"
         cases = (("mp3", "audio/mpeg"), ("mpeg", "audio/mpeg"), ("wav", "audio/wav"), ("ogg", "audio/ogg"), ("oga", "audio/ogg"))
         for format_name, expected_mime in cases:
-            with self.subTest(format_name=format_name), patch.dict(os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": "C:\\tools\\ffprobe.exe"}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", return_value=json.dumps({"streams": [{"codec_type": "audio", "codec_name": "source", "duration": "1.25"}], "format": {"format_name": format_name, "duration": "1.25"}})):
+            with self.subTest(format_name=format_name), patch.dict(os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": TEST_FFPROBE_PATH}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", return_value=json.dumps({"streams": [{"codec_type": "audio", "codec_name": "source", "duration": "1.25"}], "format": {"format_name": format_name, "duration": "1.25"}})):
                 result = inspect_audio_bytes(body=body, expected_sha256=hashlib.sha256(body).hexdigest())
             self.assertEqual(result.mime_type, expected_mime)
-        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": "C:\\tools\\ffprobe.exe"}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", return_value=json.dumps({"streams": [{"codec_type": "audio", "codec_name": "flac", "duration": "1.25"}], "format": {"format_name": "flac", "duration": "1.25"}})):
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": TEST_FFPROBE_PATH}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", return_value=json.dumps({"streams": [{"codec_type": "audio", "codec_name": "flac", "duration": "1.25"}], "format": {"format_name": "flac", "duration": "1.25"}})):
             with self.assertRaisesRegex(MediaRuntimeError, "could not be inspected"):
                 inspect_audio_bytes(body=body, expected_sha256=hashlib.sha256(body).hexdigest())
 
@@ -499,7 +501,7 @@ class MediaRuntimeTests(unittest.TestCase):
         cases = (("NaN", "1.25"), ("1.25", "Infinity"))
         for stream_duration, format_duration in cases:
             with self.subTest(stream_duration=stream_duration, format_duration=format_duration), patch.dict(
-                os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": "C:\\tools\\ffprobe.exe"}, clear=False
+                os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": TEST_FFPROBE_PATH}, clear=False
             ), patch("runtime.Path.is_file", return_value=True), patch(
                 "runtime._run",
                 return_value=json.dumps({
@@ -580,7 +582,7 @@ class MediaRuntimeTests(unittest.TestCase):
         self.assertEqual(command[command.index("--speaker") + 1], "0")
         self.assertEqual(command[command.index("--length-scale") + 1], "1.0")
         self.assertEqual(command[command.index("--sentence-silence") + 1], "0.3")
-        self.assertEqual(command[command.index("--output_file") + 1].split("\\")[-1], "narration.wav")
+        self.assertEqual(Path(command[command.index("--output_file") + 1]).name, "narration.wav")
 
     def test_synthesize_narration_rejects_nonzero_piper_exit(self) -> None:
         with TemporaryDirectory(prefix="alchemy-runtime-piper-exit-test-") as directory:
@@ -668,7 +670,8 @@ class MediaRuntimeTests(unittest.TestCase):
                 clear=False,
             ), patch("runtime.shutil.which", return_value="C:\\polluted-path\\piper.exe"), patch("runtime.subprocess.run", side_effect=fake_run):
                 command, _, _ = runtime._piper_runtime()
-            self.assertEqual(command[:2], [str(Path(runtime.sys.executable).resolve()), "-m"])
+            self.assertEqual(Path(command[0]).resolve(), Path(runtime.sys.executable).resolve())
+            self.assertEqual(command[1], "-m")
             self.assertEqual(command[2], "piper")
 
     def test_piper_runtime_rejects_path_only_executable_when_bound_interpreter_has_no_module(self) -> None:
@@ -732,7 +735,7 @@ class MediaRuntimeTests(unittest.TestCase):
 
         with patch("runtime.synthesize_narration_bytes", return_value=(b"full-wav", 2_000)) as synthesize, patch.dict(
             os.environ,
-            {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe"},
+            {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH},
             clear=False,
         ), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", side_effect=fake_run):
             audio, duration_ms = synthesize_narration_segments_bytes(
@@ -747,7 +750,7 @@ class MediaRuntimeTests(unittest.TestCase):
 
         with patch("runtime.synthesize_narration_bytes", return_value=(b"full-wav", 2_000)), patch.dict(
             os.environ,
-            {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe"},
+            {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH},
             clear=False,
         ), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", side_effect=fake_run):
             placed, placed_duration_ms = synthesize_narration_segments_bytes(
@@ -774,7 +777,7 @@ class MediaRuntimeTests(unittest.TestCase):
 
         with patch("runtime.synthesize_narration_bytes", side_effect=fake_synthesize), patch.dict(
             os.environ,
-            {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe"},
+            {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH},
             clear=False,
         ), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", side_effect=fake_run):
             _audio, duration_ms = synthesize_narration_segments_bytes(
@@ -1774,7 +1777,7 @@ class MediaRuntimeTests(unittest.TestCase):
             "audio_channels": 2,
             "audio_sample_rate": 48000,
         }
-        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe", "MEDIA_RUNTIME_FFPROBE_PATH": "C:\\tools\\ffprobe.exe"}, clear=False), \
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH, "MEDIA_RUNTIME_FFPROBE_PATH": TEST_FFPROBE_PATH}, clear=False), \
              patch("runtime.Path.is_file", return_value=True), \
              patch("runtime._probe_final_review_technical", return_value=technical), \
              patch("runtime._sample_review_frames", return_value=(4, False, [])), \
@@ -1825,7 +1828,7 @@ class MediaRuntimeTests(unittest.TestCase):
                 self.assertEqual(review["status"], "NEEDS_ATTENTION")
 
     def test_audio_review_marks_source_aligned_long_silence_for_review(self) -> None:
-        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe"}, clear=False), \
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH}, clear=False), \
              patch("runtime.Path.is_file", return_value=True), \
              patch("runtime._run_capture", return_value=(0, "silence_start: 22.8\\nsilence_end: 30.1 | silence_duration: 7.3\\n")):
             unexpected, issues = runtime._audio_review(
@@ -1837,7 +1840,7 @@ class MediaRuntimeTests(unittest.TestCase):
         self.assertTrue(any("静音" in issue for issue in issues))
 
     def test_audio_review_blocks_near_total_silence(self) -> None:
-        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe"}, clear=False), \
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH}, clear=False), \
              patch("runtime.Path.is_file", return_value=True), \
              patch("runtime._run_capture", return_value=(0, "silence_start: 0.0\\nsilence_end: 29.2 | silence_duration: 29.2\\n")):
             unexpected, issues = runtime._audio_review(
@@ -1849,7 +1852,7 @@ class MediaRuntimeTests(unittest.TestCase):
         self.assertTrue(any("大段异常静音" in issue for issue in issues))
 
     def test_audio_review_blocks_authoritative_narration_gap_over_one_second(self) -> None:
-        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe"}, clear=False), \
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH}, clear=False), \
              patch("runtime.Path.is_file", return_value=True), \
              patch("runtime._run_capture", return_value=(0, "silence_start: 12.0\\nsilence_end: 13.2 | silence_duration: 1.2\\n")):
             unexpected, issues = runtime._audio_review(
@@ -1882,7 +1885,7 @@ class MediaRuntimeTests(unittest.TestCase):
             "has_audio": True, "codec": "h264", "file_size_bytes": len(body), "issues": [],
             "audio_channels": 2, "audio_sample_rate": 48000,
         }
-        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe", "MEDIA_RUNTIME_FFPROBE_PATH": "C:\\tools\\ffprobe.exe"}, clear=False), \
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH, "MEDIA_RUNTIME_FFPROBE_PATH": TEST_FFPROBE_PATH}, clear=False), \
              patch("runtime.Path.is_file", return_value=True), \
              patch("runtime._probe_final_review_technical", return_value=technical), \
              patch("runtime._sample_review_frames", return_value=(4, False, [])), \
@@ -1900,7 +1903,7 @@ class MediaRuntimeTests(unittest.TestCase):
         technical = {"valid_container": True, "duration_seconds": 15.0, "resolution": "848x480", "fps": 24.0,
                      "has_audio": True, "codec": "h264", "file_size_bytes": len(body), "issues": [],
                      "audio_channels": 2, "audio_sample_rate": 48000}
-        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe"}, clear=False), \
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH}, clear=False), \
              patch("runtime._probe_final_review_technical", return_value=technical), \
              patch("runtime._sample_review_frames", return_value=(1, False, [])), \
              patch("runtime._audio_review", return_value=(True, ["音频存在大段异常静音。"])), \
@@ -2335,7 +2338,7 @@ class MediaRuntimeTests(unittest.TestCase):
             "audio_channels": 2, "audio_sample_rate": 48000,
         }
         transcript = {"status": "CHECKED", "word_timestamps": [{"word": "你好", "start": 0, "end": 1}], "issues": []}
-        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe", "MEDIA_RUNTIME_FFPROBE_PATH": "C:\\tools\\ffprobe.exe"}, clear=False), \
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH, "MEDIA_RUNTIME_FFPROBE_PATH": TEST_FFPROBE_PATH}, clear=False), \
              patch("runtime.Path.is_file", return_value=True), \
              patch("runtime._probe_final_review_technical", return_value=technical), \
              patch("runtime._sample_review_frames", return_value=(4, False, [])), \
@@ -2419,7 +2422,7 @@ class MediaRuntimeTests(unittest.TestCase):
                     Path(args[-1]).write_bytes(PNG)
                 return ""
 
-            with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe"}, clear=False), \
+            with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH}, clear=False), \
                  patch("runtime.Path.is_file", return_value=True), \
                  patch("runtime._run", side_effect=run), \
                  patch("runtime._run_capture", side_effect=lambda _binary, args, **_kwargs: (capture_calls.append(args) or (0, "black_start:0 black_duration:1.2"))):
@@ -2436,7 +2439,7 @@ class MediaRuntimeTests(unittest.TestCase):
         with TemporaryDirectory(prefix="alchemy-final-review-short-black-test-") as directory:
             path = Path(directory) / "sample.mp4"
             path.write_bytes(b"fixture")
-            with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe"}, clear=False), \
+            with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH}, clear=False), \
                  patch("runtime.Path.is_file", return_value=True), \
                  patch("runtime._run", side_effect=lambda _binary, args, **_kwargs: (Path(args[-1]).write_bytes(PNG) if args[-1].endswith(".png") else "") or ""), \
                  patch("runtime._run_capture", return_value=(0, "black_start:0 black_duration:0.7")):
@@ -2450,7 +2453,7 @@ class MediaRuntimeTests(unittest.TestCase):
         with TemporaryDirectory(prefix="alchemy-final-review-terminal-black-test-") as directory:
             path = Path(directory) / "sample.mp4"
             path.write_bytes(b"fixture")
-            with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe"}, clear=False), \
+            with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH}, clear=False), \
                  patch("runtime.Path.is_file", return_value=True), \
                  patch("runtime._run", side_effect=lambda _binary, args, **_kwargs: (Path(args[-1]).write_bytes(PNG) if args[-1].endswith(".png") else "") or ""), \
                  patch("runtime._run_capture", return_value=(0, "black_start:2.5 black_end:4.0 black_duration:1.5")):
@@ -2468,7 +2471,7 @@ class MediaRuntimeTests(unittest.TestCase):
                 if any("blackdetect" in value for value in args):
                     return "", "black_start:1.0 black_end:2.2 black_duration:1.2"
                 return "", ""
-            with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe"}, clear=False), \
+            with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH}, clear=False), \
                  patch("runtime.Path.is_file", return_value=True), \
                  patch("runtime._run", side_effect=lambda _binary, args, **_kwargs: (Path(args[-1]).write_bytes(PNG) if args[-1].endswith(".png") else "") or ""), \
                  patch("runtime._run_capture", side_effect=capture):
@@ -2492,7 +2495,7 @@ class MediaRuntimeTests(unittest.TestCase):
             json.dumps({"streams": [{"codec_type": "video", "width": 848, "height": 480, "duration": "2.0", "codec_name": "h264", "pix_fmt": "yuv420p", "r_frame_rate": "24/1"}], "format": {"duration": "2.0"}}),
             json.dumps({"streams": [{"codec_type": "audio", "codec_name": "aac", "channels": 2, "sample_rate": "48000"}]}),
         ])
-        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": "C:\\tools\\ffprobe.exe"}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", side_effect=lambda *args, **kwargs: next(responses)):
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": TEST_FFPROBE_PATH}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", side_effect=lambda *args, **kwargs: next(responses)):
             inspection = __import__("runtime").inspect_video_bytes(body=body, expected_sha256=hashlib.sha256(body).hexdigest())
         self.assertTrue(inspection.has_audio)
         self.assertEqual(inspection.audio_channels, 2)
@@ -2508,7 +2511,7 @@ class MediaRuntimeTests(unittest.TestCase):
             json.dumps({"streams": [{"codec_type": "video", "width": 848, "height": 480, "duration": "2.0"}], "format": {"duration": "2.0"}}),
             json.dumps({"streams": [{"codec_type": "audio", "channels": 2, "sample_rate": "48000"}]}),
         ])
-        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": "C:\\tools\\ffprobe.exe"}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", side_effect=lambda *args, **kwargs: next(responses)):
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": TEST_FFPROBE_PATH}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", side_effect=lambda *args, **kwargs: next(responses)):
             with self.assertRaisesRegex(MediaRuntimeError, "video audio could not be inspected") as raised:
                 __import__("runtime").inspect_video_bytes(body=body, expected_sha256=hashlib.sha256(body).hexdigest())
         self.assertEqual(raised.exception.code, "QC_FAILED")
@@ -2519,11 +2522,11 @@ class MediaRuntimeTests(unittest.TestCase):
             "format": {"duration": "2.0"},
         })
         audio_probe = json.dumps({"streams": []})
-        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": "C:\\tools\\ffprobe.exe"}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", side_effect=[video_probe, audio_probe]):
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": TEST_FFPROBE_PATH}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", side_effect=[video_probe, audio_probe]):
             inspection = runtime._inspect_path(Path("fixture.mp4"), 8, "0" * 64)
         self.assertEqual((inspection.width, inspection.height, inspection.duration_ms), (848, 480, 2_000))
         self.assertIsNone(inspection.fps)
-        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": "C:\\tools\\ffprobe.exe"}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", side_effect=[video_probe, audio_probe]):
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFPROBE_PATH": TEST_FFPROBE_PATH}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", side_effect=[video_probe, audio_probe]):
             with self.assertRaisesRegex(MediaRuntimeError, "video could not be inspected") as raised:
                 runtime._inspect_path(Path("fixture.mp4"), 8, "0" * 64, require_compatibility_facts=True)
         self.assertEqual(raised.exception.code, "QC_FAILED")
@@ -2796,7 +2799,7 @@ class MediaRuntimeTests(unittest.TestCase):
             return ""
 
         body = b"mock-mp4"
-        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe", "MEDIA_RUNTIME_FFPROBE_PATH": "C:\\tools\\ffprobe.exe"}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", side_effect=run_tool):
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH, "MEDIA_RUNTIME_FFPROBE_PATH": TEST_FFPROBE_PATH}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", side_effect=run_tool):
             result = extract_handoff_frame(body=body, expected_sha256=hashlib.sha256(body).hexdigest())
 
         self.assertEqual(result.mime_type, "image/png")
@@ -2818,7 +2821,7 @@ class MediaRuntimeTests(unittest.TestCase):
             return ""
 
         body = b"mock-mp4"
-        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": "C:\\tools\\ffmpeg.exe", "MEDIA_RUNTIME_FFPROBE_PATH": "C:\\tools\\ffprobe.exe"}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", side_effect=run_tool):
+        with patch.dict(os.environ, {"MEDIA_RUNTIME_FFMPEG_PATH": TEST_FFMPEG_PATH, "MEDIA_RUNTIME_FFPROBE_PATH": TEST_FFPROBE_PATH}, clear=False), patch("runtime.Path.is_file", return_value=True), patch("runtime._run", side_effect=run_tool):
             result = extract_boundary_frames(body=body, expected_sha256=hashlib.sha256(body).hexdigest())
 
         self.assertEqual(result.first.sha256, hashlib.sha256(PNG).hexdigest())
