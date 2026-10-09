@@ -11,12 +11,13 @@ const resolvedWorkspaceDependencies = [];
 const installedPackages = new Map();
 const verifiedWorkerModules = [];
 let verifiedMediaTools;
+let dependencyProbeSequence = 0;
 
 async function verifyWorkspaceImports(packageJsonPath, packageName, dependencies) {
   if (dependencies.length === 0) return [];
   const probePath = path.join(
     path.dirname(packageJsonPath),
-    `.runtime-dependency-probe-${process.pid}.mjs`,
+    `.runtime-dependency-probe-${process.pid}-${dependencyProbeSequence++}.mjs`,
   );
   const source = `
     import { lstat, realpath, readFile } from 'node:fs/promises';
@@ -35,6 +36,7 @@ async function verifyWorkspaceImports(packageJsonPath, packageName, dependencies
       );
       resolutions.push({
         workspace,
+        requestedName: dependency,
         name: installedManifest.name,
         version: installedManifest.version,
         entry: resolvedUrl,
@@ -94,30 +96,123 @@ for (const workspaceRoot of workspaceRoots) {
   }
 }
 
-const studioPackageJsonPath = path.join(root, 'apps/studio-web/package.json');
-const studioManifest = JSON.parse(await readFile(studioPackageJsonPath, 'utf8'));
-const standaloneManifest = JSON.parse(
-  await readFile(path.join(root, 'apps/studio-web/.output/server/package.json'), 'utf8'),
-);
+const standaloneOutputDirectory = path.join(root, 'apps/studio-web/.output/server');
+const standaloneManifestPath = path.join(standaloneOutputDirectory, 'package.json');
+const standaloneManifest = JSON.parse(await readFile(standaloneManifestPath, 'utf8'));
 const standaloneRuntimeDependencyVersions = standaloneManifest.dependencies ?? {};
 const standaloneRuntimeDependencies = Object.keys(standaloneRuntimeDependencyVersions);
+const standaloneNodeModulesDirectory = path.join(standaloneOutputDirectory, 'node_modules');
 for (const dependency of standaloneRuntimeDependencies) {
+  const dependencyDirectory = path.join(standaloneNodeModulesDirectory, dependency);
+  const dependencyRealPath = await realpath(dependencyDirectory);
+  const dependencyRelativePath = path.relative(
+    standaloneNodeModulesDirectory,
+    dependencyRealPath,
+  );
   assert.ok(
-    studioManifest.dependencies?.[dependency],
-    `Studio production dependencies must declare standalone runtime dependency ${dependency}`,
+    dependencyRelativePath !== '..' &&
+      !dependencyRelativePath.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(dependencyRelativePath),
+    `Standalone Studio dependency ${dependency} escapes its own node_modules tree`,
   );
-}
-const standaloneResolutions = await verifyWorkspaceImports(
-  studioPackageJsonPath,
-  '@alchemy-video/studio-web .output/server',
-  standaloneRuntimeDependencies,
-);
-for (const resolution of standaloneResolutions) {
+  const installedManifest = JSON.parse(
+    await readFile(path.join(dependencyRealPath, 'package.json'), 'utf8'),
+  );
   assert.equal(
-    resolution.version,
-    standaloneRuntimeDependencyVersions[resolution.name],
-    `Standalone Studio expects ${resolution.name}@${standaloneRuntimeDependencyVersions[resolution.name]}, resolved ${resolution.version}`,
+    installedManifest.version,
+    standaloneRuntimeDependencyVersions[dependency],
+    `Standalone Studio expects ${dependency}@${standaloneRuntimeDependencyVersions[dependency]}, found ${installedManifest.version}`,
   );
+  resolvedWorkspaceDependencies.push({
+    workspace: '@alchemy-video/studio-web .output/server',
+    requestedName: dependency,
+    name: installedManifest.name,
+    version: installedManifest.version,
+    entry: path.join(dependencyRealPath, 'package.json'),
+  });
+}
+
+const standaloneImportsByDirectory = new Map();
+const standaloneImportPattern =
+  /(?:\bfrom\s*|\bimport\s*(?:\(\s*)?|\brequire\s*\(\s*)['"]([^'"]+)['"]/g;
+const isStandalonePackageSpecifier = (specifier) =>
+  !(
+    specifier.startsWith('.') ||
+    specifier.startsWith('/') ||
+    specifier.startsWith('#') ||
+    /^(?:node|data|file):/.test(specifier)
+  );
+
+async function collectStandaloneImports(directory) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.name === 'node_modules') continue;
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      await collectStandaloneImports(entryPath);
+      continue;
+    }
+    if (!/\.(?:mjs|js|cjs)$/.test(entry.name)) continue;
+    const source = await readFile(entryPath, 'utf8');
+    const imports = standaloneImportsByDirectory.get(path.dirname(entryPath)) ?? new Set();
+    for (const match of source.matchAll(standaloneImportPattern)) {
+      if (isStandalonePackageSpecifier(match[1])) imports.add(match[1]);
+    }
+    if (imports.size > 0) standaloneImportsByDirectory.set(path.dirname(entryPath), imports);
+  }
+}
+
+await collectStandaloneImports(standaloneOutputDirectory);
+const standaloneDependencyNames = new Set(standaloneRuntimeDependencies);
+for (const [sourceDirectory, importSpecifiers] of standaloneImportsByDirectory) {
+  for (const specifier of importSpecifiers) {
+    const segments = specifier.split('/');
+    const packageName = specifier.startsWith('@')
+      ? segments.slice(0, 2).join('/')
+      : segments[0];
+    assert.ok(
+      standaloneDependencyNames.has(packageName),
+      `Standalone import ${specifier} is absent from its generated dependency manifest`,
+    );
+  }
+  const probePath = path.join(
+    sourceDirectory,
+    `.runtime-dependency-probe-${process.pid}-${dependencyProbeSequence++}.mjs`,
+  );
+  const probeSource = `
+    import assert from 'node:assert/strict';
+    import { lstat, realpath } from 'node:fs/promises';
+    import path from 'node:path';
+    import { fileURLToPath } from 'node:url';
+    const runtimeNodeModules = ${JSON.stringify(standaloneNodeModulesDirectory)};
+    for (const specifier of ${JSON.stringify([...importSpecifiers])}) {
+      const resolvedUrl = import.meta.resolve(specifier);
+      assert.ok(
+        resolvedUrl.startsWith('file:'),
+        'Standalone import did not resolve to a file: ' + specifier,
+      );
+      const resolvedPath = fileURLToPath(resolvedUrl);
+      await lstat(resolvedPath);
+      const realResolvedPath = await realpath(resolvedPath);
+      const relativePath = path.relative(runtimeNodeModules, realResolvedPath);
+      assert.ok(
+        relativePath !== '..' &&
+          !relativePath.startsWith('..' + path.sep) &&
+          !path.isAbsolute(relativePath),
+        'Standalone import ' + specifier + ' escaped its own node_modules tree to ' + realResolvedPath,
+      );
+    }
+  `;
+  await writeFile(probePath, probeSource, { flag: 'wx' });
+  try {
+    await import(pathToFileURL(probePath).href);
+  } catch (error) {
+    throw new Error(
+      `Standalone Studio emitted-import verification failed from ${sourceDirectory}: ${error.message}`,
+      { cause: error },
+    );
+  } finally {
+    await rm(probePath, { force: true });
+  }
 }
 checkedDependencies.push(
   ...standaloneRuntimeDependencies.map((dependency) => `@alchemy-video/studio-web .output/server:${dependency}`),

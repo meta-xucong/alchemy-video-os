@@ -13,12 +13,13 @@ FROM build AS production-dependencies
 
 ENV NODE_ENV=production
 
-# Remove build-stage links and pnpm's virtual store from the image layer before
-# recreating the production-only workspace tree. The pnpm package store lives
-# outside /app, so the locked install can reuse downloaded packages offline.
+# Remove only pnpm's workspace install roots and virtual store before
+# recreating the production-only workspace tree. Keep generated standalone
+# outputs such as Studio's .output/server/node_modules intact. The pnpm package
+# store lives outside /app, so the locked install can reuse packages offline.
 # Skip workspace hooks such as Studio's Nuxt prepare, then rebuild only the
 # provider-video ffmpeg binary required at runtime.
-RUN find /app -type d -name node_modules -prune -exec rm -rf {} + \
+RUN rm -rf /app/node_modules /app/apps/*/node_modules /app/packages/*/node_modules /app/tools/*/node_modules \
   && CI=true pnpm install --prod --offline --frozen-lockfile --ignore-scripts \
   && pnpm --filter @alchemy-video/provider-video rebuild ffmpeg-static
 
