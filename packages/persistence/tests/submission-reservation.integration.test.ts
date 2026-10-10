@@ -86,6 +86,6 @@ test("PostgreSQL submission reservation is exclusive and survives restart, failu
     await database.db.delete(workspaces).where(eq(workspaces.id, workspaceId));
     await database.db.delete(users).where(eq(users.id, userId));
     await database.db.delete(commandDeduplications).where(like(commandDeduplications.scope, `${scope}%`));
-    await database.pool.end();
+    await database.close();
   }
 });
