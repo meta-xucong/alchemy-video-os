@@ -16,6 +16,7 @@ import { assertTaskRunTransition, BILLING_RETRY_ERROR_CODES, createPrefixedId, f
 
 import type { PlatformDatabase } from "./db.js";
 import { releasedAssetScope } from "./asset-release.js";
+import { terminalProviderResultScope, unresolvedProviderRequestScope } from "./provider-attempt-recovery.js";
 import type { ControlAsset } from "./asset-workspace-repository.js";
 import {
   assets,
@@ -155,7 +156,7 @@ export interface TaskRunStore extends OutboxRelayStore {
   scheduleBillingRetry(input: { workspaceId: string; taskRunId: string; code: string; safeMessage: string; retryAt: Date; now: Date }): Promise<void>;
   resumeBillingRetry(input: { workspaceId: string; taskRunId: string; now: Date }): Promise<ControlTaskRun | undefined>;
   finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; code: string; message: string; now: Date }): Promise<ControlTaskRun | undefined>;
-  failTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId?: string; failureStage?: "PROVIDER" | "DOWNLOAD"; code: string; message: string; retryable: boolean; now: Date }): Promise<ControlTaskRun | undefined>;
+  failTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId?: string; failureStage?: "PROVIDER" | "DOWNLOAD"; providerRequestTerminal?: true; code: string; message: string; retryable: boolean; now: Date }): Promise<ControlTaskRun | undefined>;
   listWorkspaceEvents(input: { workspaceId: string; afterEventId?: string; limit: number }): Promise<InternalEventEnvelope[]>;
   processEvent(input: TaskRunEventProcessingInput): Promise<TaskRunEventResult>;
   releaseConsumerEvent(input: { eventId: string; workspaceId: string; consumerName: string; workerId: string; reason: string; deadLetter: boolean; now: Date }): Promise<void>;
@@ -319,7 +320,7 @@ const queuedSourceForTaskRun = async (executor: QueryExecutor, workspaceId: stri
     .find((parsed): parsed is { success: true; data: QueuedTaskRunEvent } => parsed.success && parsed.data.event_type === "task_run.queued")?.data;
 };
 
-const lockTaskRun = (executor: QueryExecutor, workspaceId: string, taskRunId: string) =>
+export const lockTaskRun = (executor: QueryExecutor, workspaceId: string, taskRunId: string) =>
   executor.execute(sql`select pg_advisory_xact_lock(hashtext(${workspaceId} || ':' || ${taskRunId}))`);
 
 const rawSha256 = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
@@ -632,10 +633,8 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
           isNull(providerAttempts.providerRequestId),
           sql`${providerAttempts.status} not in ('FAILED', 'DOWNLOAD_FAILED', 'ABANDONED')`,
         ));
-      // A terminal provider rejection such as "request not found" means the
-      // upstream task no longer exists. An explicit user retry must submit a
-      // fresh provider task; transient polling/download failures still retain
-      // the persisted request id for recovery without duplicate submission.
+      // Generic HTTP/local rejections do not prove that the request ended.
+      // Only this attempt's persisted terminal status permits regeneration.
       if (current.error?.code === "PROVIDER_REJECTED") {
         await transaction
           .update(providerAttempts)
@@ -643,8 +642,8 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
           .where(and(
             eq(providerAttempts.workspaceId, input.workspaceId),
             eq(providerAttempts.taskRunId, input.taskRunId),
-            isNotNull(providerAttempts.providerRequestId),
-            sql`${providerAttempts.status} not in ('SUCCEEDED', 'ABANDONED')`,
+            eq(providerAttempts.status, "FAILED"),
+            terminalProviderResultScope(),
           ));
       }
       const taskRun = toControlTaskRun(retried);
@@ -776,7 +775,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
           eq(providerAttempts.workspaceId, input.workspaceId),
           eq(providerAttempts.taskRunId, input.taskRunId),
           isNotNull(providerAttempts.providerRequestId),
-          sql`${providerAttempts.status} <> 'ABANDONED'`,
+          or(sql`${providerAttempts.status} <> 'ABANDONED'`, unresolvedProviderRequestScope()),
         ))
         .orderBy(sql`${providerAttempts.createdAt} desc`)
         .limit(1);
@@ -817,7 +816,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
         eq(providerAttempts.taskRunId, input.taskRunId),
         or(
           and(isNotNull(providerAttempts.submissionReservedAt), isNull(providerAttempts.providerRequestId)),
-          and(isNotNull(providerAttempts.providerRequestId), sql`${providerAttempts.status} <> 'ABANDONED'`),
+          and(isNotNull(providerAttempts.providerRequestId), or(sql`${providerAttempts.status} <> 'ABANDONED'`, unresolvedProviderRequestScope())),
         ),
       )).limit(1);
       if (boundary) return false;
@@ -1031,25 +1030,18 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
         return failedBilling ? toControlTaskRun(failedBilling) : undefined;
       }
       assertTaskRunTransition(current.status, "FAILED");
-      const [submittedAttempt] = await transaction
+      const [attempt] = await transaction
         .select({ id: providerAttempts.id, providerRequestId: providerAttempts.providerRequestId, submissionReservedAt: providerAttempts.submissionReservedAt })
         .from(providerAttempts)
         .where(and(
           eq(providerAttempts.workspaceId, input.workspaceId),
           eq(providerAttempts.taskRunId, input.taskRunId),
-          isNotNull(providerAttempts.providerRequestId),
         ))
-        .orderBy(sql`${providerAttempts.createdAt} desc`)
+        .orderBy(sql`case
+          when ${providerAttempts.submissionReservedAt} is not null and ${providerAttempts.providerRequestId} is null then 0
+          when ${unresolvedProviderRequestScope()} then 1
+          else 2 end`, sql`${providerAttempts.createdAt} desc`)
         .limit(1);
-      const [latestAttempt] = submittedAttempt
-        ? [undefined]
-        : await transaction
-          .select({ id: providerAttempts.id, providerRequestId: providerAttempts.providerRequestId, submissionReservedAt: providerAttempts.submissionReservedAt })
-          .from(providerAttempts)
-          .where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.taskRunId, input.taskRunId)))
-          .orderBy(sql`${providerAttempts.createdAt} desc`)
-          .limit(1);
-      const attempt = submittedAttempt ?? latestAttempt;
       const retryable = !(attempt?.submissionReservedAt && !attempt.providerRequestId);
       const message = retryable ? input.message : "The video submission outcome is unknown. Reconcile the existing request before retrying.";
       if (attempt) {
@@ -1086,7 +1078,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
     });
   }
 
-  async failTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId?: string; failureStage?: "PROVIDER" | "DOWNLOAD"; code: string; message: string; retryable: boolean; now: Date }) {
+  async failTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId?: string; failureStage?: "PROVIDER" | "DOWNLOAD"; providerRequestTerminal?: true; code: string; message: string; retryable: boolean; now: Date }) {
     return this.db.transaction(async (transaction) => {
       await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
       const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
@@ -1108,7 +1100,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
           .update(providerAttempts)
           .set({
             status: input.failureStage === "DOWNLOAD" && attempt?.providerRequestId ? "DOWNLOAD_FAILED" : "FAILED",
-            responsePayload: { code: input.code },
+            responsePayload: { code: input.code, ...(input.providerRequestTerminal === true && input.failureStage === "PROVIDER" && input.code === "PROVIDER_REJECTED" && !input.retryable && attempt?.providerRequestId ? { provider_request_terminal: true } : {}) },
             updatedAt: input.now.toISOString(),
           })
           .where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.id, input.providerAttemptId), eq(providerAttempts.taskRunId, input.taskRunId)));

@@ -409,6 +409,10 @@ ADR-0014 将本图确定为 TaskRun 迁移的唯一完整规则；根目录 `AGE
 
 适配器可以抛出内部 `VideoProviderFailure`，其字段为稳定应用错误 `code`、`retryable` 和阶段 `PROVIDER | DOWNLOAD`。查询也可用 `ProviderStatus.FAILED` 表达归一化失败：`429`、`503` 必须是 `PROVIDER_UNAVAILABLE/retryable=true`，拒绝是 `PROVIDER_REJECTED/retryable=false`。Worker 必须按该类型和状态保留拒绝、暂不可用和下载无效的语义，且只把安全摘要写入 TaskRun；不得泄露 Provider payload、对象 key、签名 URL 或凭据。结构非法继续使用 `VideoProviderProtocolError`：提交/查询阶段映射 `PROVIDER_PROTOCOL_INVALID`，下载阶段映射 `DOWNLOAD_INVALID`。本边界不改变任何 `/api/v1` 请求、响应或公开事件 schema。
 
+已知请求 ID 的显式重试补充约束（2026-10-10）：`PROVIDER_REJECTED` 仅描述本地归一化错误，不能证明远端任务已终止。HTTP 401/403/404、配置不匹配和历史未分类失败均不得据此放弃已知请求 ID 并再次 POST。仅当成功的状态响应通过既有 SUB2API `rejectedStates` 分类（`failed/error/rejected/cancelled/canceled`），或受控 Mock 明确报告等价终态时，内部失败状态可附带显式终态证据，并由 Worker 写入对应 Attempt 的私有 `responsePayload`。普通错误消息、HTTP 状态码或未经分类的原始 payload 不能自行声明该证据。任务重试与制作段重新生成必须对同一 Attempt 的可信终态证据核验；缺少证据时保留已知 ID 的查询/下载恢复能力，禁止新的生成请求。未知提交预留规则不变。此证据不新增数据库列、公开 DTO、事件字段或上游参数；属于现有端口错误分类和持久化防重边界的最小收紧。
+
+上述规则不取消既有“生成已成功并持久化结果，后续媒体/QC 失败”的显式重新生成契约。该分支必须以成功的 TaskRun、对应成功 Attempt 和已持久化结果资产为依据，不能仅用前端/事件中的 retryable 标记或笼统错误码代替；仍未核实的已知请求与未知提交不得混入该例外。
+
 ## 4. HTTP 资源契约
 
 以下均以 `/api/v1` 为前缀。第一版会生成 `contracts/openapi.yaml`，Zod 定义是唯一源码，OpenAPI 由它导出。

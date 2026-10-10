@@ -1225,12 +1225,66 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
       workspaceId, productionRunId: failedRunId, sequence: 1, event: eventMetadata(),
     });
     assert.equal(blockedLateIdRetry.kind, "STATE_INVALID", "a late ID does not authorize fresh generation; ordinary task retry resumes polling");
+    await database.db.update(productionSegments).set({ retryable: true })
+      .where(and(eq(productionSegments.workspaceId, workspaceId), eq(productionSegments.id, failedSegment.id)));
+    for (const status of ["FAILED", "ABANDONED"] as const) {
+      await database.db.update(providerAttempts).set({ status, responsePayload: { code: "PROVIDER_REJECTED", provider_request_terminal: "true" } })
+        .where(and(eq(providerAttempts.workspaceId, workspaceId), eq(providerAttempts.id, uncertainAttemptId)));
+      const staleFlagRetry = await production.retryProductionSegment({
+        scope: `${scope}:retry-segment`, idempotencyKey: `retry-unproven-${status}`, requestHash: fingerprintRequest({}),
+        workspaceId, productionRunId: failedRunId, sequence: 1, event: eventMetadata(),
+      });
+      assert.equal(staleFlagRetry.kind, "STATE_INVALID", "stale segment flags and unproven ABANDONED rows cannot authorize another POST");
+    }
     // Continue the existing fresh-generation fixture only after an explicit
     // terminal Provider rejection, not merely after learning a late request ID.
     await database.db.update(taskRuns).set({ status: "FAILED", error: { code: "PROVIDER_REJECTED", message: "Synthetic terminal rejection.", retryable: false } })
       .where(and(eq(taskRuns.workspaceId, workspaceId), eq(taskRuns.id, failedSegment.taskRunId!)));
+    await database.db.update(providerAttempts).set({ status: "FAILED", responsePayload: { code: "PROVIDER_REJECTED", provider_request_terminal: true } })
+      .where(and(eq(providerAttempts.workspaceId, workspaceId), eq(providerAttempts.id, uncertainAttemptId)));
     await database.db.update(productionSegments).set({ retryable: true })
       .where(and(eq(productionSegments.workspaceId, workspaceId), eq(productionSegments.id, failedSegment.id)));
+    for (const status of ["QUEUED", "RUNNING"] as const) {
+      await database.db.update(taskRuns).set({ status }).where(eq(taskRuns.id, failedSegment.taskRunId!));
+      const alreadyActive = await production.retryProductionSegment({
+        scope: `${scope}:retry-segment`, idempotencyKey: `retry-active-${status}`, requestHash: fingerprintRequest({}),
+        workspaceId, productionRunId: failedRunId, sequence: 1, event: eventMetadata(),
+      });
+      assert.equal(alreadyActive.kind, "STATE_INVALID");
+    }
+    await database.db.update(taskRuns).set({ status: "FAILED" }).where(eq(taskRuns.id, failedSegment.taskRunId!));
+
+    // Hold the exact lock used by ordinary TaskRun retry while its QUEUED
+    // transition is uncommitted. Segment retry must wait, then see QUEUED.
+    const { Client } = await import("pg");
+    const retryTransaction = new Client({ connectionString: databaseUrl });
+    await retryTransaction.connect();
+    let concurrentSegmentRetry: ReturnType<typeof production.retryProductionSegment> | undefined;
+    try {
+      await retryTransaction.query("BEGIN");
+      const lockKey = `${workspaceId}:${failedSegment.taskRunId}`;
+      await retryTransaction.query("SELECT pg_advisory_xact_lock(hashtext($1))", [lockKey]);
+      await retryTransaction.query("UPDATE task_runs SET status = 'QUEUED' WHERE workspace_id = $1 AND id = $2", [workspaceId, failedSegment.taskRunId]);
+      concurrentSegmentRetry = production.retryProductionSegment({
+        scope: `${scope}:retry-segment`, idempotencyKey: "retry-concurrent-task", requestHash: fingerprintRequest({}),
+        workspaceId, productionRunId: failedRunId, sequence: 1, event: eventMetadata(),
+      });
+      let waiting = false;
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        const locks = await retryTransaction.query("SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid::bigint = (hashtext($1)::bigint & 4294967295)", [lockKey]);
+        if (locks.rowCount) { waiting = true; break; }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(waiting, true, "segment retry must contend on the same TaskRun advisory lock");
+      await retryTransaction.query("COMMIT");
+      assert.equal((await concurrentSegmentRetry).kind, "STATE_INVALID");
+    } finally {
+      await retryTransaction.query("ROLLBACK");
+      await retryTransaction.end();
+      await concurrentSegmentRetry;
+    }
+    await database.db.update(taskRuns).set({ status: "FAILED" }).where(eq(taskRuns.id, failedSegment.taskRunId!));
     const retried = await production.retryProductionSegment({
       scope: `${scope}:retry-segment`,
       idempotencyKey: "retry-first-segment",
@@ -1314,11 +1368,33 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     assert.equal(reconciledRun?.status, "GENERATING");
     assert.equal(reconciledSegment?.status, "CHECKING");
     assert.equal(reconciledSegment?.retryable, false);
-    assert.ok(await readEvent(database.db, {
+    const legacyQcEvent = await readEvent(database.db, {
       workspaceId,
       eventType: "production_segment.qc_requested",
       predicate: (event) => event.event_type === "production_segment.qc_requested" && event.data.task_run_id === legacySegment.taskRunId,
-    }));
+    });
+    assert.ok(legacyQcEvent);
+    const completedAttemptId = createPrefixedId("att");
+    await database.db.insert(providerAttempts).values({
+      id: completedAttemptId, workspaceId, taskRunId: legacySegment.taskRunId!, provider: "mock", model: "mock-video-v1",
+      status: "SUCCEEDED", providerRequestId: `completed-${completedAttemptId}`,
+    });
+    await database.db.update(assets).set({ metadata: { fixture: "c12", task_run_id: legacySegment.taskRunId } }).where(eq(assets.id, legacyAssetId));
+    await production.failMediaRuntimeEvent({ eventId: legacyQcEvent.event_id, workspaceId, errorCode: "QC_FAILED", retryable: true, now: new Date() });
+    const retryCompleted = (idempotencyKey: string) => production.retryProductionSegment({
+      scope: `${scope}:retry-completed-segment`, idempotencyKey, requestHash: fingerprintRequest({}),
+      workspaceId, productionRunId: legacyRunId, sequence: 1, event: eventMetadata(),
+    });
+    await database.db.update(assets).set({ status: "PENDING_UPLOAD" }).where(eq(assets.id, legacyAssetId));
+    assert.equal((await retryCompleted("unverified-result")).kind, "STATE_INVALID");
+    await database.db.update(assets).set({ status: "READY" }).where(eq(assets.id, legacyAssetId));
+    await database.db.update(taskRuns).set({ status: "BILLING_PENDING", resultAssetId: null }).where(eq(taskRuns.id, legacySegment.taskRunId!));
+    assert.equal((await retryCompleted("unpaid-result")).kind, "STATE_INVALID");
+    await database.db.update(taskRuns).set({ status: "SUCCEEDED", resultAssetId: legacyAssetId }).where(eq(taskRuns.id, legacySegment.taskRunId!));
+    await database.db.update(providerAttempts).set({ status: "PROCESSING" }).where(eq(providerAttempts.id, completedAttemptId));
+    assert.equal((await retryCompleted("unresolved-attempt")).kind, "STATE_INVALID");
+    await database.db.update(providerAttempts).set({ status: "SUCCEEDED" }).where(eq(providerAttempts.id, completedAttemptId));
+    assert.equal((await retryCompleted("completed-media-retry")).kind, "NEW", "verified successful video may be explicitly regenerated after recoverable QC failure");
   } finally {
     const { Client } = await import("pg");
     const client = new Client({ connectionString: databaseUrl });

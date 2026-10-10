@@ -24,7 +24,7 @@ export type ProviderFailureCode = Extract<
 export type ProviderStatus =
   | { state: "PROCESSING" }
   | { state: "SUCCEEDED" }
-  | { state: "FAILED"; code: ProviderFailureCode; message: string; retryable: boolean };
+  | { state: "FAILED"; code: ProviderFailureCode; message: string; retryable: boolean; providerRequestTerminal?: true };
 
 export type VideoProviderFailureStage = "PROVIDER" | "DOWNLOAD";
 

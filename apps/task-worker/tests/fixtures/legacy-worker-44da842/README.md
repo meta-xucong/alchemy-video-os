@@ -21,12 +21,20 @@ their original PostgreSQL errors before the old executor normalizes them.
 No Worker algorithm, SQL statement, or state transition is reimplemented here.
 
 The integration cases create and drop their own randomly named databases on a
-loopback PostgreSQL 16 server from `DATABASE_URL` (the role needs `CREATEDB`).
+loopback PostgreSQL 16 server from `LEGACY_FENCE_TEST_DATABASE_URL` (the role
+needs `CREATEDB`). Both legacy fence suites validate the dedicated URL before
+constructing a client: the authority and every `host`/`hostaddr` override must
+be exactly `127.0.0.1`. There is no fallback to the generic `DATABASE_URL`.
 They apply the repository's actual migrations through 0027 before applying 0028.
 They never rename columns in the shared integration database. Without
-`DATABASE_URL`, only the fixture-integrity test runs and integration cases are
+`LEGACY_FENCE_TEST_DATABASE_URL`, only the non-database tests run and integration cases are
 explicitly skipped. No Git history, GitHub access, Redis, media files, or real
 Provider credentials are needed at test runtime.
+
+The fixture directory has an explicit `text eol=lf` Git attribute. This preserves
+the original bytes with Windows `core.autocrlf=true`; the integrity assertion
+still hashes raw bytes without newline normalization. A separate Git checkout
+regression verifies the attribute and rejects altered bytes.
 
 Queue coverage invokes the original persisted event consumer and duplicate
 delivery path. It does not claim to exercise the BullMQ transport or scheduling.

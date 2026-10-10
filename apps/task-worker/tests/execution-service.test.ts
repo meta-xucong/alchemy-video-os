@@ -957,13 +957,12 @@ test("C07 rejected submit is preserved as non-retryable PROVIDER_REJECTED by C06
   assert.deepEqual(transport.requests.map((request) => request.method), ["POST"]);
 });
 
-test("C09 explicit retry after a missing provider task creates a fresh provider attempt", async () => {
+test("C09 explicit retry after HTTP 404 retains the known request until status can be recovered", async () => {
   const { store, workspaceId, taskRunId } = await prepareTask();
   const fixture = await createMockMp4Fixture();
   const transport = new C07FakeTransport([
     { status: 202, json: { id: "req_c09_missing" } },
     { status: 404, json: { message: "Video request not found" } },
-    { status: 202, json: { id: "req_c09_fresh" } },
     { status: 200, json: { status: "succeeded" } },
     { status: 200, headers: { "content-type": "video/mp4", "content-length": String(fixture.byteLength) }, stream: streamFromBytes(fixture) },
   ]);
@@ -997,11 +996,11 @@ test("C09 explicit retry after a missing provider task creates a fresh provider 
   });
   const succeeded = await executor.execute({ workspaceId, taskRunId });
   assert.equal(succeeded?.status, "SUCCEEDED");
-  assert.equal(transport.requests.filter((request) => request.method === "POST").length, 2);
+  assert.equal(transport.requests.filter((request) => request.method === "POST").length, 1);
   const attempts = await store.listTaskRunAttempts(workspaceId, taskRunId);
-  assert.equal(attempts.length, 2);
-  assert.equal(attempts[0]?.status, "ABANDONED");
-  assert.equal(attempts[1]?.providerRequestId, "req_c09_fresh");
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0]?.status, "SUCCEEDED");
+  assert.equal(attempts[0]?.providerRequestId, "req_c09_missing");
 });
 
 test("C07 temporary polling 429 and 503 stay processing and recover without resubmission", async () => {

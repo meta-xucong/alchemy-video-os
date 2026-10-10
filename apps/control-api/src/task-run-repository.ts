@@ -7,7 +7,7 @@ import {
 } from "@alchemy-video/contracts";
 import { assertTaskRunTransition, createPrefixedId, fingerprintRequest, isBillingRetryErrorCode } from "@alchemy-video/domain";
 import { VideoGenerationInputSnapshotSchema } from "@alchemy-video/contracts";
-import { isAssetReleased } from "@alchemy-video/persistence";
+import { hasTerminalProviderResult, isAssetReleased } from "@alchemy-video/persistence";
 import type {
   AssetWorkspaceStore,
   ControlAsset,
@@ -195,7 +195,7 @@ export class InMemoryTaskRunStore implements TaskRunStore {
       if (attempt.taskRunId === retried.id && !attempt.providerRequestId && !["FAILED", "DOWNLOAD_FAILED", "ABANDONED"].includes(attempt.status)) {
         this.attempts.set(attemptId, { ...attempt, status: "ABANDONED", updatedAt: now });
       }
-      if (attempt.taskRunId === retried.id && current.error?.code === "PROVIDER_REJECTED" && attempt.providerRequestId && !["SUCCEEDED", "ABANDONED"].includes(attempt.status)) {
+      if (attempt.taskRunId === retried.id && current.error?.code === "PROVIDER_REJECTED" && attempt.status === "FAILED" && hasTerminalProviderResult(attempt)) {
         this.attempts.set(attemptId, { ...attempt, status: "ABANDONED", updatedAt: now });
       }
     }
@@ -264,7 +264,7 @@ export class InMemoryTaskRunStore implements TaskRunStore {
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     // A persisted Provider request is a durable submit boundary. Prefer it over
     // any later unsubmitted row, which may have been left by an interrupted run.
-    const submitted = [...attempts].reverse().find((attempt) => Boolean(attempt.providerRequestId) && attempt.status !== "ABANDONED");
+    const submitted = [...attempts].reverse().find((attempt) => Boolean(attempt.providerRequestId) && (attempt.status !== "ABANDONED" || !hasTerminalProviderResult(attempt)));
     if (submitted) return submitted;
     const uncertainSubmission = attempts.find((attempt) => attempt.submissionReservedAt && !attempt.providerRequestId);
     if (uncertainSubmission) return uncertainSubmission;
@@ -281,7 +281,7 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     if (!current || current.workspaceId !== input.workspaceId || current.status !== "RUNNING") return false;
     const attempts = [...this.attempts.values()].filter((attempt) => attempt.taskRunId === current.id);
     if (attempts.some((attempt) => attempt.submissionReservedAt && !attempt.providerRequestId
-      || attempt.providerRequestId && attempt.status !== "ABANDONED")) return false;
+      || attempt.providerRequestId && (attempt.status !== "ABANDONED" || !hasTerminalProviderResult(attempt)))) return false;
     const attempt = this.attempts.get(input.providerAttemptId);
     if (!attempt || attempt.taskRunId !== current.id || attempt.status !== "CREATED" || attempt.providerRequestId || attempt.submissionReservedAt) return false;
     this.attempts.set(attempt.id, { ...attempt, submissionReservedAt: input.now.toISOString(), updatedAt: input.now.toISOString() });
@@ -437,7 +437,9 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     assertTaskRunTransition(current.status, "FAILED");
     const now = input.now.toISOString();
     const attempts = await this.listTaskRunAttempts(input.workspaceId, input.taskRunId);
-    const attempt = [...attempts].reverse().find((item) => Boolean(item.providerRequestId)) ?? attempts.at(-1);
+    const attempt = [...attempts].reverse().find((item) => item.submissionReservedAt && !item.providerRequestId)
+      ?? [...attempts].reverse().find((item) => item.providerRequestId && !hasTerminalProviderResult(item))
+      ?? attempts.at(-1);
     const retryable = !(attempt?.submissionReservedAt && !attempt.providerRequestId);
     const message = retryable ? input.message : "The video submission outcome is unknown. Reconcile the existing request before retrying.";
     if (attempt) {
@@ -456,7 +458,7 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     return failed;
   }
 
-  async failTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId?: string; failureStage?: "PROVIDER" | "DOWNLOAD"; code: string; message: string; retryable: boolean; now: Date }) {
+  async failTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId?: string; failureStage?: "PROVIDER" | "DOWNLOAD"; providerRequestTerminal?: true; code: string; message: string; retryable: boolean; now: Date }) {
     const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
     if (!current || current.status === "SUCCEEDED" || current.status === "FAILED") return current;
     assertTaskRunTransition(current.status, "FAILED");
@@ -467,7 +469,7 @@ export class InMemoryTaskRunStore implements TaskRunStore {
         this.attempts.set(attempt.id, {
           ...attempt,
           status: input.failureStage === "DOWNLOAD" && attempt.providerRequestId ? "DOWNLOAD_FAILED" : "FAILED",
-          responsePayload: { code: input.code },
+          responsePayload: { code: input.code, ...(input.providerRequestTerminal === true && input.failureStage === "PROVIDER" && input.code === "PROVIDER_REJECTED" && !input.retryable && attempt.providerRequestId ? { provider_request_terminal: true } : {}) },
           updatedAt: now,
         });
       }

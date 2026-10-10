@@ -10,6 +10,7 @@ import { Pool } from "pg";
 import { createPrefixedId, fingerprintRequest } from "@alchemy-video/domain";
 import type { VideoGenerationInput, VideoProviderPort } from "@alchemy-video/provider-video";
 import type { StoragePort } from "@alchemy-video/storage-client";
+import { assertLoopbackTestDatabaseUrl } from "../../../packages/persistence/tests/helpers/legacy-fence-test-database.js";
 
 import { MockVideoTaskExecutor as LegacyExecutor } from "./fixtures/legacy-worker-44da842/apps/task-worker/src/execution-service.js";
 import { createTaskRunQueueMessage, recoverC06TaskRuns, TaskRunEventConsumer as LegacyConsumer } from "./fixtures/legacy-worker-44da842/apps/task-worker/src/service.js";
@@ -21,6 +22,7 @@ const fixtureRoot = new URL("./fixtures/legacy-worker-44da842/", import.meta.url
 const migrationsRoot = new URL("../../../packages/persistence/drizzle/", import.meta.url);
 const legacyCommit = "44da8428d2c1b73648eb1616cd0350dac798eba8";
 const fenceMigration = "0028_fence_legacy_task_workers.sql";
+const databaseUrl = process.env.LEGACY_FENCE_TEST_DATABASE_URL;
 
 test("pinned legacy Worker fixtures match their original commit and SHA-256 manifest", async () => {
   const manifest = JSON.parse(await readFile(new URL("manifest.json", fixtureRoot), "utf8")) as {
@@ -62,8 +64,8 @@ const applyMigration = async (pool: Pool, filename: string) => {
 };
 
 const createIsolatedDatabase = async () => {
-  const connection = new URL(process.env.DATABASE_URL!);
-  assert.ok(["localhost", "127.0.0.1", "[::1]"].includes(connection.hostname), "Legacy regression requires a loopback-only test PostgreSQL server.");
+  assert.ok(databaseUrl);
+  const connection = new URL(assertLoopbackTestDatabaseUrl(databaseUrl));
   const admin = new Pool({ connectionString: connection.toString(), max: 1 });
   const databaseName = `legacy_worker_fence_${randomUUID().replaceAll("-", "")}`;
   let pool: Pool | undefined;
@@ -219,7 +221,7 @@ const forbiddenStorage = new Proxy({} as StoragePort, {
   get() { return () => assert.fail("Fenced old Worker must not reach storage."); },
 });
 const retryableExecutionError = { name: "RetryableTaskExecutionError", message: "The video execution could not complete." };
-const integrationOptions = { skip: !process.env.DATABASE_URL, timeout: 60_000 };
+const integrationOptions = { skip: !databaseUrl, timeout: 60_000 };
 
 test("0028 rejects the pinned old Worker before video POST; duplicate delivery and recovery stay fenced", integrationOptions, async (t) => {
   const database = await createIsolatedDatabase();

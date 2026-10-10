@@ -10,38 +10,10 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client } from "pg";
 
 import { providerAttempts } from "../src/schema.js";
+import { assertLoopbackTestDatabaseUrl } from "./helpers/legacy-fence-test-database.js";
 
 const migrationsFolder = resolve(import.meta.dirname, "..", "drizzle");
 const databaseUrl = process.env.LEGACY_FENCE_TEST_DATABASE_URL;
-
-const assertLoopbackTestDatabaseUrl = (connectionString: string) => {
-  // pg-connection-string rewrites URLs containing literal spaces before parsing;
-  // reject them so this guard and the driver's effective host cannot diverge.
-  if (/\s/.test(connectionString)) {
-    throw new Error("LEGACY_FENCE_TEST_DATABASE_URL must not contain literal whitespace.");
-  }
-  let connection: URL;
-  try {
-    connection = new URL(connectionString);
-  } catch {
-    throw new Error("LEGACY_FENCE_TEST_DATABASE_URL must be a PostgreSQL URL for a loopback test server.");
-  }
-  if (connection.protocol !== "postgres:" && connection.protocol !== "postgresql:") {
-    throw new Error("LEGACY_FENCE_TEST_DATABASE_URL must use the PostgreSQL URL scheme.");
-  }
-  // Accept one exact IPv4 loopback literal. Do not normalize host strings:
-  // the PostgreSQL driver must receive the exact value that this guard checked.
-  const loopbackHosts = new Set(["127.0.0.1"]);
-  const hosts = [
-    connection.hostname,
-    ...connection.searchParams.getAll("host"),
-    ...connection.searchParams.getAll("hostaddr"),
-  ];
-  if (hosts.some((host) => !loopbackHosts.has(host))) {
-    throw new Error("LEGACY_FENCE_TEST_DATABASE_URL must use the exact loopback host 127.0.0.1 without aliases or formatting.");
-  }
-  return connectionString;
-};
 
 test("disposable migration database URL rejects non-loopback targets before connecting", () => {
   assert.throws(
@@ -80,10 +52,40 @@ test("disposable migration database URL rejects non-loopback targets before conn
     () => assertLoopbackTestDatabaseUrl("postgres://test:test@127.0.0.1:5432/test_db?host=127.0.0.1,127.0.0.1"),
     /loopback/,
   );
+  for (const query of [
+    "host=127.0.0.1&host=postgres.example",
+    "host=postgres.example&host=127.0.0.1",
+    "%68ost=postgres.example",
+    "hostaddr=127.0.0.1&hostaddr=192.0.2.1",
+    "%68ostaddr=192.0.2.1",
+    "host=",
+  ]) {
+    assert.throws(() => assertLoopbackTestDatabaseUrl(`postgres://test:test@127.0.0.1:5432/test_db?${query}`), /loopback/);
+  }
+  assert.throws(() => assertLoopbackTestDatabaseUrl("https://127.0.0.1/test_db"), /PostgreSQL URL scheme/);
+  assert.throws(() => assertLoopbackTestDatabaseUrl("not-a-url"), /PostgreSQL URL/);
+  assert.throws(() => assertLoopbackTestDatabaseUrl("\tpostgres://test:test@127.0.0.1:5432/test_db"), /whitespace/);
   assert.equal(
     assertLoopbackTestDatabaseUrl("postgres://test:test@127.0.0.1:5432/test_db"),
     "postgres://test:test@127.0.0.1:5432/test_db",
   );
+});
+
+test("accepted URLs retain the loopback host and isolated database in the locked PostgreSQL driver", () => {
+  for (const query of [
+    "",
+    "?host=127.0.0.1&hostaddr=127.0.0.1",
+    "?%68ost=127.0.0.1",
+    "?database=original_database&dbname=original_database",
+    "?connectionString=postgres%3A%2F%2Ftest%40postgres.example%2Foriginal_database",
+  ]) {
+    const connection = new URL(assertLoopbackTestDatabaseUrl(`postgres://test:test@127.0.0.1:5432/original_database${query}`));
+    connection.pathname = "/legacy_worker_fence_offline_probe";
+    // Client construction parses the URL without connecting or issuing SQL.
+    const client = new Client({ connectionString: connection.toString() });
+    assert.equal(client.host, "127.0.0.1");
+    assert.equal(client.database, "legacy_worker_fence_offline_probe");
+  }
 });
 
 // Historical migrations explicitly qualify public. An owned disposable database

@@ -284,7 +284,7 @@ export class MockVideoTaskExecutor {
           });
           throw new RetryableTaskExecutionError(status.message);
         }
-        return this.store.failTaskRun({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, code: status.code, message: status.message, retryable: status.retryable, now: new Date() });
+        return this.store.failTaskRun({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, failureStage: "PROVIDER", code: status.code, message: status.message, retryable: status.retryable, ...(status.providerRequestTerminal === true ? { providerRequestTerminal: true } : {}), now: new Date() });
       }
       if (status.state !== "SUCCEEDED") {
         throw new VideoProviderProtocolError("Video provider did not reach a terminal success state.");

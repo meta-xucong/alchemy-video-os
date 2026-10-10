@@ -9,6 +9,7 @@ export * from "./document-conversion-repository.js";
 export * from "./document-knowledge-repository.js";
 export * from "./drizzle-document-knowledge-repository.js";
 export * from "./production-repository.js";
+export { hasTerminalProviderResult } from "./provider-attempt-recovery.js";
 export * from "./schema.js";
 export * from "./task-run-repository.js";
 export * from "./workspace-repositories.js";

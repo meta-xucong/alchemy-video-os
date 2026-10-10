@@ -7,7 +7,7 @@ import { createDatabase } from "../src/db.js";
 import { DrizzleControlPlaneRepository } from "../src/control-plane-repository.js";
 import { DrizzleAssetWorkspaceRepository } from "../src/asset-workspace-repository.js";
 import { DrizzleTaskRunRepository } from "../src/task-run-repository.js";
-import { commandDeduplications, taskRuns, users, workspaces } from "../src/schema.js";
+import { commandDeduplications, providerAttempts, taskRuns, users, workspaces } from "../src/schema.js";
 
 const event = () => ({ eventId: createPrefixedId("evt"), messageId: createPrefixedId("msg"), traceId: createPrefixedId("trc"), correlationId: createPrefixedId("cor") });
 
@@ -76,6 +76,30 @@ test("PostgreSQL submission reservation is exclusive and survives restart, failu
     assert.equal(await restarted.reserveProviderSubmission(reserveInput), false);
     await assert.rejects(restarted.recordProviderSubmission({ ...reserveInput, providerRequestId: "different-offline-id", now: new Date() }), /PROVIDER_RESUBMIT_FORBIDDEN/);
     assert.equal((await restarted.listTaskRunAttempts(workspaceId, taskRunId)).length, 1);
+
+    // Generic status/auth/routing failures and historical unclassified rows
+    // retain the durable ID. A JSON string is not trusted terminal evidence.
+    for (const [index, flag] of [null, false, "true", [true], 1, { terminal: true }].entries()) {
+      const legacyStatus = index % 2 === 0 ? "FAILED" : "ABANDONED";
+      await restarted.failTaskRun({ ...reserveInput, failureStage: "PROVIDER", code: "PROVIDER_REJECTED", message: "Synthetic HTTP access failure.", retryable: false, now: new Date() });
+      await database.db.update(providerAttempts).set({ status: legacyStatus, responsePayload: { code: "PROVIDER_REJECTED", provider_request_terminal: flag } }).where(eq(providerAttempts.id, first.id));
+      assert.equal((await retry(`unproven-${index}`)).kind, "NEW");
+      await start(restarted);
+      assert.equal((await ensure())?.providerRequestId, providerRequestId);
+      assert.equal(await restarted.reserveProviderSubmission(reserveInput), false);
+    }
+
+    // Only a status result classified by the Provider permits a new attempt.
+    await restarted.failTaskRun({ ...reserveInput, failureStage: "PROVIDER", providerRequestTerminal: true, code: "PROVIDER_REJECTED", message: "Synthetic completed failure status.", retryable: false, now: new Date() });
+    assert.equal((await retry("proven-terminal")).kind, "NEW");
+    await start(restarted);
+    const next = await ensure();
+    assert.ok(next);
+    assert.notEqual(next.id, first.id);
+    assert.equal(await restarted.reserveProviderSubmission({ ...reserveInput, providerAttemptId: next.id }), true);
+    const uncertainAfterTerminal = await restarted.finalizeTaskRunExecutionFailure({ workspaceId, taskRunId, code: "PROVIDER_UNAVAILABLE", message: "Synthetic failure after reservation.", now: new Date() });
+    assert.equal(uncertainAfterTerminal?.error?.retryable, false, "old known terminal IDs must not hide a newer uncertain submission");
+    assert.equal((await retry("new-unknown")).kind, "STATE_INVALID");
 
     // Repository-level terminal guard covers cancellation without invoking any
     // external Provider or inventing a public cancellation endpoint.

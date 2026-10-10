@@ -9,6 +9,19 @@ permissions:
   contents: read
 
 jobs:
+  windows-fixture-fidelity:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify raw fixture hashes and autocrlf checkout behavior
+        run: node --test apps/task-worker/tests/legacy-worker-fixture-checkout.test.ts
+
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 45
