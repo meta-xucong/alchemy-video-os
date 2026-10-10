@@ -257,7 +257,7 @@ const captureProductionDiagnostic = async (databaseUrl) => {
       SELECT json_build_object(
         'runs', (SELECT coalesce(json_agg(json_build_object('status', status, 'accepted', accepted_shot_count, 'total', total_shot_count) ORDER BY created_at), '[]'::json) FROM production_runs),
         'segments', (SELECT coalesce(json_agg(json_build_object('sequence', sequence, 'status', status, 'retryable', retryable) ORDER BY sequence), '[]'::json) FROM production_segments),
-        'tasks', (SELECT coalesce(json_agg(json_build_object('status', task.status, 'submitted', EXISTS (SELECT 1 FROM provider_attempts attempt WHERE attempt.workspace_id = task.workspace_id AND attempt.task_run_id = task.id AND attempt.provider_request_id IS NOT NULL)) ORDER BY task.created_at), '[]'::json) FROM task_runs task),
+        'tasks', (SELECT coalesce(json_agg(json_build_object('status', task.status, 'submitted', EXISTS (SELECT 1 FROM provider_attempts attempt WHERE attempt.workspace_id = task.workspace_id AND attempt.task_run_id = task.id AND attempt.provider_request_id_v2 IS NOT NULL)) ORDER BY task.created_at), '[]'::json) FROM task_runs task),
         'outbox', (SELECT coalesce(json_agg(json_build_object('type', event_type, 'published', published_at IS NOT NULL, 'dead_lettered', dead_lettered_at IS NOT NULL, 'attempts', publish_attempts) ORDER BY available_at), '[]'::json) FROM outbox_events)
       ) AS diagnostic
     `);

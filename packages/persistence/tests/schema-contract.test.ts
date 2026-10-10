@@ -116,6 +116,57 @@ test("submission reservations backfill ambiguous legacy attempts without changin
   assert.equal(journal.entries.find((entry) => entry.idx === 27)?.tag, "0027_provider_submission_reservation");
 });
 
+test("the legacy Worker fence changes only the physical request-ID column and preserves its logical mapping", async () => {
+  const migrations = resolve(import.meta.dirname, "..", "drizzle");
+  const migration = await readFile(resolve(migrations, "0028_fence_legacy_task_workers.sql"), "utf8");
+  assert.equal(migration.trim(), 'ALTER TABLE "provider_attempts" RENAME COLUMN "provider_request_id" TO "provider_request_id_v2";');
+  assert.equal(providerAttempts.providerRequestId.name, "provider_request_id_v2");
+  assert.equal(providerAttempts.providerRequestId.columnType, "PgText");
+  assert.equal(providerAttempts.providerRequestId.notNull, false);
+  assert.equal(providerAttempts.submissionReservedAt.name, "submission_reserved_at");
+  const config = getTableConfig(providerAttempts);
+  assert.equal(config.columns.some((column) => column.name === "provider_request_id"), false);
+  const requestIndex = config.indexes.find((index) => index.config.name === "provider_attempts_provider_request_key");
+  assert.ok(requestIndex);
+  assert.equal(requestIndex.config.unique, true);
+  assert.deepEqual(requestIndex.config.columns.map((column) => "name" in column ? column.name : null), ["provider", "provider_request_id_v2"]);
+
+  const journal = JSON.parse(await readFile(resolve(migrations, "meta", "_journal.json"), "utf8")) as {
+    entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
+  };
+  assert.deepEqual(journal.entries.at(-1), {
+    idx: 28, version: "7", when: journal.entries.at(-1)?.when,
+    tag: "0028_fence_legacy_task_workers", breakpoints: true,
+  });
+  assert.ok(journal.entries[28]!.when > journal.entries[27]!.when);
+
+  const previous = JSON.parse(await readFile(resolve(migrations, "meta", "0027_snapshot.json"), "utf8"));
+  const snapshot = JSON.parse(await readFile(resolve(migrations, "meta", "0028_snapshot.json"), "utf8"));
+  assert.notEqual(snapshot.id, previous.id);
+  assert.equal(snapshot.prevId, previous.id);
+  const expected = structuredClone(previous);
+  expected.id = snapshot.id;
+  expected.prevId = previous.id;
+  const attempts = expected.tables["public.provider_attempts"];
+  attempts.columns.provider_request_id_v2 = { ...attempts.columns.provider_request_id, name: "provider_request_id_v2" };
+  delete attempts.columns.provider_request_id;
+  attempts.indexes.provider_attempts_provider_request_key.columns[1].expression = "provider_request_id_v2";
+  attempts.indexes.provider_attempts_provider_request_key.where = '"provider_attempts"."provider_request_id_v2" is not null';
+  assert.deepEqual(snapshot, expected, "0028 snapshot must have no unrelated schema changes");
+});
+
+test("C06 and C12 diagnostics use the fenced physical column without renaming logical output fields", async () => {
+  const tests = resolve(import.meta.dirname, "..", "..", "..", "apps", "control-api", "tests");
+  const c06 = await readFile(resolve(tests, "c06-local-e2e.mjs"), "utf8");
+  const c12 = await readFile(resolve(tests, "c12-local-e2e.mjs"), "utf8");
+  assert.doesNotMatch(c06, /provider_attempts\.provider_request_id\b/);
+  assert.doesNotMatch(c12, /attempt\.provider_request_id\b/);
+  assert.match(c06, /min\(provider_attempts\.provider_request_id_v2\) AS provider_request_id/);
+  assert.match(c06, /provider_attempts\.provider_request_id_v2 AS provider_request_id,/);
+  assert.match(c06, /AS provider_request_ids/);
+  assert.match(c12, /attempt\.provider_request_id_v2 IS NOT NULL/);
+});
+
 test("the C05 consumption ledger persists workspace scope and matches its outbox row", async () => {
   const migration = await readFile(
     resolve(import.meta.dirname, "..", "drizzle", "0006_overjoyed_captain_cross.sql"),

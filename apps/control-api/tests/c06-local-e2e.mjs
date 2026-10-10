@@ -243,10 +243,10 @@ const taskRunProviderRecord = async (projectName) => {
               shots.generation_settings -> 'video_settings' ->> 'resolution' AS saved_resolution,
               shots.generation_settings -> 'video_settings' ->> 'ratio' AS saved_ratio,
               count(provider_attempts.id)::integer AS attempt_count,
-              count(provider_attempts.provider_request_id)::integer AS submitted_attempt_count,
-              min(provider_attempts.provider_request_id) AS provider_request_id,
-              array_agg(provider_attempts.provider_request_id ORDER BY provider_attempts.created_at)
-                FILTER (WHERE provider_attempts.provider_request_id IS NOT NULL) AS provider_request_ids
+              count(provider_attempts.provider_request_id_v2)::integer AS submitted_attempt_count,
+              min(provider_attempts.provider_request_id_v2) AS provider_request_id,
+              array_agg(provider_attempts.provider_request_id_v2 ORDER BY provider_attempts.created_at)
+                FILTER (WHERE provider_attempts.provider_request_id_v2 IS NOT NULL) AS provider_request_ids
        FROM task_runs
        INNER JOIN projects ON projects.id = task_runs.project_id
        INNER JOIN shots ON shots.workspace_id = task_runs.workspace_id AND shots.id = task_runs.shot_id
@@ -350,7 +350,7 @@ const taskRunDiagnostics = async (projectName) => {
     const taskRuns = await database.query(
       `SELECT task_runs.id, task_runs.status, task_runs.error, task_runs.updated_at,
               provider_attempts.id AS provider_attempt_id, provider_attempts.status AS provider_attempt_status,
-              provider_attempts.provider_request_id, provider_attempts.response_payload,
+              provider_attempts.provider_request_id_v2 AS provider_request_id, provider_attempts.response_payload,
               outbox_events.id AS outbox_event_id, outbox_events.event_type AS outbox_event_type,
               outbox_events.published_at, outbox_events.available_at, outbox_events.publish_attempts,
               outbox_events.last_error, outbox_events.dead_lettered_at,
