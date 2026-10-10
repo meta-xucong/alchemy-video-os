@@ -9,9 +9,170 @@ permissions:
   contents: read
 
 jobs:
+  windows-fixture-fidelity:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify raw fixture hashes and autocrlf checkout behavior
+        run: node --test apps/task-worker/tests/legacy-worker-fixture-checkout.test.ts
+
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: alchemy_video_os
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: alchemy_video_os_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U alchemy_video_os -d alchemy_video_os_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://alchemy_video_os:ci-only@127.0.0.1:5432/alchemy_video_os_test
+      LEGACY_FENCE_TEST_DATABASE_URL: postgres://alchemy_video_os:ci-only@127.0.0.1:5432/alchemy_video_os_test
+      PRODUCTION_RECOVERY_TEST_DATABASE_URL: postgres://alchemy_video_os:ci-only@127.0.0.1:5432/alchemy_recovery_test_ci
+      REDIS_URL: redis://127.0.0.1:6379/15
+      S3_ENDPOINT: http://127.0.0.1:9000
+      S3_REGION: us-east-1
+      S3_BUCKET: alchemy-video-os-ci
+      S3_ACCESS_KEY: ci-minio-user
+      S3_SECRET_KEY: ci-minio-password
+      DOCUMENT_RUNTIME_PYTHON: ${{ github.workspace }}/services/document-runtime/.venv/bin/python
+      # TEST-ONLY service inputs. Each Mock harness owns its generated database,
+      # bucket, and queue namespace rather than the unit-test resources above.
+      MOCK_E2E_DATABASE_ADMIN_URL: postgres://alchemy_video_os:ci-only@127.0.0.1:5432/postgres
+      MOCK_E2E_REDIS_URL: redis://127.0.0.1:6379/15
+      MOCK_E2E_S3_ENDPOINT: http://127.0.0.1:9000
+      MOCK_E2E_S3_REGION: us-east-1
+      MOCK_E2E_S3_ACCESS_KEY: ci-minio-user
+      MOCK_E2E_S3_SECRET_KEY: ci-minio-password
+      MOCK_E2E_PYTHON: ${{ github.workspace }}/services/media-runtime/.venv/bin/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.8"
+      - name: Build pinned MinIO test server
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/minio-bin"
+          GOBIN="$RUNNER_TEMP/minio-bin" go install github.com/minio/minio@RELEASE.2025-10-15T17-29-55Z
+          "$RUNNER_TEMP/minio-bin/minio" --version
+      - name: Start isolated MinIO
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/minio-data"
+          MINIO_ROOT_USER=ci-minio-user \
+          MINIO_ROOT_PASSWORD=ci-minio-password \
+          MINIO_API_CORS_ALLOW_ORIGIN="http://127.0.0.1:3031,http://localhost:3031,http://127.0.0.1:3331,http://localhost:3331" \
+          MINIO_UPDATE=off \
+            nohup "$RUNNER_TEMP/minio-bin/minio" server \
+              --address 127.0.0.1:9000 \
+              --console-address 127.0.0.1:9001 \
+              "$RUNNER_TEMP/minio-data" \
+              > "$RUNNER_TEMP/minio.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/minio.pid"
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error http://127.0.0.1:9000/minio/health/live >/dev/null; then
+              exit 0
+            fi
+            if ! kill -0 "$(cat "$RUNNER_TEMP/minio.pid")" 2>/dev/null; then
+              cat "$RUNNER_TEMP/minio.log"
+              exit 1
+            fi
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/minio.log"
+          exit 1
+      - name: Install locked media runtime dependencies
+        run: uv sync --project services/media-runtime --locked --no-dev
+      - name: Install locked document runtime dependencies
+        run: uv sync --project services/document-runtime --locked --no-dev
+      - name: Create isolated MinIO test bucket
+        run: pnpm --filter @alchemy-video/storage-client exec tsx tests/create-ci-bucket.ts
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Migrate isolated integration database
+        run: pnpm --filter @alchemy-video/persistence db:migrate
+      - name: Create and migrate isolated recovery concurrency database
+        working-directory: packages/persistence
+        shell: bash
+        run: |
+          node --import tsx --input-type=module <<'NODE'
+          import { Client } from 'pg';
+          import { assertLoopbackTestDatabaseUrl } from './tests/helpers/legacy-fence-test-database.ts';
+          const target = new URL(assertLoopbackTestDatabaseUrl(process.env.PRODUCTION_RECOVERY_TEST_DATABASE_URL));
+          const name = decodeURIComponent(target.pathname.slice(1));
+          if (target.protocol !== 'postgres:' || !/^alchemy_recovery_test_[a-z0-9_-]+$/iu.test(name)) throw new Error('Recovery tests require their dedicated database.');
+          target.pathname = '/postgres';
+          const database = new Client({ connectionString: target.href });
+          try {
+            await database.connect();
+            await database.query(`CREATE DATABASE "${name}"`);
+          } finally {
+            await database.end();
+          }
+          NODE
+          DATABASE_URL="$PRODUCTION_RECOVERY_TEST_DATABASE_URL" node --import tsx src/migrate.ts
+      - name: Unit and contract tests
+        run: pnpm test
+      - name: Install pinned Mock browser test runtime
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          uv pip install --python "$MOCK_E2E_PYTHON" 'playwright==1.62.0'
+          "$MOCK_E2E_PYTHON" -m playwright install --with-deps chromium
+      - name: C06 Mock browser failure and retry acceptance
+        timeout-minutes: 8
+        run: pnpm --filter @alchemy-video/control-api test:c06-e2e
+      - name: C12 Mock browser final-video acceptance
+        timeout-minutes: 12
+        run: pnpm --filter @alchemy-video/control-api test:c12-e2e
+      - name: Stop isolated MinIO
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f "$RUNNER_TEMP/minio.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/minio.pid")" 2>/dev/null || true
+          fi
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -23,17 +184,81 @@ jobs:
           cache: pnpm
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
-      - name: Typecheck
-        run: pnpm typecheck
-      - name: Unit and contract tests
-        run: pnpm test
       - name: Production dependency audit
-        run: pnpm audit --prod --audit-level=high
+        run: pnpm audit --prod --audit-level=high --json
+
+  docker-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and verify production runtime image
+        run: docker build --pull --file infrastructure/deploy/Dockerfile --tag alchemy-video-os-ci:${GITHUB_SHA} .
+      - name: Smoke test standalone Studio on loopback
+        shell: bash
+        run: |
+          container="alchemy-video-os-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          image="alchemy-video-os-ci:${GITHUB_SHA}"
+          trap 'docker rm --force "$container" >/dev/null 2>&1 || true' EXIT
+          docker run --detach \
+            --name "$container" \
+            --publish 127.0.0.1::3031/tcp \
+            --env HOST=0.0.0.0 \
+            --env PORT=3031 \
+            --env NITRO_HOST=0.0.0.0 \
+            --env NITRO_PORT=3031 \
+            --entrypoint node \
+            "$image" apps/studio-web/.output/server/index.mjs
+          host_port="$(docker port "$container" 3031/tcp | awk -F: '{print $NF}')"
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error "http://127.0.0.1:${host_port}/" >/dev/null; then
+              exit 0
+            fi
+            if [[ "$(docker inspect --format='{{.State.Running}}' "$container")" != "true" ]]; then
+              docker logs "$container"
+              exit 1
+            fi
+            sleep 2
+          done
+          docker logs "$container"
+          exit 1
+
+  media-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - name: Install FFmpeg for media integration tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+      - name: Install locked media runtime dependencies
+        run: uv sync --project services/media-runtime --locked --no-dev
       - name: Python syntax check
         shell: bash
         run: python -m compileall -q services tools
+      - name: Media runtime tests with installed FFmpeg
+        working-directory: services/media-runtime
+        run: uv run --project . --locked python -m unittest discover -s tests -p 'test_*.py' -v
+
+  diff-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Diff hygiene
-        run: git diff --check
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git diff --check "${{ github.event.pull_request.base.sha }}...${{ github.sha }}"
+          else
+            git show --check --oneline HEAD
+          fi
 
   secret-scan:
     runs-on: ubuntu-latest

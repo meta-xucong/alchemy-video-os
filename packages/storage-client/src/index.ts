@@ -12,6 +12,7 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const DEFAULT_URL_TTL_SECONDS = 10 * 60;
+const DEFAULT_INSPECTION_TIMEOUT_MS = 30_000;
 const DEFAULT_BROWSER_ORIGINS = ["http://127.0.0.1:3031", "http://localhost:3031"];
 
 export type ObjectInspection = {
@@ -44,16 +45,25 @@ export type StorageObjectStream = {
   stream: ReadableStream<Uint8Array>;
 };
 
+export type ObjectInspectionInput = {
+  objectKey: string;
+  signal?: AbortSignal;
+  maxByteSize?: number;
+  expectedMimeType?: string;
+  timeoutMs?: number;
+};
+
 export interface StoragePort {
   createUploadUrl(input: {
     objectKey: string;
     mimeType: string;
+    byteSize: number;
     expiresInSeconds?: number;
   }): Promise<SignedUpload>;
-  inspectObject(input: { objectKey: string; signal?: AbortSignal }): Promise<ObjectInspection | undefined>;
+  inspectObject(input: ObjectInspectionInput): Promise<ObjectInspection | undefined>;
   putObject(input: { objectKey: string; mimeType: string; bytes: Uint8Array; ifNoneMatch?: "*" }): Promise<void>;
   createDownloadUrl(input: { objectKey: string; expiresInSeconds?: number }): Promise<SignedDownload>;
-  readObject(input: { objectKey: string }): Promise<StorageObjectStream | undefined>;
+  readObject(input: { objectKey: string; signal?: AbortSignal }): Promise<StorageObjectStream | undefined>;
 }
 
 export type S3StorageConfig = {
@@ -100,7 +110,12 @@ export const storageDiagnostic = (error: unknown): StorageDiagnostic => {
 
 const isMinioCorsNotImplemented = (error: unknown) => {
   const diagnostic = storageDiagnostic(error);
-  return diagnostic.name === "NotImplemented" && diagnostic.code === "NotImplemented" && diagnostic.httpStatusCode === 501;
+  const server = (error as { $response?: { headers?: { server?: unknown } } } | undefined)?.$response?.headers?.server;
+  const minioServerCorsIsExternal = diagnostic.httpStatusCode === 501
+    && typeof server === "string"
+    && server.toLowerCase() === "minio";
+  return (diagnostic.name === "NotImplemented" && diagnostic.code === "NotImplemented" && diagnostic.httpStatusCode === 501)
+    || minioServerCorsIsExternal;
 };
 
 export class StorageObjectAlreadyExistsError extends Error {
@@ -109,6 +124,18 @@ export class StorageObjectAlreadyExistsError extends Error {
     this.name = "StorageObjectAlreadyExistsError";
   }
 }
+
+export class StorageObjectInvalidError extends Error {
+  constructor(readonly reason: "SIZE" | "MIME") {
+    super("The object exceeds its reserved size or does not match its reserved MIME type.");
+    this.name = "StorageObjectInvalidError";
+  }
+}
+
+const validateInspectionMetadata = (input: ObjectInspectionInput, byteSize: number | undefined, mimeType: string | undefined) => {
+  if (input.maxByteSize !== undefined && byteSize !== undefined && byteSize > input.maxByteSize) throw new StorageObjectInvalidError("SIZE");
+  if (input.expectedMimeType !== undefined && mimeType !== input.expectedMimeType) throw new StorageObjectInvalidError("MIME");
+};
 
 const expiresAt = (expiresInSeconds: number) =>
   new Date(Date.now() + expiresInSeconds * 1000).toISOString();
@@ -230,7 +257,8 @@ export class S3StoragePort implements StoragePort {
     private readonly browserOrigins: readonly string[],
   ) {}
 
-  async createUploadUrl(input: { objectKey: string; mimeType: string; expiresInSeconds?: number }) {
+  async createUploadUrl(input: { objectKey: string; mimeType: string; byteSize: number; expiresInSeconds?: number }) {
+    if (!Number.isSafeInteger(input.byteSize) || input.byteSize < 1) throw new StorageUnavailableError("The reserved upload size is invalid.");
     await this.ensureBucket();
     const expiresInSeconds = input.expiresInSeconds ?? DEFAULT_URL_TTL_SECONDS;
     try {
@@ -241,9 +269,10 @@ export class S3StoragePort implements StoragePort {
             Bucket: this.bucket,
             Key: input.objectKey,
             ContentType: input.mimeType,
+            ContentLength: input.byteSize,
             IfNoneMatch: "*",
           }),
-          { expiresIn: expiresInSeconds },
+          { expiresIn: expiresInSeconds, signableHeaders: new Set(["content-type", "content-length", "if-none-match"]) },
         ),
         headers: { "Content-Type": input.mimeType, "If-None-Match": "*" },
         expiresAt: expiresAt(expiresInSeconds),
@@ -253,33 +282,74 @@ export class S3StoragePort implements StoragePort {
     }
   }
 
-  async inspectObject(input: { objectKey: string; signal?: AbortSignal }): Promise<ObjectInspection | undefined> {
-    await this.ensureBucket();
-    try {
-      const requestOptions = input.signal ? { abortSignal: input.signal } : undefined;
-      const head = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: input.objectKey }), requestOptions);
-      const object = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: input.objectKey }), requestOptions);
-      const hash = createHash("sha256");
-      let byteSize = 0;
-      try {
-        for await (const chunk of asAsyncIterable(object.Body)) {
-          const value = Buffer.from(chunk);
-          hash.update(value);
-          byteSize += value.length;
-        }
-      } finally {
-        await closeObjectBody(object.Body).catch(() => undefined);
-      }
-      return {
-        mimeType: head.ContentType ?? object.ContentType ?? "application/octet-stream",
-        byteSize: head.ContentLength ?? byteSize,
-        sha256: hash.digest("hex"),
+  async inspectObject(input: ObjectInspectionInput): Promise<ObjectInspection | undefined> {
+    const controller = new AbortController();
+    const signal = input.signal ? AbortSignal.any([input.signal, controller.signal]) : controller.signal;
+    const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? DEFAULT_INSPECTION_TIMEOUT_MS);
+    let body: unknown;
+    let iterator: AsyncIterator<Uint8Array> | undefined;
+    const close = () => {
+      void closeObjectBody(body).catch(() => undefined);
+      // Release iterator-owned resources too, without letting a stalled return
+      // promise defeat the byte or time limit.
+      try { void Promise.resolve(iterator?.return?.()).catch(() => undefined); } catch { /* best effort */ }
+    };
+    let abort: () => void = () => undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      abort = () => {
+        close();
+        reject(new StorageUnavailableError("Object inspection was interrupted."));
       };
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+    });
+    try {
+      return await Promise.race([aborted, (async () => {
+        signal.throwIfAborted();
+        await this.ensureBucket();
+        signal.throwIfAborted();
+        const requestOptions = { abortSignal: signal };
+        const head = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: input.objectKey }), requestOptions);
+        signal.throwIfAborted();
+        validateInspectionMetadata(input, head.ContentLength, head.ContentType);
+        const object = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: input.objectKey, ...(head.ETag ? { IfMatch: head.ETag } : {}) }), requestOptions);
+        body = object.Body;
+        const hash = createHash("sha256");
+        let byteSize = 0;
+        try {
+          signal.throwIfAborted();
+          validateInspectionMetadata(input, object.ContentLength, object.ContentType ?? head.ContentType);
+          iterator = asAsyncIterable(object.Body)[Symbol.asyncIterator]();
+          for (;;) {
+            const next = await iterator.next();
+            signal.throwIfAborted();
+            if (next.done) break;
+            byteSize += next.value.byteLength;
+            validateInspectionMetadata(input, byteSize, head.ContentType ?? object.ContentType);
+            hash.update(next.value);
+          }
+          if ((head.ContentLength !== undefined && head.ContentLength !== byteSize)
+            || (object.ContentLength !== undefined && object.ContentLength !== byteSize)) {
+            throw new StorageUnavailableError("Object storage returned an inconsistent object length.");
+          }
+        } finally {
+          close();
+        }
+        return {
+          mimeType: head.ContentType ?? object.ContentType ?? "application/octet-stream",
+          byteSize,
+          sha256: hash.digest("hex"),
+        };
+      })()]);
     } catch (error: unknown) {
       if (error instanceof Error && (error.name === "NotFound" || error.name === "NoSuchKey")) {
         return undefined;
       }
+      if (error instanceof StorageObjectInvalidError || error instanceof StorageUnavailableError) throw error;
       throw new StorageUnavailableError("Object storage is unavailable.", storageDiagnostic(error));
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
     }
   }
 
@@ -341,10 +411,10 @@ export class S3StoragePort implements StoragePort {
     }
   }
 
-  async readObject(input: { objectKey: string }): Promise<StorageObjectStream | undefined> {
+  async readObject(input: { objectKey: string; signal?: AbortSignal }): Promise<StorageObjectStream | undefined> {
     await this.ensureBucket();
     try {
-      const object = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: input.objectKey }));
+      const object = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: input.objectKey }), input.signal ? { abortSignal: input.signal } : undefined);
       if (!object.Body) throw new StorageUnavailableError("Object storage returned an unreadable object body.");
       return {
         mimeType: object.ContentType ?? "application/octet-stream",
@@ -399,11 +469,15 @@ export class S3StoragePort implements StoragePort {
   }
 }
 
-const createS3Client = (input: Pick<S3StorageConfig, "endpoint" | "region" | "accessKeyId" | "secretAccessKey">) =>
+const createS3Client = (input: Pick<S3StorageConfig, "endpoint" | "region" | "accessKeyId" | "secretAccessKey">, signingOnly = false) =>
   new S3Client({
     endpoint: input.endpoint,
     region: input.region,
     forcePathStyle: true,
+    // A presigned PUT has no body yet. The SDK's default CRC32 would describe
+    // an empty payload and reject the browser's real bytes. Keep ordinary
+    // server writes on the SDK default and hash browser uploads at confirmation.
+    ...(signingOnly ? { requestChecksumCalculation: "WHEN_REQUIRED" as const } : {}),
     credentials: {
       accessKeyId: input.accessKeyId,
       secretAccessKey: input.secretAccessKey,
@@ -413,7 +487,7 @@ const createS3Client = (input: Pick<S3StorageConfig, "endpoint" | "region" | "ac
 export const createS3StoragePort = (config: S3StorageConfig): StoragePort =>
   new S3StoragePort(
     createS3Client(config),
-    createS3Client({ ...config, endpoint: config.publicEndpoint ?? config.endpoint }),
+    createS3Client({ ...config, endpoint: config.publicEndpoint ?? config.endpoint }, true),
     config.bucket,
     config.browserOrigins?.length ? config.browserOrigins : DEFAULT_BROWSER_ORIGINS,
   );
@@ -421,7 +495,8 @@ export const createS3StoragePort = (config: S3StorageConfig): StoragePort =>
 export class InMemoryStoragePort implements StoragePort {
   private readonly objects = new Map<string, { mimeType: string; bytes: Uint8Array }>();
 
-  async createUploadUrl(input: { objectKey: string; mimeType: string; expiresInSeconds?: number }) {
+  async createUploadUrl(input: { objectKey: string; mimeType: string; byteSize: number; expiresInSeconds?: number }) {
+    if (!Number.isSafeInteger(input.byteSize) || input.byteSize < 1) throw new StorageUnavailableError("The reserved upload size is invalid.");
     const ttl = input.expiresInSeconds ?? DEFAULT_URL_TTL_SECONDS;
     return {
       uploadUrl: `http://storage.invalid/upload/${encodeURIComponent(input.objectKey)}`,
@@ -430,9 +505,11 @@ export class InMemoryStoragePort implements StoragePort {
     };
   }
 
-  async inspectObject(input: { objectKey: string; signal?: AbortSignal }) {
+  async inspectObject(input: ObjectInspectionInput) {
+    if (input.signal?.aborted) throw new StorageUnavailableError("Object inspection was interrupted.");
     const object = this.objects.get(input.objectKey);
     if (!object) return undefined;
+    validateInspectionMetadata(input, object.bytes.byteLength, object.mimeType);
     return {
       mimeType: object.mimeType,
       byteSize: object.bytes.byteLength,
@@ -467,7 +544,8 @@ export class InMemoryStoragePort implements StoragePort {
     this.objects.set(input.objectKey, { mimeType: input.mimeType, bytes: input.bytes });
   }
 
-  async readObject(input: { objectKey: string }) {
+  async readObject(input: { objectKey: string; signal?: AbortSignal }) {
+    if (input.signal?.aborted) throw new StorageUnavailableError("Object read was interrupted.");
     const object = this.objects.get(input.objectKey);
     if (!object) return undefined;
     const bytes = new Uint8Array(object.bytes);

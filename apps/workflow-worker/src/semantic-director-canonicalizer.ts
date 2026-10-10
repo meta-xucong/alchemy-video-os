@@ -390,6 +390,15 @@ const validateG02NarrativePlan = (raw: RawSemanticPlan, bundle: CanonicalSourceB
       );
     }
     const existing = matchingEntities[0];
+    if (existing && candidate.reference_asset_ids.some((assetId) => {
+      const usage = bundle.references.find((reference) => reference.asset_id === assetId)?.user_declared_usage;
+      return typeof usage !== "string" || !hasExactEntityNameMention(usage, existing.exact_name);
+    })) {
+      throw new SemanticDirectorCanonicalizationError(
+        "CANONICALIZATION_SEGMENT_SOURCE_SCOPE_INVALID",
+        "G02 reference usage for an existing project identity must include the frozen canonical exact_name.",
+      );
+    }
     canonicalNamesByCandidateKey.set(candidate.candidate_key, existing?.exact_name ?? candidate.exact_name);
     for (const assetId of candidate.reference_asset_ids) {
       const reference = bundle.references.find((item) => item.asset_id === assetId)!;

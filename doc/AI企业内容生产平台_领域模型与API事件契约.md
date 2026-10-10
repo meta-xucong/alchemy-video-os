@@ -327,10 +327,14 @@ envelope；SSE 投影只含 conversion/source/Markdown Asset ID、状态和 retr
 | `shots` | `id`, `workspace_id`, `project_id`, `position`, `prompt`, `model`, `generation_settings`, `status`, `selected_asset_id` | 用户可编辑的分镜意图 |
 | `reference_bindings` | `shot_id`, `asset_id`, `role`, `position` | 分镜与参考资产关系 |
 | `task_runs` | `id`, `workspace_id`, `project_id`, `shot_id`, `kind`, `status`, `input_snapshot`, `result_asset_id`, `error` | 一个可恢复的领域任务 |
-| `provider_attempts` | `id`, `task_run_id`, `provider`, `model`, `provider_request_id`, `status`, `request_payload`, `response_payload` | 提供方一次提交与轮询审计 |
+| `provider_attempts` | `id`, `task_run_id`, `provider`, `model`, `provider_request_id`, `submission_reserved_at`, `status`, `request_payload`, `response_payload` | 提供方一次提交与轮询审计 |
 | `usage_records` | `id`, `task_run_id`, `external_user_id`, `amount`, `source`, `reference_id`, `idempotency_key`, `balance_after`, `replayed` | 已完成的外部扣费镜像，不是账本 |
 | `outbox_events` | `id`, `aggregate_type`, `aggregate_id`, `event_type`, `payload`, `published_at` | 数据库事务内写入、事务外发布 |
 | `command_deduplications` | `scope`, `idempotency_key`, `request_hash`, `response_snapshot` | 命令幂等回放 |
+
+`provider_attempts` 的请求 ID 逻辑字段保持 `provider_request_id`，TypeScript 属性保持 `providerRequestId`；自迁移 `0028_fence_legacy_task_workers` 起，数据库物理列原位更名为 `provider_request_id_v2`。内部事件、Provider 参数和公开脱敏契约不随物理列改名。已有值、`submission_reserved_at` 与唯一索引语义保留；直接 SQL 必须使用新物理列。旧 schema 消费者不能混跑，切换与在途请求限制见《旧Worker混跑提交栅栏_开发文档_20261010.md》。
+
+恢复权替代关系（2026-10-10，本轮设计）：制作段显式重试合法创建新 TaskRun B 时，在同一事务将旧 TaskRun A 的私有 `superseded_by_task_run_id` 设为 B。只允许同工作区/项目、原 VIDEO_GENERATION 终态及新创建后继；保留 A 的状态、输入快照、结果和 Attempt 历史。新普通重试、队列激活和提交预留必须重新读取该关系并拒绝恢复 A，不能自动沿关系重试 B。原幂等命令回放保持既有响应语义，但不重新激活任务。该私有字段不进入公开 DTO、事件或 Provider 输入；不增加业务状态或创作逻辑。历史缺失关系不得推测回填，旧恢复写入者不可混跑。模型、事务及兼容性验收按 `closure-20261010/recovery-design.md` 执行；设计不等于迁移已实施或生产已验收。
 
 `Asset.kind` 采用 `IMAGE | VIDEO | AUDIO | DOCUMENT | POSTER | THUMBNAIL`；`Asset.origin` 采用 `USER_UPLOAD | GENERATED | DERIVED`。生成视频必须写为 `Asset(kind=VIDEO, origin=GENERATED)`，海报/缩略图写为 `origin=DERIVED`，用户上传文件写为 `origin=USER_UPLOAD`。
 
@@ -392,6 +396,7 @@ ADR-0014 将本图确定为 TaskRun 迁移的唯一完整规则；根目录 `AGE
   revision 的快照还需固定 `motion_plan_version`、动作时间轴哈希和动作计划来源叙事点序号；旧 revision
   缺少这些字段时按兼容版本解释，不能回填或改写历史快照。
 - `provider_request_id` 一旦存在，worker 只能查询、下载或恢复，禁止再次 `submit`。
+- Worker 在调用 `submit` 前必须原子持久化 `ProviderAttempt.submission_reserved_at`，仅 `RUNNING` 且尚无提交预留/请求 ID 的运行可取得一次预留。该内部字段复用 C08 certifier 的先预留后 POST、未知结果 fail-closed 边界，不增加上游幂等协议。预留已存在但请求 ID 未持久化时，重启、异常收敛、队列重试及用户显式重试均不得再次 POST；失败摘要标记不可自动重试，等待有证据的人工核对。任何失败或取消不得清空预留。已知请求 ID 仍按原查询/下载恢复规则工作。升级时历史无请求 ID 的 Attempt 保守回填预留，不能推断其从未发送。该字段不进入公开 DTO、事件或 Provider 请求。
 - Worker ready 后由受控后台进程执行一次全局恢复扫描，只选择 `VIDEO_GENERATION` 且为 `RUNNING`、`PROVIDER_PROCESSING`、`DOWNLOADING` 的 TaskRun；`QUEUED`、其他 kind 和终态不得被该扫描执行。C06 先让 BullMQ 连接 ready 但不启动 processor，完成每项最多三次的扫描恢复后才领取历史 queue job，避免同一实例双 submit。三次短暂错误都耗尽时，Worker 必须按该 TaskRun 的 `workspace_id + task_run_id` 写入可公开读取、可显式 retry 的失败终态，不能依赖已完成 C05 consumer lease。该全局发现不属于浏览器或公开 API，扫描返回每个 TaskRun 后的所有读取和更新都必须使用其 `workspace_id` 范围；多 Worker 扩容必须先增加持久化 execution lease/claim。
 - BullMQ 重复 delivery 不能因为 C05 的消费账本已完成而跳过执行器：`DUPLICATE` delivery 仍须按其 `workspace_id` 调用执行器，使消费事务后发生的执行器中断可在同一进程重试恢复。已 `SUCCEEDED` 的 TaskRun 必须成为无副作用 no-op，因此重复 delivery 不得产生第二次 submit 或替换结果对象。
 - 已持久化 `provider_request_id` 的下载、ffprobe 或结果资产写入失败，Attempt 必须保留为 `DOWNLOAD_FAILED`；可重试的传输/对象存储错误保持 TaskRun `DOWNLOADING` 并交给 BullMQ 或启动扫描恢复，终态媒体/协议错误则由用户显式 `FAILED -> QUEUED` 重试恢复查询/下载。同一 TaskRun 不得因此再次 `submit` 或替换已成功写入的结果对象。
@@ -405,6 +410,10 @@ ADR-0014 将本图确定为 TaskRun 迁移的唯一完整规则；根目录 `AGE
 `VideoProviderPort` 是 Worker 与视频适配器之间的内部端口，不是公开 HTTP DTO。`download()` 返回 `{ stream, mimeType, contentLength? }`：`mimeType` 必须来自下载响应的实际 `Content-Type`，`contentLength` 仅在上游给出可解析的 `Content-Length` 时返回。Worker 在写入对象存储前必须使用该 MIME 校验字节、SHA-256、声明/实际大小和 `ffprobe`；缺失 MIME、非 `video/mp4`、非法长度或长度不匹配均是不可重试的 `DOWNLOAD_INVALID`，不得假定为 `video/mp4`。
 
 适配器可以抛出内部 `VideoProviderFailure`，其字段为稳定应用错误 `code`、`retryable` 和阶段 `PROVIDER | DOWNLOAD`。查询也可用 `ProviderStatus.FAILED` 表达归一化失败：`429`、`503` 必须是 `PROVIDER_UNAVAILABLE/retryable=true`，拒绝是 `PROVIDER_REJECTED/retryable=false`。Worker 必须按该类型和状态保留拒绝、暂不可用和下载无效的语义，且只把安全摘要写入 TaskRun；不得泄露 Provider payload、对象 key、签名 URL 或凭据。结构非法继续使用 `VideoProviderProtocolError`：提交/查询阶段映射 `PROVIDER_PROTOCOL_INVALID`，下载阶段映射 `DOWNLOAD_INVALID`。本边界不改变任何 `/api/v1` 请求、响应或公开事件 schema。
+
+已知请求 ID 的显式重试补充约束（2026-10-10）：`PROVIDER_REJECTED` 仅描述本地归一化错误，不能证明远端任务已终止。HTTP 401/403/404、配置不匹配和历史未分类失败均不得据此放弃已知请求 ID 并再次 POST。仅当成功的状态响应通过既有 SUB2API `rejectedStates` 分类（`failed/error/rejected/cancelled/canceled`），或受控 Mock 明确报告等价终态时，内部失败状态可附带显式终态证据，并由 Worker 写入对应 Attempt 的私有 `responsePayload`。普通错误消息、HTTP 状态码或未经分类的原始 payload 不能自行声明该证据。任务重试与制作段重新生成必须对同一 Attempt 的可信终态证据核验；缺少证据时保留已知 ID 的查询/下载恢复能力，禁止新的生成请求。未知提交预留规则不变。此证据不新增数据库列、公开 DTO、事件字段或上游参数；属于现有端口错误分类和持久化防重边界的最小收紧。
+
+上述规则不取消既有“生成已成功并持久化结果，后续媒体/QC 失败”的显式重新生成契约。该分支必须以成功的 TaskRun、对应成功 Attempt 和已持久化结果资产为依据，不能仅用前端/事件中的 retryable 标记或笼统错误码代替；仍未核实的已知请求与未知提交不得混入该例外。
 
 ## 4. HTTP 资源契约
 
@@ -603,7 +612,7 @@ C09-A 固定 Veyra HTTP 归一化：`402 -> CREDIT_INSUFFICIENT`、`409 -> CREDI
 
 1. API 在一个事务内创建 `TaskRun`、`command_deduplications` 和 `task_run.queued` outbox 事件。
 2. outbox relay 事务外投递 BullMQ；投递失败可安全重试，消费者幂等。
-3. worker 在提交前创建 `ProviderAttempt(CREATED)`；提交成功后立即写 `provider_request_id`、状态和事件。
+3. worker 在提交前创建 `ProviderAttempt(CREATED)` 并原子写入 `submission_reserved_at`；提交成功后立即写 `provider_request_id`、状态和事件。未知提交结果保留预留并 fail-closed；任务重试与创建新 TaskRun 的制作段重试均不能绕过旧 Attempt 的未知提交边界。
 4. 下载到本地临时文件后检查 MIME、非空尺寸、`ffprobe` 可读性和 SHA-256；全部通过才上传对象存储并事务性置成功。
 5. 积分扣费仅位于 `BILLING_PENDING`，且 idempotency key 只由 `billing_rule_key + task_run_id` 构成；详见共享积分规范。
 6. 扣费成功事件、usage record 和最终状态必须在同一数据库事务内写出，确保重放不会重复扣费。

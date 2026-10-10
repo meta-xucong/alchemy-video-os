@@ -340,6 +340,10 @@ def main() -> int:
     parser.add_argument("--secondary-project-name", required=True)
     parser.add_argument("--mode", choices=("failure", "retry"), required=True)
     parser.add_argument("--command-seed", required=True)
+    parser.add_argument(
+        "--browser-executable",
+        help="Explicit local Chromium executable; defaults to Playwright's pinned browser.",
+    )
     args = parser.parse_args()
     fixtures = [Path(value).resolve() for value in args.fixture]
     result: dict[str, object] = {"ok": False}
@@ -349,6 +353,7 @@ def main() -> int:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
                 headless=True,
+                executable_path=args.browser_executable,
                 args=["--host-resolver-rules=MAP localhost [::1]"],
             )
             try:

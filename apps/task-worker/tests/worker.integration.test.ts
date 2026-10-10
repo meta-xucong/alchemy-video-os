@@ -371,6 +371,9 @@ const hasC06Infrastructure = Boolean(
   && process.env.S3_ACCESS_KEY
   && process.env.S3_SECRET_KEY,
 );
+if (process.env.CI && !hasC06Infrastructure) {
+  throw new Error("CI must provide isolated PostgreSQL, Redis, and MinIO configuration for the C06 BullMQ integration tests.");
+}
 
 test("C06 BullMQ retry resumes a persisted Mock request after executor interruption without resubmitting", { skip: !hasC06Infrastructure }, async () => {
   const databaseUrl = process.env.DATABASE_URL;

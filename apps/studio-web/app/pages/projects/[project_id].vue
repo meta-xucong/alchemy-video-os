@@ -313,6 +313,7 @@ import StoryPlanningPanel from "../../components/studio/StoryPlanningPanel.vue";
 import { creationProgressFor, isRecoverableWaitingProduction, productionProgressFor } from "../../composables/useCreationProgress";
 import type { Asset, CreativeBriefRevision, DeliveryPlanRevision, DocumentConversion, DocumentKnowledgeDetail, ProductionRun, ProductionRunProgress, Shot, StoryboardRevision, TaskRun, VideoVersion } from "../../composables/useControlApi";
 import { useRelayConnection } from "../../composables/useRelayConnection";
+import { readMusicDurationMs } from "../../composables/musicUploadMetadata";
 
 const route = useRoute();
 const runtimeConfig = useRuntimeConfig();
@@ -1554,16 +1555,22 @@ async function uploadMusic(file: File | undefined) {
   productionBusy.value = true;
   productionError.value = "";
   try {
+    const durationMs = await readMusicDurationMs(file);
+    const fileSha256 = await sha256(file);
+    if (projectIdAtStart !== selectedProjectId.value) return;
     const request = await createUploadRequest(projectIdAtStart, { kind: "AUDIO", purpose: "MUSIC", filename: file.name, mime_type: file.type, byte_size: file.size }, commandKey("studio-music-upload"));
+    if (projectIdAtStart !== selectedProjectId.value) return;
     if (!request.data.upload_url) throw new Error("Music upload is unavailable.");
     const uploaded = await fetch(request.data.upload_url, { method: "PUT", headers: request.data.headers, body: file });
     if (!uploaded.ok) throw new Error("Music upload failed.");
-    await confirmAssetUpload(request.data.asset_id, { sha256: await sha256(file), mime_type: file.type, byte_size: file.size }, commandKey("studio-music-confirm"));
+    if (projectIdAtStart !== selectedProjectId.value) return;
+    await confirmAssetUpload(request.data.asset_id, { sha256: fileSha256, mime_type: file.type, byte_size: file.size, duration_ms: durationMs }, commandKey("studio-music-confirm"));
+    if (projectIdAtStart !== selectedProjectId.value) return;
     musicPlan.mode = "MANUAL";
     musicPlan.assetId = request.data.asset_id;
     await refreshCurrentProject();
   } catch (error) {
-    productionError.value = safeErrorMessage(error, "音乐暂时无法添加，请稍后重试。");
+    if (projectIdAtStart === selectedProjectId.value) productionError.value = safeErrorMessage(error, "音乐暂时无法添加，请稍后重试。");
   } finally {
     productionBusy.value = false;
   }

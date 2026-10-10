@@ -2712,7 +2712,7 @@ def compose_video_bundle(*, body: bytes, expected_sha256: str | None) -> Composi
                 root=root,
                 paths=paths,
                 inspections=inspections,
-                audio_present=audio_present,
+                audio_present=[present and not replace_source_audio for present in audio_present],
             )
             filter_parts: list[str] = []
             for index, inspection in enumerate(inspections):

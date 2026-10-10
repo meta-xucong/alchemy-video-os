@@ -8,6 +8,9 @@ import { createS3StoragePort } from "../src/index.js";
 
 const requiredEnvironment = ["S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "S3_ACCESS_KEY", "S3_SECRET_KEY"] as const;
 const hasMinioConfiguration = requiredEnvironment.every((name) => process.env[name]);
+if (process.env.CI && !hasMinioConfiguration) {
+  throw new Error("CI must provide isolated MinIO configuration for the presigned upload integration test.");
+}
 
 test("MinIO presigned uploads allow a browser CORS PUT once and reject overwrites", { skip: !hasMinioConfiguration }, async () => {
   const endpoint = process.env.S3_ENDPOINT;
@@ -19,7 +22,7 @@ test("MinIO presigned uploads allow a browser CORS PUT once and reject overwrite
 
   const objectKey = `ws_c04_minio_${randomUUID()}/prj_c04_minio/ast_c04_minio/original.png`;
   const firstBytes = new TextEncoder().encode("first immutable local asset");
-  const replacementBytes = new TextEncoder().encode("replacement must be rejected");
+  const replacementBytes = new Uint8Array(firstBytes.byteLength).fill(42);
   const storage = createS3StoragePort({ endpoint, region, bucket, accessKeyId, secretAccessKey });
   const cleanupClient = new S3Client({
     endpoint,
@@ -29,7 +32,7 @@ test("MinIO presigned uploads allow a browser CORS PUT once and reject overwrite
   });
 
   try {
-    const firstUpload = await storage.createUploadUrl({ objectKey, mimeType: "image/png" });
+    const firstUpload = await storage.createUploadUrl({ objectKey, mimeType: "image/png", byteSize: firstBytes.byteLength });
     assert.equal(firstUpload.headers["If-None-Match"], "*");
 
     const preflight = await fetch(firstUpload.uploadUrl, {
@@ -44,6 +47,14 @@ test("MinIO presigned uploads allow a browser CORS PUT once and reject overwrite
     assert.equal(preflight.headers.get("access-control-allow-origin"), "http://127.0.0.1:3031");
     assert.match(preflight.headers.get("access-control-allow-methods") ?? "", /PUT/i);
     assert.match(preflight.headers.get("access-control-allow-headers") ?? "", /if-none-match/i);
+
+    for (const wrongSize of [firstBytes.byteLength - 1, firstBytes.byteLength + 1]) {
+      const rejected = await fetch(firstUpload.uploadUrl, { method: "PUT", headers: firstUpload.headers, body: new Uint8Array(wrongSize) });
+      assert.equal(rejected.status, 403);
+      assert.equal(await storage.inspectObject({ objectKey }), undefined);
+    }
+    const wrongMime = await fetch(firstUpload.uploadUrl, { method: "PUT", headers: { ...firstUpload.headers, "Content-Type": "text/plain" }, body: firstBytes });
+    assert.equal(wrongMime.status, 403);
 
     const firstPut = await fetch(firstUpload.uploadUrl, {
       method: "PUT",
@@ -62,7 +73,7 @@ test("MinIO presigned uploads allow a browser CORS PUT once and reject overwrite
     });
     assert.equal(stalePut.status, 412);
 
-    const replayUpload = await storage.createUploadUrl({ objectKey, mimeType: "image/png" });
+    const replayUpload = await storage.createUploadUrl({ objectKey, mimeType: "image/png", byteSize: firstBytes.byteLength });
     const replayPut = await fetch(replayUpload.uploadUrl, {
       method: "PUT",
       headers: { ...replayUpload.headers, Origin: "http://127.0.0.1:3031" },

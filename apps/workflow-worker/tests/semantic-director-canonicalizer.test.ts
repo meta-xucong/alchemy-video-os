@@ -429,7 +429,7 @@ test("G02 beat lineage freezes exact source spans and maps each beat to one segm
         exact_name: "面霜罐（产品）",
         source_evidence_refs: [
           "G02_APPROVED_BEAT_1:面霜罐与乳霜质地，肌肤舒缓。",
-          "面霜罐（产品）参考图，仅展示原样产品。",
+          "面霜罐（历史别名）（面霜罐（产品））参考图，仅展示原样产品。",
         ],
       }
       : candidate),
@@ -440,7 +440,7 @@ test("G02 beat lineage freezes exact source spans and maps each beat to one segm
   const propAliasBundle = {
     ...existingEntityBundle,
     references: existingEntityBundle.references.map((reference) => reference.asset_id === "ast_jar_001"
-      ? { ...reference, user_declared_usage: "面霜罐（产品）参考图，仅展示原样产品。" }
+      ? { ...reference, user_declared_usage: "面霜罐（历史别名）（面霜罐（产品））参考图，仅展示原样产品。" }
       : reference),
   };
   const propAliasDecision = canonicalizeSemanticPlan(propAliasPlan, propAliasBundle);
@@ -453,7 +453,7 @@ test("G02 beat lineage freezes exact source spans and maps each beat to one segm
     "canonical entity resolution changes only the exact anchor bytes",
   );
 
-  const sceneAliasUsage = "研发 灌装环境参考图，用于第二节拍。";
+  const sceneAliasUsage = "研发灌装环境（研发 灌装环境）参考图，用于第二节拍。";
   const sceneAliasPlan = {
     ...plan,
     entity_candidates: candidates.map((candidate) => candidate.candidate_key === "entity-scene"

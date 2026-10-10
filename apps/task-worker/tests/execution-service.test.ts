@@ -6,6 +6,7 @@ import { createPrefixedId, fingerprintRequest } from "@alchemy-video/domain";
 import { StorageUnavailableError, createInMemoryStoragePort, type StoragePort } from "@alchemy-video/storage-client";
 import { MockVideoProvider, Sub2ApiVideoProvider, VideoProviderFailure, createMockMp4Fixture, resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import type { VideoProviderPort } from "@alchemy-video/provider-video";
+import type { ControlTaskRun } from "@alchemy-video/persistence";
 import type { Sub2ApiTransport, Sub2ApiTransportResponse } from "@alchemy-video/provider-video";
 
 import { InMemoryTaskRunStore } from "../../control-api/src/task-run-repository.js";
@@ -293,7 +294,10 @@ const prepareTask = async (withBilling = false, model = "mock-video-v1") => {
   return { assets, store, workspaceId, taskRunId };
 };
 
-const prepareReferenceTask = async (semanticSnapshot?: (references: Array<{ assetId: string; sha256: string; position: number }>) => Record<string, unknown>) => {
+const prepareReferenceTask = async (
+  semanticSnapshot?: (references: Array<{ assetId: string; sha256: string; position: number }>) => Record<string, unknown>,
+  prompt = "Generate a reference-set Mock video.",
+) => {
   const control = new InMemoryControlPlaneStore();
   const workspaceId = createPrefixedId("ws");
   const userId = createPrefixedId("usr");
@@ -340,7 +344,7 @@ const prepareReferenceTask = async (semanticSnapshot?: (references: Array<{ asse
     projectId,
     shotId,
     position: 0,
-    prompt: "Generate a reference-set Mock video.",
+    prompt,
     model: "mock-video-v1",
     generationSettings: {},
     referenceBindings: references.map((reference) => ({ assetId: reference.assetId, role: reference.position === 0 ? "STYLE" : "SUBJECT", position: reference.position })),
@@ -358,7 +362,7 @@ const prepareReferenceTask = async (semanticSnapshot?: (references: Array<{ asse
     kind: "VIDEO_GENERATION",
     inputSnapshot: {
       model: "mock-video-v1",
-      prompt: "Generate a reference-set Mock video.",
+      prompt,
       duration: 1,
       resolution: "160x90",
       ratio: "16:9",
@@ -384,6 +388,69 @@ const prepareReferenceTask = async (semanticSnapshot?: (references: Array<{ asse
   });
   return { assets, store, workspaceId, projectId, taskRunId, references };
 };
+
+test("G02 scheduled TaskRun with an ordered identity projection passes Worker preflight", async () => {
+  const sourceText = [
+    "G02_APPROVED_BEAT_1: Snowy picks up Copper Flask.",
+    "G02_APPROVED_BEAT_2: Snowy turns toward the window.",
+  ].join("\n");
+  const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
+  const quote = sourceText.split("\n")[0]!;
+  const quoteHash = createHash("sha256").update(quote, "utf8").digest("hex");
+  const beat = {
+    sequence: 1 as const,
+    span: { start: 0, end: quote.length, quote },
+    exact_quote_sha256: quoteHash,
+    identity_sha256: fingerprintRequest({ brief_revision_id: "cbr_g02_positive", sequence: 1, exact_quote_sha256: quoteHash }),
+  };
+  const lineage = { version: 1 as const, brief_revision_id: "cbr_g02_positive", source_hash: sourceHash, beat };
+  const decisionHash = "e".repeat(64);
+  const prompt = "@Snowy picks up @Copper Flask.";
+  const { assets, store, workspaceId, taskRunId } = await prepareReferenceTask((references) => {
+    const projection = {
+      version: 1 as const,
+      brief_revision_id: "cbr_g02_positive",
+      source_hash: sourceHash,
+      decision_hash: decisionHash,
+      segment_id: "seg_g02_positive_1",
+      prompt_package_id: "ppk_g02_positive",
+      bindings: references.map((reference, position) => ({
+        entity_kind: position === 0 ? "CHARACTER" as const : "PROP" as const,
+        entity_id: `cve_g02_positive_${position}`,
+        entity_revision_id: `cvr_g02_positive_${position}`,
+        exact_name: position === 0 ? "Snowy" : "Copper Flask",
+        asset_id: reference.assetId,
+        asset_sha256: reference.sha256,
+        provider_position: reference.position,
+        mapping_evidence_id: createPrefixedId("mpe"),
+      })),
+    };
+    return {
+      generation_segment_sequence: 1,
+      narrative_beat_sequences: [1],
+      semantic_entity_reference_projection: projection,
+      semantic_entity_reference_projection_hash: fingerprintRequest(projection),
+      semantic_narrative_beat_lineage: lineage,
+      semantic_narrative_beat_lineage_hash: fingerprintRequest(lineage),
+    };
+  }, prompt);
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const deliveryInputs: string[][] = [];
+  const result = await new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    assetStore: assets,
+    referenceDelivery: {
+      async createVisualInput(input) {
+        deliveryInputs.push(input.visualInput.references.map((reference) => reference.asset_id));
+        return { mode: "REFERENCE_SET", urls: input.visualInput.references.map((reference) => `https://provider-input.invalid/${reference.asset_id}`) };
+      },
+    },
+  }).execute({ workspaceId, taskRunId });
+
+  assert.equal(result?.status, "SUCCEEDED", JSON.stringify(result?.error));
+  assert.equal(provider.submitCount, 1);
+  assert.deepEqual(deliveryInputs, [[...(result?.inputSnapshot.reference_asset_ids ?? [])]]);
+  assert.equal((await store.listTaskRunAttempts(workspaceId, taskRunId)).length, 1);
+});
 
 test("G02 Worker preflight rejects a missing exact entity prompt anchor before an attempt or Provider submit", async () => {
   const sourceText = [
@@ -582,6 +649,79 @@ test("invalid video output never enters billing even when a service-fee rule is 
   assert.equal(result?.status, "FAILED");
   assert.equal(result?.error?.code, "DOWNLOAD_INVALID");
   assert.equal(result?.resultAssetId, null);
+});
+
+for (const pause of ["download", "draft lookup", "completion"] as const) {
+  test(`supersession observed after ${pause} stops stale storage or billing continuation`, async () => {
+    const { store, workspaceId, taskRunId } = await prepareTask(true);
+    const bytes = await createMockMp4Fixture();
+    const provider = new MockVideoProvider({ fixtureBytes: bytes });
+    const task = await store.findTaskRun(workspaceId, taskRunId);
+    assert.ok(task);
+    const assetId = createPrefixedId("ast");
+    await store.ensureGeneratedAsset({ workspaceId, taskRunId, assetId, objectKey: `${workspaceId}/${task.projectId}/${assetId}/result.mp4`, provider: "mock", now: new Date() });
+    const originalComplete = store.completeGeneratedTaskRun.bind(store);
+    const closeAndSupersede = async () => {
+      const [attempt] = await store.listTaskRunAttempts(workspaceId, taskRunId);
+      assert.ok(attempt);
+      await originalComplete({ workspaceId, taskRunId, providerAttemptId: attempt.id, assetId, sha256: createHash("sha256").update(bytes).digest("hex"), byteSize: bytes.byteLength, width: 160, height: 90, durationMs: 1000, now: new Date() });
+      // A second executor's completed debit/terminal write is a controlled fixture.
+      await store.markBillingSucceeded({ workspaceId, taskRunId, usageRecordId: createPrefixedId("use"), now: new Date() });
+      const succeeded = await store.findTaskRun(workspaceId, taskRunId);
+      assert.equal(succeeded?.status, "SUCCEEDED");
+      const superseded = { ...succeeded!, supersededByTaskRunId: createPrefixedId("tsk") };
+      (store as unknown as { taskRuns: Map<string, ControlTaskRun> }).taskRuns.set(taskRunId, superseded);
+      return superseded;
+    };
+    if (pause === "download") {
+      const original = provider.download.bind(provider);
+      provider.download = async (input) => { const value = await original(input); await closeAndSupersede(); return value; };
+    } else if (pause === "draft lookup") {
+      const original = store.findGeneratedAssetDraft.bind(store);
+      store.findGeneratedAssetDraft = async (workspace, taskId) => { const captured = await original(workspace, taskId); await closeAndSupersede(); return captured; };
+    } else {
+      store.completeGeneratedTaskRun = async () => closeAndSupersede();
+    }
+    const storage = createInMemoryStoragePort();
+    const inspect = storage.inspectObject.bind(storage);
+    let inspections = 0;
+    storage.inspectObject = async (input) => { inspections += 1; return inspect(input); };
+    const credit = new SuccessfulCreditPort();
+    const billingExecutor = new VideoBillingExecutor(credit, new InMemoryBillingAttemptStore(store));
+    let usageCalls = 0;
+    const executor = new MockVideoTaskExecutor(store, provider, storage, {
+      billingExecutor,
+      videoUsage: { async getUsage(input) { usageCalls += 1; return { providerRequestId: input.providerRequestId, model: "mock-video-v1", actualCost: "0.12" }; } },
+    });
+    const result = await executor.execute({ workspaceId, taskRunId });
+    assert.equal(result?.status, "SUCCEEDED");
+    assert.ok(result?.supersededByTaskRunId);
+    assert.equal(provider.submitCount, 1);
+    assert.equal(credit.debitCalls, 0, "the stale executor must not request even an idempotent debit after observing supersession");
+    if (pause === "download") assert.equal(usageCalls, 0);
+    if (pause !== "completion") assert.equal(inspections, 0, "captured drafts cannot bypass the refreshed task guard");
+  });
+}
+
+test("billing recovery rechecks supersession after an awaited usage lookup", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask(true);
+  const task = await store.findTaskRun(workspaceId, taskRunId);
+  assert.ok(task);
+  const rows = (store as unknown as { taskRuns: Map<string, ControlTaskRun> }).taskRuns;
+  rows.set(taskRunId, { ...task, status: "BILLING_PENDING" });
+  const attempt = await store.ensureProviderAttempt({ workspaceId, taskRunId, providerAttemptId: createPrefixedId("att"), provider: "mock", model: "mock-video-v1", now: new Date() });
+  assert.ok(attempt);
+  await store.recordProviderSubmission({ workspaceId, taskRunId, providerAttemptId: attempt.id, providerRequestId: "offline-billing-resume", now: new Date() });
+  const credit = new SuccessfulCreditPort();
+  const executor = new MockVideoTaskExecutor(store, new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() }), createInMemoryStoragePort(), {
+    billingExecutor: new VideoBillingExecutor(credit, new InMemoryBillingAttemptStore(store)),
+    videoUsage: { async getUsage(input) {
+      rows.set(taskRunId, { ...task, status: "SUCCEEDED", resultAssetId: createPrefixedId("ast"), supersededByTaskRunId: createPrefixedId("tsk") });
+      return { providerRequestId: input.providerRequestId, model: "mock-video-v1", actualCost: "0.12" };
+    } },
+  });
+  assert.equal((await executor.execute({ workspaceId, taskRunId }))?.status, "SUCCEEDED");
+  assert.equal(credit.debitCalls, 0);
 });
 
 test("the documented KIE preview usage model alias completes billing without rewriting the usage fact", async () => {
@@ -891,13 +1031,12 @@ test("C07 rejected submit is preserved as non-retryable PROVIDER_REJECTED by C06
   assert.deepEqual(transport.requests.map((request) => request.method), ["POST"]);
 });
 
-test("C09 explicit retry after a missing provider task creates a fresh provider attempt", async () => {
+test("C09 explicit retry after HTTP 404 retains the known request until status can be recovered", async () => {
   const { store, workspaceId, taskRunId } = await prepareTask();
   const fixture = await createMockMp4Fixture();
   const transport = new C07FakeTransport([
     { status: 202, json: { id: "req_c09_missing" } },
     { status: 404, json: { message: "Video request not found" } },
-    { status: 202, json: { id: "req_c09_fresh" } },
     { status: 200, json: { status: "succeeded" } },
     { status: 200, headers: { "content-type": "video/mp4", "content-length": String(fixture.byteLength) }, stream: streamFromBytes(fixture) },
   ]);
@@ -931,11 +1070,11 @@ test("C09 explicit retry after a missing provider task creates a fresh provider 
   });
   const succeeded = await executor.execute({ workspaceId, taskRunId });
   assert.equal(succeeded?.status, "SUCCEEDED");
-  assert.equal(transport.requests.filter((request) => request.method === "POST").length, 2);
+  assert.equal(transport.requests.filter((request) => request.method === "POST").length, 1);
   const attempts = await store.listTaskRunAttempts(workspaceId, taskRunId);
-  assert.equal(attempts.length, 2);
-  assert.equal(attempts[0]?.status, "ABANDONED");
-  assert.equal(attempts[1]?.providerRequestId, "req_c09_fresh");
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0]?.status, "SUCCEEDED");
+  assert.equal(attempts[0]?.providerRequestId, "req_c09_missing");
 });
 
 test("C07 temporary polling 429 and 503 stay processing and recover without resubmission", async () => {

@@ -1309,6 +1309,7 @@ export const taskRuns = pgTable(
     status: taskRunStatus().default("CREATED").notNull(),
     inputSnapshot: jsonb("input_snapshot").$type<Record<string, unknown>>().notNull(),
     resultAssetId: text("result_asset_id"),
+    supersededByTaskRunId: text("superseded_by_task_run_id"),
     error: jsonb().$type<Record<string, unknown>>(),
     retryAt: timestamp("retry_at", { withTimezone: true, mode: "string" }),
     createdAt: createdAt(),
@@ -1317,6 +1318,9 @@ export const taskRuns = pgTable(
   (table) => [
     uniqueIndex("task_runs_workspace_id_key").on(table.workspaceId, table.id),
     uniqueIndex("task_runs_workspace_project_id_key").on(table.workspaceId, table.projectId, table.id),
+    uniqueIndex("task_runs_superseded_successor_key")
+      .on(table.workspaceId, table.projectId, table.supersededByTaskRunId)
+      .where(sql`${table.supersededByTaskRunId} is not null`),
     index("task_runs_workspace_project_created_at_idx").on(table.workspaceId, table.projectId, table.createdAt),
     uniqueIndex("task_runs_one_active_shot_key")
       .on(table.shotId)
@@ -1336,6 +1340,13 @@ export const taskRuns = pgTable(
       foreignColumns: [assets.workspaceId, assets.projectId, assets.id],
       name: "task_runs_workspace_project_result_asset_fk",
     }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.workspaceId, table.projectId, table.supersededByTaskRunId],
+      foreignColumns: [table.workspaceId, table.projectId, table.id],
+      name: "task_runs_superseded_successor_fk",
+    }).onDelete("no action"),
+    check("task_runs_superseded_terminal_check", sql`${table.supersededByTaskRunId} is null or (${table.kind} = 'VIDEO_GENERATION' and ${table.status} in ('FAILED', 'SUCCEEDED'))`),
+    check("task_runs_superseded_not_self_check", sql`${table.supersededByTaskRunId} is null or ${table.supersededByTaskRunId} <> ${table.id}`),
     check(
       "task_runs_result_asset_success_check",
       sql`(${table.status} = 'SUCCEEDED' and ${table.resultAssetId} is not null) or (${table.status} <> 'SUCCEEDED' and ${table.resultAssetId} is null)`,
@@ -1351,7 +1362,8 @@ export const providerAttempts = pgTable(
     taskRunId: text("task_run_id").notNull(),
     provider: varchar({ length: 128 }).notNull(),
     model: varchar({ length: 255 }).notNull(),
-    providerRequestId: text("provider_request_id"),
+    providerRequestId: text("provider_request_id_v2"),
+    submissionReservedAt: timestamp("submission_reserved_at", { withTimezone: true, mode: "string" }),
     status: providerAttemptStatus().default("CREATED").notNull(),
     requestPayload: jsonb("request_payload").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`).notNull(),
     responsePayload: jsonb("response_payload").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`).notNull(),

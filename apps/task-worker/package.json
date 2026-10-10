@@ -15,6 +15,7 @@
   "dependencies": {
     "@alchemy-video/contracts": "workspace:*",
     "@alchemy-video/credit-veyra": "workspace:*",
+    "@alchemy-video/domain": "workspace:*",
     "@alchemy-video/persistence": "workspace:*",
     "@alchemy-video/provider-video": "workspace:*",
     "@alchemy-video/reference-delivery": "workspace:*",
@@ -24,7 +25,6 @@
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "3.750.0",
-    "@alchemy-video/domain": "workspace:*",
     "@types/node": "^24.0.0",
     "drizzle-orm": "^0.45.1",
     "pg": "^8.16.3",
