@@ -12,15 +12,88 @@ import { Client } from "pg";
 import { providerAttempts } from "../src/schema.js";
 
 const migrationsFolder = resolve(import.meta.dirname, "..", "drizzle");
-const databaseUrl = process.env.DATABASE_URL;
+const databaseUrl = process.env.LEGACY_FENCE_TEST_DATABASE_URL;
+
+const assertLoopbackTestDatabaseUrl = (connectionString: string) => {
+  // pg-connection-string rewrites URLs containing literal spaces before parsing;
+  // reject them so this guard and the driver's effective host cannot diverge.
+  if (/\s/.test(connectionString)) {
+    throw new Error("LEGACY_FENCE_TEST_DATABASE_URL must not contain literal whitespace.");
+  }
+  let connection: URL;
+  try {
+    connection = new URL(connectionString);
+  } catch {
+    throw new Error("LEGACY_FENCE_TEST_DATABASE_URL must be a PostgreSQL URL for a loopback test server.");
+  }
+  if (connection.protocol !== "postgres:" && connection.protocol !== "postgresql:") {
+    throw new Error("LEGACY_FENCE_TEST_DATABASE_URL must use the PostgreSQL URL scheme.");
+  }
+  // Accept one exact IPv4 loopback literal. Do not normalize host strings:
+  // the PostgreSQL driver must receive the exact value that this guard checked.
+  const loopbackHosts = new Set(["127.0.0.1"]);
+  const hosts = [
+    connection.hostname,
+    ...connection.searchParams.getAll("host"),
+    ...connection.searchParams.getAll("hostaddr"),
+  ];
+  if (hosts.some((host) => !loopbackHosts.has(host))) {
+    throw new Error("LEGACY_FENCE_TEST_DATABASE_URL must use the exact loopback host 127.0.0.1 without aliases or formatting.");
+  }
+  return connectionString;
+};
+
+test("disposable migration database URL rejects non-loopback targets before connecting", () => {
+  assert.throws(
+    () => assertLoopbackTestDatabaseUrl("postgres://test:test@postgres.example:5432/test_db"),
+    /loopback/,
+  );
+  assert.throws(
+    () => assertLoopbackTestDatabaseUrl("postgres://test:test@localhost:5432/test_db"),
+    /loopback/,
+  );
+  assert.throws(
+    () => assertLoopbackTestDatabaseUrl("postgres://test:test@[::1]:5432/test_db"),
+    /loopback/,
+  );
+  assert.throws(
+    () => assertLoopbackTestDatabaseUrl("postgres://test:test@127.0.0.1:5432/test_db?host=postgres.example"),
+    /loopback/,
+  );
+  assert.throws(
+    () => assertLoopbackTestDatabaseUrl("postgres://test:test@127.0.0.1:5432/test_db?host=127.0.0.1%20"),
+    /loopback/,
+  );
+  assert.throws(
+    () => assertLoopbackTestDatabaseUrl("postgres://test:test@127.0.0.1:5432/test_db?host=127.0.0.1 "),
+    /whitespace/,
+  );
+  assert.throws(
+    () => assertLoopbackTestDatabaseUrl("postgres://test:test@127.0.0.1:5432/test_db?host=%5B%3A%3A1%5D"),
+    /loopback/,
+  );
+  assert.throws(
+    () => assertLoopbackTestDatabaseUrl("postgres://test:test@127.0.0.1:5432/test_db?hostaddr=127.0.0.1,192.0.2.1"),
+    /loopback/,
+  );
+  assert.throws(
+    () => assertLoopbackTestDatabaseUrl("postgres://test:test@127.0.0.1:5432/test_db?host=127.0.0.1,127.0.0.1"),
+    /loopback/,
+  );
+  assert.equal(
+    assertLoopbackTestDatabaseUrl("postgres://test:test@127.0.0.1:5432/test_db"),
+    "postgres://test:test@127.0.0.1:5432/test_db",
+  );
+});
 
 // Historical migrations explicitly qualify public. An owned disposable database
 // tests the unmodified chain without touching the caller's tables or journal.
 const withIsolatedDatabase = async (run: (client: Client) => Promise<void>) => {
   assert.ok(databaseUrl);
-  const admin = new Client({ connectionString: databaseUrl });
+  const safeDatabaseUrl = assertLoopbackTestDatabaseUrl(databaseUrl);
+  const admin = new Client({ connectionString: safeDatabaseUrl });
   const databaseName = `legacy_worker_fence_${randomUUID().replaceAll("-", "")}`;
-  const isolatedUrl = new URL(databaseUrl);
+  const isolatedUrl = new URL(safeDatabaseUrl);
   isolatedUrl.pathname = `/${databaseName}`;
   const client = new Client({ connectionString: isolatedUrl.toString() });
   let created = false;

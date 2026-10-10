@@ -37,6 +37,7 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgres://alchemy_video_os:ci-only@127.0.0.1:5432/alchemy_video_os_test
+      LEGACY_FENCE_TEST_DATABASE_URL: postgres://alchemy_video_os:ci-only@127.0.0.1:5432/alchemy_video_os_test
       REDIS_URL: redis://127.0.0.1:6379/15
       S3_ENDPOINT: http://127.0.0.1:9000
       S3_REGION: us-east-1
