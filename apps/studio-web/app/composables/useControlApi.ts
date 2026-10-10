@@ -429,7 +429,7 @@ export function useControlApi() {
       body: input,
     });
 
-  const confirmAssetUpload = (assetId: string, input: { sha256: string; mime_type: string; byte_size: number }, idempotencyKey: string) =>
+  const confirmAssetUpload = (assetId: string, input: { sha256: string; mime_type: string; byte_size: number; duration_ms?: number }, idempotencyKey: string) =>
     $fetch<AssetResponse>(`/api/v1/assets/${assetId}/confirm-upload`, {
       method: "POST",
       headers: commandHeaders(idempotencyKey),

@@ -146,8 +146,11 @@ const assertFinalProduction = async (projectId, databaseUrl) => {
         (SELECT count(*)::integer FROM task_runs WHERE workspace_id = $1 AND project_id = $2 AND status = 'SUCCEEDED') AS completed_tasks,
         (SELECT count(*)::integer FROM video_versions WHERE workspace_id = $1 AND project_id = $2 AND status = 'SUCCEEDED') AS completed_versions,
         (SELECT asset.object_key FROM video_versions version JOIN assets asset ON asset.workspace_id = version.workspace_id AND asset.project_id = version.project_id AND asset.id = version.asset_id WHERE version.workspace_id = $1 AND version.project_id = $2 AND version.status = 'SUCCEEDED' ORDER BY version.created_at DESC LIMIT 1) AS final_object_key,
+        (SELECT json_build_object('sha256', asset.sha256, 'byte_size', asset.byte_size, 'duration_ms', asset.duration_ms) FROM video_versions version JOIN assets asset ON asset.workspace_id = version.workspace_id AND asset.project_id = version.project_id AND asset.id = version.asset_id WHERE version.workspace_id = $1 AND version.project_id = $2 AND version.status = 'SUCCEEDED' ORDER BY version.created_at DESC LIMIT 1) AS final_metadata,
+        (SELECT count(*)::integer FROM production_runs run JOIN delivery_plan_revisions plan ON plan.workspace_id = run.workspace_id AND plan.project_id = run.project_id AND plan.storyboard_revision_id = run.storyboard_revision_id AND plan.id = run.delivery_plan_revision_id AND plan.consumed_by_production_run_id = run.id WHERE run.workspace_id = $1 AND run.project_id = $2 AND plan.status = 'CONSUMED') AS consumed_delivery_plans,
+        (SELECT report.details FROM video_versions version JOIN qc_reports report ON report.workspace_id = version.workspace_id AND report.project_id = version.project_id AND report.id = version.qc_report_id AND report.subject_type = 'VIDEO_VERSION' AND report.subject_id = version.id AND report.kind = 'COMPOSITION' WHERE version.workspace_id = $1 AND version.project_id = $2 AND version.status = 'SUCCEEDED') AS final_review,
         (SELECT count(*)::integer FROM handoff_reviews WHERE workspace_id = $1 AND project_id = $2) AS handoff_reviews,
-        (SELECT count(*)::integer FROM transition_repairs WHERE workspace_id = $1 AND project_id = $2 AND strategy = 'BLEND' AND status = 'ACCEPTED') AS safe_blend_repairs,
+        (SELECT count(*)::integer FROM transition_repairs WHERE workspace_id = $1 AND project_id = $2) AS transition_repairs,
         (SELECT continuity_status FROM production_runs WHERE workspace_id = $1 AND project_id = $2 ORDER BY created_at DESC LIMIT 1) AS continuity_status,
         (SELECT target_resolution FROM creative_brief_revisions WHERE workspace_id = $1 AND project_id = $2 ORDER BY revision DESC LIMIT 1) AS target_resolution,
         (SELECT array_agg(DISTINCT input_snapshot ->> 'resolution') FROM task_runs WHERE workspace_id = $1 AND project_id = $2) AS task_resolutions,
@@ -159,12 +162,17 @@ const assertFinalProduction = async (projectId, databaseUrl) => {
     assert.equal(row.accepted_segments, 2, "C12 E2E did not accept all planned segments.");
     assert.equal(row.completed_tasks, 2, "C12 E2E did not complete exactly one TaskRun per planned segment.");
     assert.equal(row.completed_versions, 1, "C12 E2E did not create one immutable final video version.");
-    assert.equal(row.handoff_reviews, 1, "C12.1 E2E did not persist every adjacent handoff review.");
-    assert.equal(row.safe_blend_repairs, 0, "C12.1 E2E created a transition repair without an available semantic evaluation.");
-    assert.equal(row.continuity_status, "NEEDS_ATTENTION", "C12.1 E2E did not safely project the unavailable evaluator.");
+    assert.equal(row.consumed_delivery_plans, 1, "C12 E2E did not bind its run to the consumed same-project DeliveryPlan and Storyboard.");
+    assert.equal(row.handoff_reviews, 0, "C12 DeliveryPlan hard-cut composition unexpectedly created a legacy handoff review.");
+    assert.equal(row.transition_repairs, 0, "C12 DeliveryPlan hard-cut composition unexpectedly created a transition repair.");
+    assert.equal(row.continuity_status, "NOT_CHECKED", "C12 DeliveryPlan hard-cut composition claimed a continuity evaluation.");
+    assert.equal(row.final_review?.review_completeness, "PARTIAL", "C12 Mock composition must retain incomplete semantic coverage.");
+    assert.equal(row.final_review?.semantic_evaluation?.status, "UNAVAILABLE", "C12 Mock composition claimed unavailable semantic evaluation.");
+    assert.equal(row.final_review?.audio_spotcheck?.has_audio, true, "C12 final review did not detect the uploaded MUSIC audio.");
+    assert.equal(row.final_review?.audio_summary?.music_applied, true, "C12 composition did not record its selected MUSIC asset.");
     assert.equal(row.target_resolution, "480p", "C12 E2E did not persist the selected target resolution.");
     assert.deepEqual(row.task_resolutions, ["480p"], "C12 E2E did not propagate the selected resolution to every TaskRun snapshot.");
-    return { objectKeys: row.object_keys ?? [], finalObjectKey: row.final_object_key ?? "" };
+    return { objectKeys: row.object_keys ?? [], finalObjectKey: row.final_object_key ?? "", finalMetadata: row.final_metadata };
   } finally {
     await database.end();
   }
@@ -179,7 +187,7 @@ const assertPublicPlaybackProjection = async (projectId) => {
   assert.equal(versionsResponse.status, 200);
   const [progress, versions] = await Promise.all([progressResponse.json(), versionsResponse.json()]);
   assert.equal(progress.data[0].production_run.status, "SUCCEEDED");
-  assert.equal(progress.data[0].production_run.continuity_status, "NEEDS_ATTENTION");
+  assert.equal(progress.data[0].production_run.continuity_status, "NOT_CHECKED");
   assert.equal(progress.data[0].segments.filter((segment) => segment.status === "ACCEPTED").length, 2);
   assert.equal(versions.data.length, 1);
   assert.equal(versions.data[0].status, "SUCCEEDED");
@@ -312,6 +320,8 @@ const run = async () => {
     assert.equal(browserResult.segment_count, 2);
     assert.equal(browserResult.mobile_viewport, "390x844");
     const production = await assertFinalProduction(browserResult.project_id, databaseUrl);
+    assert.equal(browserResult.download_sha256, production.finalMetadata.sha256, "C12 browser download differs from the immutable final asset.");
+    assert.equal(browserResult.download_byte_size, production.finalMetadata.byte_size, "C12 browser download byte size differs from the immutable final asset.");
     await preserveFinalArtifact(storage, production.finalObjectKey, browserResult.project_id);
     await assertPublicPlaybackProjection(browserResult.project_id);
   } catch (error) {
@@ -372,7 +382,7 @@ const run = async () => {
   if (ownedRunInterrupted()) cleanupFailures.push(new Error("C12 E2E was interrupted; owned resources are preserved and acceptance did not complete."));
   if (cleanupFailures.length) throw new AggregateError(executionError ? [executionError, ...cleanupFailures] : cleanupFailures, `C12 E2E cleanup failed; retained/inspect ${resources.residualDescription()}; queues=${queuePrefix}; files=${environment.STUDIO_NUXT_BUILD_DIR},${environment.STUDIO_NITRO_OUTPUT_DIR}.`);
   if (executionError) throw executionError;
-  console.log("C12 local E2E passed: Studio project planning, Mock segment generation, QC/handoff, versioned composition, final-video playback/download, public redaction, mobile layout, and isolated cleanup.");
+  console.log("C12 local E2E passed: Studio project planning, Mock segment generation, consumed DeliveryPlan hard-cut composition, partial technical/audio QC, final-video playback and byte-matched download, public redaction, mobile layout, and isolated cleanup.");
 };
 
 await run();

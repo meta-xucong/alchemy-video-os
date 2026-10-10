@@ -122,3 +122,29 @@ Mock harness 独立审计最后重跑 14 pass / 0 fail / 0 skip，三项已发�
 - 沿用 [Gitleaks v8.24.3 官方 fingerprint 机制](https://github.com/gitleaks/gitleaks/blob/v8.24.3/README.md#gitleaksignore)，根 `.gitleaksignore` 只加入该提交、完整文件路径、规则和行号组成的一条精确指纹。当前文档给包选择器加引号并显式使用 `run`，仍调用相同三项脚本。未豁免整个文件、规则或提交，未调整阈值/CI，未重写历史；仅改当前文档无法消除历史扫描中的原始误报。
 - 验证使用官方 release 的 `8.24.3` Linux x64 二进制，归档 SHA-256 与官方 checksum 一致：`9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c`。补齐只读远端历史后，在无工作树 ignore 文件的临时本地 clone 中以 `--no-merges --first-parent cd4c2cea5f44b13cbc1d7bf74c660d3bd9c25e3b^..9419b30c83da2e48348e3ad36a3e207d3d8a64d1` 扫描 23 个提交：不加载精确指纹为 1 finding、退出 1；加载后为 0 finding、退出 0。
 - 正控制：另一个临时提交保留相同原始文档、相同路径与第 106 行，加载上述 ignore 后仍为 1 finding、退出 1，证明新提交未被该指纹放行。当前文档及本次改动文件的独立文件扫描、`git diff --check` 通过。扫描报告仅本地脱敏保存，未上传；没有运行真实 Provider、改产品代码或把本次扫描当作最终 SHA 全套 CI。升级 Gitleaks 后须重验其官方标为 experimental 的 fingerprint 行为。
+
+## 12db 修订的正式 CI 与本地续验
+
+提交 `12dbf0c8897436a019f60b69610e6e179671ca23`、tree `22190eba5eef426cebe793725bb6421ba3794d35` 已推送且九项文件 blob 与云端逐一匹配。[CI 38091761122](https://github.com/meta-xucong/alchemy-video-os/actions/runs/38091761122) 六个 job 成功，Validate 的 C12 阶段失败：
+
+- 18 个 Node 套件 1042 pass / 0 fail / 0 skip；媒体独立 job 159/159。
+- C06 浏览器失败/显式重试流程通过，随后实际清理 2 个项目、3 个对象、两个隔离队列、fixture 和子服务通过。原 S3 XML 阻断已在真实 MinIO 路径关闭；secret scan 也通过。
+- C12 的两个视频任务均成功、两个段均 ACCEPTED，但最终合成转为 FAILED，浏览器未得到最终成片；捕获的 Runtime 日志仅显示 inspect/handoff-frame，未出现 compose 调用。该阻断须继续定位，不能解释为浏览器等待不够，也不能把 1042 项成功扩大成 Validate 成功。
+- 本地 9419 在补齐锁定 `ffmpeg-static` 官方二进制后，原 Worker 失败组合重跑为 52 pass / 0 fail / 0 skip；不继承给其他 SHA。Python Playwright 1.62.0 与官方 Chromium 已在任务隔离环境准备。
+- 本地代理 127.0.0.1:7890 在主机实际监听；默认 sandbox 的 EACCES 是隔离限制。相同 Git fetch 经正常审批路径成功，没有改代理或系统权限。新建干净 `D:\AI\alchemy_video_OS\review-12dbf0c88974`，HEAD/tree 与上述提交一致，新增 XML 回归 6/6、diff 检查通过。
+- 完整本地 UI 仍待任务专属 Linux runner 的 PG/Redis/MinIO 和成片问题修复；Windows smoke 曾有任务 Python 残留，已核实归属后定点停止，不能把 smoke 成功当成进程树清理证明。原开发目录与旧 worktree 均保留。
+
+## C12 音乐上传时长修复与限定复审
+
+已通过真实 Control API 确认缺陷：Studio 旧上传 body 仅含 hash/MIME/size，READY MUSIC 的时长仍为 null，实际合成输入读取器拒绝该手选资产。补丁只在 Studio 浏览器元数据与已有 `duration_ms` DTO 之间补转发，校验既有整数存储范围并清理临时媒体资源；Runtime、服务端验证、Provider 和媒体算法不变。详细来源、方案及历史 null 资产边界见验收文档 §10。
+
+独立复审核实：当前 consumed DeliveryPlan 路径不应产生旧 handoff review/transition repair；验收先核对同作用域双向 run/plan 绑定，再断言 `NOT_CHECKED` 和零 review/repair。旧无 DeliveryPlan 的行为与测试保留。QC 查询严格绑定该 VideoVersion 的 COMPOSITION 报告；嵌套字段与实际 Worker→Drizzle 写入一致。浏览器播放时钟和下载完成后的 hash/size 校验增加了实际行为证据，没有以改成预期成功状态替代产品修复。
+
+- 实施者 Studio 全套 63 pass / 0 fail，新增 metadata/实际上传 handler 16 项包含于其中；实际 API/存储/合成资格专项 3/3。Control API 全套 155 pass / 0 fail / 2 数据库条件 skip，跳过不算通过。Studio typecheck 和生产 build 通过。
+- 独立审计重跑 Studio 专项 16/16、API 专项 3/3，另执行 10 个实际 handler 的失败/跨项目交错场景；C12 JS/Python 语法与 diff 检查通过。没有运行完整浏览器，不冒称正式运行时路由凭证。
+- 使用相同 C12 WAV 与两个真实固定 Mock MP4，按实际 ALCHMED8 bundle 执行下游 Runtime，产物 43,587 bytes、160×90、2,000 ms、H.264/AAC、48 kHz mono；终检 PASS / PARTIAL、semantic UNAVAILABLE、有音轨、unexpected_silence=false。这是定向实际 Runtime 验证，不是整条浏览器/PG/MinIO E2E，也不等于请求的 30 秒/480p 真实质量验收。
+- 实施环境的媒体安装 hooks 缺失时，仅恢复同一 `ffmpeg-static@5.3.0` 已有缓存包，manifest 对比一致、二进制 SHA-256 与前述 `e7e7fb…a3eb99` 相同；没有使用系统 fallback。
+
+完整新 SHA CI、C12 浏览器与本地 Linux runner 仍需执行。旧缺失时长的 READY 音乐不会自动回填或重写，需要显式重传，不能将本次新上传修复宣称为历史数据治理完成。
+
+最终独立复审与主任务复算的七文件指纹为 `90f905421a45385aa087fc6173fcc0c3ae5959328a435d0a8534ee514f27a392`：上述两个 C12 脚本、新 API duration 测试、Studio metadata adapter、useControlApi、项目页及新 MUSIC 测试，路径按 `LC_ALL=C` 排序后生成每行 `sha256sum`，再对完整 manifest 字节取 SHA-256。无代码级阻断；所有通过数仍限定于实际执行范围。

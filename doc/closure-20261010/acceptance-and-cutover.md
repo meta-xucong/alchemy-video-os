@@ -75,7 +75,7 @@ S06 记录下列事实，均保持“历史记录、待实际证据复核”标�
 | Q03 | 合法字段但错 project/workspace/subject/version/asset | 拒绝把不同对象的证据合并 |
 | Q04 | 文件存在但 hash/bytes 与绑定不符 | 拒绝媒体身份核验；不调用 Provider 补片 |
 | Q05 | QC 为 `PASS`，coverage 为 `PARTIAL` | 原样展示二者；不提升为完整语义验收 |
-| Q06 | 当前 C12 Mock continuity 为 `NEEDS_ATTENTION` | 仅证明 unavailable evaluator 的正确投影；不解释历史 composition QC |
+| Q06 | 旧无 DeliveryPlan 的 Mock continuity 为 `NEEDS_ATTENTION`；当前 DeliveryPlan-backed 流程为 `NOT_CHECKED` | 分别保留 legacy evaluator 与当前来源 hard-cut 语义；均不解释历史 composition QC |
 | Q07 | 导出或日志含凭据、原始 URL query、原始 Provider payload | 不写入公开报告/仓库；要求最小脱敏输入；不自动上传 |
 | Q08 | 在当前代码重验同一媒体 | 保留旧结果及时间；新结果有独立代码/hash/config 绑定 |
 
@@ -239,3 +239,29 @@ S10 的 C12 入口创建随机数据库和四组随机队列，走 Studio → AP
 | 完整 C06/C12 UI、真实 PG/Redis/MinIO清理、最终 SHA CI | 该推送前检查点尚未执行 | 历史 PENDING；后续 `9419b30` C06 UI 通过但清理失败、C12 未执行，不能用 helper 替身或语法检查替代 |
 
 一次最初的 `pnpm --filter ... exec` 调用因当前云端 PATH 的 pnpm 版本/用户目录检查失败，未形成测试结果；随后直接使用工作区现有 Node/tsx 成功运行上述定向测试。CI 继续锁定 pnpm 10.33.0，没有为此更改包管理器版本或依赖门槛。
+
+## 10. C12 上传时长与当前合成路径修复方案
+
+固定排查提交 `12dbf0c8897436a019f60b69610e6e179671ca23`，CI run `38091761122`。两个片段与 TaskRun 均成功，ProductionRun 在发起 Runtime compose HTTP 前失败。沿实际 Studio 上传 body 执行 Control API 回归，MUSIC 被确认成 READY，但 `duration_ms=null`；`findProductionCompositionInput` 的既有 MANUAL 时长校验因而拒绝该曲目。不是 UI 刷新超时，也不以延长等待或放宽 QC 修复。
+
+实施边界（先方案后代码）：
+
+1. 沿用固定提交的 `packages/contracts/src/resources.ts::ConfirmAssetUploadCommandSchema.duration_ms`、Control API `confirm-upload` 映射与资产持久化字段。Studio 仅补齐浏览器 `HTMLMediaElement.duration` 到毫秒字段的上传元数据薄适配；加载事件依据同一提交 `c06-studio-ui-e2e.py::video_dimensions` 已有的 `loadedmetadata` 模式。不是新的媒体时长算法，不是服务端实测事实，也不改变公开 DTO。
+2. 读取用户已选择文件的临时 object URL；非有限、非正数、不能安全表示为正整数毫秒、超出既有 PostgreSQL integer 存储范围的结果、加载失败或 10 秒 UI 资源等待届满均拒绝，不生成估算值、不提交上传确认。10 秒复用 C06 metadata 等待，只限制 UI 资源生命周期，不是音频/QC 阈值。成功/失败均解除事件、停止加载并 revoke URL。异步结束核对当前项目，避免旧项目结果修改新项目的 MUSIC 选择。
+3. 现有 hash/MIME/size 校验、MANUAL MUSIC 时长资格、Worker/Runtime bytes/ffprobe、source full_mix 与终检保持原义；客户端报告时长不提升为服务端权威测量。未知时长的历史 READY 上传仍保持原有 fail-closed，不能猜测回填或通过重新确认改写，需显式重新上传或另行批准的修复。
+4. C12 DB 验收先核实 ProductionRun 双向绑定同工作区/项目/Storyboard 的 `CONSUMED` DeliveryPlan，再断言零 handoff review、零 transition repair、`NOT_CHECKED`。来源是固定提交 `production-repository.ts::findProductionCompositionInput/acceptProductionSegmentQc` 的 DeliveryPlan hard-cut 路径及现有 PG 集成回归；旧无 DeliveryPlan 的 `NEEDS_ATTENTION` 测试不改。继续要求恰好 2 个成功 TaskRun、2 个接受片段和 1 个不可变成片版本；绑定该版本的既有 COMPOSITION QC 必须记录音轨、MUSIC 应用、`PARTIAL` 与语义 `UNAVAILABLE`，不将未知覆盖写成完成。
+5. 浏览器除 metadata 就绪外，实际调用播放并验证播放时钟推进；下载须成功并读到非空 MP4 字节，其 size/SHA-256 与该不可变成片资产一致。保持当前 480p 请求设置、公开脱敏、390px 布局和本次资源清理断言。实际 Mock 视频固定为每段 1 秒、160×90，不能把 30 秒/480p 请求设置当成产物质量。只声称 Mock 管线及文件播放/下载，不声称真实 Provider、完整语义质量或历史 QC 已验证。
+
+验证计划：浏览器媒体替身覆盖有效/无效/超时/加载异常及 URL 清理；执行实际上传函数证明无效时长不发上传/确认、跨项目不应用旧结果；真实 Control API + 现有资产存储端口证明上传确认字段落库、缺失时长不具备合成资格；最终 C12 CI 用真实浏览器和 Runtime 证明完整路径。定向通过不能代替最终 SHA 的完整 CI。
+
+### 10.1 本次定向验证回执（未提交工作树）
+
+- Studio 目录 `node --test tests/music-upload.test.mjs`：16 pass / 0 fail / 0 skip；最后重跑执行真实页面的 `safeErrorMessage`，确认错误保持原有公开 fallback，不把测试替身原始 Error 文案当 UI 事实。`node --test tests/*.test.mjs`：63 pass / 0 fail / 0 skip，包含上述 16 项，不相加。
+- Control API 目录 `node --import tsx --test tests/music-upload-duration.test.ts`：3 pass / 0 fail / 0 skip。真实 API/内存资产存储接收确认后，将该 MUSIC row 传入现有 `DrizzleProductionRepository.findProductionCompositionInput`；查询端使用与既有 repository 测试相同的只读 Drizzle-shaped fixture，不声称 PostgreSQL 已验证。缺失时长精确重现 `QC_FAILED: the explicitly selected music asset is not available or failed scope validation`；30000ms 报告值生成合法的 2000ms 两段 hard-cut composition input。
+- Control API 目录 `node --import tsx --test tests/*.test.ts`：155 pass / 0 fail / 2 skip。两个跳过为缺少专用 PostgreSQL 的计费产物公开门和 SSE replay 集成，不计为通过。单独 `tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck tests/music-upload-duration.test.ts` 退出 0。
+- Studio 目录 `node node_modules/nuxt/bin/nuxt.mjs typecheck` 和 `NUXT_TELEMETRY_DISABLED=1 node node_modules/nuxt/bin/nuxt.mjs build` 均退出 0；C12 MJS `node --check`、Python `ast.parse`、`git diff --check` 通过。
+- 下游真实 Runtime 定向重放：Control API 目录通过 `node --import tsx --input-type=module` heredoc 调用现有 `verifyBundledMediaTools/createMockMp4Fixture`，Python AST 仅提取现有 `c12-studio-ui-e2e.py::create_music_fixture` 生成相同 30 秒 WAV；Node `encodeMediaCompositionBundle` 使用两段实际 Mock MP4 和 repository 所证明的 ALCHMED8 计划（2000ms、PASS、LEGACY_PRESERVE、两条原片音轨事实及唯一 MUSIC 0..2000ms）；将 bundle 经 stdin 传给 `python3 -c` 的现有 `runtime.compose_video_bundle`，再执行 `final_review_video_bytes(caption_policy='OFF', music_applied=True)`。全程离线、临时文件作用域内清理，没有新增 Runtime 实现或测试阈值。
+- 上述实际输出为 H.264/AAC、160×90、2000ms、43587 bytes、mono 48000Hz；SHA-256 `9d3d3bbe364c1749718847081e62e7cafb4752ff3d8ece114aeb693c41ead8c1`。终检 `PASS / PARTIAL`、semantic `UNAVAILABLE`、音轨存在、unexpected_silence=false、-14 LUFS / -7.8 dBTP。运行媒体未上传；这是当前 Mock fixture 的技术回执，不是历史 QC 或真实视频质量证明。
+- 当前环境的 `ffmpeg-static@5.3.0` 二进制曾缺失；沿用先前回执的缓存修复方式，先比较相同包 manifest，再从已有隔离工作树的同版安装缓存恢复。复制前后 SHA-256 均为 `e7e7fb30477f717e6f55f9180a70386c62677ef8a4d4d1a5d948f4098aa3eb99`，`verifyBundledMediaTools` 通过；未加入系统 FFmpeg fallback。
+
+完整浏览器、真实 PG/Redis/MinIO 及最终提交 CI 仍须另行核验。当前 shell 未提供这些服务；上述真实 Runtime 重放和测试替身不能替代该层验收。
