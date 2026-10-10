@@ -7,8 +7,8 @@
 - 方案编制：三份专项方案及总览已形成。
 - 方案独立复审：2026-10-10 通过限定范围审查；要求验证自关联 FK 对合法批量清理的影响、晚到状态写入守卫、真实缺包 CLI 回归和测试资源退出/清理顺序。
 - 产品代码实现：R01 私有替代关系、R02 精确版本未使用依赖边移除、R04 现有 Mock 浏览器 harness 已完成本地实现及限定范围复审。不实现新的 QC/路由凭证解析协议。
-- 最终代码复审：恢复范围及 Mock harness 限定范围通过。2026-10-10 21:58 UTC 用户已批准向官方 npm registry 发送依赖名称、版本和关系，并选择本地隔离部署测试；在线审计与新提交 CI 恢复推进。精确 SHA CI 尚未完成，不能继承基线结果。
-- 本地协作与同步：隔离目录 `D:\AI\alchemy_video_OS\review-3fd8410baf90` 已精确拉取基线 `3fd8410baf904e879ae353e796b98b10e7ea3495`；当前修订尚未推送或同步。指定旧 Codex 会话的受支持接口失败，不视为已完成双方通信。
+- 最终代码复审：恢复范围及 Mock harness 限定范围通过。2026-10-10 21:58 UTC 用户已批准向官方 npm registry 发送依赖名称、版本和关系，并选择本地隔离部署测试。修订已推送为 `9419b30c83da2e48348e3ad36a3e207d3d8a64d1`；其 CI 已结束并暴露下述两项阻断，不能称为全绿。
+- 本地协作与同步：隔离目录 `D:\AI\alchemy_video_OS\review-9419b30c83da` 已确认 HEAD 为 `9419b30c83da2e48348e3ad36a3e207d3d8a64d1`、tree 为 `fae9717a81c7d12f74ddb964d58612fe89b40862`，工作树干净。原开发目录及 `review-3fd8410baf90` 保留；原指定 Codex 会话的受支持接口失败，不视为已完成双方通信。后续补丁仍须再次同步。
 - 合并、部署、真实 Provider、生产迁移：未执行。
 
 ## 基线回执（历史，不覆盖本轮修改）
@@ -21,7 +21,7 @@
 
 生产或敏感证据只按获授权的接收方和路径处理；先前未获准上传的审计 JSON/镜像清单不得改走其它渠道。仓库只保存开发方案、代码、合成测试和脱敏结论。
 
-## 当前实施检查点（未形成最终提交）
+## 实施历史检查点（推送前记录）
 
 - 本地现有开发目录报告 HEAD 为 `071f46e`，有 8 项修改和 3 项未跟踪；原目录保留。指定原 Codex 会话的受支持接口报错，尚不能认定已联系；新建的本地核验任务负责隔离工作树复核，最终拉取与版本一致性仍待确认。
 - 依赖精确边移除后，独立干净目录及主云端工作树均完成离线 frozen install：675 包复用、零下载，安装使用 `--ignore-scripts`。独立目录另行完成 Nuxt prepare 及真实 Drizzle CLI 回归；最终合并工作树的构建与回归仍在运行。
@@ -86,3 +86,39 @@ Mock harness 独立审计最后重跑 14 pass / 0 fail / 0 skip，三项已发�
 - R02 只允许 `drizzle-kit@0.31.10>@esbuild-kit/esm-loader: -`，必须从真实干净安装和 Kit 的解析上下文证明该旧链已不存在；真实 generate/check 对比不能由 grep/mock 替代。node-forge/braces 继续 OPEN。
 - R04 所有连接包括异常诊断路径必须先验证目标；停止并确认所有 mutator 退出后才收集/删除本次对象和数据库。失败不能扩大清理范围，不得静默清理共享服务。
 - Q01–Q08、历史 QC 与运行时 receipt 的读取/分析依赖实际受权输入，当前仅保留计划；不伪造正式凭证或生成一个新的验收协议来替代缺失证据。
+
+## Windows 本地 9419 交叉复核回执
+
+2026-10-10 22:27 UTC 本地核验任务返回：干净隔离工作树 `review-9419b30c83da` 的源码 SHA/tree 与云端已发布版本一致；当地直接访问 GitHub 被代理拒绝，其远端状态引用父任务已经成功完成的 GitHub 核验，不能称为独立远端读取。原目录仍有 8 项修改、3 项未跟踪，未覆盖。
+
+- 根 typecheck 通过；固定旧夹具换行测试 2/2；Worker 已知 request ID 专项 10/10。
+- API supersession/隔离工具组合 19 pass / 0 fail / 4 skip，四项 POSIX 专属分支在 Windows 跳过。
+- 本任务 loopback PostgreSQL 16.15 的定向集成 58 pass / 0 fail，覆盖迁移、双向锁竞争、事务故障回滚、恢复及 QC 后显式再生成。首次因专用基础库未迁移的错误已在仅迁移本任务数据库后重跑关闭。
+- Worker 执行组合 22 pass / 30 fail：固定 `ffmpeg-static` Mock 媒体二进制未随跳过安装脚本的依赖安装准备完整，未用系统工具替代。该组合不能算通过，待补齐环境后重跑。
+- Python Playwright 缺失、CUA 启动器错误，完整本地 UI 未完成。任务 PG 容器最后核验健康、绑定 loopback 56432；随后 npipe 权限错误导致资源最终状态未确认。后续仅通过正常审批路径修复并核对本任务资源，不操作其他服务。
+
+本地代码范围复审未报告新阻断，认为私有 A→B 替代关系及严格布尔终态证据是必要的最小适配；这不代替尚未通过的环境/浏览器验收。
+
+## 首次新 SHA 的 CI 结果与收尾阻断
+
+固定提交 `9419b30c83da2e48348e3ad36a3e207d3d8a64d1`，对应 [Actions run 38090315025](https://github.com/meta-xucong/alchemy-video-os/actions/runs/38090315025)。七个 job 中五个成功：Windows fixture fidelity、production dependency audit、Docker runtime、diff hygiene、media runtime；Validate 和 secret scan 失败。
+
+- Validate 中构建、typecheck、普通及专用恢复测试库迁移成功；18 个 Node 套件合计 1036 pass / 0 fail / 0 skip。这不是整个 Validate job 成功。
+- C06 Playwright 的失败展示、显式重试及 160×90 / 1 秒 Mock 视频 UI 断言通过。随后清理本次 bucket 的 `ListObjectsV2` 因 `@aws-sdk/core@3.750.0` 注册数字实体与强制 `fast-xml-parser@5.7.0` 不兼容而失败：`Invalid character '#' in entity name: "#xD"`。清理按既有 fail-closed 规则保留资源，没有放宽检查；C12 因前置失败未执行。
+- Secret scan 失败是下一节核实的文档命令误报，不能把这次失败记成通过。
+- 修复须保留真实 SDK XML 反序列化回归，并在下一固定 SHA 重跑完整 CI、C06 清理及 C12。此次 1036 项结果不能预先覆盖新的依赖锁文件。
+
+### S3 XML 与误报修复的独立交叉复核
+
+独立审计确认仅将官方 `fast-xml-parser` 补丁版从 `5.7.0` 固定到 `5.7.2`；结构化比较锁文件，其余包版本、SDK、清理代码与检查门槛未变。真实 SDK XML 专项独立运行 6 pass / 0 fail / 0 skip；storage 全目录为 22 pass / 0 fail / 1 skip，跳过的是该审计 shell 未配置 MinIO 的集成用例。实现者运行的 22 项非集成用例与这些测试有重叠，不相加，也不声称真实 S3 清理已经通过。
+
+独立核对官方 registry 审计响应：生产 219 依赖、零漏洞；完整 821 依赖、2 high，muted 为空。Gitleaks 相同 23 提交范围的无 ignore / 精确 fingerprint / 另一提交正控制分别为 1 / 0 / 1 finding；官方归档 checksum 一致。当前文档已区分历史、`9419b30` 的部分成功/失败及最终 SHA 待跑范围，`git diff --check` 通过。此次静态和定向审查未发现新的阻断；全量构建、最终 CI、真实 MinIO 清理及本地部署回执另行记录。
+
+修复冻结后，实施者使用 PATH 优先固定的 pnpm 10.33.0 完成根完整 build/typecheck（均退出 0），新增测试文件单独 strict typecheck 通过。主任务另行运行 14 项 Mock supervisor 回归全部通过、零跳过；其资源故障操作仍使用替身，真实资源清理仍由下一 SHA 的 CI 验证。主任务复算关键文件 SHA-256 与独立审计一致：manifest `7e33ef01a31394b331f954548b95c14311b330af7c18cb9850454683c4161f97`；lock `0310e5c8c37d9cb6ce4b6e6198a87093138a53cd19686125284fa49db913a570`；XML 测试 `8bc4bb96d2ffb44ac5f116d3788d51692f84a5aa2868f5a437bb3a03b34bcf01`；精确 ignore `6e98746baadb10296dbb01bebc50982446792578f68274e09f60fff0dbd4c469`。
+
+## Secret scan 文档误报修复（2026-10-10）
+
+- Gitleaks `8.24.3` 在提交 `9419b30c83da2e48348e3ad36a3e207d3d8a64d1` 的 `acceptance-and-cutover.md:106` 把 C06 isolation 测试命令识别为 `generic-api-key`。已与 `apps/control-api/package.json` 的既有脚本核对：内容只有包名与测试入口，没有凭据。
+- 沿用 [Gitleaks v8.24.3 官方 fingerprint 机制](https://github.com/gitleaks/gitleaks/blob/v8.24.3/README.md#gitleaksignore)，根 `.gitleaksignore` 只加入该提交、完整文件路径、规则和行号组成的一条精确指纹。当前文档给包选择器加引号并显式使用 `run`，仍调用相同三项脚本。未豁免整个文件、规则或提交，未调整阈值/CI，未重写历史；仅改当前文档无法消除历史扫描中的原始误报。
+- 验证使用官方 release 的 `8.24.3` Linux x64 二进制，归档 SHA-256 与官方 checksum 一致：`9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c`。补齐只读远端历史后，在无工作树 ignore 文件的临时本地 clone 中以 `--no-merges --first-parent cd4c2cea5f44b13cbc1d7bf74c660d3bd9c25e3b^..9419b30c83da2e48348e3ad36a3e207d3d8a64d1` 扫描 23 个提交：不加载精确指纹为 1 finding、退出 1；加载后为 0 finding、退出 0。
+- 正控制：另一个临时提交保留相同原始文档、相同路径与第 106 行，加载上述 ignore 后仍为 1 finding、退出 1，证明新提交未被该指纹放行。当前文档及本次改动文件的独立文件扫描、`git diff --check` 通过。扫描报告仅本地脱敏保存，未上传；没有运行真实 Provider、改产品代码或把本次扫描当作最终 SHA 全套 CI。升级 Gitleaks 后须重验其官方标为 experimental 的 fingerprint 行为。

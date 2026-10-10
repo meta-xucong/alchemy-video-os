@@ -5,9 +5,9 @@
 ## 现状与安全边界
 
 - 既有目录 `D:\AI\alchemy_video_OS\开发版_20261009` 的已观察基线为 `071f46e0321300656972c48697e2703fe2ba736c`，有 8 项修改与 3 项未跟踪。它不是本轮可直接覆盖的干净目录；不要 reset、clean、覆盖复制、删除或擅自 stash。
-- 本地已建立 `D:\AI\alchemy_video_OS\review-3fd8410baf90`，detached HEAD 精确为云端本轮实施基线 `3fd8410baf904e879ae353e796b98b10e7ea3495`。当前新修订尚待推送及精确 SHA 同步，不能把基线同步称为新版本同步。
+- 本地基线 `D:\AI\alchemy_video_OS\review-3fd8410baf90` 保留。另建干净工作树 `D:\AI\alchemy_video_OS\review-9419b30c83da`，HEAD 为 `9419b30c83da2e48348e3ad36a3e207d3d8a64d1`、tree 为 `fae9717a81c7d12f74ddb964d58612fe89b40862`。该版本 CI 暴露 S3 XML 清理兼容问题及文档密钥扫描误报，修复后的最终 SHA 仍须重新同步和测试。不能把 9419 的验证继承给新补丁。
 - 原指定 Codex 会话的受支持会话接口失败；新建本地任务能够检查工作区，但不代表已和原会话通信。
-- 不合并、不部署、不迁移生产数据、不调用收费 Provider，不读取或输出凭据。保留未经授权上传的 audit JSON/运行镜像清单限制。
+- 允许用户已批准的本地隔离 Mock 部署调试；不合并、不操作生产/VPS、不迁移生产数据、不调用收费 Provider，不读取或输出现有业务凭据。保留未经授权上传的 audit JSON/运行镜像清单限制。
 
 ## 复核顺序
 

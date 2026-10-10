@@ -2,7 +2,7 @@
 
 日期：2026-10-10。核对基线：`3fd8410baf904e879ae353e796b98b10e7ea3495`（PR #4 候选代码）。
 
-状态：`MOCK_HARNESS_IMPLEMENTED_PENDING_AUDIT_AND_CI / NOT_ALL_CLOSED`。初始设计基于上述 SHA；文档评审后只实施了 C06/C12 Mock 测试工具的可移植/隔离/清理与现有 CI browser stage，见 §9。没有运行完整浏览器 E2E、读取历史业务数据库、重新执行 QC、调用真实 Provider 或执行生产切换。后续代码变化必须重新绑定快照和审计证据，不能继承此基线的测试结论。
+状态：`MOCK_HARNESS_IMPLEMENTED_CI_BLOCKED / NOT_ALL_CLOSED`。初始设计基于上述 SHA；文档评审后只实施了 C06/C12 Mock 测试工具的可移植/隔离/清理与现有 CI browser stage，见 §9。首次修订 `9419b30` 的 CI 已通过 C06 浏览器断言，但其 S3 资源清理因 SDK/XML 兼容问题失败，C12 未执行；具体回执见《实施与审计记录》。没有读取历史业务数据库、重新执行 QC、调用真实 Provider 或执行生产切换。用户已授权本地隔离调试。后续代码变化必须重新绑定快照和审计证据，不能继承此基线的测试结论。
 
 ## 1. 验收边界和当前缺口
 
@@ -103,9 +103,9 @@ G02 的历史窄豁免按 S07 原样保留：只适用于 TaskSpec `G02-VISUAL-E
 实际命令：
 
 ```text
-pnpm --filter @alchemy-video/control-api test:c06-e2e-isolation
-pnpm --filter @alchemy-video/control-api test:c06-e2e
-pnpm --filter @alchemy-video/control-api test:c12-e2e
+pnpm --filter "@alchemy-video/control-api" run test:c06-e2e-isolation
+pnpm --filter "@alchemy-video/control-api" run test:c06-e2e
+pnpm --filter "@alchemy-video/control-api" run test:c12-e2e
 ```
 
 S08 的 C06 入口驱动 Python Playwright，而非替换 API 的纯前端 mock。它创建两个项目、上传两张不同 PNG、展示失败、显式重试同一 TaskRun、保留原失败 Attempt 并建立一个新 Attempt、验证实际落库/公开脱敏/播放/移动与桌面布局，再清理自己的资源。这条“上游已明确终态失败”的重试与“提交结果未知”的禁止重提是不同用例，不能混为一谈。
@@ -126,7 +126,7 @@ S10 的 C12 入口创建随机数据库和四组随机队列，走 Studio → AP
 
 本次只读探测：工作区有 Node 依赖、Python Playwright/uvicorn/pydantic、`/usr/bin/ffmpeg` 与 `/usr/bin/ffprobe`；未在本进程 PATH 发现 Docker。父执行者另确认 `/usr/bin/chromium` 与可用 PG16，但 `/usr/bin/go` 不是可执行 Go 编译器，Redis/MinIO 未找到且临时盘仅约 2.3GB 空闲。浏览器实际 launch、包内媒体二进制可执行、Python 锁定环境均仍需核验。模块可 import 不等于版本合格或完整 E2E 可用。
 
-因此把受控 Mock 浏览器 stage 接入 S12 的现有 CI `validate` 资源：该 job 已有 PG16/Redis/MinIO 和受控 Python Runtime，以测试专用端口/DSN 配置创建新鲜任务 DB/随机队列/专属 bucket。不能因为 CI 服务是临时的就移除输入护栏；C06/C12 清理仍只针对各自拥有的资源。Playwright 固定为 `1.62.0`，通过官方 Chromium install 入口准备浏览器，复用锁定 media/doc Python 环境，不新增收费调用或 artifact 上传。若运行时间不能容纳，应拆分拥有同等隔离条件的 job，而非缩短 UI 检查或把超时当通过。CI 配置已修改，当前未触发运行。
+因此把受控 Mock 浏览器 stage 接入 S12 的现有 CI `validate` 资源：该 job 已有 PG16/Redis/MinIO 和受控 Python Runtime，以测试专用端口/DSN 配置创建新鲜任务 DB/随机队列/专属 bucket。不能因为 CI 服务是临时的就移除输入护栏；C06/C12 清理仍只针对各自拥有的资源。Playwright 固定为 `1.62.0`，通过官方 Chromium install 入口准备浏览器，复用锁定 media/doc Python 环境，不新增收费调用或 artifact 上传。若运行时间不能容纳，应拆分拥有同等隔离条件的 job，而非缩短 UI 检查或把超时当通过。该配置已在 `9419b30` 的 CI 执行；C06 UI 通过但清理失败，C12 未执行，新修订须重跑。
 
 优先复用 S12 的固定 MinIO 版本和已批准工具来源；安装/启动前核对本任务授权和现有服务。禁止为方便测试停止、删除未知容器/进程，禁止把 generic storage/queue cleanup 指向已有共享服务。
 
@@ -155,7 +155,7 @@ S10 的 C12 入口创建随机数据库和四组随机队列，走 Studio → AP
 | B09 | 当前最终快照回归 | `pnpm typecheck`、`pnpm test`、相关 build、Python/Runtime 与 diff hygiene；精确 SHA CI | 云端；报告每套 pass/fail/skip，避免重叠相加 |
 | B10 | 真实 Provider 与人工质量 | 原始请求身份、下载校验、实际音轨、来源/内容与听看结果 | 当前不可由 Mock 关闭，见 §7 |
 
-初始设计时 B01–B10 均未在本轮执行；当前仅 B01/B08 的测试工具定向覆盖和脚本检查有 §9 回执。B03/B05 完整 E2E 仍未运行。S02/S06 中历史结果可引用为历史，不复制成当前最终快照通过数。
+初始设计时 B01–B10 均未在本轮执行；§9 保留推送前 B01/B08 定向回执。首次 `9419b30` CI 的 B03 UI 断言通过但清理失败，B05 未执行；其他套件的精确范围见《实施与审计记录》。B03/B05 尚未形成完整通过证据。S02/S06 中历史结果可引用为历史，不复制成当前最终快照通过数。
 
 ## 6. 生产停流、迁移、恢复与回滚
 
@@ -227,7 +227,7 @@ S10 的 C12 入口创建随机数据库和四组随机队列，走 Studio → AP
 - Python UI 原有断言保留。CI media venv 安装 `playwright==1.62.0`（[官方 PyPI 发布页](https://pypi.org/project/playwright/1.62.0/)），使用官方 `python -m playwright install --with-deps chromium`；C06/C12 分别 8/12 分钟 step timeout，总 job 仍 45 分钟。不添加 artifact upload。
 - 与 recovery 方案对齐：CI 单独提供 `PRODUCTION_RECOVERY_TEST_DATABASE_URL` 指向 `alchemy_recovery_test_ci`，创建前验证 strict loopback 与专库前缀，再通过既有迁移入口准备。测试不能从通用 DATABASE_URL 回退；该库与主集成测试及两个随机 browser DB 分开。
 
-2026-10-10 本地回执（未提交工作树，不等于最终 SHA CI）：
+2026-10-10 推送前本地历史回执（当时未提交工作树，不等于后续 SHA CI；新运行状态见本文开头及《实施与审计记录》）：
 
 | 检查 | 命令/范围 | 结果 |
 | --- | --- | --- |
@@ -236,6 +236,6 @@ S10 的 C12 入口创建随机数据库和四组随机队列，走 Studio → AP
 | Control API 类型检查 | control-api 目录 `node node_modules/typescript/bin/tsc --noEmit` | PASS；该 tsconfig 覆盖产品 src，测试脚本由上述执行验证 |
 | Python/CI 静态检查 | Python compile/CLI help、YAML parse/顺序、UI 函数 AST 与基线比较 | PASS；UI 断言未删减 |
 | 差异空白 | `git diff --check` | PASS |
-| 完整 C06/C12 UI、真实 PG/Redis/MinIO清理、最终 SHA CI | 尚未执行 | PENDING；不能用 helper 替身或语法检查替代 |
+| 完整 C06/C12 UI、真实 PG/Redis/MinIO清理、最终 SHA CI | 该推送前检查点尚未执行 | 历史 PENDING；后续 `9419b30` C06 UI 通过但清理失败、C12 未执行，不能用 helper 替身或语法检查替代 |
 
 一次最初的 `pnpm --filter ... exec` 调用因当前云端 PATH 的 pnpm 版本/用户目录检查失败，未形成测试结果；随后直接使用工作区现有 Node/tsx 成功运行上述定向测试。CI 继续锁定 pnpm 10.33.0，没有为此更改包管理器版本或依赖门槛。

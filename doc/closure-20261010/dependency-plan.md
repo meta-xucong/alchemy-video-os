@@ -2,13 +2,13 @@
 
 日期：2026-10-10 UTC。研究基线：`3fd8410baf904e879ae353e796b98b10e7ea3495`。
 
-本文件先记录实施前方案，再记录经独立设计评审后的限定实施。已做源码检查、官方公告/registry 查询、兼容实验和独立干净安装回归；**只修改限定 manifest/lockfile 与新增工具链回归，没有修改审计门禁**。本轮没有真实 Provider、生产数据库、部署、合并或外部 artifact 上传。
+本文件先记录实施前方案，再记录经独立设计评审后的限定实施及 S3 XML 兼容修复。已做源码检查、官方公告/registry 查询、兼容实验和独立干净安装回归；**只修改限定 manifest/lockfile 与新增工具链/XML 回归，没有修改审计门禁**。本轮没有真实 Provider、生产数据库、部署、合并或外部 artifact 上传。
 
 ## 1. 结论与状态
 
 1. **限定实施完成，最终集成验收待主任务**：移除 `drizzle-kit@0.31.10` 声明但其发布代码已不调用的 `@esbuild-kit/esm-loader` 依赖边，消除由该边独占引入的 `esbuild@0.18.20`。独立干净安装的真实 CLI 回归已通过；最终树的集成/CI 和远端再审计没有据此自动通过。
 2. **仍为 OPEN / BLOCKED_UPSTREAM**：`node-forge@1.4.0` 和 `braces@3.0.3`。核验时官方 registry 的 latest 仍分别为这两个版本，GitHub Reviewed 公告均未列 patched version。不得伪造更高版本号、静默空实现、忽略 advisory 或把 dev 依赖风险写成“全部修复”。
-3. **生产图和完整图必须分开陈述**：现有生产审计为 219 个依赖、0 告警；完整审计为 848 个依赖、2 high / 1 moderate。生产图无告警不是完整开发/构建供应链清零，也不是本轮重新验证过最终镜像。
+3. **生产图和完整图必须分开陈述**：2026-10-10 获准后且包含 `fast-xml-parser@5.7.2` 的最新生产审计为 219 个依赖、0 告警；完整审计为 821 个依赖、2 high / 0 moderate / 0 critical。下文 848 个依赖、2 high / 1 moderate 是移除旧 loader 前的历史基线。生产图无告警不是完整开发/构建供应链清零，也不是本轮重新验证过最终镜像。
 
 ## 2. 基线证据与范围
 
@@ -94,9 +94,11 @@ node /workspace/shared/video-tools/node_modules/pnpm/bin/pnpm.cjs <arguments>
 
 这是源码证据加真实命令的模拟缺失实验。它没有真的重建依赖树，也不覆盖 Drizzle Studio、push、pull、Bun/Deno 或全部第三方 API。项目使用的是 `db:generate` 和现有 `tsx src/migrate.ts`；不得把这些有限实验证据扩大为其他接口的兼容承诺。
 
-### 4.2 实施后必须补齐的验收
+### 4.2 旧 esbuild 依赖边实施后的原始验收检查点（历史状态）
 
-| 验收项 | 成功条件 | 当前状态 |
+以下保留首次实施时的状态；授权和再次审计结果以第 7 节末及第 8 节为准。
+
+| 验收项 | 成功条件 | 当时状态 |
 | --- | --- | --- |
 | 限定 manifest/lock 变更 | 只有经评审的删除边与独占子树发生变化；没有 unrelated upgrades | 通过：25 个包记录及 25 个 snapshot 移除，其他版本/完整性/importer 不变 |
 | 干净 frozen install | 从最终 manifest/lock 安装成功；不是复用旧 node_modules 假通过 | 通过：独立目录 offline / frozen / ignore-scripts 安装 675 包，0 下载；另行 Nuxt prepare 通过；未声称所有安装 hook 通过 |
@@ -130,11 +132,11 @@ npm_config_cache=/tmp/video-dependency-npm-cache \
 
 相同方式已成功查询 node-forge、braces、`@esbuild-kit/core-utils`、listhen。初次默认 cache 不可写导致 ENOENT，换到 `/tmp` 后这些查询成功；没有用失败的结果推断版本。附带的 Nitro/globby latest 查询返回尚未取得，工具的等待操作被取消，因此本文件不声称已核验它们的最新发行状态，也不据此推荐父包升级。这里的 Nitro/globby 结论依据实际锁定代码。
 
-## 7. 限定实施记录
+## 7. 旧 esbuild 依赖边移除的历史实施记录
 
 - 变更文件：根 `package.json`、`pnpm-lock.yaml`、`packages/persistence/tests/drizzle-toolchain.test.ts` 和本文件。未编辑 CI、共享 schema、数据库 migration 或其他代理的契约改动。
 - 初次 `install --lockfile-only --offline` 因本地缺少 registry metadata 失败。为避免重新解析导致隐式升级，准确裁剪旧 loader → core-utils → esbuild 0.18.20 及其 22 个平台包；随后 `install --lockfile-only --frozen-lockfile --offline --ignore-scripts` 成功。
-- 结构化比较前后 lock：importers、settings、保留包的版本/完整性及 snapshots 不变；唯一保留 snapshot 改动是 Drizzle Kit 的旧 loader 依赖边删除。共删除 25 个包记录及其 25 个 snapshot。当前 lock SHA-256 为 `bf2812f5f58603ead4b247dcad60c2042cb002b8b21f432bfa8a0e17a2d84bf4`。
+- 结构化比较前后 lock：importers、settings、保留包的版本/完整性及 snapshots 不变；唯一保留 snapshot 改动是 Drizzle Kit 的旧 loader 依赖边删除。共删除 25 个包记录及其 25 个 snapshot。当时 lock SHA-256 为 `bf2812f5f58603ead4b247dcad60c2042cb002b8b21f432bfa8a0e17a2d84bf4`，S3 XML 补丁后的最新锁文件见第 8 节。
 - 在独立 `video-dependency-clean` 目录使用已有 `/workspace/shared/video-pnpm-store` 执行 `install --frozen-lockfile --offline --ignore-scripts --store-dir /workspace/shared/video-pnpm-store`：675 包、0 下载、退出 0。没有改主工作树正在被其他测试使用的 node_modules。随后 contracts build 和 Nuxt prepare 分别通过。跳过的安装 hooks 和媒体二进制验收仍由主任务的最终安装/镜像检查负责。
 - 永久测试不依赖 mock CLI：检查 Kit 和直接 esbuild 版本，验证旧模块从调用方及 Kit 均不可解析，检查实际 `.pnpm` 目录不含旧链；复制当前真实 schema 到临时目录，导入真实 Drizzle 配置，执行两份 generate/check 和各自重复 generate，比较 SQL 与 journal 稳定性，最后清理临时目录。schema 内容在单次测试内冻结，不受其他源码编辑打断比较。
 - 干净树执行 `pnpm --filter @alchemy-video/persistence exec node --import tsx --test tests/drizzle-toolchain.test.ts`：1 passed、0 failed、0 skipped。原 tsx CLI 在此 sandbox 因 IPC pipe `EPERM` 未能启动，改用同一 tsx 官方 import 入口运行 Node test；没有修改产品 test script 或降低断言。首次新测试还发现 Drizzle `check` 对绝对 out 路径拼接不兼容，测试改为 workspace-relative 临时 out，与现有配置用法一致。
@@ -154,3 +156,31 @@ npm_config_cache=/tmp/video-dependency-npm-cache \
 ### 获准后的实际审计结果
 
 使用官方 registry 和固定 pnpm 10.33.0 重跑：生产依赖 219 项、零漏洞，退出 0；完整依赖 821 项、2 high、0 moderate、0 critical，退出 1。剩余为 `node-forge` 的 `GHSA-86w9-cpqp-85rv` 与 `braces` 的 `GHSA-vfj7-8cjw-p6xm`，响应均未提供修复版本。旧 esbuild 告警已不再出现，两份响应的 muted 列表为空；没有降低门槛或静默忽略告警。完整 JSON 仅在本地保存，没有上传。两项 high 继续 OPEN，不能将生产审计通过说成全依赖零风险。
+
+## 8. S3 XML 反序列化兼容修复（2026-10-10）
+
+### 故障、来源和最小方案
+
+- 主任务确认 `9419b30c83da2e48348e3ad36a3e207d3d8a64d1` 的 CI 中 1036 项 Node 测试与 C06 实际 UI 场景已通过，但最终清理的 `ListObjectsV2Command` 在反序列化时失败；没有据此宣称整个 E2E 或 C12 已通过。
+- 实际安装的 `@aws-sdk/core@3.750.0` 的 `dist-cjs/submodules/protocols/index.js:162-196` 与 [AWS 固定 v3.750.0 的 `parseXmlBody`](https://github.com/aws/aws-sdk-js-v3/blob/v3.750.0/packages/core/src/submodules/protocols/xml/parseXmlBody.ts) 相符：对非空 XML 响应无条件注册 `#xD` 和 `#10`。根 override 强制的 `fast-xml-parser@5.7.0` 在解析前校验这些名称，报 `Invalid character '#' in entity name: "#xD"`；XML 不含字符引用的正常空列表也会失败。
+- 上游 [issue #823](https://github.com/NaturalIntelligence/fast-xml-parser/issues/823) 报告同一兼容问题；正式 [v5.7.2 release](https://github.com/NaturalIntelligence/fast-xml-parser/releases/tag/v5.7.2) 明确恢复数字外部实体兼容。官方 registry 的 `gitHead` 为 `b1d5b907ccbfbfbdbbeecc1f273bf20973d305e3`，对应 `src/xmlparser/XMLParser.js` 将实体传给 `OrderedObjParser` 构造器，由后者的 `EntityDecoder` 初始化处理。使用原样发布包，不复制实现或 monkeypatch。
+- 独立复核补充：[同一上游提交](https://github.com/NaturalIntelligence/fast-xml-parser/commit/b1d5b907ccbfbfbdbbeecc1f273bf20973d305e3) 将 `spec/entities_spec.js` 中一项自定义外部实体测试改为 `xit`。本项目没有运行或声称上游完整套件通过，也不把该 release 理解为任意重定义数字实体均兼容。这里只验证 AWS 实际使用的 CR/LF 映射及下述项目行为，保留该上游覆盖局限。
+- 选择 root override `5.7.0 → 5.7.2`，保留三个 workspace 中 `@aws-sdk/client-s3` 及 storage 的 presigner `3.750.0`。该补丁版恢复已有接口，且四条依赖范围与 `5.7.0` 完全相同；不为本次故障批量升级 AWS/Smithy、改变签名/校验和配置或引入自造 XML 协议。保留安全 override，未降级到旧 parser。
+- 锁文件只有四处差异：override 版本；parser package key 与官方 SHA-512 integrity；`@aws-sdk/core@3.750.0` 的 parser 依赖边；parser snapshot key。其四个子依赖的已锁版本、所有 workspace importer 和其他 package/snapshot 均保持不变。
+
+### 定向回归与验收边界
+
+新增 `packages/storage-client/tests/s3-xml-compatibility.test.ts`：仅替换 SDK 支持的 HTTP `requestHandler`，真实执行 S3Client 签名/middleware、XML parser 和 ListObjectsV2 deserializer。固定无效域名与测试凭据，不读取真实 S3/Provider 凭据、不产生网络请求。覆盖空清理列表、单/多对象、CR/LF 数字实体与 XML 命名实体、空格保真、URL 编码 key、opaque continuation token、时间/ETag/size/分页元数据、403 服务错误和畸形 XML 拒绝。
+
+修复前首次运行前五项用例：1 passed / 4 failed / 0 skipped。前三项正常 XML 重现同一 `#xD` 异常，403 用例不能得到预期的 SDK 服务异常；畸形 XML 仍在校验阶段拒绝。随后补充 URL 编码/opaque token 第六项。该测试不以静态源码检索或 mock parser 代替实际反序列化。
+
+修复后 registry audit 已完成：`audit --prod --audit-level=high --json --registry=https://registry.npmjs.org` 为 219 项、各 severity 0、退出 0；完整 `audit --json` 为 821 项、2 high、0 moderate/critical、退出 1，剩余仍是上列 Forge/braces。两份响应 muted 为空，只保存本地 JSON，未上传。
+
+最终本地验证：
+
+- 固定 pnpm 10.33.0 执行 `install --frozen-lockfile --ignore-scripts --registry=https://registry.npmjs.org`：675 包，239 reused / 436 downloaded，退出 0。安装 hooks 明确跳过；随后完整 build 验证实际构建。此处既有 node_modules 引用的 store 路径不存在，所以安装器重建了依赖链接。
+- `node --import tsx --test tests/s3-xml-compatibility.test.ts tests/storage-client.test.ts`（storage-client 目录）：22 passed / 0 failed / 0 skipped，其中新 XML 回归为 6 项；包含旧的真实 SDK presigning 测试。测试文件另用 TypeScript `--noEmit --strict` 单独检查通过，因为 package tsconfig 只包含 `src`。
+- 根 `pnpm build`、`pnpm typecheck` 全量通过，退出均为 0。最终验证将 `/workspace/shared/video-tools/node_modules/.bin` 前置到 PATH，确保 root script 和嵌套 script 均使用 10.33.0；环境全局 pnpm 11.25.0 不读取 package.json overrides，不能用于本仓库依赖操作。此前未前置 PATH 的 build/typecheck 虽通过，不作为版本固定验收依据。
+- `install --lockfile-only --frozen-lockfile --offline --ignore-scripts` 和 `git diff --check` 均通过。结构化解析前后 lock 并断言相等，仅允许上列四处 parser 变更；最终 lock SHA-256 为 `0310e5c8c37d9cb6ce4b6e6198a87093138a53cd19686125284fa49db913a570`。`pnpm -r why fast-xml-parser` 仅解析到 `5.7.2`。
+
+变更只涉及根 package.json、pnpm-lock.yaml、本节所在文档及新 XML 测试。未修改 cleanup listing、既有断言、SDK workspace manifests、应用实现或 CI gate；未提交/推送。真实 MinIO 清理及后续 E2E 仍需主任务最终 CI 验证，不能被合成 HTTP 回归替代。
