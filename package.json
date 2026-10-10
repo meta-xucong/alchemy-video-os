@@ -15,6 +15,7 @@
       "source-map-js": "1.2.2",
       "postcss-selector-parser": "7.1.6",
       "nuxt@3.21.11>@nuxt/devtools": "-",
+      "drizzle-kit@0.31.10>@esbuild-kit/esm-loader": "-",
       "vue": "3.5.42",
       "@vue/compiler-core": "3.5.42",
       "@vue/compiler-dom": "3.5.42",

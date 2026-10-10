@@ -134,8 +134,8 @@ test("the legacy Worker fence changes only the physical request-ID column and pr
   const journal = JSON.parse(await readFile(resolve(migrations, "meta", "_journal.json"), "utf8")) as {
     entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
   };
-  assert.deepEqual(journal.entries.at(-1), {
-    idx: 28, version: "7", when: journal.entries.at(-1)?.when,
+  assert.deepEqual(journal.entries.find((entry) => entry.idx === 28), {
+    idx: 28, version: "7", when: journal.entries[28]?.when,
     tag: "0028_fence_legacy_task_workers", breakpoints: true,
   });
   assert.ok(journal.entries[28]!.when > journal.entries[27]!.when);
@@ -153,6 +153,30 @@ test("the legacy Worker fence changes only the physical request-ID column and pr
   attempts.indexes.provider_attempts_provider_request_key.columns[1].expression = "provider_request_id_v2";
   attempts.indexes.provider_attempts_provider_request_key.where = '"provider_attempts"."provider_request_id_v2" is not null';
   assert.deepEqual(snapshot, expected, "0028 snapshot must have no unrelated schema changes");
+});
+
+test("recovery supersession is private, nullable, scoped and constrained without backfilling lineage", async () => {
+  const migrations = resolve(import.meta.dirname, "..", "drizzle");
+  const migration = await readFile(resolve(migrations, "0029_task_run_recovery_supersession.sql"), "utf8");
+  assert.equal(taskRuns.supersededByTaskRunId.name, "superseded_by_task_run_id");
+  assert.equal(taskRuns.supersededByTaskRunId.columnType, "PgText");
+  assert.equal(taskRuns.supersededByTaskRunId.notNull, false);
+  const config = getTableConfig(taskRuns);
+  const foreign = config.foreignKeys.find((key) => key.getName() === "task_runs_superseded_successor_fk");
+  assert.ok(foreign);
+  assert.equal(foreign.onDelete, "no action");
+  assert.deepEqual(foreign.reference().columns.map((column) => column.name), ["workspace_id", "project_id", "superseded_by_task_run_id"]);
+  assert.deepEqual(foreign.reference().foreignColumns.map((column) => column.name), ["workspace_id", "project_id", "id"]);
+  assert.ok(config.checks.some((constraint) => constraint.name === "task_runs_superseded_terminal_check"));
+  assert.ok(config.checks.some((constraint) => constraint.name === "task_runs_superseded_not_self_check"));
+  assert.equal(config.indexes.find((index) => index.config.name === "task_runs_superseded_successor_key")?.config.unique, true);
+  assert.doesNotMatch(migration, /UPDATE "task_runs"|DELETE FROM|DROP |provider_request_id/);
+  const journal = JSON.parse(await readFile(resolve(migrations, "meta", "_journal.json"), "utf8"));
+  assert.equal(journal.entries.at(-1).tag, "0029_task_run_recovery_supersession");
+  const prior = JSON.parse(await readFile(resolve(migrations, "meta", "0028_snapshot.json"), "utf8"));
+  const current = JSON.parse(await readFile(resolve(migrations, "meta", "0029_snapshot.json"), "utf8"));
+  assert.equal(current.prevId, prior.id);
+  assert.deepEqual(current.tables["public.provider_attempts"], prior.tables["public.provider_attempts"]);
 });
 
 test("C06 and C12 diagnostics use the fenced physical column without renaming logical output fields", async () => {

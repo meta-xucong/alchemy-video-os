@@ -42,6 +42,8 @@ export type ControlTaskRun = {
   status: TaskRunStatus;
   inputSnapshot: Record<string, unknown>;
   resultAssetId: string | null;
+  // Private recovery lineage; omitted by all public serializers and older command snapshots.
+  supersededByTaskRunId?: string | null;
   error: { code: string; message: string; retryable: boolean } | null;
   retryAt: string | null;
   createdAt: string;
@@ -189,6 +191,7 @@ const toControlTaskRun = (value: typeof taskRuns.$inferSelect): ControlTaskRun =
   status: value.status,
   inputSnapshot: value.inputSnapshot,
   resultAssetId: value.resultAssetId,
+  supersededByTaskRunId: value.supersededByTaskRunId,
   error: value.error as ControlTaskRun["error"],
   retryAt: value.retryAt,
   createdAt: timestamp(value.createdAt),
@@ -577,6 +580,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
       await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
       const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
       if (!current) return this.storeCommandOutcome(transaction, input.scope, input.idempotencyKey, { kind: "NOT_FOUND", status: 404 });
+      if (current.supersededByTaskRunId != null) return this.storeCommandOutcome(transaction, input.scope, input.idempotencyKey, { kind: "STATE_INVALID" });
       if (current.status === "BILLING_FAILED") {
         const parsed = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
         if (!parsed.success || !parsed.data.billing) {
@@ -704,6 +708,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
       .from(taskRuns)
       .where(and(
         eq(taskRuns.kind, "VIDEO_GENERATION"),
+        isNull(taskRuns.supersededByTaskRunId),
         statusFilter,
       ))
       .orderBy(asc(taskRuns.updatedAt), asc(taskRuns.id))
@@ -765,7 +770,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
     return this.db.transaction(async (transaction) => {
       await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
       const [taskRun] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
-      if (!taskRun || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(taskRun.status)) return undefined;
+      if (!taskRun || taskRun.supersededByTaskRunId != null || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(taskRun.status)) return undefined;
       // A persisted Provider request is a durable submit boundary. Prefer it over
       // any later unsubmitted row, which may have been left by an interrupted run.
       const [submitted] = await transaction
@@ -809,8 +814,8 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
   async reserveProviderSubmission(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; now: Date }) {
     return this.db.transaction(async (transaction) => {
       await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
-      const [current] = await transaction.select({ status: taskRuns.status }).from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
-      if (current?.status !== "RUNNING") return false;
+      const [current] = await transaction.select({ status: taskRuns.status, supersededByTaskRunId: taskRuns.supersededByTaskRunId }).from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
+      if (current?.status !== "RUNNING" || current.supersededByTaskRunId != null) return false;
       const [boundary] = await transaction.select({ id: providerAttempts.id }).from(providerAttempts).where(and(
         eq(providerAttempts.workspaceId, input.workspaceId),
         eq(providerAttempts.taskRunId, input.taskRunId),
@@ -842,8 +847,10 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
       if (!current || !attempt) return undefined;
       if (attempt.providerRequestId && attempt.providerRequestId !== input.providerRequestId) throw new Error("PROVIDER_RESUBMIT_FORBIDDEN");
       if (!attempt.providerRequestId) {
-        await transaction.update(providerAttempts).set({ providerRequestId: input.providerRequestId, status: "SUBMITTED", updatedAt: input.now.toISOString() }).where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.id, input.providerAttemptId)));
-        if (current.status === "RUNNING") {
+        // A late accepted request remains evidence even after supersession; do
+        // not reactivate the ancestor or overwrite its terminal Attempt state.
+        await transaction.update(providerAttempts).set({ providerRequestId: input.providerRequestId, ...(current.supersededByTaskRunId != null ? {} : { status: "SUBMITTED" as const }), updatedAt: input.now.toISOString() }).where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.id, input.providerAttemptId)));
+        if (current.supersededByTaskRunId == null && current.status === "RUNNING") {
           assertTaskRunTransition(current.status, "PROVIDER_PROCESSING");
           await transaction.update(taskRuns).set({ status: "PROVIDER_PROCESSING", updatedAt: input.now.toISOString() }).where(taskRunScope(input.workspaceId, input.taskRunId));
           const source = await queuedSourceForTaskRun(transaction, input.workspaceId, input.taskRunId);
@@ -863,6 +870,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
       const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
       const [attempt] = await transaction.select().from(providerAttempts).where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.id, input.providerAttemptId), eq(providerAttempts.taskRunId, input.taskRunId))).limit(1);
       if (!current || !attempt) return undefined;
+      if (current.supersededByTaskRunId != null) return toControlTaskRun(current);
       let updatedTaskRun = current;
       if (current.status === "RUNNING") {
         assertTaskRunTransition(current.status, "PROVIDER_PROCESSING");
@@ -888,6 +896,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
       const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
       const [attempt] = await transaction.select().from(providerAttempts).where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.id, input.providerAttemptId), eq(providerAttempts.taskRunId, input.taskRunId))).limit(1);
       if (!current || !attempt) return undefined;
+      if (current.supersededByTaskRunId != null) return toControlTaskRun(current);
       if (current.status !== "DOWNLOADING") {
         assertTaskRunTransition(current.status, "DOWNLOADING");
         await transaction.update(taskRuns).set({ status: "DOWNLOADING", updatedAt: input.now.toISOString() }).where(taskRunScope(input.workspaceId, input.taskRunId));
@@ -903,7 +912,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
   async recordDownloadRetryableFailure(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; code: string; now: Date }) {
     await this.db.transaction(async (transaction) => {
       await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
-      const [current] = await transaction.select({ status: taskRuns.status }).from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
+      const [current] = await transaction.select({ status: taskRuns.status, supersededByTaskRunId: taskRuns.supersededByTaskRunId }).from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
       const [attempt] = await transaction
         .select({ providerRequestId: providerAttempts.providerRequestId })
         .from(providerAttempts)
@@ -913,7 +922,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
           eq(providerAttempts.taskRunId, input.taskRunId),
         ))
         .limit(1);
-      if (!current || current.status !== "DOWNLOADING" || !attempt?.providerRequestId) return;
+      if (!current || current.supersededByTaskRunId != null || current.status !== "DOWNLOADING" || !attempt?.providerRequestId) return;
       await transaction
         .update(providerAttempts)
         .set({ status: "DOWNLOAD_FAILED", responsePayload: { code: input.code }, updatedAt: input.now.toISOString() })
@@ -929,7 +938,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
     return this.db.transaction(async (transaction) => {
       await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
       const [taskRun] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
-      if (!taskRun) return undefined;
+      if (!taskRun || taskRun.supersededByTaskRunId != null) return undefined;
       const [existing] = await transaction
         .select({ id: assets.id, objectKey: assets.objectKey, kind: assets.kind, origin: assets.origin, metadata: assets.metadata })
         .from(assets)
@@ -950,6 +959,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
       const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
       const [asset] = await transaction.select().from(assets).where(assetScope(input.workspaceId, input.assetId)).limit(1);
       if (!current || !asset) return undefined;
+      if (current.supersededByTaskRunId != null) return toControlTaskRun(current);
       if (current.status === "SUCCEEDED") return toControlTaskRun(current);
       assertTaskRunTransition(current.status, "SUCCEEDED");
       const [updated] = await transaction.update(assets).set({ status: "READY", sha256: input.sha256, mimeType: "video/mp4", byteSize: input.byteSize, width: input.width, height: input.height, durationMs: input.durationMs, updatedAt: input.now.toISOString() }).where(and(assetScope(input.workspaceId, input.assetId), eq(assets.status, "PENDING_UPLOAD"))).returning();
@@ -967,7 +977,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
     await this.db.transaction(async (transaction) => {
       await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
       const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
-      if (!current || current.status === "SUCCEEDED") return;
+      if (!current || current.supersededByTaskRunId != null || current.status === "SUCCEEDED") return;
       assertTaskRunTransition(current.status, "SUCCEEDED");
       const [generated] = await transaction.select({ id: assets.id, sha256: assets.sha256 }).from(assets).where(and(eq(assets.workspaceId, input.workspaceId), sql`${assets.metadata}->>'task_run_id' = ${input.taskRunId}`)).limit(1);
       if (!generated) throw new Error("Generated asset is missing before billing completion.");
@@ -982,7 +992,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
     await this.db.transaction(async (transaction) => {
       await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
       const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
-      if (!current || current.status === "BILLING_FAILED") return;
+      if (!current || current.supersededByTaskRunId != null || current.status === "BILLING_FAILED") return;
       assertTaskRunTransition(current.status, "BILLING_FAILED");
       await transaction.update(taskRuns).set({ status: "BILLING_FAILED", error: { code: input.code, message: input.safeMessage, retryable: false }, updatedAt: input.now.toISOString() }).where(taskRunScope(input.workspaceId, input.taskRunId));
     });
@@ -992,7 +1002,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
     await this.db.transaction(async (transaction) => {
       await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
       const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
-      if (!current || current.status === "RETRY_SCHEDULED") return;
+      if (!current || current.supersededByTaskRunId != null || current.status === "RETRY_SCHEDULED") return;
       assertTaskRunTransition(current.status, "RETRY_SCHEDULED");
       await transaction.update(taskRuns).set({ status: "RETRY_SCHEDULED", retryAt: input.retryAt.toISOString(), error: { code: input.code, message: input.safeMessage, retryable: true }, updatedAt: input.now.toISOString() }).where(taskRunScope(input.workspaceId, input.taskRunId));
     });
@@ -1002,7 +1012,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
     return this.db.transaction(async (transaction) => {
       await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
       const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
-      if (!current || current.status !== "RETRY_SCHEDULED") return current ? toControlTaskRun(current) : undefined;
+      if (!current || current.supersededByTaskRunId != null || current.status !== "RETRY_SCHEDULED") return current ? toControlTaskRun(current) : undefined;
       if (current.retryAt && current.retryAt > input.now.toISOString()) return toControlTaskRun(current);
       const parsed = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
       if (!parsed.success || !parsed.data.billing || !isBillingRetryErrorCode(current.error?.code)) return toControlTaskRun(current);
@@ -1019,7 +1029,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
     return this.db.transaction(async (transaction) => {
       await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
       const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
-      if (!current || current.kind !== "VIDEO_GENERATION" || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(current.status)) return current ? toControlTaskRun(current) : undefined;
+      if (!current || current.supersededByTaskRunId != null || current.kind !== "VIDEO_GENERATION" || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(current.status)) return current ? toControlTaskRun(current) : undefined;
       const billingSnapshot = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
       if (current.status === "BILLING_PENDING" && billingSnapshot.success && billingSnapshot.data.billing) {
         assertTaskRunTransition(current.status, "BILLING_FAILED");
@@ -1083,6 +1093,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
       await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
       const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
       if (!current) return undefined;
+      if (current.supersededByTaskRunId != null) return toControlTaskRun(current);
       if (current.status === "FAILED") return toControlTaskRun(current);
       if (current.status === "SUCCEEDED") return toControlTaskRun(current);
       assertTaskRunTransition(current.status, "FAILED");
@@ -1258,6 +1269,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
         attemptNo = reclaimed.attempts;
       }
 
+      await lockTaskRun(transaction, message.workspace_id, message.task_run_id);
       const [taskRun] = await transaction
         .select()
         .from(taskRuns)
@@ -1268,7 +1280,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
       const isBillingWake = taskRun.status === "BILLING_PENDING"
         && billingWakeSnapshot.success
         && Boolean(billingWakeSnapshot.data.billing);
-      if (taskRun.status !== "QUEUED" && !isBillingWake) {
+      if (taskRun.supersededByTaskRunId != null || taskRun.status !== "QUEUED" && !isBillingWake) {
         await transaction
           .update(eventConsumptions)
           .set({ completedAt: input.now.toISOString(), leaseOwner: null, leaseExpiresAt: null, updatedAt: input.now.toISOString() })

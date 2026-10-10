@@ -206,6 +206,7 @@ test("PostgreSQL 16 upgrades 0027 in place, retaining all request IDs, reservati
     await client.query(`INSERT INTO provider_attempts (id, workspace_id, task_run_id, provider, model)
       VALUES ('att_unreserved', 'ws_fence', 'tsk_fence', 'mock', 'mock-video-v1')`);
     const before = await client.query("SELECT to_jsonb(attempt) AS row FROM provider_attempts attempt ORDER BY id");
+    const beforeTasks = await client.query("SELECT to_jsonb(task) AS row FROM task_runs task ORDER BY id");
     const beforeIndex = await requestIndex(client);
     const expectedRows = before.rows.map(({ row }) => {
       const { provider_request_id: providerRequestId, ...otherColumns } = row;
@@ -214,6 +215,8 @@ test("PostgreSQL 16 upgrades 0027 in place, retaining all request IDs, reservati
 
     await migrate(drizzle({ client }), { migrationsFolder });
     assert.deepEqual((await client.query("SELECT to_jsonb(attempt) AS row FROM provider_attempts attempt ORDER BY id")).rows, expectedRows);
+    assert.deepEqual((await client.query("SELECT to_jsonb(task) AS row FROM task_runs task ORDER BY id")).rows,
+      beforeTasks.rows.map(({ row }) => ({ row: { ...row, superseded_by_task_run_id: null } })));
     assert.deepEqual(await requestIndex(client), {
       ...beforeIndex,
       definition: beforeIndex.definition.replaceAll("provider_request_id", "provider_request_id_v2"),
@@ -225,7 +228,7 @@ test("PostgreSQL 16 upgrades 0027 in place, retaining all request IDs, reservati
     assert.equal(current[0]?.providerRequestId, "offline-known-request");
     assert.equal(new Date(current[0]!.submissionReservedAt!).toISOString(), "2026-10-09T01:02:03.456Z");
     await assertCurrentMappingAndUniqueness(client);
-    assert.equal((await client.query('SELECT count(*)::integer AS count FROM drizzle.__drizzle_migrations')).rows[0].count, 29);
+    assert.equal((await client.query('SELECT count(*)::integer AS count FROM drizzle.__drizzle_migrations')).rows[0].count, 30);
   });
 });
 
@@ -239,6 +242,6 @@ test("PostgreSQL 16 fresh migrations include the fence and rerun without changin
     const before = await client.query("SELECT to_jsonb(attempt) AS row FROM provider_attempts attempt ORDER BY id");
     await migrate(db, { migrationsFolder });
     assert.deepEqual((await client.query("SELECT to_jsonb(attempt) AS row FROM provider_attempts attempt ORDER BY id")).rows, before.rows);
-    assert.equal((await client.query('SELECT count(*)::integer AS count FROM drizzle.__drizzle_migrations')).rows[0].count, 29);
+    assert.equal((await client.query('SELECT count(*)::integer AS count FROM drizzle.__drizzle_migrations')).rows[0].count, 30);
   });
 });

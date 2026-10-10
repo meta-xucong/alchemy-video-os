@@ -186,11 +186,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--studio-origin", required=True)
     parser.add_argument("--project-name", required=True)
+    parser.add_argument(
+        "--browser-executable",
+        help="Explicit local Chromium executable; defaults to Playwright's pinned browser.",
+    )
     args = parser.parse_args()
     result = {"ok": False, "project_name": args.project_name}
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = playwright.chromium.launch(headless=True, executable_path=args.browser_executable)
             try:
                 page = browser.new_page(viewport={"width": 1280, "height": 720})
                 result = {"ok": True, **create_plan_and_verify_final_video(page, args.studio_origin, args.project_name, browser)}

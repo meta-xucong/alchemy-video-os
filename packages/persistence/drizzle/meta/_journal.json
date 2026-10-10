@@ -204,6 +204,13 @@
       "when": 1791637200000,
       "tag": "0028_fence_legacy_task_workers",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1791649582851,
+      "tag": "0029_task_run_recovery_supersession",
+      "breakpoints": true
     }
   ]
 }

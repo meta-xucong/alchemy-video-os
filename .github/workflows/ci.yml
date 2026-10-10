@@ -51,6 +51,7 @@ jobs:
     env:
       DATABASE_URL: postgres://alchemy_video_os:ci-only@127.0.0.1:5432/alchemy_video_os_test
       LEGACY_FENCE_TEST_DATABASE_URL: postgres://alchemy_video_os:ci-only@127.0.0.1:5432/alchemy_video_os_test
+      PRODUCTION_RECOVERY_TEST_DATABASE_URL: postgres://alchemy_video_os:ci-only@127.0.0.1:5432/alchemy_recovery_test_ci
       REDIS_URL: redis://127.0.0.1:6379/15
       S3_ENDPOINT: http://127.0.0.1:9000
       S3_REGION: us-east-1
@@ -58,6 +59,15 @@ jobs:
       S3_ACCESS_KEY: ci-minio-user
       S3_SECRET_KEY: ci-minio-password
       DOCUMENT_RUNTIME_PYTHON: ${{ github.workspace }}/services/document-runtime/.venv/bin/python
+      # TEST-ONLY service inputs. Each Mock harness owns its generated database,
+      # bucket, and queue namespace rather than the unit-test resources above.
+      MOCK_E2E_DATABASE_ADMIN_URL: postgres://alchemy_video_os:ci-only@127.0.0.1:5432/postgres
+      MOCK_E2E_REDIS_URL: redis://127.0.0.1:6379/15
+      MOCK_E2E_S3_ENDPOINT: http://127.0.0.1:9000
+      MOCK_E2E_S3_REGION: us-east-1
+      MOCK_E2E_S3_ACCESS_KEY: ci-minio-user
+      MOCK_E2E_S3_SECRET_KEY: ci-minio-password
+      MOCK_E2E_PYTHON: ${{ github.workspace }}/services/media-runtime/.venv/bin/python
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -88,7 +98,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/minio-data"
           MINIO_ROOT_USER=ci-minio-user \
           MINIO_ROOT_PASSWORD=ci-minio-password \
-          MINIO_API_CORS_ALLOW_ORIGIN=http://127.0.0.1:3031 \
+          MINIO_API_CORS_ALLOW_ORIGIN="http://127.0.0.1:3031,http://localhost:3031,http://127.0.0.1:3331,http://localhost:3331" \
           MINIO_UPDATE=off \
             nohup "$RUNNER_TEMP/minio-bin/minio" server \
               --address 127.0.0.1:9000 \
@@ -118,8 +128,40 @@ jobs:
         run: pnpm typecheck
       - name: Migrate isolated integration database
         run: pnpm --filter @alchemy-video/persistence db:migrate
+      - name: Create and migrate isolated recovery concurrency database
+        working-directory: packages/persistence
+        shell: bash
+        run: |
+          node --import tsx --input-type=module <<'NODE'
+          import { Client } from 'pg';
+          import { assertLoopbackTestDatabaseUrl } from './tests/helpers/legacy-fence-test-database.ts';
+          const target = new URL(assertLoopbackTestDatabaseUrl(process.env.PRODUCTION_RECOVERY_TEST_DATABASE_URL));
+          const name = decodeURIComponent(target.pathname.slice(1));
+          if (target.protocol !== 'postgres:' || !/^alchemy_recovery_test_[a-z0-9_-]+$/iu.test(name)) throw new Error('Recovery tests require their dedicated database.');
+          target.pathname = '/postgres';
+          const database = new Client({ connectionString: target.href });
+          try {
+            await database.connect();
+            await database.query(`CREATE DATABASE "${name}"`);
+          } finally {
+            await database.end();
+          }
+          NODE
+          DATABASE_URL="$PRODUCTION_RECOVERY_TEST_DATABASE_URL" node --import tsx src/migrate.ts
       - name: Unit and contract tests
         run: pnpm test
+      - name: Install pinned Mock browser test runtime
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          uv pip install --python "$MOCK_E2E_PYTHON" 'playwright==1.62.0'
+          "$MOCK_E2E_PYTHON" -m playwright install --with-deps chromium
+      - name: C06 Mock browser failure and retry acceptance
+        timeout-minutes: 8
+        run: pnpm --filter @alchemy-video/control-api test:c06-e2e
+      - name: C12 Mock browser final-video acceptance
+        timeout-minutes: 12
+        run: pnpm --filter @alchemy-video/control-api test:c12-e2e
       - name: Stop isolated MinIO
         if: always()
         shell: bash

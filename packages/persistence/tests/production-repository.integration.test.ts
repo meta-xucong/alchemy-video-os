@@ -7,6 +7,7 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   InternalEventEnvelopeSchema,
   InternalMediaRuntimeQueueMessageSchema,
+  InternalTaskRunQueueMessageSchema,
   VideoGenerationInputSnapshotSchema,
   semanticPromptPackageIntegrityPayload,
   type InternalEventEnvelope,
@@ -18,6 +19,8 @@ import { DrizzleCreativePlanningRepository } from "../src/creative-planning-repo
 import { createDatabase } from "../src/db.js";
 import { DrizzleDeliveryPreflightStore } from "../src/delivery-preflight-repository.js";
 import { DrizzleAssetWorkspaceRepository } from "../src/asset-workspace-repository.js";
+import { DrizzleTaskRunRepository } from "../src/task-run-repository.js";
+import { assertLoopbackTestDatabaseUrl } from "./helpers/legacy-fence-test-database.js";
 import {
   DrizzleProductionRepository,
   ProductionCompositionInputUnavailableError,
@@ -36,6 +39,7 @@ import {
   productionRuns,
   productionSegments,
   qcReports,
+  referenceBindings,
   taskRuns,
   transitionRepairs,
   videoVersions,
@@ -58,6 +62,23 @@ const isDisposableBgmLifecycleDatabaseUrl = (value: string) => {
     return false;
   }
 };
+
+const isDisposableRecoveryDatabaseUrl = (value: string) => {
+  const url = new URL(assertLoopbackTestDatabaseUrl(value));
+  return /^alchemy_recovery_test_[a-z0-9_-]+$/iu.test(decodeURIComponent(url.pathname.slice(1)));
+};
+
+test("production recovery fault injection requires an exact loopback disposable database", () => {
+  assert.equal(isDisposableRecoveryDatabaseUrl("postgres://postgres@127.0.0.1:56433/alchemy_recovery_test_closure"), true);
+  assert.equal(isDisposableRecoveryDatabaseUrl("postgres://postgres@127.0.0.1:56433/video_local"), false);
+  for (const url of [
+    "postgres://postgres@localhost/alchemy_recovery_test_closure",
+    "postgres://postgres@postgres.example/alchemy_recovery_test_closure",
+    "postgres://postgres@127.0.0.1/alchemy_recovery_test_closure?host=postgres.example",
+    "postgres://postgres@127.0.0.1/alchemy_recovery_test_closure?hostaddr=192.0.2.1",
+    "postgres://postgres@127.0.0.1/alchemy_recovery_test_closure?host=127.0.0.1%20",
+  ]) assert.throws(() => isDisposableRecoveryDatabaseUrl(url), /loopback/);
+});
 
 const eventMetadata = () => ({
   eventId: createPrefixedId("evt"),
@@ -150,15 +171,22 @@ const generatedAsset = async (database: ReturnType<typeof createDatabase>["db"],
 };
 
 test("C12 Drizzle production persists QC, handoff, dependency scheduling, composition, and terminal media failure", {
-  skip: !process.env.DATABASE_URL && process.env.BGM_LIFECYCLE_TEST_DATABASE_URL === undefined,
-}, async () => {
+  skip: !process.env.DATABASE_URL && process.env.BGM_LIFECYCLE_TEST_DATABASE_URL === undefined && process.env.PRODUCTION_RECOVERY_TEST_DATABASE_URL === undefined,
+}, async (t) => {
   const bgmLifecycleDatabaseUrl = process.env.BGM_LIFECYCLE_TEST_DATABASE_URL;
+  const recoveryDatabaseUrl = process.env.PRODUCTION_RECOVERY_TEST_DATABASE_URL;
   if (bgmLifecycleDatabaseUrl !== undefined && !isDisposableBgmLifecycleDatabaseUrl(bgmLifecycleDatabaseUrl)) {
     throw new Error("BGM_LIFECYCLE_TEST_DATABASE_URL must use postgres:// on loopback and an alchemy_bgm_lifecycle_test_ database name.");
   }
+  if (recoveryDatabaseUrl !== undefined && !isDisposableRecoveryDatabaseUrl(recoveryDatabaseUrl)) {
+    throw new Error("PRODUCTION_RECOVERY_TEST_DATABASE_URL must use postgres:// on loopback and an alchemy_recovery_test_ database name.");
+  }
+  if (recoveryDatabaseUrl !== undefined && bgmLifecycleDatabaseUrl !== undefined) {
+    throw new Error("Run production recovery and BGM lifecycle fixtures with separate dedicated database URLs.");
+  }
   // An explicitly supplied disposable URL always wins; never silently run the
   // BGM lifecycle negative against the ordinary development DATABASE_URL.
-  const databaseUrl = bgmLifecycleDatabaseUrl ?? process.env.DATABASE_URL;
+  const databaseUrl = recoveryDatabaseUrl ?? bgmLifecycleDatabaseUrl ?? process.env.DATABASE_URL;
   if (!databaseUrl) return;
   const runBgmLifecycleNegative = bgmLifecycleDatabaseUrl !== undefined;
 
@@ -1240,8 +1268,40 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     // terminal Provider rejection, not merely after learning a late request ID.
     await database.db.update(taskRuns).set({ status: "FAILED", error: { code: "PROVIDER_REJECTED", message: "Synthetic terminal rejection.", retryable: false } })
       .where(and(eq(taskRuns.workspaceId, workspaceId), eq(taskRuns.id, failedSegment.taskRunId!)));
+    // Hold every other eligibility condition valid so these negatives prove
+    // the Attempt evidence gate, rather than the task's earlier QUEUED state.
+    for (const [index, responsePayload] of [
+      ...[false, "true", 1, 0, [], null, {}].map((value) => ({ provider_request_terminal: value })),
+      ...[401, 403, 404].map((status) => ({ code: "PROVIDER_REJECTED", http_status: status })),
+      { code: "PROVIDER_CONFIG_INVALID" },
+    ].entries()) {
+      await database.db.update(providerAttempts).set({ status: "FAILED", responsePayload })
+        .where(eq(providerAttempts.id, uncertainAttemptId));
+      assert.equal((await production.retryProductionSegment({
+        scope: `${scope}:retry-segment`, idempotencyKey: `retry-invalid-terminal-evidence-${index}`, requestHash: fingerprintRequest({}),
+        workspaceId, productionRunId: failedRunId, sequence: 1, event: eventMetadata(),
+      })).kind, "STATE_INVALID");
+    }
+    await database.db.update(providerAttempts).set({ status: "ABANDONED", responsePayload: {} }).where(eq(providerAttempts.id, uncertainAttemptId));
+    assert.equal((await production.retryProductionSegment({
+      scope: `${scope}:retry-segment`, idempotencyKey: "retry-unclassified-abandoned-evidence", requestHash: fingerprintRequest({}),
+      workspaceId, productionRunId: failedRunId, sequence: 1, event: eventMetadata(),
+    })).kind, "STATE_INVALID");
     await database.db.update(providerAttempts).set({ status: "FAILED", responsePayload: { code: "PROVIDER_REJECTED", provider_request_terminal: true } })
       .where(and(eq(providerAttempts.workspaceId, workspaceId), eq(providerAttempts.id, uncertainAttemptId)));
+    const secondUnknownAttemptId = createPrefixedId("att");
+    await database.db.insert(providerAttempts).values({
+      id: secondUnknownAttemptId, workspaceId, taskRunId: failedSegment.taskRunId!, provider: "mock", model: "mock-video-v1",
+      status: "FAILED", submissionReservedAt: new Date().toISOString(),
+    });
+    assert.equal((await production.retryProductionSegment({
+      scope: `${scope}:retry-segment`, idempotencyKey: "retry-terminal-plus-unknown-reservation", requestHash: fingerprintRequest({}),
+      workspaceId, productionRunId: failedRunId, sequence: 1, event: eventMetadata(),
+    })).kind, "STATE_INVALID", "one terminal known request cannot authorize bypassing another unknown submission");
+    await database.db.update(providerAttempts).set({
+      providerRequestId: `mock-reconciled-${secondUnknownAttemptId}`,
+      responsePayload: { provider_request_terminal: true },
+    }).where(and(eq(providerAttempts.workspaceId, workspaceId), eq(providerAttempts.id, secondUnknownAttemptId)));
     await database.db.update(productionSegments).set({ retryable: true })
       .where(and(eq(productionSegments.workspaceId, workspaceId), eq(productionSegments.id, failedSegment.id)));
     for (const status of ["QUEUED", "RUNNING"] as const) {
@@ -1394,7 +1454,373 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     await database.db.update(providerAttempts).set({ status: "PROCESSING" }).where(eq(providerAttempts.id, completedAttemptId));
     assert.equal((await retryCompleted("unresolved-attempt")).kind, "STATE_INVALID");
     await database.db.update(providerAttempts).set({ status: "SUCCEEDED" }).where(eq(providerAttempts.id, completedAttemptId));
+    const [successfulPredecessor] = await database.db.select().from(taskRuns).where(eq(taskRuns.id, legacySegment.taskRunId!));
+    const [successfulAttempt] = await database.db.select().from(providerAttempts).where(eq(providerAttempts.id, completedAttemptId));
+    const [successfulAsset] = await database.db.select().from(assets).where(eq(assets.id, legacyAssetId));
     assert.equal((await retryCompleted("completed-media-retry")).kind, "NEW", "verified successful video may be explicitly regenerated after recoverable QC failure");
+    const [supersededSuccess] = await database.db.select().from(taskRuns).where(eq(taskRuns.id, legacySegment.taskRunId!));
+    assert.ok(supersededSuccess?.supersededByTaskRunId);
+    assert.deepEqual({ ...supersededSuccess, updatedAt: successfulPredecessor!.updatedAt, supersededByTaskRunId: null }, successfulPredecessor);
+    assert.deepEqual((await database.db.select().from(providerAttempts).where(eq(providerAttempts.id, completedAttemptId)))[0], successfulAttempt);
+    assert.deepEqual((await database.db.select().from(assets).where(eq(assets.id, legacyAssetId)))[0], successfulAsset);
+
+    await t.test("production recovery lineage uses real opposing commands and atomic PostgreSQL writes", {
+      skip: recoveryDatabaseUrl === undefined,
+    }, async (recoveryTest) => {
+      // Reuse the complete production fixture above. Test-only triggers are
+      // restricted to an explicitly named disposable loopback database.
+      const observer = new Client({ connectionString: recoveryDatabaseUrl });
+      await observer.connect();
+      const tasks = new DrizzleTaskRunRepository(database.db);
+      const recoveryScope = `${scope}:recovery-lineage`;
+      const [segmentA] = await database.db.select().from(productionSegments).where(and(
+        eq(productionSegments.workspaceId, workspaceId), eq(productionSegments.id, legacySegment.id),
+      ));
+      assert.ok(segmentA?.taskRunId);
+      const taskA = segmentA.taskRunId;
+      const retrySegment = (idempotencyKey: string, requestHash = fingerprintRequest({})) => production.retryProductionSegment({
+        scope: recoveryScope, idempotencyKey, requestHash, workspaceId,
+        productionRunId: legacyRunId, sequence: 1, event: eventMetadata(),
+      });
+      const retryOrdinary = (taskRunId: string, idempotencyKey: string, repository = tasks, targetWorkspaceId = workspaceId) => repository.retryTaskRun({
+        scope: `${recoveryScope}:ordinary`, idempotencyKey, requestHash: fingerprintRequest({}),
+        workspaceId: targetWorkspaceId, taskRunId, event: eventMetadata(),
+      });
+      const failCurrent = async (taskRunId: string) => {
+        await tasks.failTaskRun({ workspaceId, taskRunId, code: "PROVIDER_REJECTED", message: "Mock terminal failure.", retryable: false, now: new Date() });
+        const failed = taskFailedEvent({ workspaceId, projectId, taskRunId, retryable: true });
+        failed.data.error_code = "PROVIDER_REJECTED";
+        await production.recordProductionTaskFailed({ event: failed, now: new Date() });
+      };
+      const state = async () => {
+        const rows: Array<readonly [string, unknown[]]> = [];
+        for (const table of [
+          "shots", "reference_bindings", "task_runs", "provider_attempts", "assets", "production_runs",
+          "production_segments", "outbox_events", "qc_reports", "handoff_reviews", "video_versions",
+        ]) {
+          rows.push([table, (await observer.query(
+            `SELECT to_jsonb(record) AS row FROM ${table} AS record WHERE workspace_id = $1 ORDER BY to_jsonb(record)::text`, [workspaceId],
+          )).rows]);
+        }
+        const commands = (await observer.query(
+          "SELECT to_jsonb(record) AS row FROM command_deduplications AS record WHERE left(scope, length($1)) = $1 ORDER BY scope, idempotency_key", [recoveryScope],
+        )).rows;
+        return Object.fromEntries([...rows, ["command_deduplications", commands]]);
+      };
+      const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
+      const triggerName = `recovery_${suffix}`;
+      let triggerTable: string | undefined;
+      const clearTrigger = async () => {
+        if (triggerTable) await observer.query(`DROP TRIGGER IF EXISTS ${triggerName} ON ${triggerTable}`);
+        await observer.query(`DROP FUNCTION IF EXISTS ${triggerName}()`);
+        triggerTable = undefined;
+      };
+      const installTrigger = async (table: string, timing: string, condition: string, action: string) => {
+        await clearTrigger();
+        await observer.query(`CREATE FUNCTION ${triggerName}() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN IF ${condition} THEN ${action} END IF; RETURN NEW; END; $$`);
+        triggerTable = table;
+        await observer.query(`CREATE TRIGGER ${triggerName} ${timing} ON ${table} FOR EACH ROW EXECUTE FUNCTION ${triggerName}()`);
+      };
+      const waitForAdvisoryWaiter = async (key: string) => {
+        const deadline = Date.now() + 5_000;
+        while (Date.now() < deadline) {
+          const waiting = await observer.query(
+            "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid::bigint = (hashtext($1)::bigint & 4294967295)", [key],
+          );
+          if (waiting.rowCount) return waiting.rows[0]!.pid as number;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.fail(`Expected an actual PostgreSQL advisory-lock waiter for ${key}.`);
+      };
+      const waitForTransactionWaiter = async (blockerPid: number) => {
+        const deadline = Date.now() + 5_000;
+        while (Date.now() < deadline) {
+          const waiting = await observer.query(
+            "SELECT pid FROM pg_stat_activity WHERE wait_event = 'transactionid' AND $1 = ANY(pg_blocking_pids(pid))", [blockerPid],
+          );
+          if (waiting.rowCount) return;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.fail("Expected the same-key command to wait for the first command's uncommitted deduplication row.");
+      };
+      const taskRow = async (id: string) => (await database.db.select().from(taskRuns).where(and(
+        eq(taskRuns.workspaceId, workspaceId), eq(taskRuns.id, id),
+      )))[0]!;
+      const queuedRows = async (id: string) => database.db.select().from(outboxEvents).where(and(
+        eq(outboxEvents.workspaceId, workspaceId), eq(outboxEvents.aggregateId, id), eq(outboxEvents.eventType, "task_run.queued"),
+      )).orderBy(asc(outboxEvents.id));
+      let taskB = "";
+      let taskC = "";
+      try {
+        // A Shot can be edited after its TaskRun was frozen. Seed one binding
+        // so rollback covers the existing reference-copy branch while proving
+        // the immutable TaskRun input is still copied exactly as originally saved.
+        await database.db.insert(referenceBindings).values({
+          workspaceId, projectId, shotId: segmentA.shotId!, assetId: sourceImageAssetId, role: "SUBJECT", position: 0,
+        }).onConflictDoNothing();
+        assert.ok((await database.db.select().from(referenceBindings).where(and(
+          eq(referenceBindings.workspaceId, workspaceId), eq(referenceBindings.shotId, segmentA.shotId!),
+        ))).length > 0);
+        await failCurrent(taskA);
+        const attemptA = createPrefixedId("att");
+        await database.db.insert(providerAttempts).values({
+          id: attemptA, workspaceId, taskRunId: taskA, provider: "mock", model: "mock-video-v1",
+          status: "FAILED", providerRequestId: `mock-terminal-${attemptA}`,
+          responsePayload: { provider_request_terminal: true },
+        });
+        await recoveryTest.test("R4 ordinary retry really holds the TaskRun lock before segment retry", async () => {
+          const barrierKey = `${recoveryScope}:ordinary-barrier`;
+          const taskCount = (await database.db.select().from(taskRuns).where(eq(taskRuns.workspaceId, workspaceId))).length;
+          await observer.query("SELECT pg_advisory_lock(hashtext($1))", [barrierKey]);
+          await installTrigger("task_runs", "AFTER UPDATE", `NEW.id = ${literal(taskA)} AND NEW.status = 'QUEUED'`,
+            `PERFORM pg_advisory_xact_lock(hashtext(${literal(barrierKey)}));`);
+          let ordinary: ReturnType<typeof retryOrdinary> | undefined;
+          let segment: ReturnType<typeof retrySegment> | undefined;
+          try {
+            ordinary = retryOrdinary(taskA, "historical-ordinary-success");
+            void ordinary.catch(() => undefined);
+            await waitForAdvisoryWaiter(barrierKey);
+            segment = retrySegment("ordinary-wins");
+            void segment.catch(() => undefined);
+            await waitForAdvisoryWaiter(`${workspaceId}:${taskA}`);
+            assert.equal((await taskRow(taskA)).status, "FAILED", "ordinary update is still uncommitted at the barrier");
+            await observer.query("SELECT pg_advisory_unlock(hashtext($1))", [barrierKey]);
+            assert.equal((await ordinary).kind, "NEW");
+            assert.equal((await segment).kind, "STATE_INVALID");
+            assert.equal((await taskRow(taskA)).status, "QUEUED");
+            assert.equal((await taskRow(taskA)).supersededByTaskRunId, null);
+            assert.equal((await database.db.select().from(taskRuns).where(eq(taskRuns.workspaceId, workspaceId))).length, taskCount);
+          } finally {
+            await observer.query("SELECT pg_advisory_unlock(hashtext($1))", [barrierKey]);
+            await Promise.allSettled([ordinary, segment].filter(Boolean));
+            await clearTrigger();
+          }
+        });
+        await failCurrent(taskA);
+        const beforeReplacement = await state();
+        const historicalTaskA = await taskRow(taskA);
+        const historicalAttemptA = await tasks.listTaskRunAttempts(workspaceId, taskA);
+        const historicalQueuedA = await queuedRows(taskA);
+        const workspaceCondition = `NEW.workspace_id = ${literal(workspaceId)}`;
+        const faults = [
+          { name: "first new Shot write", table: "shots", timing: "AFTER INSERT", condition: workspaceCondition },
+          { name: "copied reference write", table: "reference_bindings", timing: "AFTER INSERT", condition: workspaceCondition },
+          { name: "new TaskRun write", table: "task_runs", timing: "AFTER INSERT", condition: workspaceCondition },
+          { name: "supersession CAS miss", table: "task_runs", timing: "BEFORE UPDATE", condition: `NEW.id = ${literal(taskA)} AND NEW.superseded_by_task_run_id IS NOT NULL`, action: "RETURN NULL;", expected: "Production recovery predecessor changed before supersession." },
+          { name: "segment rebind CAS miss", table: "production_segments", timing: "BEFORE UPDATE", condition: `NEW.id = ${literal(segmentA.id)} AND NEW.status = 'GENERATING'`, action: "RETURN NULL;", expected: "Production recovery segment changed before replacement." },
+          { name: "run transition CAS miss", table: "production_runs", timing: "BEFORE UPDATE", condition: `NEW.id = ${literal(legacyRunId)} AND NEW.status = 'GENERATING'`, action: "RETURN NULL;", expected: "Production recovery run changed before replacement." },
+          { name: "queued outbox write", table: "outbox_events", timing: "AFTER INSERT", condition: `${workspaceCondition} AND NEW.event_type = 'task_run.queued'` },
+          { name: "progress outbox write", table: "outbox_events", timing: "AFTER INSERT", condition: `${workspaceCondition} AND NEW.event_type = 'production_run.progressed'` },
+          { name: "progress lookup miss", table: "outbox_events", timing: "AFTER INSERT", condition: `${workspaceCondition} AND NEW.event_type = 'production_run.progressed'`, action: `DELETE FROM production_runs WHERE id = ${literal(legacyRunId)};`, expected: "Production recovery progress was not persisted." },
+          { name: "command snapshot write", table: "command_deduplications", timing: "BEFORE UPDATE", condition: `NEW.scope = ${literal(recoveryScope)} AND NEW.idempotency_key = 'segment-wins'` },
+        ];
+        for (const fault of faults) {
+          let rollbackVerified = false;
+          await recoveryTest.test(`R7 rolls back every fact after ${fault.name}`, async () => {
+            await installTrigger(fault.table, fault.timing, fault.condition, fault.action ?? "RAISE EXCEPTION 'Injected recovery write failure';");
+            try {
+              await assert.rejects(() => retrySegment("segment-wins"), (error: unknown) => {
+                let current = error;
+                while (current instanceof Error) {
+                  if (current.message.includes(fault.expected ?? "Injected recovery write failure")) return true;
+                  current = current.cause;
+                }
+                return false;
+              });
+            } finally {
+              await clearTrigger();
+            }
+            assert.deepEqual(await state(), beforeReplacement, "new Shot, copied references, task, lineage, run, segment, outbox and dedup all roll back");
+            rollbackVerified = true;
+          });
+          assert.equal(rollbackVerified, true, "stop rather than reuse a fixture after a failed rollback assertion");
+        }
+        await recoveryTest.test("R5 segment retry commits its successor before the waiting ordinary command", async () => {
+          const barrierKey = `${recoveryScope}:segment-barrier`;
+          await observer.query("SELECT pg_advisory_lock(hashtext($1))", [barrierKey]);
+          await installTrigger("task_runs", "AFTER UPDATE", `NEW.id = ${literal(taskA)} AND NEW.superseded_by_task_run_id IS NOT NULL`,
+            `PERFORM pg_advisory_xact_lock(hashtext(${literal(barrierKey)}));`);
+          let segment: ReturnType<typeof retrySegment> | undefined;
+          let ordinary: ReturnType<typeof retryOrdinary> | undefined;
+          try {
+            segment = retrySegment("segment-wins");
+            void segment.catch(() => undefined);
+            await waitForAdvisoryWaiter(barrierKey);
+            ordinary = retryOrdinary(taskA, "segment-wins-ordinary-loses");
+            void ordinary.catch(() => undefined);
+            await waitForAdvisoryWaiter(`${workspaceId}:${taskA}`);
+            assert.deepEqual(await state(), beforeReplacement, "neither replacement nor lineage is visible before commit");
+            await observer.query("SELECT pg_advisory_unlock(hashtext($1))", [barrierKey]);
+            const result = await segment;
+            assert.equal(result.kind, "NEW", "the same key is reusable after every injected rollback");
+            assert.equal((await ordinary).kind, "STATE_INVALID");
+            taskB = (await taskRow(taskA)).supersededByTaskRunId!;
+            assert.ok(taskB);
+            assert.notEqual(taskB, taskA);
+            assert.equal((await taskRow(taskA)).status, "FAILED");
+            assert.equal((await taskRow(taskB)).status, "QUEUED");
+            assert.equal((await queuedRows(taskB)).length, 1);
+            assert.deepEqual(await queuedRows(taskA), historicalQueuedA);
+          } finally {
+            await observer.query("SELECT pg_advisory_unlock(hashtext($1))", [barrierKey]);
+            await Promise.allSettled([segment, ordinary].filter(Boolean));
+            await clearTrigger();
+          }
+        });
+        assert.ok(taskB, "segment-first concurrency must have committed its replacement");
+        await recoveryTest.test("R3 R8 R9 private history survives fresh clients, rejected commands and historical replay", async () => {
+          const reopened = createDatabase(recoveryDatabaseUrl!);
+          try {
+            const restartedTasks = new DrizzleTaskRunRepository(reopened.db);
+            assert.equal((await retryOrdinary(taskA, "after-restart", restartedTasks)).kind, "STATE_INVALID");
+            assert.equal((await retryOrdinary(taskA, "wrong-workspace", restartedTasks, createPrefixedId("ws"))).kind, "NOT_FOUND");
+            const persisted = await taskRow(taskA);
+            assert.deepEqual({ ...persisted, updatedAt: historicalTaskA.updatedAt, supersededByTaskRunId: null }, historicalTaskA);
+            assert.deepEqual(await tasks.listTaskRunAttempts(workspaceId, taskA), historicalAttemptA);
+            assert.deepEqual((await taskRow(taskB)).inputSnapshot, historicalTaskA.inputSnapshot);
+            const queuedB = InternalEventEnvelopeSchema.parse((await queuedRows(taskB))[0]!.payload);
+            assert.equal(queuedB.event_type, "task_run.queued");
+            if (queuedB.event_type === "task_run.queued") assert.deepEqual(queuedB.data.input_snapshot, historicalTaskA.inputSnapshot);
+            assert.equal(JSON.stringify(historicalTaskA.inputSnapshot).includes("superseded"), false);
+            assert.equal(JSON.stringify(queuedB).includes("superseded"), false);
+            assert.deepEqual(await queuedRows(taskA), historicalQueuedA);
+            await observer.query(
+              "UPDATE command_deduplications SET response_snapshot = response_snapshot #- '{task_run,supersededByTaskRunId}' WHERE scope = $1 AND idempotency_key = $2",
+              [`${recoveryScope}:ordinary`, "historical-ordinary-success"],
+            );
+            const beforeReplay = await state();
+            const replay = await retryOrdinary(taskA, "historical-ordinary-success", restartedTasks);
+            assert.equal(replay.kind, "REPLAY");
+            assert.equal(replay.kind === "REPLAY" ? replay.value.status : undefined, "QUEUED", "historical response is not current recovery authority");
+            if (replay.kind === "REPLAY") assert.equal(Object.hasOwn(replay.value, "supersededByTaskRunId"), false);
+            assert.equal((await retryOrdinary(taskA, "segment-wins-ordinary-loses", restartedTasks)).kind, "STATE_INVALID");
+            assert.equal((await retrySegment("segment-wins")).kind, "REPLAY");
+            assert.equal((await retrySegment("segment-wins", fingerprintRequest({ conflicting: true }))).kind, "CONFLICT");
+            assert.deepEqual(await state(), beforeReplay, "all replays preserve current rows and enqueue nothing");
+          } finally {
+            await reopened.close();
+          }
+        });
+        await recoveryTest.test("R12 stale queue, scanner, attempt, reservation and failure writes leave ancestors unchanged", async () => {
+          const staleEvent = InternalEventEnvelopeSchema.parse(historicalQueuedA[0]!.payload);
+          assert.equal(staleEvent.event_type, "task_run.queued");
+          if (staleEvent.event_type !== "task_run.queued") return;
+          const beforeStale = await state();
+          assert.equal(await tasks.processEvent({
+            message: InternalTaskRunQueueMessageSchema.parse({
+              contract_version: staleEvent.contract_version, event_id: staleEvent.event_id,
+              workspace_id: workspaceId, task_run_id: taskA, attempt_no: 1,
+              correlation_id: staleEvent.correlation_id, input_snapshot: staleEvent.data.input_snapshot,
+            }),
+            consumerName: "recovery-stale-worker", workerId: "recovery-stale-worker", now: new Date(), leaseMs: 10_000,
+          }), "DUPLICATE");
+          assert.equal(await tasks.ensureProviderAttempt({ workspaceId, taskRunId: taskA, providerAttemptId: createPrefixedId("att"), provider: "mock", model: "mock-video-v1", now: new Date() }), undefined);
+          assert.equal(await tasks.reserveProviderSubmission({ workspaceId, taskRunId: taskA, providerAttemptId: attemptA, now: new Date() }), false);
+          assert.equal((await tasks.listRecoverableVideoTaskRuns({ limit: 1_000, statuses: ["FAILED"] })).some((task) => task.id === taskA), false);
+          await tasks.failTaskRun({ workspaceId, taskRunId: taskA, providerAttemptId: attemptA, code: "PROVIDER_UNAVAILABLE", message: "Stale callback.", retryable: true, now: new Date() });
+          await tasks.finalizeTaskRunExecutionFailure({ workspaceId, taskRunId: taskA, code: "PROVIDER_UNAVAILABLE", message: "Stale execution.", now: new Date() });
+          assert.deepEqual(await state(), beforeStale, "only the duplicate-consumption receipt may change");
+        });
+        await recoveryTest.test("R3 segment replacement executes its PostgreSQL-backed successor exactly once through the Mock Worker", async () => {
+          // Cross-layer integration stays in this isolated test, not in the
+          // persistence product. Terminal failure avoids a media download and
+          // supplies the existing terminal evidence for the following B -> C.
+          const { MockVideoTaskExecutor } = await import("../../../apps/task-worker/src/execution-service.js");
+          const { MockVideoProvider } = await import("../../provider-video/src/mock-video-provider.js");
+          const { createInMemoryStoragePort } = await import("../../storage-client/src/index.js");
+          const provider = new MockVideoProvider({ fixtureBytes: new Uint8Array([0]), outcome: "failed" });
+          const createExecutor = () => new MockVideoTaskExecutor(tasks, provider, createInMemoryStoragePort(), {
+            assetStore: new DrizzleAssetWorkspaceRepository(database.db),
+            referenceDelivery: { async createVisualInput(input) {
+              if (input.visualInput.mode === "TEXT") return { mode: "TEXT" };
+              if (input.visualInput.mode === "FIRST_FRAME") return { mode: "FIRST_FRAME", url: "https://offline.invalid/reference" };
+              return { mode: "REFERENCE_SET", urls: input.visualInput.references.map(() => "https://offline.invalid/reference") };
+            } },
+          });
+          const executor = createExecutor();
+          assert.equal((await executor.execute({ workspaceId, taskRunId: taskA }))?.status, "FAILED");
+          assert.equal(provider.submitCount, 0, "the already-rejected ancestor cannot reach Provider submit");
+          const queued = InternalEventEnvelopeSchema.parse((await queuedRows(taskB))[0]!.payload);
+          assert.equal(queued.event_type, "task_run.queued");
+          if (queued.event_type !== "task_run.queued") throw new Error("Expected the committed replacement queue event.");
+          const delivery = {
+            message: InternalTaskRunQueueMessageSchema.parse({
+              contract_version: queued.contract_version, event_id: queued.event_id,
+              workspace_id: workspaceId, task_run_id: taskB, attempt_no: 1,
+              correlation_id: queued.correlation_id, input_snapshot: queued.data.input_snapshot,
+            }),
+            consumerName: "recovery-successor-worker", workerId: "offline-mock-worker", now: new Date(), leaseMs: 10_000,
+          };
+          assert.equal(await tasks.processEvent(delivery), "PROCESSED");
+          const executed = await executor.execute({ workspaceId, taskRunId: taskB });
+          assert.equal(executed?.status, "FAILED");
+          assert.equal(executed?.error?.code, "PROVIDER_REJECTED");
+          assert.equal(provider.submitCount, 1);
+          assert.equal(await tasks.processEvent(delivery), "DUPLICATE");
+          await executor.execute({ workspaceId, taskRunId: taskB });
+          await createExecutor().execute({ workspaceId, taskRunId: taskB });
+          await executor.execute({ workspaceId, taskRunId: taskA });
+          assert.equal(provider.submitCount, 1, "duplicate delivery and Worker reconstruction never resubmit either historical task");
+          const [attempt] = await tasks.listTaskRunAttempts(workspaceId, taskB);
+          assert.ok(attempt?.providerRequestId);
+          assert.ok(attempt.submissionReservedAt);
+          assert.equal(attempt.responsePayload.provider_request_terminal, true);
+          assert.equal((await tasks.listTaskRunAttempts(workspaceId, taskB)).length, 1);
+          assert.equal((await queuedRows(taskB)).length, 1);
+          assert.deepEqual(await queuedRows(taskA), historicalQueuedA);
+        });
+        await recoveryTest.test("R6 same-key and distinct-key segment retries preserve A to B to C authority", async () => {
+          await failCurrent(taskB);
+          const beforeB = await taskRow(taskB);
+          const barrierKey = `${recoveryScope}:chain-barrier`;
+          await observer.query("SELECT pg_advisory_lock(hashtext($1))", [barrierKey]);
+          await installTrigger("task_runs", "AFTER UPDATE", `NEW.id = ${literal(taskB)} AND NEW.superseded_by_task_run_id IS NOT NULL`,
+            `PERFORM pg_advisory_xact_lock(hashtext(${literal(barrierKey)}));`);
+          const pending: Array<ReturnType<typeof retrySegment>> = [];
+          try {
+            pending.push(retrySegment("chain-next"));
+            void pending[0]!.catch(() => undefined);
+            const firstCommandPid = await waitForAdvisoryWaiter(barrierKey);
+            pending.push(retrySegment("chain-next"), retrySegment("chain-competitor"));
+            for (const command of pending) void command.catch(() => undefined);
+            await waitForTransactionWaiter(firstCommandPid);
+            await waitForAdvisoryWaiter(`${workspaceId}:${legacyRunId}`);
+            await observer.query("SELECT pg_advisory_unlock(hashtext($1))", [barrierKey]);
+            const responses = await Promise.all(pending);
+            assert.deepEqual(responses.map((response) => response.kind), ["NEW", "REPLAY", "STATE_INVALID"]);
+          } finally {
+            await observer.query("SELECT pg_advisory_unlock(hashtext($1))", [barrierKey]);
+            await Promise.allSettled(pending);
+            await clearTrigger();
+          }
+          taskC = (await taskRow(taskB)).supersededByTaskRunId!;
+          assert.ok(taskC);
+          assert.notEqual(taskC, taskB);
+          assert.equal((await taskRow(taskA)).supersededByTaskRunId, taskB);
+          assert.equal((await taskRow(taskB)).status, "FAILED");
+          assert.deepEqual((await taskRow(taskB)).inputSnapshot, beforeB.inputSnapshot);
+          assert.equal((await taskRow(taskC)).status, "QUEUED");
+          assert.equal((await taskRow(taskC)).supersededByTaskRunId, null);
+          assert.equal((await queuedRows(taskC)).length, 1);
+          assert.equal((await retryOrdinary(taskA, "ancestor-a")).kind, "STATE_INVALID");
+          assert.equal((await retryOrdinary(taskB, "ancestor-b")).kind, "STATE_INVALID");
+          const oldSegmentReplay = await retrySegment("segment-wins");
+          assert.equal(oldSegmentReplay.kind, "REPLAY");
+          assert.equal((await database.db.select().from(productionSegments).where(and(
+            eq(productionSegments.workspaceId, workspaceId), eq(productionSegments.id, segmentA.id),
+          )))[0]?.taskRunId, taskC);
+          assert.deepEqual(oldSegmentReplay.kind === "REPLAY" ? oldSegmentReplay.value : undefined,
+            await production.findProductionRunProgress(workspaceId, legacyRunId),
+            "segment replay intentionally projects current public progress without exposing its private TaskRun binding");
+          assert.equal((await queuedRows(taskB)).length, 1);
+          assert.deepEqual(await queuedRows(taskA), historicalQueuedA);
+        });
+      } finally {
+        await clearTrigger();
+        await observer.end();
+      }
+    });
   } finally {
     const { Client } = await import("pg");
     const client = new Client({ connectionString: databaseUrl });

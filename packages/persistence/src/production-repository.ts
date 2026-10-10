@@ -1850,6 +1850,7 @@ export class DrizzleProductionRepository implements ProductionStore {
         .where(and(eq(shots.workspaceId, input.workspaceId), eq(shots.projectId, run.projectId), eq(shots.id, segment.shotId)))
         .limit(1);
       if (!previousTaskRun || !previousShot) return this.storeProductionSegmentRetryOutcome(transaction, input, { kind: "STATE_INVALID" });
+      if (previousTaskRun.supersededByTaskRunId != null) return this.storeProductionSegmentRetryOutcome(transaction, input, { kind: "STATE_INVALID" });
       if (!["FAILED", "SUCCEEDED"].includes(previousTaskRun.status)) return this.storeProductionSegmentRetryOutcome(transaction, input, { kind: "STATE_INVALID" });
 
       // Existing explicit media/QC retry may regenerate a completed video,
@@ -1924,8 +1925,20 @@ export class DrizzleProductionRepository implements ProductionStore {
         updatedAt: now,
       }).returning();
 
+      if (!taskRun) throw new Error("Production recovery task creation was not persisted.");
+      const [superseded] = await transaction.update(taskRuns)
+        .set({ supersededByTaskRunId: taskRunId, updatedAt: now })
+        .where(and(
+          eq(taskRuns.workspaceId, input.workspaceId),
+          eq(taskRuns.projectId, run.projectId),
+          eq(taskRuns.id, previousTaskRun.id),
+          isNull(taskRuns.supersededByTaskRunId),
+          inArray(taskRuns.status, ["FAILED", "SUCCEEDED"]),
+        )).returning({ id: taskRuns.id });
+      if (!superseded) throw new Error("Production recovery predecessor changed before supersession.");
+
       assertProductionSegmentTransition(segment.status, "GENERATING");
-      await transaction
+      const [reboundSegment] = await transaction
         .update(productionSegments)
         .set({
           status: "GENERATING",
@@ -1937,14 +1950,16 @@ export class DrizzleProductionRepository implements ProductionStore {
           qcReportId: null,
           updatedAt: now,
         })
-        .where(and(eq(productionSegments.workspaceId, input.workspaceId), eq(productionSegments.id, segment.id), eq(productionSegments.status, "FAILED")));
+        .where(and(eq(productionSegments.workspaceId, input.workspaceId), eq(productionSegments.id, segment.id), eq(productionSegments.status, "FAILED"), eq(productionSegments.taskRunId, previousTaskRun.id)))
+        .returning({ id: productionSegments.id });
+      if (!reboundSegment) throw new Error("Production recovery segment changed before replacement.");
       assertProductionRunTransition(run.status, "GENERATING");
       const [running] = await transaction
         .update(productionRuns)
         .set({ status: "GENERATING", updatedAt: now })
         .where(and(eq(productionRuns.workspaceId, input.workspaceId), eq(productionRuns.id, run.id), eq(productionRuns.status, "BLOCKED")))
         .returning();
-      if (!running) return this.storeProductionSegmentRetryOutcome(transaction, input, { kind: "STATE_INVALID" });
+      if (!running) throw new Error("Production recovery run changed before replacement.");
 
       const source: EventSource = {
         message_id: input.event.messageId,
@@ -1957,7 +1972,7 @@ export class DrizzleProductionRepository implements ProductionStore {
       await insertOutboxEvent(transaction, queuedTaskEvent(source, { now: new Date(now), taskRun }));
       await insertOutboxEvent(transaction, progressEvent(source, { now: new Date(now), productionRun: running, currentSequence: segment.sequence, producer: "control-api" }));
       const progress = await this.progressWithinTransaction(transaction, input.workspaceId, run.id);
-      if (!progress) return this.storeProductionSegmentRetryOutcome(transaction, input, { kind: "NOT_FOUND" });
+      if (!progress) throw new Error("Production recovery progress was not persisted.");
       await this.storeProductionSegmentRetrySnapshot(transaction, input, run.id);
       return { kind: "NEW", value: progress, status: 202 };
     });

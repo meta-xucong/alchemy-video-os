@@ -1,0 +1,88 @@
+# 实施与审计记录
+
+基线：`3fd8410baf904e879ae353e796b98b10e7ea3495`。本文件只记录本轮剩余问题闭环，不改写旧验收记录。
+
+## 阶段状态
+
+- 方案编制：三份专项方案及总览已形成。
+- 方案独立复审：2026-10-10 通过限定范围审查；要求验证自关联 FK 对合法批量清理的影响、晚到状态写入守卫、真实缺包 CLI 回归和测试资源退出/清理顺序。
+- 产品代码实现：R01 私有替代关系、R02 精确版本未使用依赖边移除、R04 现有 Mock 浏览器 harness 已完成本地实现及限定范围复审。不实现新的 QC/路由凭证解析协议。
+- 最终代码复审：恢复范围及 Mock harness 限定范围通过。2026-10-10 21:58 UTC 用户已批准向官方 npm registry 发送依赖名称、版本和关系，并选择本地隔离部署测试；在线审计与新提交 CI 恢复推进。精确 SHA CI 尚未完成，不能继承基线结果。
+- 本地协作与同步：隔离目录 `D:\AI\alchemy_video_OS\review-3fd8410baf90` 已精确拉取基线 `3fd8410baf904e879ae353e796b98b10e7ea3495`；当前修订尚未推送或同步。指定旧 Codex 会话的受支持接口失败，不视为已完成双方通信。
+- 合并、部署、真实 Provider、生产迁移：未执行。
+
+## 基线回执（历史，不覆盖本轮修改）
+
+基线 CI run `38066159177` 七项成功；Validate 18 套件 983 通过、零失败零跳过，Windows 2 通过，媒体 159 通过。范围与边界见 PR #4 基线回执及《旧 Worker 混跑提交栅栏开发文档》§§10–12。
+
+## 证据记录规则
+
+每次记录包含具体文件或固定 SHA、命令、数据/服务隔离方式、通过/失败/跳过数量、失败原因与修复后的重跑结果。测试组有重叠时分别报告，不相加。来源字节校验与功能审计分别记录；不能以一种替代另一种。记录清单完整性不等于现场真实性或运行时路由凭证。
+
+生产或敏感证据只按获授权的接收方和路径处理；先前未获准上传的审计 JSON/镜像清单不得改走其它渠道。仓库只保存开发方案、代码、合成测试和脱敏结论。
+
+## 当前实施检查点（未形成最终提交）
+
+- 本地现有开发目录报告 HEAD 为 `071f46e`，有 8 项修改和 3 项未跟踪；原目录保留。指定原 Codex 会话的受支持接口报错，尚不能认定已联系；新建的本地核验任务负责隔离工作树复核，最终拉取与版本一致性仍待确认。
+- 依赖精确边移除后，独立干净目录及主云端工作树均完成离线 frozen install：675 包复用、零下载，安装使用 `--ignore-scripts`。独立目录另行完成 Nuxt prepare 及真实 Drizzle CLI 回归；最终合并工作树的构建与回归仍在运行。
+- 交叉审计发现现有 C06 Linux 端口探测会同时绑定 IPv4、IPv6 和双栈地址，互相造成占用；已改为顺序探测并以真实 socket 回归验证。进一步发现取消信号与 Windows 已退出父进程的清理证明不足，仍在补修，不将初版 harness 视为已通过。
+- 完整/生产依赖在线重审曾因向官方 npm registry 发送依赖名称、版本及关系而被审批阻断。等待期间未重试，也未通过自动触发同类 CI 绕过；2026-10-10 21:58 UTC 用户明确批准该数据与目的地后才恢复。历史审计数不能作为本轮重审结果。完整 audit JSON/镜像清单的上传仍未获授权，此次批准不覆盖该上传。
+
+## 云端集成验证与恢复范围复审
+
+以下结果属于本轮未提交源码，不能称为 GitHub CI 或生产验收：
+
+| 验证 | 实际结果与边界 |
+| --- | --- |
+| 全新 PostgreSQL 16.14、全量迁移、Persistence 全套 | 最终重跑 160 pass / 0 fail / 0 skip。独占 loopback 56432，随机 PGDATA；故障注入使用另建 `alchemy_recovery_test_parent`，所有服务与测试同一隔离命令内运行，结束后关闭 |
+| Task Worker 全套 | 84 pass / 0 fail / 5 skip；五项 BullMQ/外部测试服务条件缺失，留待 CI，不计为通过 |
+| Control API 全套 | 最后冻结重跑 154 pass / 0 fail / 0 skip，含全部 14 项 Mock supervisor 专项；组间有重叠，不相加 |
+| Studio 测试与生产构建 | 正确的 `node --test tests/*.test.mjs` 为 47 pass / 0 fail / 0 skip；Nuxt production build 成功。一次误用 `*.test.ts` 返回 0 tests，该次不算验证 |
+| 根完整 typecheck | 使用固定 pnpm 10.33.0，包含 workspace build/pretypecheck，退出 0 |
+| 最终 schema 工具链回归 | 主云端重装后真实 Drizzle generate/check/repeat-generation，1 pass / 0 fail / 0 skip |
+| 固定旧 Worker 原始字节回归 | 实际 Git autocrlf checkout 与故意内容/换行破坏两项通过；未修改旧夹具或原始哈希 |
+| 获准后官方 npm 审计 | pnpm 10.33.0：生产 219 依赖、零漏洞、退出 0；完整 821 依赖、2 high、无 moderate/critical、退出 1。node-forge/braces 未有响应列出的修复版本，esbuild 告警已移除，muted 为空。完整 JSON 未上传 |
+
+离线 `--ignore-scripts` 安装后，ffmpeg-static 缺少安装钩子生成的二进制，部分 Worker fixture 曾在断言前失败。恢复的是已有云端相同 `ffmpeg-static@5.3.0` 包的二进制缓存：包 manifest 比较一致，复制前后 SHA-256 均为 `e7e7fb30477f717e6f55f9180a70386c62677ef8a4d4d1a5d948f4098aa3eb99`，随后 `verifyBundledMediaTools` 成功；未加入系统 FFmpeg fallback、未修改产品路径，也未把环境失败计为通过。最终 CI 仍须验证正常安装和镜像。
+
+恢复范围独立复审通过。审计者独立执行内存/已知请求/Worker 执行用例 51 pass、C06 路由及计费 18 pass；schema contract 26 pass / 1 个 DB 条件 skip，Worker 类型与 diff 检查通过。审计者没有运行 PostgreSQL，PG 结果来源是上述主验证及实施者独立专库测试，不能混同。
+
+审计确认并由主验证复算的产品指纹：`6ee91ba2a27d4863dd60645185e5496de2a4d1eb72476b42c44cc13c3562d132`，算法为下列路径按 `LC_ALL=C` 排序，对每个文件生成 `sha256sum` 行，再对完整 manifest 字节计算 SHA-256：
+
+- `apps/control-api/src/task-run-repository.ts`
+- `apps/task-worker/src/execution-service.ts`
+- `packages/persistence/src/production-repository.ts`
+- `packages/persistence/src/schema.ts`
+- `packages/persistence/src/task-run-repository.ts`
+- `packages/persistence/drizzle/0029_task_run_recovery_supersession.sql`
+- `packages/persistence/drizzle/meta/0029_snapshot.json`
+- `packages/persistence/drizzle/meta/_journal.json`
+
+真实 PG 段重试 → B 持久 queued 事件 → 实际 MockVideoTaskExecutor 提交的组合回归已补齐：一次提交后重复 delivery、重建 executor、执行旧 A 均不增加提交数。该 Mock 明确终态失败以避免媒体下载，所以证明提交/重放语义，不证明成片成功。对应测试文件 SHA-256：`c0181fb01b9a834d446aa6f140e7a71979226be4b1d7471393217f930627954e`。
+
+审计中补修了“已经观察到 supersession 仍继续存储/扣费”和“忽略 transient polling 仓储返回值”的路径。守卫只阻止观察后的后续动作；不能撤销已开始的外部请求，也不保证外部 exactly-once。
+
+## Mock 隔离复审与本地基线交叉核验
+
+Mock harness 独立审计最后重跑 14 pass / 0 fail / 0 skip，三项已发现缺口均在限定范围关闭：Linux 顺序端口探测，POSIX 信号触发实际子进程退出并保留数据，Windows 已退出根进程/失败 taskkill 不误认为可清理。超时后子进程返回 0 仍失败。MJS 语法、Python AST、diff 检查通过。未执行完整 E2E、实际 Windows 进程树或真实服务资源清理，不能推广为完整跨平台验收。
+
+审计绑定 SHA-256：
+
+| 文件 | SHA-256 |
+| --- | --- |
+| `apps/control-api/tests/support/mock-e2e-resources.mjs` | `55128d0088fad2d4c7eec4b586b86628c6a53b517599c0c5f7efecc7308eea15` |
+| `apps/control-api/tests/mock-e2e-resources.test.ts` | `158a664321fc43e346431ddcb05c9dee0e8a580399b19c68665332ce39bac321` |
+| `apps/control-api/tests/c06-local-e2e.mjs` | `53b3d73ca9c74ef2cfd25df4b25f24df6d81d9a665d9b0ec0831e31e2c8e2d3d` |
+| `apps/control-api/tests/c12-local-e2e.mjs` | `17803024ddeda80ca8df914ef972ce4ff52d0c35f7fec39a526acfd570e0a88c` |
+| `.github/workflows/ci.yml` | `355e2d67f3fa4caf1cafd2ddcdc839cbf8b74fc9be119ef1abf865b53e560333` |
+
+本地基线任务已完成 `3fd8410` 六项静态核验，未报阻断问题；实际 Windows 固定夹具测试 2/2。初次默认 TEMP 下 Git 写入失败，改用本 worktree 临时目录后通过并清理。其余包测试因隔离目录未装依赖、本机 pnpm 路径规范化 Access denied、没有专用测试库而未运行。这只属于基线的本地证据，不覆盖本轮新修改。
+
+本地还查找了授权项目/归档内的旧 QC 证据，只找到历史状态记载；引用的 `.codex-longrun/test-log.md` 未找到，也未找到对应大小的 fixture 媒体。没有据此推断 QC 原因。旧 Codex 会话接口仍失败，本任务未绕过限制。
+
+## 方案审查结论与实施限制
+
+- R01 不新增 graph service 或 lineage API；先核验 scoped 自关联约束和正常整项目/工作区清理。已知晚到 request ID 仍按原事实保存规则处理，不得为阻断恢复而丢失外部已接受事实。
+- R02 只允许 `drizzle-kit@0.31.10>@esbuild-kit/esm-loader: -`，必须从真实干净安装和 Kit 的解析上下文证明该旧链已不存在；真实 generate/check 对比不能由 grep/mock 替代。node-forge/braces 继续 OPEN。
+- R04 所有连接包括异常诊断路径必须先验证目标；停止并确认所有 mutator 退出后才收集/删除本次对象和数据库。失败不能扩大清理范围，不得静默清理共享服务。
+- Q01–Q08、历史 QC 与运行时 receipt 的读取/分析依赖实际受权输入，当前仅保留计划；不伪造正式凭证或生成一个新的验收协议来替代缺失证据。

@@ -334,6 +334,8 @@ envelope；SSE 投影只含 conversion/source/Markdown Asset ID、状态和 retr
 
 `provider_attempts` 的请求 ID 逻辑字段保持 `provider_request_id`，TypeScript 属性保持 `providerRequestId`；自迁移 `0028_fence_legacy_task_workers` 起，数据库物理列原位更名为 `provider_request_id_v2`。内部事件、Provider 参数和公开脱敏契约不随物理列改名。已有值、`submission_reserved_at` 与唯一索引语义保留；直接 SQL 必须使用新物理列。旧 schema 消费者不能混跑，切换与在途请求限制见《旧Worker混跑提交栅栏_开发文档_20261010.md》。
 
+恢复权替代关系（2026-10-10，本轮设计）：制作段显式重试合法创建新 TaskRun B 时，在同一事务将旧 TaskRun A 的私有 `superseded_by_task_run_id` 设为 B。只允许同工作区/项目、原 VIDEO_GENERATION 终态及新创建后继；保留 A 的状态、输入快照、结果和 Attempt 历史。新普通重试、队列激活和提交预留必须重新读取该关系并拒绝恢复 A，不能自动沿关系重试 B。原幂等命令回放保持既有响应语义，但不重新激活任务。该私有字段不进入公开 DTO、事件或 Provider 输入；不增加业务状态或创作逻辑。历史缺失关系不得推测回填，旧恢复写入者不可混跑。模型、事务及兼容性验收按 `closure-20261010/recovery-design.md` 执行；设计不等于迁移已实施或生产已验收。
+
 `Asset.kind` 采用 `IMAGE | VIDEO | AUDIO | DOCUMENT | POSTER | THUMBNAIL`；`Asset.origin` 采用 `USER_UPLOAD | GENERATED | DERIVED`。生成视频必须写为 `Asset(kind=VIDEO, origin=GENERATED)`，海报/缩略图写为 `origin=DERIVED`，用户上传文件写为 `origin=USER_UPLOAD`。
 
 `assets.object_key` 由服务端生成，格式为 `workspace_id/project_id/asset_id/variant.ext`，例如用户原文件使用 `original.ext`、生成视频使用 `generated.mp4`、派生海报使用 `poster.jpg`。数据库不存二进制；已授权浏览器只能从 Control API 的单次响应得到短时、单对象、单操作预签名 URL，且不得将该 URL 的 query 写入状态持久化。`request_payload` 和 `response_payload` 在写入前必须去掉授权 Header、密钥和签名 URL query。

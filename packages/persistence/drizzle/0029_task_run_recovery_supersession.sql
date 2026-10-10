@@ -1,0 +1,5 @@
+ALTER TABLE "task_runs" ADD COLUMN "superseded_by_task_run_id" text;--> statement-breakpoint
+ALTER TABLE "task_runs" ADD CONSTRAINT "task_runs_superseded_successor_fk" FOREIGN KEY ("workspace_id","project_id","superseded_by_task_run_id") REFERENCES "public"."task_runs"("workspace_id","project_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "task_runs_superseded_successor_key" ON "task_runs" USING btree ("workspace_id","project_id","superseded_by_task_run_id") WHERE "task_runs"."superseded_by_task_run_id" is not null;--> statement-breakpoint
+ALTER TABLE "task_runs" ADD CONSTRAINT "task_runs_superseded_terminal_check" CHECK ("task_runs"."superseded_by_task_run_id" is null or ("task_runs"."kind" = 'VIDEO_GENERATION' and "task_runs"."status" in ('FAILED', 'SUCCEEDED')));--> statement-breakpoint
+ALTER TABLE "task_runs" ADD CONSTRAINT "task_runs_superseded_not_self_check" CHECK ("task_runs"."superseded_by_task_run_id" is null or "task_runs"."superseded_by_task_run_id" <> "task_runs"."id");

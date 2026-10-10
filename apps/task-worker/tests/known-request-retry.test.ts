@@ -4,7 +4,7 @@ import test from "node:test";
 import { createPrefixedId } from "@alchemy-video/domain";
 import { Sub2ApiVideoProvider, type Sub2ApiTransport } from "@alchemy-video/provider-video";
 import { createInMemoryStoragePort } from "@alchemy-video/storage-client";
-import { hasTerminalProviderResult } from "@alchemy-video/persistence";
+import { hasTerminalProviderResult, type ControlTaskRun } from "@alchemy-video/persistence";
 import { InMemoryTaskRunStore } from "../../control-api/src/task-run-repository.js";
 import { InMemoryAssetWorkspaceStore } from "../../control-api/src/asset-repository.js";
 import { InMemoryControlPlaneStore } from "../../control-api/src/repository.js";
@@ -116,3 +116,46 @@ test("historical abandoned requests and malformed private flags remain recoverab
     assert.equal(posts, 1);
   }
 });
+
+test("a superseded historical task is a no-op before any Provider call", async () => {
+  const context = await prepare();
+  const current = await context.store.findTaskRun(context.workspaceId, context.taskRunId);
+  assert.ok(current);
+  // Private fixture only: no memory ProductionStore or supersession API exists.
+  const rows = (context.store as unknown as { taskRuns: Map<string, ControlTaskRun> }).taskRuns;
+  rows.set(current.id, { ...current, status: "FAILED", supersededByTaskRunId: createPrefixedId("tsk") });
+  let calls = 0;
+  const provider = new Sub2ApiVideoProvider({ async request() { calls += 1; throw new Error("No provider request is allowed."); } });
+  const executor = new MockVideoTaskExecutor(context.store, provider, createInMemoryStoragePort(), { providerName: "sub2api" });
+  assert.equal((await executor.execute(context))?.status, "FAILED");
+  assert.equal(calls, 0);
+  assert.equal((await context.store.listTaskRunAttempts(context.workspaceId, context.taskRunId)).length, 0);
+});
+
+for (const status of ["processing", "completed", "transient"] as const) {
+  test(`a stale ${status} response cannot continue polling or download after supersession`, async () => {
+    const context = await prepare();
+    const attempt = await context.store.ensureProviderAttempt({ ...context, providerAttemptId: createPrefixedId("att"), provider: "sub2api", model: "grok-imagine-video-1.5", now: new Date() });
+    assert.ok(attempt);
+    assert.equal(await context.store.reserveProviderSubmission({ ...context, providerAttemptId: attempt.id, now: new Date() }), true);
+    await context.store.recordProviderSubmission({ ...context, providerAttemptId: attempt.id, providerRequestId: "offline-stale-known", now: new Date() });
+    const calls: string[] = [];
+    const provider = new Sub2ApiVideoProvider({ async request(request) {
+      calls.push(request.method);
+      assert.equal(request.method, "GET");
+      assert.equal(calls.length, 1, "supersession must stop subsequent poll/download calls");
+      const current = await context.store.findTaskRun(context.workspaceId, context.taskRunId);
+      assert.ok(current);
+      // Model an already in-flight response arriving after the durable ancestor
+      // was closed and replaced elsewhere; this fixture does not authorize it.
+      const rows = (context.store as unknown as { taskRuns: Map<string, ControlTaskRun> }).taskRuns;
+      rows.set(current.id, { ...current, status: "FAILED", supersededByTaskRunId: createPrefixedId("tsk") });
+      return status === "transient" ? { status: 503, json: { message: "Offline transient failure." } } : { status: 200, json: { status } };
+    } });
+    const executor = new MockVideoTaskExecutor(context.store, provider, createInMemoryStoragePort(), { providerName: "sub2api", maxPollAttempts: 3, retryableStatusPolls: 3 });
+    assert.equal((await executor.execute(context))?.status, "FAILED");
+    assert.deepEqual(calls, ["GET"]);
+    assert.equal((await context.store.listTaskRunAttempts(context.workspaceId, context.taskRunId))[0]?.status, "SUBMITTED");
+    assert.equal(await context.store.findGeneratedAssetDraft(context.workspaceId, context.taskRunId), undefined);
+  });
+}

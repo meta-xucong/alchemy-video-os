@@ -133,7 +133,7 @@ export class MockVideoTaskExecutor {
 
   async execute(input: { workspaceId: string; taskRunId: string }) {
     let taskRun = await this.store.findTaskRun(input.workspaceId, input.taskRunId);
-    if (!taskRun || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(taskRun.status)) return taskRun;
+    if (!taskRun || taskRun.supersededByTaskRunId != null || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(taskRun.status)) return taskRun;
 
     const inputSnapshot = VideoGenerationInputSnapshotSchema.parse(taskRun.inputSnapshot);
     if (taskRun.status === "RETRY_SCHEDULED" && inputSnapshot.billing && isBillingRetryErrorCode(taskRun.error?.code)) {
@@ -155,6 +155,8 @@ export class MockVideoTaskExecutor {
         if (this.isRetryableUsagePending(error)) return taskRun;
         throw error;
       }
+      const billingTask = await this.store.findTaskRun(input.workspaceId, input.taskRunId);
+      if (!billingTask || billingTask.supersededByTaskRunId != null) return billingTask;
       await this.options.billingExecutor.execute({
         workspaceId: input.workspaceId,
         chargeRequest: {
@@ -233,7 +235,7 @@ export class MockVideoTaskExecutor {
         const reserved = await this.store.reserveProviderSubmission({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
         if (!reserved) {
           const current = await this.store.findTaskRun(input.workspaceId, taskRun.id);
-          if (!current || current.status !== "RUNNING") return current;
+          if (!current || current.supersededByTaskRunId != null || current.status !== "RUNNING") return current;
           throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", false, "PROVIDER", "The video submission outcome is unknown. Reconcile the existing request before retrying.");
         }
         submissionUncertain = true;
@@ -258,30 +260,35 @@ export class MockVideoTaskExecutor {
           } catch (error) {
             if (!(error instanceof VideoProviderFailure) || !error.retryable || retry >= retryableStatusPolls) throw error;
           }
-          await this.store.recordProviderProcessing({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
+          const current = await this.store.recordProviderProcessing({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
+          if (current?.supersededByTaskRunId != null) return current;
           const delay = this.options.pollIntervalMs ?? 0;
           if (delay > 0) await new Promise<void>((resolve) => setTimeout(resolve, delay));
         }
       };
       let status = await getStatusWithTransientRetry();
+      if (!("state" in status)) return status;
       const maxPollAttempts = this.options.maxPollAttempts ?? 2;
       for (let pollAttempt = 1; status.state === "PROCESSING"; pollAttempt += 1) {
-        await this.store.recordProviderProcessing({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
+        const current = await this.store.recordProviderProcessing({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
+        if (current?.supersededByTaskRunId != null) return current;
         if (pollAttempt >= maxPollAttempts) {
           throw new RetryableTaskExecutionError("The video service is still processing this task.");
         }
         const pollIntervalMs = this.options.pollIntervalMs ?? 0;
         if (pollIntervalMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs));
         status = await getStatusWithTransientRetry();
+        if (!("state" in status)) return status;
       }
       if (status.state === "FAILED") {
         if (status.retryable) {
-          await this.store.recordProviderProcessing({
+          const current = await this.store.recordProviderProcessing({
             workspaceId: input.workspaceId,
             taskRunId: taskRun.id,
             providerAttemptId: attempt.id,
             now: new Date(),
           });
+          if (current?.supersededByTaskRunId != null) return current;
           throw new RetryableTaskExecutionError(status.message);
         }
         return this.store.failTaskRun({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, failureStage: "PROVIDER", code: status.code, message: status.message, retryable: status.retryable, ...(status.providerRequestTerminal === true ? { providerRequestTerminal: true } : {}), now: new Date() });
@@ -290,8 +297,10 @@ export class MockVideoTaskExecutor {
         throw new VideoProviderProtocolError("Video provider did not reach a terminal success state.");
       }
 
-      await this.store.recordProviderProcessing({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
-      await this.store.beginDownload({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
+      const processing = await this.store.recordProviderProcessing({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
+      if (processing?.supersededByTaskRunId != null) return processing;
+      const downloading = await this.store.beginDownload({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
+      if (downloading?.supersededByTaskRunId != null) return downloading;
       return await this.finishDownload({ workspaceId: input.workspaceId, taskRunId: taskRun.id, attemptId: attempt.id, projectId: taskRun.projectId, inputSnapshot });
     } catch (error) {
       if (error instanceof RetryableTaskExecutionError) throw error;
@@ -361,6 +370,8 @@ export class MockVideoTaskExecutor {
         throw new VideoProviderProtocolError("Downloaded media length does not match Content-Length.");
       }
       const inspection = await validateMp4Bytes(bytes, download.mimeType);
+      const afterDownload = await this.store.findTaskRun(input.workspaceId, input.taskRunId);
+      if (!afterDownload || afterDownload.supersededByTaskRunId != null) return afterDownload;
       const billing = input.inputSnapshot.billing;
       // A usage row may be written by Sub2API after the content endpoint has
       // already returned 200. Read it before publishing the asset only when
@@ -379,7 +390,7 @@ export class MockVideoTaskExecutor {
       }
       const existingDraft = await this.store.findGeneratedAssetDraft(input.workspaceId, input.taskRunId);
       const taskRun = await this.store.findTaskRun(input.workspaceId, input.taskRunId);
-      if (!taskRun) return undefined;
+      if (!taskRun || taskRun.supersededByTaskRunId != null) return taskRun;
       const assetId = existingDraft?.id ?? taskRun.resultAssetId ?? createPrefixedId("ast");
       const draft = existingDraft ?? await this.store.ensureGeneratedAsset({
         workspaceId: input.workspaceId,
@@ -419,6 +430,7 @@ export class MockVideoTaskExecutor {
         durationMs: inspection.durationMs,
         now: new Date(),
       });
+      if (!completed || completed.supersededByTaskRunId != null) return completed;
       if (!billing) return completed;
       if (!this.options.billingExecutor || usagePending) return this.store.findTaskRun(input.workspaceId, input.taskRunId);
       const billingResult = await this.options.billingExecutor.execute({

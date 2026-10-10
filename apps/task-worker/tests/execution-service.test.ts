@@ -6,6 +6,7 @@ import { createPrefixedId, fingerprintRequest } from "@alchemy-video/domain";
 import { StorageUnavailableError, createInMemoryStoragePort, type StoragePort } from "@alchemy-video/storage-client";
 import { MockVideoProvider, Sub2ApiVideoProvider, VideoProviderFailure, createMockMp4Fixture, resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import type { VideoProviderPort } from "@alchemy-video/provider-video";
+import type { ControlTaskRun } from "@alchemy-video/persistence";
 import type { Sub2ApiTransport, Sub2ApiTransportResponse } from "@alchemy-video/provider-video";
 
 import { InMemoryTaskRunStore } from "../../control-api/src/task-run-repository.js";
@@ -648,6 +649,79 @@ test("invalid video output never enters billing even when a service-fee rule is 
   assert.equal(result?.status, "FAILED");
   assert.equal(result?.error?.code, "DOWNLOAD_INVALID");
   assert.equal(result?.resultAssetId, null);
+});
+
+for (const pause of ["download", "draft lookup", "completion"] as const) {
+  test(`supersession observed after ${pause} stops stale storage or billing continuation`, async () => {
+    const { store, workspaceId, taskRunId } = await prepareTask(true);
+    const bytes = await createMockMp4Fixture();
+    const provider = new MockVideoProvider({ fixtureBytes: bytes });
+    const task = await store.findTaskRun(workspaceId, taskRunId);
+    assert.ok(task);
+    const assetId = createPrefixedId("ast");
+    await store.ensureGeneratedAsset({ workspaceId, taskRunId, assetId, objectKey: `${workspaceId}/${task.projectId}/${assetId}/result.mp4`, provider: "mock", now: new Date() });
+    const originalComplete = store.completeGeneratedTaskRun.bind(store);
+    const closeAndSupersede = async () => {
+      const [attempt] = await store.listTaskRunAttempts(workspaceId, taskRunId);
+      assert.ok(attempt);
+      await originalComplete({ workspaceId, taskRunId, providerAttemptId: attempt.id, assetId, sha256: createHash("sha256").update(bytes).digest("hex"), byteSize: bytes.byteLength, width: 160, height: 90, durationMs: 1000, now: new Date() });
+      // A second executor's completed debit/terminal write is a controlled fixture.
+      await store.markBillingSucceeded({ workspaceId, taskRunId, usageRecordId: createPrefixedId("use"), now: new Date() });
+      const succeeded = await store.findTaskRun(workspaceId, taskRunId);
+      assert.equal(succeeded?.status, "SUCCEEDED");
+      const superseded = { ...succeeded!, supersededByTaskRunId: createPrefixedId("tsk") };
+      (store as unknown as { taskRuns: Map<string, ControlTaskRun> }).taskRuns.set(taskRunId, superseded);
+      return superseded;
+    };
+    if (pause === "download") {
+      const original = provider.download.bind(provider);
+      provider.download = async (input) => { const value = await original(input); await closeAndSupersede(); return value; };
+    } else if (pause === "draft lookup") {
+      const original = store.findGeneratedAssetDraft.bind(store);
+      store.findGeneratedAssetDraft = async (workspace, taskId) => { const captured = await original(workspace, taskId); await closeAndSupersede(); return captured; };
+    } else {
+      store.completeGeneratedTaskRun = async () => closeAndSupersede();
+    }
+    const storage = createInMemoryStoragePort();
+    const inspect = storage.inspectObject.bind(storage);
+    let inspections = 0;
+    storage.inspectObject = async (input) => { inspections += 1; return inspect(input); };
+    const credit = new SuccessfulCreditPort();
+    const billingExecutor = new VideoBillingExecutor(credit, new InMemoryBillingAttemptStore(store));
+    let usageCalls = 0;
+    const executor = new MockVideoTaskExecutor(store, provider, storage, {
+      billingExecutor,
+      videoUsage: { async getUsage(input) { usageCalls += 1; return { providerRequestId: input.providerRequestId, model: "mock-video-v1", actualCost: "0.12" }; } },
+    });
+    const result = await executor.execute({ workspaceId, taskRunId });
+    assert.equal(result?.status, "SUCCEEDED");
+    assert.ok(result?.supersededByTaskRunId);
+    assert.equal(provider.submitCount, 1);
+    assert.equal(credit.debitCalls, 0, "the stale executor must not request even an idempotent debit after observing supersession");
+    if (pause === "download") assert.equal(usageCalls, 0);
+    if (pause !== "completion") assert.equal(inspections, 0, "captured drafts cannot bypass the refreshed task guard");
+  });
+}
+
+test("billing recovery rechecks supersession after an awaited usage lookup", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask(true);
+  const task = await store.findTaskRun(workspaceId, taskRunId);
+  assert.ok(task);
+  const rows = (store as unknown as { taskRuns: Map<string, ControlTaskRun> }).taskRuns;
+  rows.set(taskRunId, { ...task, status: "BILLING_PENDING" });
+  const attempt = await store.ensureProviderAttempt({ workspaceId, taskRunId, providerAttemptId: createPrefixedId("att"), provider: "mock", model: "mock-video-v1", now: new Date() });
+  assert.ok(attempt);
+  await store.recordProviderSubmission({ workspaceId, taskRunId, providerAttemptId: attempt.id, providerRequestId: "offline-billing-resume", now: new Date() });
+  const credit = new SuccessfulCreditPort();
+  const executor = new MockVideoTaskExecutor(store, new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() }), createInMemoryStoragePort(), {
+    billingExecutor: new VideoBillingExecutor(credit, new InMemoryBillingAttemptStore(store)),
+    videoUsage: { async getUsage(input) {
+      rows.set(taskRunId, { ...task, status: "SUCCEEDED", resultAssetId: createPrefixedId("ast"), supersededByTaskRunId: createPrefixedId("tsk") });
+      return { providerRequestId: input.providerRequestId, model: "mock-video-v1", actualCost: "0.12" };
+    } },
+  });
+  assert.equal((await executor.execute({ workspaceId, taskRunId }))?.status, "SUCCEEDED");
+  assert.equal(credit.debitCalls, 0);
 });
 
 test("the documented KIE preview usage model alias completes billing without rewriting the usage fact", async () => {
