@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
@@ -1827,6 +1827,13 @@ export class DrizzleProductionRepository implements ProductionStore {
       if (run.status !== "BLOCKED" || segment.status !== "FAILED" || !segment.retryable || !segment.taskRunId || !segment.shotId) {
         return this.storeProductionSegmentRetryOutcome(transaction, input, { kind: "STATE_INVALID" });
       }
+      const [uncertainSubmission] = await transaction.select({ id: providerAttempts.id }).from(providerAttempts).where(and(
+        eq(providerAttempts.workspaceId, input.workspaceId),
+        eq(providerAttempts.taskRunId, segment.taskRunId),
+        isNotNull(providerAttempts.submissionReservedAt),
+        isNull(providerAttempts.providerRequestId),
+      )).limit(1);
+      if (uncertainSubmission) return this.storeProductionSegmentRetryOutcome(transaction, input, { kind: "STATE_INVALID" });
 
       const [previousTaskRun] = await transaction
         .select()
@@ -2255,6 +2262,13 @@ export class DrizzleProductionRepository implements ProductionStore {
         .limit(1);
       if (!segment) return undefined;
       await lockProductionRun(transaction, segment.workspaceId, segment.productionRunId);
+      const [uncertainSubmission] = await transaction.select({ id: providerAttempts.id }).from(providerAttempts).where(and(
+        eq(providerAttempts.workspaceId, segment.workspaceId),
+        eq(providerAttempts.taskRunId, input.event.data.task_run_id),
+        isNotNull(providerAttempts.submissionReservedAt),
+        isNull(providerAttempts.providerRequestId),
+      )).limit(1);
+      const retryable = !uncertainSubmission && (input.event.data.retryable || input.event.data.error_code === "PROVIDER_REJECTED");
       if (segment.status === "GENERATING" || segment.status === "CHECKING") {
         assertProductionSegmentTransition(segment.status, "FAILED");
         const [attempt] = input.event.data.provider_attempt_id
@@ -2271,7 +2285,6 @@ export class DrizzleProductionRepository implements ProductionStore {
         // A missing/expired upstream request is terminal for the persisted
         // request, but remains explicitly retryable because the production
         // segment retry path creates a fresh Provider task.
-        const retryable = input.event.data.retryable || input.event.data.error_code === "PROVIDER_REJECTED";
         await transaction
           .update(productionSegments)
           .set({ status: "FAILED", retryable, safeSummary: productionTaskFailureSummary(input.event.data.error_code, attempt?.status), updatedAt: timestamp(input.now) })
@@ -2294,7 +2307,7 @@ export class DrizzleProductionRepository implements ProductionStore {
           productionRun: blocked,
           sequence: segment.sequence,
           reasonCode: "SEGMENT_NEEDS_ATTENTION",
-            retryable: input.event.data.retryable || input.event.data.error_code === "PROVIDER_REJECTED",
+          retryable,
         }));
       }
       return this.progressWithinTransaction(transaction, segment.workspaceId, segment.productionRunId);

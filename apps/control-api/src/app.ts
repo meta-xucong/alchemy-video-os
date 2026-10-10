@@ -65,9 +65,10 @@ import {
   type VideoProviderRuntimeMode,
 } from "@alchemy-video/provider-video";
 import { ReferenceDeliveryTokenCodec } from "@alchemy-video/reference-delivery";
+import { isAssetReleased } from "@alchemy-video/persistence";
 import { ReferenceVisionAnalysisError, type ReferenceVisionAnalyzerPort } from "@alchemy-video/reference-analysis";
 import { deriveTranscriptScript, hasMusicContentMatch, InMemoryCreativePlanningStore, InMemoryDeliveryPreflightStore, InMemoryDocumentConversionStore, InMemoryDocumentKnowledgeStore, InMemoryNarrationQualityStore, isUsableMusicAsset, MAX_DOCUMENT_CONTEXT_CHARACTERS, MAX_DOCUMENT_CONTEXTS_PER_BRIEF, type AssetWorkspaceStore, type ControlAsset, type ControlPlaneStore, type CreativePlanningStore, type DeliveryPreflightStore, type DocumentConversionStore, type DocumentKnowledgeStore, type NarrationQualityStore, type ProductionStore, type TaskRunStore } from "@alchemy-video/persistence";
-import { InMemoryStoragePort, StorageObjectAlreadyExistsError, StorageUnavailableError, createAssetObjectKey, type ObjectMetadataInspection, type StoragePort } from "@alchemy-video/storage-client";
+import { InMemoryStoragePort, StorageObjectAlreadyExistsError, StorageObjectInvalidError, StorageUnavailableError, createAssetObjectKey, type ObjectInspection, type ObjectMetadataInspection, type StoragePort } from "@alchemy-video/storage-client";
 import type { z } from "zod";
 import { CreditPortError, VeyraIdentityError, type VideoVeyraBridgeAdapter } from "@alchemy-video/credit-veyra";
 import type { CreditAccount, VeyraExternalIdentity, VideoGenerationInputSnapshot } from "@alchemy-video/contracts";
@@ -231,6 +232,7 @@ const resolveWorkspaceAccess = async (
   context: HonoContext,
   identityPort: IdentityPort,
   store: ControlPlaneStore,
+  bootstrapIdentity = true,
 ): Promise<CurrentIdentity> => {
   let identity: CurrentIdentity;
   try {
@@ -249,7 +251,9 @@ const resolveWorkspaceAccess = async (
   )) {
     throw new ControlApiError(503, "AUTH_UNAVAILABLE", "The identity mapping is unavailable.", true);
   }
-  await (identity.bootstrap ? store.ensureIdentity(identity.bootstrap) : store.ensureDevIdentity(DEV_IDENTITY_SEED));
+  if (bootstrapIdentity) {
+    await (identity.bootstrap ? store.ensureIdentity(identity.bootstrap) : store.ensureDevIdentity(DEV_IDENTITY_SEED));
+  }
 
   const user = await store.findUser(identity.userId);
   if (!user) {
@@ -398,19 +402,30 @@ const requestedMetadataMatches = (asset: { metadata: Record<string, unknown> }, 
 const referenceImageMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 const maxReferenceImageBytes = 8 * 1024 * 1024;
 
-const readReferenceBytes = async (stream: ReadableStream<Uint8Array>, maximumBytes: number) => {
+const readReferenceBytes = async (stream: ReadableStream<Uint8Array>, maximumBytes: number, signal: AbortSignal) => {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
+  let abortRead: () => void = () => undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    abortRead = () => reject(signal.reason ?? new Error("Reference image read aborted."));
+    signal.addEventListener("abort", abortRead, { once: true });
+  });
   try {
+    signal.throwIfAborted();
     while (true) {
-      const next = await reader.read();
+      const next = await Promise.race([reader.read(), aborted]);
+      signal.throwIfAborted();
       if (next.done) break;
       size += next.value.byteLength;
       if (size > maximumBytes) throw new Error("Reference image exceeds analysis limit.");
       chunks.push(next.value);
     }
+  } catch (error) {
+    void reader.cancel(error).catch(() => undefined);
+    throw error;
   } finally {
+    signal.removeEventListener("abort", abortRead);
     reader.releaseLock();
   }
   const bytes = new Uint8Array(size);
@@ -469,22 +484,24 @@ const analyzeMissingReferenceImages = async (input: {
     if (asset.metadata.visual_analysis_status === "READY"
       && parseVisualReferenceAnalysis(asset.metadata.visual_analysis)) continue;
     try {
-      const inspection = await input.storage.inspectObject({ objectKey: asset.objectKey });
+      const signal = AbortSignal.timeout(30_000);
+      const inspection = await input.storage.inspectObject({ objectKey: asset.objectKey, maxByteSize: asset.byteSize!, expectedMimeType: asset.mimeType!, signal });
       if (!inspection
         || inspection.mimeType !== asset.mimeType
         || inspection.byteSize !== asset.byteSize
         || inspection.sha256 !== asset.sha256) continue;
-      const object = await input.storage.readObject({ objectKey: asset.objectKey });
+      const object = await input.storage.readObject({ objectKey: asset.objectKey, signal });
       if (!object
         || object.mimeType !== asset.mimeType
         || (object.byteSize !== undefined && object.byteSize !== asset.byteSize)) {
+        if (object) void object.stream.cancel().catch(() => undefined);
         await persist({ workspaceId: input.workspaceId, projectId: input.projectId, assetId: asset.id, visualAnalysisStatus: "FAILED" });
         continue;
       }
       const visualAnalysis = await input.analyzer.analyze({
         assetId: asset.id,
         mimeType: asset.mimeType as "image/jpeg" | "image/png" | "image/webp",
-        bytes: await readReferenceBytes(object.stream, maxReferenceImageBytes),
+        bytes: await readReferenceBytes(object.stream, maxReferenceImageBytes, signal),
       });
       await persist({ workspaceId: input.workspaceId, projectId: input.projectId, assetId: asset.id, visualAnalysis, visualAnalysisStatus: "READY" });
     } catch (error) {
@@ -1060,10 +1077,7 @@ export function createApp(options: CreateAppOptions = {}) {
   // server, rather than relying on a separate HEAD route that is never hit.
   app.get("/provider-input/:token", (context) => providerInputResponse(context, context.req.method !== "HEAD"));
 
-  const redirectToVideoPortal = (context: Context) => {
-    if (!options.videoSessionCodec || !options.videoVeyraBridge) {
-      throw new ControlApiError(503, "AUTH_UNAVAILABLE", "Video account sign-in is not configured.", true);
-    }
+  const getVideoPortalUrl = () => {
     const baseUrl = options.videoVeyraPortalBaseUrl ?? "https://aiself.vip";
     let portalUrl: URL;
     try {
@@ -1071,11 +1085,18 @@ export function createApp(options: CreateAppOptions = {}) {
       if (portalUrl.protocol !== "https:" || portalUrl.username || portalUrl.password || portalUrl.search || portalUrl.hash) {
         throw new Error("invalid portal URL");
       }
-      portalUrl.pathname = "/_veyra/return";
-      portalUrl.search = "?target=video";
     } catch {
       throw new ControlApiError(503, "AUTH_UNAVAILABLE", "Video account sign-in is not configured.", true);
     }
+    return portalUrl;
+  };
+  const redirectToVideoPortal = (context: Context) => {
+    if (!options.videoSessionCodec || !options.videoVeyraBridge) {
+      throw new ControlApiError(503, "AUTH_UNAVAILABLE", "Video account sign-in is not configured.", true);
+    }
+    const portalUrl = getVideoPortalUrl();
+    portalUrl.pathname = "/_veyra/return";
+    portalUrl.search = "?target=video";
     return context.redirect(portalUrl.toString(), 303);
   };
   // Keep the provider-specific path as a compatibility alias; the browser uses
@@ -1086,6 +1107,12 @@ export function createApp(options: CreateAppOptions = {}) {
   app.post("/auth/veyra/callback", async (context) => {
     if (!options.videoVeyraBridge || !options.videoSessionCodec) {
       throw new ControlApiError(503, "AUTH_UNAVAILABLE", "Video account sign-in is not configured.", true);
+    }
+    // The Portal's existing top-level form POST supplies its browser Origin.
+    // A one-time ticket alone does not bind a login to the intended browser.
+    if (context.req.header("origin") !== getVideoPortalUrl().origin) {
+      const requestId = (context as unknown as { get: (key: string) => unknown }).get("requestId");
+      return context.json({ error: { code: "CSRF_ORIGIN_INVALID", message: "The request origin is not allowed.", retryable: false, details: {} }, request_id: typeof requestId === "string" ? requestId : "req_unknown" }, 403);
     }
     const form = await context.req.raw.formData().catch(() => undefined);
     const ticket = form?.get("ticket");
@@ -1315,12 +1342,17 @@ export function createApp(options: CreateAppOptions = {}) {
     const detail = await assetStore.findProjectDetail(projectWorkspaceId, projectId);
     if (!detail) throw notFound("Project not found.");
     const taskRuns = await taskStore.listProjectTaskRuns(projectWorkspaceId, projectId);
+    const taskRunsById = new Map(taskRuns.map((taskRun) => [taskRun.id, taskRun]));
+    const releasedAssets = detail.assets.filter((asset) => isAssetReleased(asset,
+      typeof asset.metadata.task_run_id === "string" ? taskRunsById.get(asset.metadata.task_run_id) : undefined));
     const generatedAssets = (await Promise.all(
-      taskRuns.flatMap((taskRun) => taskRun.resultAssetId
+      taskRuns.flatMap((taskRun) => taskRun.status === "SUCCEEDED" && taskRun.resultAssetId
         ? [taskStore.findTaskRunResultAsset(projectWorkspaceId, taskRun.resultAssetId)]
         : []),
-    )).filter((asset): asset is NonNullable<typeof asset> => Boolean(asset));
-    const assetIds = new Set(detail.assets.map((asset) => asset.id));
+    )).filter((asset): asset is NonNullable<typeof asset> => Boolean(asset))
+      .filter((asset) => isAssetReleased(asset,
+        typeof asset.metadata.task_run_id === "string" ? taskRunsById.get(asset.metadata.task_run_id) : undefined));
+    const assetIds = new Set(releasedAssets.map((asset) => asset.id));
     const [creativeBriefRevisions, storyboardRevisions, productionRuns] = await Promise.all([
       planningStore.listProjectCreativeBriefRevisions(projectWorkspaceId, projectId),
       planningStore.listProjectStoryboardRevisions(projectWorkspaceId, projectId),
@@ -1328,7 +1360,7 @@ export function createApp(options: CreateAppOptions = {}) {
     ]);
     return response(context, serializeProjectDetail({
       ...detail,
-      assets: [...detail.assets, ...generatedAssets.filter((asset) => !assetIds.has(asset.id))],
+      assets: [...releasedAssets, ...generatedAssets.filter((asset) => !assetIds.has(asset.id))],
     }, taskRuns, { creativeBriefRevisions, storyboardRevisions, productionRuns }));
   });
 
@@ -1406,7 +1438,7 @@ export function createApp(options: CreateAppOptions = {}) {
       return response(context, { asset_id: execution.value.id, upload_url: null, headers: {}, expires_at: null }, execution.status);
     }
     try {
-      const upload = await storage.createUploadUrl({ objectKey: execution.value.objectKey, mimeType: command.mime_type });
+      const upload = await storage.createUploadUrl({ objectKey: execution.value.objectKey, mimeType: command.mime_type, byteSize: command.byte_size });
       return response(context, { asset_id: execution.value.id, upload_url: upload.uploadUrl, headers: upload.headers, expires_at: upload.expiresAt }, execution.status);
     } catch (error) {
       if (error instanceof StorageUnavailableError) throw storageUnavailable();
@@ -1420,25 +1452,48 @@ export function createApp(options: CreateAppOptions = {}) {
     const command = await parseBody(context, ConfirmAssetUploadCommandSchema);
     const idempotencyKey = readIdempotencyKey(context);
     const pendingAsset = await assetStore.findAsset(identity.workspaceId, assetId);
+    let inspection: ObjectInspection | undefined;
+    let inspectionError: unknown;
+    // Object I/O is bounded and completed before entering the command transaction.
+    // Defer any transient error until verifyUpload so persisted command replays
+    // still win over a later storage outage.
+    if (pendingAsset?.status === "PENDING_UPLOAD"
+      && pendingAsset.origin === "USER_UPLOAD"
+      && pendingAsset.metadata.audio_provider === undefined
+      && requestedMetadataMatches(pendingAsset, { mimeType: command.mime_type, byteSize: command.byte_size })) {
+      try {
+        inspection = await storage.inspectObject({
+          objectKey: pendingAsset.objectKey,
+          maxByteSize: pendingAsset.metadata.requested_byte_size as number,
+          expectedMimeType: pendingAsset.metadata.requested_mime_type as string,
+          signal: context.req.raw.signal,
+        });
+      } catch (error) {
+        inspectionError = error;
+      }
+    }
+    const verifiedInspection = Boolean(inspection
+      && inspection.mimeType === command.mime_type
+      && inspection.byteSize === command.byte_size
+      && inspection.sha256 === command.sha256);
     const analyzeReferenceUpload = async () => {
       if (!pendingAsset
         || pendingAsset.status !== "PENDING_UPLOAD"
+        || !verifiedInspection
         || pendingAsset.kind !== "IMAGE"
         || !referenceImageMimeTypes.has(command.mime_type)) return undefined;
       if (!referenceVisionAnalyzer) return { visualAnalysisStatus: "UNAVAILABLE" as const };
       try {
-        const inspection = await storage.inspectObject({ objectKey: pendingAsset.objectKey });
-        if (!inspection
-          || !requestedMetadataMatches(pendingAsset, { mimeType: command.mime_type, byteSize: command.byte_size })
-          || inspection.mimeType !== command.mime_type
-          || inspection.byteSize !== command.byte_size
-          || inspection.sha256 !== command.sha256) return undefined;
-        const object = await storage.readObject({ objectKey: pendingAsset.objectKey });
-        if (!object || object.mimeType !== command.mime_type) return { visualAnalysisStatus: "FAILED" as const };
+        const signal = AbortSignal.any([context.req.raw.signal, AbortSignal.timeout(30_000)]);
+        const object = await storage.readObject({ objectKey: pendingAsset.objectKey, signal });
+        if (!object || object.mimeType !== command.mime_type) {
+          if (object) void object.stream.cancel().catch(() => undefined);
+          return { visualAnalysisStatus: "FAILED" as const };
+        }
         const visualAnalysis = await referenceVisionAnalyzer.analyze({
           assetId,
           mimeType: command.mime_type as "image/jpeg" | "image/png" | "image/webp",
-          bytes: await readReferenceBytes(object.stream, maxReferenceImageBytes),
+          bytes: await readReferenceBytes(object.stream, maxReferenceImageBytes, signal),
         });
         return { visualAnalysis, visualAnalysisStatus: "READY" as const };
       } catch (error) {
@@ -1460,24 +1515,22 @@ export function createApp(options: CreateAppOptions = {}) {
       durationMs: command.duration_ms,
       ...(visualAnalysis ?? {}),
       verifyUpload: async (asset) => {
-        let object;
-        try {
-          object = await storage.inspectObject({ objectKey: asset.objectKey });
-        } catch (error) {
-          if (error instanceof StorageUnavailableError) throw storageUnavailable();
-          throw error;
-        }
+        if (inspectionError instanceof StorageObjectInvalidError) return false;
+        if (inspectionError instanceof StorageUnavailableError) throw storageUnavailable();
+        if (inspectionError) throw inspectionError;
         return Boolean(
-          object
+          verifiedInspection
+          && pendingAsset?.objectKey === asset.objectKey
+          && asset.origin === "USER_UPLOAD"
           && requestedMetadataMatches(asset, { mimeType: command.mime_type, byteSize: command.byte_size })
-          && object.mimeType === command.mime_type
-          && object.byteSize === command.byte_size
-          && object.sha256 === command.sha256,
         );
       },
     });
     if (execution.kind === "CONFLICT") throw idempotencyConflict();
     if (execution.kind === "NOT_FOUND") throw notFound("Asset not found.");
+    // Retain rejected objects for controlled lifecycle cleanup. S3-compatible
+    // backends do not all enforce conditional DELETE, so automatic deletion
+    // here could remove bytes confirmed or replaced by another request.
     if (execution.kind === "INVALID_UPLOAD") throw invalidUpload();
     return response(context, serializeAsset(execution.value), execution.status);
   });
@@ -1596,8 +1649,14 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/api/v1/assets/:asset_id/download-url", async (context) => {
     const identity = await resolveWorkspaceAccess(context, identityPort, store);
-    const asset = await assetStore.findAsset(identity.workspaceId, parseAssetId(context));
+    const assetId = parseAssetId(context);
+    const asset = await assetStore.findAsset(identity.workspaceId, assetId)
+      ?? await taskStore.findTaskRunResultAsset(identity.workspaceId, assetId);
     if (!asset || asset.status !== "READY") throw notFound("Asset not found.");
+    const owner = typeof asset.metadata.task_run_id === "string"
+      ? await taskStore.findTaskRun(identity.workspaceId, asset.metadata.task_run_id)
+      : undefined;
+    if (!isAssetReleased(asset, owner)) throw notFound("Asset not found.");
     try {
       const download = await storage.createDownloadUrl({ objectKey: asset.objectKey });
       return response(context, { download_url: download.downloadUrl, expires_at: download.expiresAt });
@@ -2486,7 +2545,7 @@ export function createApp(options: CreateAppOptions = {}) {
     if (!taskRun) throw notFound("Task run not found.");
     const [attempts, resultAsset] = await Promise.all([
       taskStore.listTaskRunAttempts(identity.workspaceId, taskRun.id),
-      taskRun.resultAssetId ? taskStore.findTaskRunResultAsset(identity.workspaceId, taskRun.resultAssetId) : Promise.resolve(undefined),
+      taskRun.status === "SUCCEEDED" && taskRun.resultAssetId ? taskStore.findTaskRunResultAsset(identity.workspaceId, taskRun.resultAssetId) : Promise.resolve(undefined),
     ]);
     return response(context, {
       task_run: serializeTaskRun(taskRun),
@@ -2527,6 +2586,10 @@ export function createApp(options: CreateAppOptions = {}) {
     if (workspaceId !== identity.workspaceId) {
       throw new ControlApiError(403, "WORKSPACE_FORBIDDEN", "The current identity cannot access this workspace.");
     }
+    const sessionExpiresAt = identity.sessionExpiresAt === undefined ? undefined : Date.parse(identity.sessionExpiresAt);
+    if (sessionExpiresAt !== undefined && (!Number.isFinite(sessionExpiresAt) || sessionExpiresAt <= Date.now())) {
+      throw new ControlApiError(403, "AUTH_FORBIDDEN", "Video account sign-in is required.");
+    }
     const afterEventId = readLastEventId(context);
     const encoder = new TextEncoder();
     let stopStream: () => void = () => undefined;
@@ -2536,11 +2599,17 @@ export function createApp(options: CreateAppOptions = {}) {
         let closed = false;
         let cursor = afterEventId;
         let timer: ReturnType<typeof setTimeout> | undefined;
+        let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+        // Reuse the heartbeat cadence for account/workspace checks instead
+        // of querying the identity service on every 250 ms event poll.
+        const authorizationIntervalMs = 15_000;
+        let nextAuthorizationCheckAt = Date.now() + authorizationIntervalMs;
         let lastHeartbeatAt = 0;
         const cleanup = () => {
           if (closed) return;
           closed = true;
           if (timer) clearTimeout(timer);
+          if (expiryTimer) clearTimeout(expiryTimer);
           context.req.raw.signal.removeEventListener("abort", close);
         };
         const close = () => {
@@ -2553,10 +2622,52 @@ export function createApp(options: CreateAppOptions = {}) {
         };
         stopStream = cleanup;
         context.req.raw.signal.addEventListener("abort", close, { once: true });
+        if (context.req.raw.signal.aborted) {
+          close();
+          return;
+        }
+        if (sessionExpiresAt !== undefined) {
+          expiryTimer = setTimeout(close, Math.max(0, sessionExpiresAt - Date.now()));
+        }
+        const isOpenAndUnexpired = () => {
+          if (closed) return false;
+          if (sessionExpiresAt !== undefined && Date.now() >= sessionExpiresAt) {
+            close();
+            return false;
+          }
+          return true;
+        };
+        const ensureAuthorized = async () => {
+          if (!isOpenAndUnexpired()) return false;
+          if (Date.now() < nextAuthorizationCheckAt) return true;
+          const checkedAt = Date.now();
+          try {
+            // Refresh is read-only: bootstrapping again would recreate a
+            // removed owner membership before checking its current state.
+            const current = await resolveWorkspaceAccess(context, identityPort, store, false);
+            if (!isOpenAndUnexpired()) return false;
+            if (current.userId !== identity.userId || current.workspaceId !== workspaceId
+              || current.sessionExpiresAt !== identity.sessionExpiresAt
+              || Date.now() >= checkedAt + authorizationIntervalMs) {
+              close();
+              return false;
+            }
+            nextAuthorizationCheckAt = checkedAt + authorizationIntervalMs;
+            return true;
+          } catch {
+            // Authentication failures must not expose upstream identity data.
+            close();
+            return false;
+          }
+        };
         const poll = async () => {
           if (closed) return;
           try {
+            if (!(await ensureAuthorized())) return;
             const events = await taskStore.listWorkspaceEvents({ workspaceId, afterEventId: cursor, limit: 100 });
+            // A slow query may cross the expiry/revalidation deadline, or
+            // finish after abort/cancel. Never enqueue its stale result.
+            if (!(await ensureAuthorized())) return;
             for (const event of events) {
               cursor = event.event_id;
               const publicEvent = projectPublicWorkspaceEvent(event);
@@ -2570,6 +2681,7 @@ export function createApp(options: CreateAppOptions = {}) {
             }
             timer = setTimeout(() => void poll(), 250);
           } catch (error) {
+            if (closed) return;
             console.error(JSON.stringify({ event: "sse.read.failed", request_id: requestId, reason: error instanceof Error ? error.message : String(error) }));
             close();
           }

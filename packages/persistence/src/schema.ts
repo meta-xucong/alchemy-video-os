@@ -1352,6 +1352,7 @@ export const providerAttempts = pgTable(
     provider: varchar({ length: 128 }).notNull(),
     model: varchar({ length: 255 }).notNull(),
     providerRequestId: text("provider_request_id"),
+    submissionReservedAt: timestamp("submission_reserved_at", { withTimezone: true, mode: "string" }),
     status: providerAttemptStatus().default("CREATED").notNull(),
     requestPayload: jsonb("request_payload").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`).notNull(),
     responsePayload: jsonb("response_payload").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`).notNull(),

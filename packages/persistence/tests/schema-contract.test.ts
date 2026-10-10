@@ -105,6 +105,17 @@ test("the C05 forward migration adds durable outbox and consumption leases", asy
   assert.equal(eventConsumptions.eventId.notNull, true);
 });
 
+test("submission reservations backfill ambiguous legacy attempts without changing the Provider protocol", async () => {
+  const migration = await readFile(resolve(import.meta.dirname, "..", "drizzle", "0027_provider_submission_reservation.sql"), "utf8");
+  assert.equal(providerAttempts.submissionReservedAt.notNull, false);
+  assert.equal(providerAttempts.submissionReservedAt.columnType, "PgTimestampString");
+  assert.match(migration, /ADD COLUMN "submission_reserved_at" timestamp with time zone/);
+  assert.match(migration, /UPDATE "provider_attempts"\s+SET "submission_reserved_at" = "created_at"\s+WHERE "provider_request_id" IS NULL/);
+  assert.doesNotMatch(migration, /DELETE FROM|DROP |UPDATE "task_runs"/);
+  const journal = JSON.parse(await readFile(resolve(import.meta.dirname, "..", "drizzle", "meta", "_journal.json"), "utf8")) as { entries: Array<{ idx: number; tag: string }> };
+  assert.equal(journal.entries.find((entry) => entry.idx === 27)?.tag, "0027_provider_submission_reservation");
+});
+
 test("the C05 consumption ledger persists workspace scope and matches its outbox row", async () => {
   const migration = await readFile(
     resolve(import.meta.dirname, "..", "drizzle", "0006_overjoyed_captain_cross.sql"),
@@ -505,8 +516,7 @@ test("G02 migration freezes append-only canonical entity revisions and mapping e
   ]) assert.ok(migration.includes(token), `${token} is absent from 0026 migration`);
   assert.doesNotMatch(migration, /canonical_visual_entity_revision_assets_reference_evidence_key/u,
     "A unique reference-evidence key would prevent append-only ADD → REVOKE → ADD history.");
-  assert.equal(journal.entries.at(-1)?.idx, 26);
-  assert.equal(journal.entries.at(-1)?.tag, "0026_canonical_visual_entity_revisions");
+  assert.equal(journal.entries.find((entry) => entry.idx === 26)?.tag, "0026_canonical_visual_entity_revisions");
   assert.ok(snapshot.tables["public.canonical_visual_entity_revision_assets"]);
   assert.equal(snapshot.tables["public.canonical_visual_entity_revision_assets"]?.indexes.canonical_visual_entity_revision_assets_reference_evidence_key, undefined);
 

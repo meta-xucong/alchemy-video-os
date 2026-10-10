@@ -15,6 +15,7 @@ import {
 import { assertTaskRunTransition, BILLING_RETRY_ERROR_CODES, createPrefixedId, fingerprintRequest, isBillingRetryErrorCode } from "@alchemy-video/domain";
 
 import type { PlatformDatabase } from "./db.js";
+import { releasedAssetScope } from "./asset-release.js";
 import type { ControlAsset } from "./asset-workspace-repository.js";
 import {
   assets,
@@ -118,6 +119,7 @@ export type ControlProviderAttempt = {
   provider: string;
   model: string;
   providerRequestId: string | null;
+  submissionReservedAt: string | null;
   status: "CREATED" | "SUBMITTED" | "PROCESSING" | "SUCCEEDED" | "FAILED" | "DOWNLOAD_FAILED" | "ABANDONED";
   requestPayload: Record<string, unknown>;
   responsePayload: Record<string, unknown>;
@@ -141,6 +143,7 @@ export interface TaskRunStore extends OutboxRelayStore {
   findGeneratedAssetDraft(workspaceId: string, taskRunId: string): Promise<GeneratedAssetDraft | undefined>;
   listTaskRunAttempts(workspaceId: string, taskRunId: string): Promise<ControlProviderAttempt[]>;
   ensureProviderAttempt(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; provider: string; model: string; now: Date }): Promise<ControlProviderAttempt | undefined>;
+  reserveProviderSubmission(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; now: Date }): Promise<boolean>;
   recordProviderSubmission(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; providerRequestId: string; now: Date }): Promise<ControlTaskRun | undefined>;
   recordProviderProcessing(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; now: Date }): Promise<ControlTaskRun | undefined>;
   beginDownload(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; now: Date }): Promise<ControlTaskRun | undefined>;
@@ -197,6 +200,7 @@ const toControlProviderAttempt = (value: typeof providerAttempts.$inferSelect): 
   provider: value.provider,
   model: value.model,
   providerRequestId: value.providerRequestId,
+  submissionReservedAt: value.submissionReservedAt,
   status: value.status,
   requestPayload: value.requestPayload,
   responsePayload: value.responsePayload,
@@ -500,7 +504,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
         const found = await transaction
           .select({ id: assets.id })
           .from(assets)
-          .where(and(eq(assets.workspaceId, input.workspaceId), eq(assets.projectId, shot.projectId), eq(assets.status, "READY"), inArray(assets.id, referenceIds)));
+          .where(and(eq(assets.workspaceId, input.workspaceId), eq(assets.projectId, shot.projectId), eq(assets.status, "READY"), inArray(assets.id, referenceIds), releasedAssetScope()));
         if (found.length !== referenceIds.length) {
           return this.storeCommandOutcome(transaction, input.scope, input.idempotencyKey, { kind: "INVALID_REFERENCE" });
         }
@@ -569,6 +573,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
         .returning({ requestHash: commandDeduplications.requestHash });
       if (!reservation) return this.replayCommand(transaction, input.scope, input.idempotencyKey, input.requestHash);
 
+      await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
       const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
       if (!current) return this.storeCommandOutcome(transaction, input.scope, input.idempotencyKey, { kind: "NOT_FOUND", status: 404 });
       if (current.status === "BILLING_FAILED") {
@@ -599,6 +604,15 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
         return { kind: "NEW", value: taskRun, status: 202 };
       }
       if (current.status !== "FAILED") {
+        return this.storeCommandOutcome(transaction, input.scope, input.idempotencyKey, { kind: "STATE_INVALID" });
+      }
+      const [uncertainSubmission] = await transaction.select({ id: providerAttempts.id }).from(providerAttempts).where(and(
+        eq(providerAttempts.workspaceId, input.workspaceId),
+        eq(providerAttempts.taskRunId, input.taskRunId),
+        isNotNull(providerAttempts.submissionReservedAt),
+        isNull(providerAttempts.providerRequestId),
+      )).limit(1);
+      if (uncertainSubmission) {
         return this.storeCommandOutcome(transaction, input.scope, input.idempotencyKey, { kind: "STATE_INVALID" });
       }
 
@@ -699,7 +713,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
   }
 
   async findTaskRunResultAsset(workspaceId: string, assetId: string) {
-    const [asset] = await this.db.select().from(assets).where(assetScope(workspaceId, assetId)).limit(1);
+    const [asset] = await this.db.select().from(assets).where(and(assetScope(workspaceId, assetId), releasedAssetScope())).limit(1);
     if (!asset) return undefined;
     return {
       id: asset.id,
@@ -767,6 +781,13 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
         .orderBy(sql`${providerAttempts.createdAt} desc`)
         .limit(1);
       if (submitted) return toControlProviderAttempt(submitted);
+      const [uncertainSubmission] = await transaction.select().from(providerAttempts).where(and(
+        eq(providerAttempts.workspaceId, input.workspaceId),
+        eq(providerAttempts.taskRunId, input.taskRunId),
+        isNotNull(providerAttempts.submissionReservedAt),
+        isNull(providerAttempts.providerRequestId),
+      )).limit(1);
+      if (uncertainSubmission) return toControlProviderAttempt(uncertainSubmission);
       const [existing] = await transaction.select().from(providerAttempts).where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.taskRunId, input.taskRunId))).orderBy(sql`${providerAttempts.createdAt} desc`).limit(1);
       if (existing && !["FAILED", "DOWNLOAD_FAILED", "ABANDONED"].includes(existing.status)) return toControlProviderAttempt(existing);
       if (!(await verifyG02ProviderAttemptSnapshot(transaction, taskRun))) return undefined;
@@ -783,6 +804,34 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
         updatedAt: input.now.toISOString(),
       }).returning();
       return created ? toControlProviderAttempt(created) : undefined;
+    });
+  }
+
+  async reserveProviderSubmission(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; now: Date }) {
+    return this.db.transaction(async (transaction) => {
+      await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
+      const [current] = await transaction.select({ status: taskRuns.status }).from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
+      if (current?.status !== "RUNNING") return false;
+      const [boundary] = await transaction.select({ id: providerAttempts.id }).from(providerAttempts).where(and(
+        eq(providerAttempts.workspaceId, input.workspaceId),
+        eq(providerAttempts.taskRunId, input.taskRunId),
+        or(
+          and(isNotNull(providerAttempts.submissionReservedAt), isNull(providerAttempts.providerRequestId)),
+          and(isNotNull(providerAttempts.providerRequestId), sql`${providerAttempts.status} <> 'ABANDONED'`),
+        ),
+      )).limit(1);
+      if (boundary) return false;
+      const [reserved] = await transaction.update(providerAttempts)
+        .set({ submissionReservedAt: input.now.toISOString(), updatedAt: input.now.toISOString() })
+        .where(and(
+          eq(providerAttempts.workspaceId, input.workspaceId),
+          eq(providerAttempts.taskRunId, input.taskRunId),
+          eq(providerAttempts.id, input.providerAttemptId),
+          eq(providerAttempts.status, "CREATED"),
+          isNull(providerAttempts.providerRequestId),
+          isNull(providerAttempts.submissionReservedAt),
+        )).returning({ id: providerAttempts.id });
+      return Boolean(reserved);
     });
   }
 
@@ -983,7 +1032,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
       }
       assertTaskRunTransition(current.status, "FAILED");
       const [submittedAttempt] = await transaction
-        .select({ id: providerAttempts.id, providerRequestId: providerAttempts.providerRequestId })
+        .select({ id: providerAttempts.id, providerRequestId: providerAttempts.providerRequestId, submissionReservedAt: providerAttempts.submissionReservedAt })
         .from(providerAttempts)
         .where(and(
           eq(providerAttempts.workspaceId, input.workspaceId),
@@ -995,12 +1044,14 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
       const [latestAttempt] = submittedAttempt
         ? [undefined]
         : await transaction
-          .select({ id: providerAttempts.id, providerRequestId: providerAttempts.providerRequestId })
+          .select({ id: providerAttempts.id, providerRequestId: providerAttempts.providerRequestId, submissionReservedAt: providerAttempts.submissionReservedAt })
           .from(providerAttempts)
           .where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.taskRunId, input.taskRunId)))
           .orderBy(sql`${providerAttempts.createdAt} desc`)
           .limit(1);
       const attempt = submittedAttempt ?? latestAttempt;
+      const retryable = !(attempt?.submissionReservedAt && !attempt.providerRequestId);
+      const message = retryable ? input.message : "The video submission outcome is unknown. Reconcile the existing request before retrying.";
       if (attempt) {
         await transaction
           .update(providerAttempts)
@@ -1013,7 +1064,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
       }
       const [failed] = await transaction
         .update(taskRuns)
-        .set({ status: "FAILED", error: { code: input.code, message: input.message, retryable: true }, updatedAt: input.now.toISOString() })
+        .set({ status: "FAILED", error: { code: input.code, message, retryable }, updatedAt: input.now.toISOString() })
         .where(taskRunScope(input.workspaceId, input.taskRunId))
         .returning();
       await transaction
@@ -1027,7 +1078,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
           now: input.now.toISOString(),
           taskRunId: input.taskRunId,
           errorCode: input.code,
-          retryable: true,
+          retryable,
           ...(attempt ? { providerAttemptId: attempt.id } : {}),
         }));
       }

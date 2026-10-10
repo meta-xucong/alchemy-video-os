@@ -7,6 +7,7 @@ import {
 } from "@alchemy-video/contracts";
 import { assertTaskRunTransition, createPrefixedId, fingerprintRequest, isBillingRetryErrorCode } from "@alchemy-video/domain";
 import { VideoGenerationInputSnapshotSchema } from "@alchemy-video/contracts";
+import { isAssetReleased } from "@alchemy-video/persistence";
 import type {
   AssetWorkspaceStore,
   ControlAsset,
@@ -183,6 +184,9 @@ export class InMemoryTaskRunStore implements TaskRunStore {
       return this.store(input, { kind: "NEW", value: retried, status: 202 });
     }
     if (current.status !== "FAILED") return this.store(input, { kind: "STATE_INVALID" });
+    if ([...this.attempts.values()].some((attempt) => attempt.taskRunId === current.id && attempt.submissionReservedAt && !attempt.providerRequestId)) {
+      return this.store(input, { kind: "STATE_INVALID" });
+    }
     assertTaskRunTransition(current.status, "QUEUED");
     const now = new Date().toISOString();
     const retried = { ...current, status: "QUEUED" as const, error: null, retryAt: null, updatedAt: now };
@@ -231,9 +235,11 @@ export class InMemoryTaskRunStore implements TaskRunStore {
   }
 
   async findTaskRunResultAsset(workspaceId: string, assetId: string) {
-    const generated = this.generatedAssets.get(assetId);
-    if (generated?.workspaceId === workspaceId) return generated;
-    return this.assets.findAsset(workspaceId, assetId);
+    const asset = this.generatedAssets.get(assetId) ?? await this.assets.findAsset(workspaceId, assetId);
+    if (!asset || asset.workspaceId !== workspaceId) return undefined;
+    const taskRunId = asset.metadata.task_run_id;
+    const owner = typeof taskRunId === "string" ? await this.findTaskRun(workspaceId, taskRunId) : undefined;
+    return isAssetReleased(asset, owner) ? asset : undefined;
   }
 
   async findGeneratedAssetDraft(workspaceId: string, taskRunId: string) {
@@ -252,19 +258,34 @@ export class InMemoryTaskRunStore implements TaskRunStore {
   }
 
   async ensureProviderAttempt(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; provider: string; model: string; now: Date }) {
-    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
-    if (!current || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(current.status)) return undefined;
-    const attempts = await this.listTaskRunAttempts(input.workspaceId, input.taskRunId);
+    const current = this.taskRuns.get(input.taskRunId);
+    if (!current || current.workspaceId !== input.workspaceId || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(current.status)) return undefined;
+    const attempts = [...this.attempts.values()].filter((attempt) => attempt.taskRunId === current.id)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     // A persisted Provider request is a durable submit boundary. Prefer it over
     // any later unsubmitted row, which may have been left by an interrupted run.
     const submitted = [...attempts].reverse().find((attempt) => Boolean(attempt.providerRequestId) && attempt.status !== "ABANDONED");
     if (submitted) return submitted;
+    const uncertainSubmission = attempts.find((attempt) => attempt.submissionReservedAt && !attempt.providerRequestId);
+    if (uncertainSubmission) return uncertainSubmission;
     const existing = attempts.at(-1);
     if (existing && !["FAILED", "DOWNLOAD_FAILED", "ABANDONED"].includes(existing.status)) return existing;
     const now = input.now.toISOString();
-    const attempt: ControlProviderAttempt = { id: input.providerAttemptId, taskRunId: input.taskRunId, provider: input.provider, model: input.model, providerRequestId: null, status: "CREATED", requestPayload: {}, responsePayload: {}, createdAt: now, updatedAt: now };
+    const attempt: ControlProviderAttempt = { id: input.providerAttemptId, taskRunId: input.taskRunId, provider: input.provider, model: input.model, providerRequestId: null, submissionReservedAt: null, status: "CREATED", requestPayload: {}, responsePayload: {}, createdAt: now, updatedAt: now };
     this.attempts.set(attempt.id, attempt);
     return attempt;
+  }
+
+  async reserveProviderSubmission(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; now: Date }) {
+    const current = this.taskRuns.get(input.taskRunId);
+    if (!current || current.workspaceId !== input.workspaceId || current.status !== "RUNNING") return false;
+    const attempts = [...this.attempts.values()].filter((attempt) => attempt.taskRunId === current.id);
+    if (attempts.some((attempt) => attempt.submissionReservedAt && !attempt.providerRequestId
+      || attempt.providerRequestId && attempt.status !== "ABANDONED")) return false;
+    const attempt = this.attempts.get(input.providerAttemptId);
+    if (!attempt || attempt.taskRunId !== current.id || attempt.status !== "CREATED" || attempt.providerRequestId || attempt.submissionReservedAt) return false;
+    this.attempts.set(attempt.id, { ...attempt, submissionReservedAt: input.now.toISOString(), updatedAt: input.now.toISOString() });
+    return true;
   }
 
   async recordProviderSubmission(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; providerRequestId: string; now: Date }) {
@@ -417,6 +438,8 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     const now = input.now.toISOString();
     const attempts = await this.listTaskRunAttempts(input.workspaceId, input.taskRunId);
     const attempt = [...attempts].reverse().find((item) => Boolean(item.providerRequestId)) ?? attempts.at(-1);
+    const retryable = !(attempt?.submissionReservedAt && !attempt.providerRequestId);
+    const message = retryable ? input.message : "The video submission outcome is unknown. Reconcile the existing request before retrying.";
     if (attempt) {
       this.attempts.set(attempt.id, {
         ...attempt,
@@ -425,11 +448,11 @@ export class InMemoryTaskRunStore implements TaskRunStore {
         updatedAt: now,
       });
     }
-    const failed = { ...current, status: "FAILED" as const, error: { code: input.code, message: input.message, retryable: true }, updatedAt: now };
+    const failed = { ...current, status: "FAILED" as const, error: { code: input.code, message, retryable }, updatedAt: now };
     this.taskRuns.set(failed.id, failed);
     await this.assets.setShotGenerationState({ workspaceId: input.workspaceId, shotId: current.shotId, status: "FAILED" });
     const source = this.queuedSource(current.id);
-    if (source) this.addEvent(executionEvent(source, { type: "task_run.failed", now, code: input.code, retryable: true, ...(attempt ? { providerAttemptId: attempt.id } : {}) }));
+    if (source) this.addEvent(executionEvent(source, { type: "task_run.failed", now, code: input.code, retryable, ...(attempt ? { providerAttemptId: attempt.id } : {}) }));
     return failed;
   }
 

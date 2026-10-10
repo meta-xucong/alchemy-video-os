@@ -1,5 +1,6 @@
 export * from "./control-plane-repository.js";
 export * from "./asset-workspace-repository.js";
+export * from "./asset-release.js";
 export * from "./billing-repository.js";
 export * from "./creative-planning-repository.js";
 export * from "./delivery-preflight-repository.js";

@@ -1194,7 +1194,43 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     assert.ok(failedSegment?.taskRunId);
     const [failedTaskBeforeRetry] = await database.db.select().from(taskRuns)
       .where(and(eq(taskRuns.workspaceId, workspaceId), eq(taskRuns.id, failedSegment.taskRunId!)));
-    await production.recordProductionTaskFailed({ event: taskFailedEvent({ workspaceId, projectId, taskRunId: failedSegment.taskRunId!, retryable: true }), now: new Date() });
+    const uncertainAttemptId = createPrefixedId("att");
+    await database.db.insert(providerAttempts).values({
+      id: uncertainAttemptId, workspaceId, taskRunId: failedSegment.taskRunId!, provider: "mock", model: "mock-video-v1",
+      status: "FAILED", submissionReservedAt: new Date().toISOString(),
+    });
+    const uncertainFailure = taskFailedEvent({ workspaceId, projectId, taskRunId: failedSegment.taskRunId!, retryable: false });
+    uncertainFailure.data.error_code = "PROVIDER_REJECTED";
+    await production.recordProductionTaskFailed({ event: uncertainFailure, now: new Date() });
+    const [uncertainSegment] = await database.db.select().from(productionSegments)
+      .where(and(eq(productionSegments.workspaceId, workspaceId), eq(productionSegments.id, failedSegment.id)));
+    assert.equal(uncertainSegment?.retryable, false, "an unknown submission must not become retryable through PROVIDER_REJECTED projection");
+    // Historical/externally repaired segment flags cannot bypass the durable
+    // reservation by creating a new TaskRun through segment retry.
+    await database.db.update(productionSegments).set({ retryable: true })
+      .where(and(eq(productionSegments.workspaceId, workspaceId), eq(productionSegments.id, failedSegment.id)));
+    const blockedUnknownRetry = await production.retryProductionSegment({
+      scope: `${scope}:retry-segment`, idempotencyKey: "retry-unknown-submission", requestHash: fingerprintRequest({}),
+      workspaceId, productionRunId: failedRunId, sequence: 1, event: eventMetadata(),
+    });
+    assert.equal(blockedUnknownRetry.kind, "STATE_INVALID");
+    assert.equal((await database.db.select().from(productionSegments)
+      .where(and(eq(productionSegments.workspaceId, workspaceId), eq(productionSegments.id, failedSegment.id))))[0]?.taskRunId, failedSegment.taskRunId);
+    await database.db.update(productionSegments).set({ retryable: false })
+      .where(and(eq(productionSegments.workspaceId, workspaceId), eq(productionSegments.id, failedSegment.id)));
+    await database.db.update(providerAttempts).set({ providerRequestId: `reconciled-${uncertainAttemptId}` })
+      .where(and(eq(providerAttempts.workspaceId, workspaceId), eq(providerAttempts.id, uncertainAttemptId)));
+    const blockedLateIdRetry = await production.retryProductionSegment({
+      scope: `${scope}:retry-segment`, idempotencyKey: "retry-late-request-id", requestHash: fingerprintRequest({}),
+      workspaceId, productionRunId: failedRunId, sequence: 1, event: eventMetadata(),
+    });
+    assert.equal(blockedLateIdRetry.kind, "STATE_INVALID", "a late ID does not authorize fresh generation; ordinary task retry resumes polling");
+    // Continue the existing fresh-generation fixture only after an explicit
+    // terminal Provider rejection, not merely after learning a late request ID.
+    await database.db.update(taskRuns).set({ status: "FAILED", error: { code: "PROVIDER_REJECTED", message: "Synthetic terminal rejection.", retryable: false } })
+      .where(and(eq(taskRuns.workspaceId, workspaceId), eq(taskRuns.id, failedSegment.taskRunId!)));
+    await database.db.update(productionSegments).set({ retryable: true })
+      .where(and(eq(productionSegments.workspaceId, workspaceId), eq(productionSegments.id, failedSegment.id)));
     const retried = await production.retryProductionSegment({
       scope: `${scope}:retry-segment`,
       idempotencyKey: "retry-first-segment",

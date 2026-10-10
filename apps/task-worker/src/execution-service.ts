@@ -112,7 +112,7 @@ export class MockVideoTaskExecutor {
   constructor(
     private readonly store: Pick<
       TaskRunStore,
-      "findTaskRun" | "listRecoverableVideoTaskRuns" | "listTaskRunAttempts" | "ensureProviderAttempt" | "recordProviderSubmission" | "recordProviderProcessing" | "beginDownload" | "recordDownloadRetryableFailure" | "findGeneratedAssetDraft" | "ensureGeneratedAsset" | "completeGeneratedTaskRun" | "failTaskRun" | "resumeBillingRetry"
+      "findTaskRun" | "listRecoverableVideoTaskRuns" | "listTaskRunAttempts" | "ensureProviderAttempt" | "reserveProviderSubmission" | "recordProviderSubmission" | "recordProviderProcessing" | "beginDownload" | "recordDownloadRetryableFailure" | "findGeneratedAssetDraft" | "ensureGeneratedAsset" | "completeGeneratedTaskRun" | "failTaskRun" | "resumeBillingRetry"
     >,
     private readonly provider: VideoProviderPort,
     private readonly storage: StoragePort,
@@ -188,6 +188,7 @@ export class MockVideoTaskExecutor {
       });
     }
     let providerAttemptId: string | undefined;
+    let submissionUncertain = false;
     try {
       const visualInput = await this.resolveVisualInput({
         workspaceId: input.workspaceId,
@@ -226,13 +227,26 @@ export class MockVideoTaskExecutor {
       }
       let providerRequestId = attempt.providerRequestId;
       if (!providerRequestId) {
+        // A transport error cannot prove that an expensive POST was rejected.
+        // Commit the same fail-closed reservation used by the C08 certifier
+        // before crossing the Provider boundary, never after the response.
+        const reserved = await this.store.reserveProviderSubmission({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
+        if (!reserved) {
+          const current = await this.store.findTaskRun(input.workspaceId, taskRun.id);
+          if (!current || current.status !== "RUNNING") return current;
+          throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", false, "PROVIDER", "The video submission outcome is unknown. Reconcile the existing request before retrying.");
+        }
+        submissionUncertain = true;
         const submission = await this.provider.submit({
           taskRunId: taskRun.id,
           inputSnapshot,
           visualInput,
         });
         providerRequestId = submission.providerRequestId;
-        await this.store.recordProviderSubmission({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, providerRequestId: submission.providerRequestId, now: new Date() });
+        const recorded = await this.store.recordProviderSubmission({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, providerRequestId: submission.providerRequestId, now: new Date() });
+        if (!recorded) throw new Error("Provider submission could not be recorded.");
+        submissionUncertain = false;
+        if (["SUCCEEDED", "FAILED", "ABANDONED"].includes(recorded.status)) return recorded;
       }
 
       const retryableStatusPolls = this.options.retryableStatusPolls ?? 0;
@@ -282,6 +296,18 @@ export class MockVideoTaskExecutor {
     } catch (error) {
       if (error instanceof RetryableTaskExecutionError) throw error;
       const failure = providerStageError(error);
+      if (submissionUncertain) {
+        return this.store.failTaskRun({
+          workspaceId: input.workspaceId,
+          taskRunId: taskRun.id,
+          ...(providerAttemptId ? { providerAttemptId } : {}),
+          failureStage: "PROVIDER",
+          code: failure.code,
+          message: failure.retryable ? "The video submission outcome is unknown. Reconcile the existing request before retrying." : failure.message,
+          retryable: false,
+          now: new Date(),
+        });
+      }
       if (failure.retryable) throw new RetryableTaskExecutionError(failure.message);
       return this.store.failTaskRun({ workspaceId: input.workspaceId, taskRunId: taskRun.id, ...(providerAttemptId ? { providerAttemptId } : {}), failureStage: "PROVIDER", ...failure, now: new Date() });
     }

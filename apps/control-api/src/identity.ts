@@ -5,6 +5,8 @@ export type CurrentIdentity = {
   userId: string;
   workspaceId: string;
   externalUserId?: number;
+  /** Signed Video session deadline; internal only, never a browser DTO field. */
+  readonly sessionExpiresAt?: string;
   /**
    * The role is copied from the signed/verified Veyra identity for display
    * only.  Authorization must use the derived capability below.
