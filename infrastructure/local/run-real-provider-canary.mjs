@@ -174,6 +174,11 @@ const brief = await requestJson(`/api/v1/projects/${project.id}/creative-brief-r
     target_resolution: "720p",
     style_preferences: "写实、干净、商业广告质感、柔和自然光、稳定镜头。",
     source_asset_ids: [asset.id],
+    source_asset_roles: [{
+      asset_id: asset.id,
+      role: "STYLE",
+      usage: "Preserve the synthetic red ring and blue triangle as the visual brand motifs.",
+    }],
   }),
 });
 
@@ -215,7 +220,6 @@ const deliveryPlan = await requestJson(`/api/v1/projects/${project.id}/delivery-
     caption_policy: "OFF",
     lip_sync_requirement: "OFF",
     voice_mode: "PLATFORM_GENERIC",
-    budget_limit: "0",
   }),
 });
 

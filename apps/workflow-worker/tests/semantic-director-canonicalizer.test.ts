@@ -55,7 +55,6 @@ const bundle = createCanonicalSourceBundle({
     audio_owner: "NATIVE_PROVIDER",
   },
 });
-
 const rawPlan = {
   execution_status: "READY" as const,
   segments: [
@@ -188,6 +187,21 @@ test("G02 beat lineage freezes exact source spans and maps each beat to one segm
   assert.equal(decision.entity_candidates?.length, 4);
   assert.equal(decision.segments.every((segment) => !segment.visual_decision.includes("【镜头")), true);
   assert.equal(decision.segments[0]?.visual_decision, "0-3秒：@面霜罐的乳霜质地。\n3-6秒：乳霜质地细节延续。\n6-9秒：肌肤舒缓。\n9-10秒：肌肤状态平稳。");
+
+  const inlineMarkerPlan = {
+    ...plan,
+    segments: plan.segments.map((segment, index) => index === 0
+      ? { ...segment, visual_prompt: segment.visual_prompt.replace("乳霜质地。", "乳霜质地【镜头残留】。") }
+      : segment),
+  };
+  assertDiagnostic("PROVIDER_INTERNAL_MARKER_REMAINS", inlineMarkerPlan);
+  const invalidTimelineAndInlineMarkerPlan = {
+    ...inlineMarkerPlan,
+    segments: inlineMarkerPlan.segments.map((segment, index) => index === 0
+      ? { ...segment, visual_prompt: segment.visual_prompt.replace("3-6秒：", "无法解析的行\n3-6秒：") }
+      : segment),
+  };
+  assertDiagnostic("TIMELINE_ROW_SYNTAX_INVALID", invalidTimelineAndInlineMarkerPlan);
 
   const jarBeat = "G02_APPROVED_BEAT_1:面霜罐与乳霜质地，肌肤舒缓。";
   const wrongEntityUsage = "CANARY_WRONG_ENTITY_USAGE";
@@ -639,6 +653,29 @@ test("G02 beat lineage freezes exact source spans and maps each beat to one segm
       && error.code === "CANONICALIZATION_SEGMENT_SOURCE_SCOPE_INVALID",
     "a used @exact_name shared by SCENE and PROP candidates must fail closed",
   );
+
+  const timelineFailureCases = [
+    ["TL-01", "TIMELINE_MARKER_SYNTAX_INVALID", "【镜头x】0-3秒：@面霜罐质地。\n3-6秒：延续。\n6-9秒：舒缓。\n9-10秒：收尾。"],
+    ["TL-02", "TIMELINE_ROW_SYNTAX_INVALID", "【镜头1】0-3秒：@面霜罐质地。\n【镜头2】\n【镜头3】3-6秒：延续。\n6-9秒：舒缓。\n9-10秒：收尾。"],
+    ["TL-03", "TIMELINE_ROW_SYNTAX_INVALID", "【镜头1】0-3秒：@面霜罐质地。\n无法解析的行\n【镜头2】3-6秒：延续。\n6-9秒：舒缓。\n9-10秒：收尾。"],
+    ["TL-04", "TIMELINE_ROW_WITHOUT_MARKER", "0-3秒：@面霜罐质地。\n【镜头1】3-6秒：延续。\n【镜头2】6-9秒：舒缓。\n9-10秒：收尾。"],
+    ["TL-05", "TIMELINE_RANGE_OR_CONTINUITY_INVALID", "【镜头1】0-3秒：@面霜罐质地。\n4-7秒：延续。\n【镜头2】7-10秒：收尾。"],
+    ["TL-06", "TIMELINE_ROW_GRANULARITY_INVALID", "【镜头1】0-2秒：@面霜罐质地。\n2-5秒：延续。\n【镜头2】5-8秒：舒缓。\n8-10秒：收尾。"],
+    ["TL-07", "TIMELINE_COVERAGE_OR_GROUP_COUNT_INVALID", "【镜头1】0-3秒：@面霜罐质地。\n3-6秒：细节。\n6-9秒：舒缓。\n9-10秒：收尾。"],
+    ["TL-08", "TIMELINE_GROUP_ORDER_OR_ROW_COUNT_INVALID", "【镜头1】0-3秒：@面霜罐质地。\n【镜头1】3-6秒：细节。\n6-9秒：舒缓。\n9-10秒：收尾。"],
+    ["TL-09", "TIMELINE_GROUP_DURATION_INVALID", "【镜头1】0-3秒：@面霜罐质地。\n3-6秒：细节。\n【镜头2】6-9秒：舒缓。\n【镜头3】9-10秒：收尾。"],
+  ] as const;
+  for (const [fixtureId, expectedCode, visualPrompt] of timelineFailureCases) {
+    const raw = {
+      ...plan,
+      segments: plan.segments.map((segment) => segment.segment_id === "segment-1"
+        ? { ...segment, visual_prompt: visualPrompt }
+        : segment),
+    };
+    const error = assertDiagnostic(expectedCode, raw);
+    assert.deepEqual(error.issues, [{ code: expectedCode }], `${fixtureId} emits exactly its fixed code`);
+    assert.doesNotMatch(JSON.stringify(error.issues), /面霜罐|ast_jar_001|0-3秒/u, `${fixtureId} exposes no prompt/source values`);
+  }
 });
 
 test("G02 rejects cross-beat merges and mappings unsupported by frozen usage", () => {

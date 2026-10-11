@@ -5,6 +5,7 @@ import { InternalCreativePlanningQueueMessageSchema } from "@alchemy-video/contr
 import type { ControlCreativeBriefRevision, ControlStoryboardRevision } from "@alchemy-video/persistence";
 
 import { CreativePlanningProcessingError } from "../src/creative-planning-failure.js";
+import { SemanticDirectorCanonicalizationError } from "../src/semantic-director-canonicalizer.js";
 import { SemanticDirectorClientError } from "../src/semantic-director-client.js";
 import { CreativePlanningEventConsumer, CreativePlanningOutboxRelay, createCreativePlanningQueueMessage } from "../src/service.js";
 
@@ -167,4 +168,42 @@ test("Creative planning consumer keeps a deterministic failure leased until one 
   assert.equal(failures[0]?.code, "PLANNING_FAILED");
   assert.equal(releases[0]?.eventId, requestedEvent.event_id);
   assert.equal(releases[0]?.deadLetter, true);
+});
+
+test("Creative planning failure logs fixed validation issue codes without raw model or source content", async () => {
+  const logs: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+  try {
+    const canonicalizationError = new SemanticDirectorCanonicalizationError(
+      "CANONICALIZATION_SEGMENT_SUBSHOT_INVALID",
+      "safe fixed message",
+      "TIMELINE_GROUP_DURATION_INVALID",
+    );
+    Object.assign(canonicalizationError, {
+      rawModelResponse: "PRIVATE_RAW_MODEL_SENTINEL",
+      sourceText: "PRIVATE_SOURCE_SENTINEL",
+    });
+    const consumer = new CreativePlanningEventConsumer({
+      async claimCreativePlanningEvent() { return { kind: "CLAIMED" as const, brief }; },
+      async completeCreativePlanningEvent() { throw new Error("complete should not run"); },
+      async releaseCreativePlanningEvent() { throw new Error("deterministic failure must not release for retry"); },
+      async failCreativePlan() { throw new Error("dead-letter transition is owned by the queue worker"); },
+    }, {
+      async execute() { throw canonicalizationError; },
+    }, { consumerName: "c11-planning-service", workerId: "c11-worker", leaseMs: 100 });
+
+    await assert.rejects(consumer.process(queueMessage()), (error) =>
+      error instanceof CreativePlanningProcessingError
+        && error.code === "CANONICALIZATION_SEGMENT_SUBSHOT_INVALID"
+        && !error.retryable);
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  assert.equal(logs.length, 1);
+  const entry = JSON.parse(logs[0]!) as Record<string, unknown>;
+  assert.equal(entry.event, "creative_planning.execution_failed");
+  assert.deepEqual(entry.validation_issue_codes, ["TIMELINE_GROUP_DURATION_INVALID"]);
+  assert.doesNotMatch(logs.join("\n"), /PRIVATE_RAW_MODEL_SENTINEL|PRIVATE_SOURCE_SENTINEL/u);
 });

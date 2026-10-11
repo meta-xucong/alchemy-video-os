@@ -460,6 +460,13 @@ test("local real-provider startup requires an explicit certified Semantic Direct
   assert.doesNotMatch(localRunner, /\$semanticPlannerModel = \$referenceVisionModel/u);
 });
 
+test("local real-provider startup rejects an ephemeral signing key with a fixed remote reference origin", () => {
+  const localRunner = read("../../infrastructure/local/start-full-local-stack.ps1");
+
+  assert.match(localRunner, /if \(-not \$referenceDeliverySigningKey\) \{[\s\S]*?if \(-not \$AllowEphemeralReferenceTunnel\) \{[\s\S]*?A generated local key cannot authenticate against a fixed remote origin[\s\S]*?New-ReferenceDeliverySigningKey/u);
+  assert.match(localRunner, /if \(\$AllowEphemeralReferenceTunnel\) \{[\s\S]*?Start-CloudflareTunnel -TargetUrl \$controlApiOrigin/u);
+});
+
 test("Studio distinguishes Semantic Director planning failure from video Provider failure", () => {
   const workspace = read("app/pages/projects/[project_id].vue");
   assert.match(workspace, /PLANNING_FAILED: "AI 语义规划未通过，尚未提交视频生成/);

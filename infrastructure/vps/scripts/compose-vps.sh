@@ -57,6 +57,47 @@ is_service() {
   esac
 }
 
+APP_SERVICES="control-api task-worker workflow-worker production-worker document-worker document-runtime media-runtime control-media-runtime studio-web edge"
+
+verify_app() {
+  expected_working_dir=$(dirname "$COMPOSE_PATH")
+  expected_compose_path=$COMPOSE_PATH
+  failed=0
+
+  for service in $APP_SERVICES; do
+    container_ids=$(compose ps -q "$service")
+    if [ -z "$container_ids" ]; then
+      printf 'Application service is missing: %s\n' "$service" >&2
+      failed=1
+      continue
+    fi
+
+    for container_id in $container_ids; do
+      status=$(docker inspect --format '{{.State.Status}}' "$container_id")
+      labels=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}|{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$container_id")
+      actual_working_dir=${labels%%|*}
+      actual_compose_path=${labels#*|}
+      if [ "$status" != running ]; then
+        printf 'Application service is not running: %s\n' "$service" >&2
+        failed=1
+      fi
+      if [ "$actual_working_dir" != "$expected_working_dir" ]; then
+        printf 'Application service has a different Compose working directory: %s\n' "$service" >&2
+        failed=1
+      fi
+      if [ "$actual_compose_path" != "$expected_compose_path" ]; then
+        printf 'Application service has a different Compose file: %s\n' "$service" >&2
+        failed=1
+      fi
+    done
+  done
+
+  if [ "$failed" -ne 0 ]; then
+    return 1
+  fi
+  printf '%s\n' 'All application services are running from the same canonical Compose working directory and file.'
+}
+
 logs() {
   if [ "$#" -eq 0 ]; then
     compose logs --tail="$LOG_TAIL" control-api task-worker edge
@@ -116,14 +157,18 @@ case "$action" in
     ;;
   restart-app)
     [ "$#" -eq 0 ] || { printf '%s\n' 'restart-app does not accept extra arguments.' >&2; exit 2; }
-    compose up -d --no-deps --force-recreate control-api task-worker workflow-worker production-worker document-worker document-runtime media-runtime control-media-runtime studio-web edge
+    compose up -d --build --no-deps --force-recreate control-api task-worker workflow-worker production-worker document-worker document-runtime media-runtime control-media-runtime studio-web edge
+    ;;
+  verify-app)
+    [ "$#" -eq 0 ] || { printf '%s\n' 'verify-app does not accept extra arguments.' >&2; exit 2; }
+    verify_app
     ;;
   smoke)
     [ "$#" -eq 0 ] || { printf '%s\n' 'smoke does not accept extra arguments.' >&2; exit 2; }
     smoke
     ;;
   *)
-    printf '%s\n' 'Usage: compose-vps.sh {config|up|ps|logs|restart-app|smoke} [log-service ...]' >&2
+    printf '%s\n' 'Usage: compose-vps.sh {config|up|ps|logs|restart-app|verify-app|smoke} [log-service ...]' >&2
     exit 2
     ;;
 esac

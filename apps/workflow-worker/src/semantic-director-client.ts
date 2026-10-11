@@ -63,6 +63,7 @@ export type SemanticDirectorDiagnostic = Readonly<{
   response_content_type?: string;
   response_bytes?: number;
   empty_response?: boolean;
+  content_normalization?: "MARKDOWN_JSON_FENCE";
   error_class?: string;
   verification_code?: string;
 }>;
@@ -258,7 +259,12 @@ const parseResponseEnvelope = (text: string): unknown => {
   return (message as { content?: unknown }).content;
 };
 
-const parseContent = (value: unknown): Record<string, unknown> => {
+type ParsedSemanticDirectorContent = Readonly<{
+  value: Record<string, unknown>;
+  contentNormalization?: "MARKDOWN_JSON_FENCE";
+}>;
+
+const parseContent = (value: unknown): ParsedSemanticDirectorContent => {
   if (typeof value !== "string") {
     throw new SemanticDirectorProtocolError(
       "DIRECTOR_CONTENT_EMPTY",
@@ -269,7 +275,7 @@ const parseContent = (value: unknown): Record<string, unknown> => {
       true,
     );
   }
-  const normalized = value.trim();
+  let normalized = value.trim();
   if (!normalized) {
     throw new SemanticDirectorProtocolError(
       "DIRECTOR_CONTENT_EMPTY",
@@ -280,11 +286,16 @@ const parseContent = (value: unknown): Record<string, unknown> => {
       true,
     );
   }
-  if (normalized.startsWith("```") || normalized.endsWith("```")) {
+  let contentNormalization: ParsedSemanticDirectorContent["contentNormalization"];
+  const jsonFence = normalized.match(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/iu);
+  if (jsonFence) {
+    normalized = jsonFence[1]!.trim();
+    contentNormalization = "MARKDOWN_JSON_FENCE";
+  } else if (normalized.startsWith("```") || normalized.endsWith("```")) {
     throw new SemanticDirectorProtocolError(
       "DIRECTOR_CONTENT_FORMAT_INVALID",
       "CONTENT",
-      "Semantic director returned Markdown instead of a plain JSON object.",
+      "Semantic director returned an unsupported Markdown wrapper instead of a plain JSON object.",
       "MARKDOWN_FENCE",
     );
   }
@@ -317,7 +328,10 @@ const parseContent = (value: unknown): Record<string, unknown> => {
       "NON_OBJECT_ROOT",
     );
   }
-  return parsed as Record<string, unknown>;
+  return {
+    value: parsed as Record<string, unknown>,
+    ...(contentNormalization ? { contentNormalization } : {}),
+  };
 };
 
 const createRequestBody = (
@@ -512,8 +526,9 @@ export class OpenAiCompatibleSemanticDirector implements SemanticDirectorPort {
         response_content_type: responseContentType,
         response_bytes: responseBytes,
         empty_response: emptyResponse,
+        ...(parsed.contentNormalization ? { content_normalization: parsed.contentNormalization } : {}),
       }));
-      return parsed;
+      return parsed.value;
     } catch (error) {
       const elapsedMs = Date.now() - startedAt;
       let code: SemanticDirectorClientErrorCode;

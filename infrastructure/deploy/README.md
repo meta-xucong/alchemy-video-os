@@ -112,7 +112,7 @@ Keep `VIDEO_PROVIDER=mock` until all following checks pass:
 5. `REFERENCE_DELIVERY_SIGNING_KEY` is identical in Control API and Worker; `REFERENCE_DELIVERY_ORIGIN=https://video.aiself.vip`.
 6. A current, bounded real-call authorization names `aiself-grok`, `grok-imagine-video-1.5`, the maximum manual submissions, the money cap, and allowed non-sensitive test material. A click on **开始生成视频** is then the only action that sends the POST to the Provider.
 
-After those checks, change only `VIDEO_PROVIDER=sub2api` in the private environment and recreate `control-api` and `task-worker`. Do not restart database, Redis, MinIO, or the existing Sub2API/Alchemy services.
+After those checks, change only `VIDEO_PROVIDER=sub2api` in the private environment and recreate `control-api` and `task-worker`. Do not restart database, Redis, MinIO, or the existing Sub2API/Alchemy services. For a full Video OS release, use the VPS wrapper's `restart-app`: it rebuilds services that declare a Compose `build:` context and force-recreates every application container from the current canonical Compose configuration. The `edge` service uses its declared `nginx:1.27-alpine` image and is recreated, not locally built. Then run `verify-app` to reject containers still attached to another Compose directory. This directory/config check does not prove the checkout's Git SHA, so record and independently verify the release source before deployment.
 
 ## AISelf bridge activation
 
