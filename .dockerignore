@@ -22,3 +22,7 @@ dist
 *.jpeg
 infrastructure/compose/volumes
 infrastructure/deploy/certbot
+secrets
+backups
+tmp
+releases
