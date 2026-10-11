@@ -224,6 +224,12 @@ test("Studio keeps one visible input and hides story planning orchestration", ()
   assert.match(generation, /开始生成视频/);
   assert.match(workspace, /async function startAutomatedProduction/);
   assert.match(workspace, /waitForAutoStoryboard/);
+  assert.match(workspace, /AUTO_STORYBOARD_MAX_WAIT_MS = 180_000/);
+  assert.match(workspace, /AUTO_STORYBOARD_POLL_INTERVAL_MS = 1_000/);
+  assert.match(workspace, /storyboard\.created_at >= startedAt/);
+  assert.match(workspace, /failedBrief\?\.status === "FAILED"[\s\S]*?throw new Error\("PLANNING_FAILED"\)/);
+  assert.match(workspace, /throw new Error\("PLANNING_TIMEOUT"\)/);
+  assert.doesNotMatch(workspace, /attempt < 40; attempt \+= 1/);
   assert.match(workspace, /AI 正在确认分镜并开始制作视频/);
   const autoPlan = workspace.slice(workspace.indexOf("async function startAutomatedProduction"));
   assert.match(autoPlan, /approveStoryboardRevision|approveDeliveryPlanRevision|createProductionRun/);

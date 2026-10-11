@@ -1156,19 +1156,27 @@ function applyProductionRun(productionRun: ProductionRun) {
 
 const delay = (milliseconds: number) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 
+const AUTO_STORYBOARD_MAX_WAIT_MS = 180_000;
+const AUTO_STORYBOARD_POLL_INTERVAL_MS = 1_000;
+
 async function waitForAutoStoryboard(projectId: string, startedAt: string) {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  const deadline = Date.now() + AUTO_STORYBOARD_MAX_WAIT_MS;
+  let nextBriefRefreshAt = 0;
+  while (Date.now() < deadline) {
     const response = await storyboardRevisions(projectId);
     const candidate = response.data
       .filter((storyboard) => storyboard.status === "READY_FOR_REVIEW" && storyboard.created_at >= startedAt)
       .sort((left, right) => right.created_at.localeCompare(left.created_at))[0];
     if (candidate) return candidate;
-    await refreshCurrentProject();
-    const failedBrief = currentPlanningBrief.value;
-    if (failedBrief?.status === "FAILED" && failedBrief.created_at >= startedAt) {
-      throw new Error("PLANNING_FAILED");
+    if (Date.now() >= nextBriefRefreshAt) {
+      await refreshCurrentProject();
+      const failedBrief = currentPlanningBrief.value;
+      if (failedBrief?.status === "FAILED" && failedBrief.created_at >= startedAt) {
+        throw new Error("PLANNING_FAILED");
+      }
+      nextBriefRefreshAt = Date.now() + 5_000;
     }
-    await delay(500);
+    await delay(Math.min(AUTO_STORYBOARD_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
   }
   throw new Error("PLANNING_TIMEOUT");
 }
