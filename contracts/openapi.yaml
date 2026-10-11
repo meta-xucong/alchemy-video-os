@@ -7843,6 +7843,7 @@ components:
         duration_ms:
           type: integer
           minimum: 0
+          maximum: 2147483647
       required:
         - sha256
         - mime_type

@@ -95,7 +95,10 @@ const handlerFixture = (overrides = {}) => {
     sha256: async () => "a".repeat(64),
     createUploadRequest: async (...args) => { calls.push(["reserve", ...args]); return { data: { asset_id: "ast_music", upload_url: "http://storage.invalid/owned-music", headers: {} } }; },
     fetch: async (...args) => { calls.push(["put", ...args]); return { ok: true }; },
-    confirmAssetUpload: async (...args) => { calls.push(["confirm", ...args]); },
+    confirmAssetUpload: async (...args) => {
+      calls.push(["confirm", ...args]);
+      await overrides.afterConfirm?.();
+    },
     commandKey: (prefix) => prefix,
     musicPlan: { mode: "OFF", assetId: "" },
     refreshCurrentProject: async () => { calls.push(["refresh"]); },
@@ -139,13 +142,58 @@ test("actual MUSIC upload handler does not reserve an asset after project naviga
   assert.deepEqual(value.context.musicPlan, { mode: "OFF", assetId: "" });
 });
 
-test("actual MUSIC upload handler does not apply an old project's completed confirmation to a new project", async () => {
+test("actual MUSIC upload handler confirms the reserved asset after navigation without changing the new project UI", async () => {
   const selectedProjectId = { value: "prj_source" };
   const value = handlerFixture({
     selectedProjectId,
-    confirmAssetUpload: async () => { selectedProjectId.value = "prj_other"; },
+    fetch: async (...args) => {
+      value.calls.push(["put", ...args]);
+      selectedProjectId.value = "prj_other";
+      return { ok: true };
+    },
   });
   await value.upload(file);
-  assert.deepEqual(value.calls.map(([action]) => action), ["reserve", "put"]);
+  assert.deepEqual(value.calls.map(([action]) => action), ["reserve", "put", "confirm"]);
+  assert.equal(value.calls[2][1], "ast_music");
   assert.deepEqual(value.context.musicPlan, { mode: "OFF", assetId: "" });
+  assert.equal(value.calls.some(([action]) => action === "refresh"), false);
+});
+
+test("actual MUSIC upload handler finishes a reservation returned after navigation", async () => {
+  const selectedProjectId = { value: "prj_source" };
+  const value = handlerFixture({
+    selectedProjectId,
+    createUploadRequest: async (...args) => {
+      value.calls.push(["reserve", ...args]);
+      selectedProjectId.value = "prj_other";
+      return { data: { asset_id: "ast_music", upload_url: "http://storage.invalid/owned-music", headers: {} } };
+    },
+  });
+  await value.upload(file);
+  assert.deepEqual(value.calls.map(([action]) => action), ["reserve", "put", "confirm"]);
+  assert.deepEqual(value.context.musicPlan, { mode: "OFF", assetId: "" });
+  assert.equal(value.calls.some(([action]) => action === "refresh"), false);
+});
+
+test("actual MUSIC upload handler does not apply a confirmation that completes after navigation", async () => {
+  const selectedProjectId = { value: "prj_source" };
+  let markConfirmStarted;
+  let finishConfirm;
+  const confirmStarted = new Promise((resolve) => { markConfirmStarted = resolve; });
+  const confirmGate = new Promise((resolve) => { finishConfirm = resolve; });
+  const value = handlerFixture({
+    selectedProjectId,
+    afterConfirm: async () => {
+      markConfirmStarted();
+      await confirmGate;
+    },
+  });
+  const pendingUpload = value.upload(file);
+  await confirmStarted;
+  selectedProjectId.value = "prj_other";
+  finishConfirm();
+  await pendingUpload;
+  assert.deepEqual(value.calls.map(([action]) => action), ["reserve", "put", "confirm"]);
+  assert.deepEqual(value.context.musicPlan, { mode: "OFF", assetId: "" });
+  assert.equal(value.calls.some(([action]) => action === "refresh"), false);
 });

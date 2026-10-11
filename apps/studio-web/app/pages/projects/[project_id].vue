@@ -1559,11 +1559,9 @@ async function uploadMusic(file: File | undefined) {
     const fileSha256 = await sha256(file);
     if (projectIdAtStart !== selectedProjectId.value) return;
     const request = await createUploadRequest(projectIdAtStart, { kind: "AUDIO", purpose: "MUSIC", filename: file.name, mime_type: file.type, byte_size: file.size }, commandKey("studio-music-upload"));
-    if (projectIdAtStart !== selectedProjectId.value) return;
     if (!request.data.upload_url) throw new Error("Music upload is unavailable.");
     const uploaded = await fetch(request.data.upload_url, { method: "PUT", headers: request.data.headers, body: file });
     if (!uploaded.ok) throw new Error("Music upload failed.");
-    if (projectIdAtStart !== selectedProjectId.value) return;
     await confirmAssetUpload(request.data.asset_id, { sha256: fileSha256, mime_type: file.type, byte_size: file.size, duration_ms: durationMs }, commandKey("studio-music-confirm"));
     if (projectIdAtStart !== selectedProjectId.value) return;
     musicPlan.mode = "MANUAL";

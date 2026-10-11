@@ -441,7 +441,7 @@ ADR-0014 将本图确定为 TaskRun 迁移的唯一完整规则；根目录 `AGE
 | `POST /production-runs/:productionRunId/segments/:sequence/retry` | 显式重试失败段 | `202` + `ProductionRunProgress`；只允许该批次的 FAILED 段，创建新的 TaskRun 而不修改旧快照 |
 | `GET /projects/:projectId/video-versions` | 获取完整成片版本 | 只返回 C12 `SUCCEEDED` VideoVersion 的公开元数据、最终 Asset ID、时长和 QC 摘要；播放仍经既有单 Asset 短时 URL |
 | `POST /projects/:projectId/assets/upload-requests` | 申请上传 | `asset_id`、短时 `upload_url`、`headers`、`expires_at`；相同幂等键只回放同一 Asset，READY 后 URL 为 `null` |
-| `POST /assets/:assetId/confirm-upload` | 确认上传 | 校验对象存在，置 `READY` |
+| `POST /assets/:assetId/confirm-upload` | 确认上传 | 校验对象存在，置 `READY`；可选 `duration_ms` 必须是 `0..2,147,483,647` 的整数，与 PostgreSQL `assets.duration_ms` 存储范围一致 |
 | `DELETE /assets/:assetId` | 删除用户来源素材 | 软删除；若仍被活动 TaskRun、活动 ProductionRun、活动文档转换或可重试失败段引用，返回 `409 ASSET_IN_USE`，不得破坏不可变任务快照 |
 | `GET /assets/:assetId/download-url` | 获取播放/下载 URL | 只返回授权资产的短时 URL |
 | `POST /projects/:projectId/shots` | 创建分镜 | `201` + `Shot` |
