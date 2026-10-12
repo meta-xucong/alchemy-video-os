@@ -6,7 +6,7 @@ import { createS3StoragePort } from "@alchemy-video/storage-client";
 
 import { MockVideoTaskExecutor } from "./execution-service.js";
 import { createWorkerVideoProviderRuntime } from "./provider-runtime.js";
-import { createWorkerReferenceDeliveryPort } from "./reference-delivery.js";
+import { createWorkerReferenceDeliveryPort, ReferenceDeliveryReadinessError, waitForWorkerReferenceDeliveryReady } from "./reference-delivery.js";
 import { VideoBillingExecutor } from "./billing-executor.js";
 import { OutboxRelay, TaskRunEventConsumer, recoverC06TaskRuns } from "./service.js";
 import { assertCommercialWorkerConfig } from "./production-config.js";
@@ -117,6 +117,18 @@ const worker = createBullMqInternalEventWorker({
 });
 
 await worker.waitUntilReady();
+if (runtime.profile.mode !== "mock") {
+  const referenceDeliveryOrigin = process.env.REFERENCE_DELIVERY_ORIGIN?.trim();
+  if (!referenceDeliveryOrigin || !process.env.REFERENCE_DELIVERY_SIGNING_KEY) {
+    throw new ReferenceDeliveryReadinessError("CONFIGURATION_MISSING");
+  }
+  const readiness = await waitForWorkerReferenceDeliveryReady({ origin: referenceDeliveryOrigin });
+  console.info(JSON.stringify({
+    event: "task_worker.reference_delivery.ready",
+    attempts: readiness.attempts,
+    elapsed_ms: readiness.elapsedMs,
+  }));
+}
 const recovery = await recoverC06TaskRuns(executor, {
   onFailure: ({ workspaceId, taskRunId, reason }) => {
     console.error(JSON.stringify({

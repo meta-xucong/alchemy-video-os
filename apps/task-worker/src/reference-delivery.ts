@@ -32,7 +32,39 @@ export type ReferenceDeliveryFetch = (input: string, init: Readonly<{
 type PreflightFailure = Readonly<{
   retryable: boolean;
   protocol: boolean;
+  reason: string;
+  status?: number;
 }>;
+
+class ReferenceDeliveryTimeoutError extends Error {
+  constructor() {
+    super("Reference delivery request timed out.");
+    this.name = "ReferenceDeliveryTimeoutError";
+  }
+}
+
+const transportFailureReason = (error: unknown): string => {
+  if (error instanceof ReferenceDeliveryTimeoutError) return "TIMEOUT";
+  let cause: unknown = error;
+  for (let depth = 0; depth < 3 && cause && typeof cause === "object"; depth += 1) {
+    const code = "code" in cause && typeof cause.code === "string" ? cause.code : "";
+    if (["ENOTFOUND", "EAI_AGAIN", "EAI_FAIL"].includes(code)) return "DNS";
+    if (["ETIMEDOUT", "ECONNABORTED"].includes(code)) return "TIMEOUT";
+    if (code.startsWith("ERR_TLS_") || code.startsWith("ERR_SSL_") || code.startsWith("ERR_CERT_") || code.startsWith("CERT_") || ["DEPTH_ZERO_SELF_SIGNED_CERT", "UNABLE_TO_VERIFY_LEAF_SIGNATURE"].includes(code)) return "TLS";
+    cause = "cause" in cause ? cause.cause : undefined;
+  }
+  return "NETWORK";
+};
+
+const logPreflightFailure = (failure: PreflightFailure, attempts: number) => {
+  console.warn(JSON.stringify({
+    event: "task_worker.reference_delivery.preflight_failed",
+    reason: failure.reason,
+    ...(failure.status === undefined ? {} : { http_status: failure.status }),
+    attempts,
+    retryable: failure.retryable,
+  }));
+};
 
 const responseHeader = (headers: ReferenceDeliveryFetchResponse["headers"], name: string) => {
   const direct = headers.get?.(name);
@@ -61,15 +93,15 @@ const preflightFailure = (failure: PreflightFailure): PreflightFailure => failur
 
 const validateResponseMetadata = (response: ReferenceDeliveryFetchResponse): PreflightFailure | undefined => {
   if (response.status < 200 || response.status >= 300) {
-    return preflightFailure({ retryable: isTransientStatus(response.status), protocol: true });
+    return preflightFailure({ retryable: isTransientStatus(response.status), protocol: true, reason: "HTTP_STATUS", status: response.status });
   }
   const mimeType = responseMimeType(response);
   if (!mimeType || !SUPPORTED_REFERENCE_MIME_TYPES.has(mimeType)) {
-    return preflightFailure({ retryable: false, protocol: true });
+    return preflightFailure({ retryable: false, protocol: true, reason: "UNSUPPORTED_MIME" });
   }
   const contentLength = responseContentLength(response);
   if (contentLength !== undefined && (!Number.isSafeInteger(contentLength) || contentLength <= 0 || contentLength > MAX_REFERENCE_IMAGE_BYTES)) {
-    return preflightFailure({ retryable: false, protocol: true });
+    return preflightFailure({ retryable: false, protocol: true, reason: "INVALID_CONTENT_LENGTH" });
   }
   return undefined;
 };
@@ -104,7 +136,7 @@ const readBoundedBodyWithTimeout = async (body: ReadableStream<Uint8Array>, maxi
       new Promise<never>((_, reject) => {
         timeout = setTimeout(() => {
           controller.abort();
-          reject(new Error("Reference delivery body read timed out."));
+          reject(new ReferenceDeliveryTimeoutError());
         }, timeoutMs);
       }),
     ]);
@@ -127,7 +159,7 @@ const requestWithTimeout = async (fetcher: ReferenceDeliveryFetch, url: string, 
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeout = setTimeout(() => {
         controller.abort();
-        reject(new Error("Reference delivery preflight timed out."));
+        reject(new ReferenceDeliveryTimeoutError());
       }, timeoutMs);
     });
     return await Promise.race([
@@ -183,8 +215,10 @@ const preflightReferenceUrl = async (input: Readonly<{
   retries: number;
 }>) => {
   assertSafeDeliveryUrl(input.origin, input.url);
-  let lastFailure: PreflightFailure = { retryable: true, protocol: false };
+  let lastFailure: PreflightFailure = { retryable: true, protocol: false, reason: "NETWORK" };
+  let attempts = 0;
   for (let attempt = 0; attempt <= input.retries; attempt += 1) {
+    attempts += 1;
     try {
       const head = await requestWithTimeout(input.fetcher, input.url, "HEAD", input.timeoutMs);
       let failure = validateResponseMetadata(head);
@@ -196,8 +230,8 @@ const preflightReferenceUrl = async (input: Readonly<{
         try {
           failure = validateResponseMetadata(get);
           if (!failure && responseContentLength(get) === undefined) {
-            if (!get.body) failure = { retryable: false, protocol: true };
-            else if ((await readBoundedBodyWithTimeout(get.body, MAX_REFERENCE_IMAGE_BYTES, input.timeoutMs)) > MAX_REFERENCE_IMAGE_BYTES) failure = { retryable: false, protocol: true };
+            if (!get.body) failure = { retryable: false, protocol: true, reason: "MISSING_BODY" };
+            else if ((await readBoundedBodyWithTimeout(get.body, MAX_REFERENCE_IMAGE_BYTES, input.timeoutMs)) > MAX_REFERENCE_IMAGE_BYTES) failure = { retryable: false, protocol: true, reason: "BODY_TOO_LARGE" };
           }
         } finally {
           await cancelResponseBody(get);
@@ -205,16 +239,93 @@ const preflightReferenceUrl = async (input: Readonly<{
       }
       if (!failure) return;
       lastFailure = failure;
-    } catch {
-      lastFailure = { retryable: true, protocol: false };
+    } catch (error) {
+      lastFailure = { retryable: true, protocol: false, reason: transportFailureReason(error) };
     }
     if (!lastFailure.retryable || attempt >= input.retries) break;
-    await delay(attempt === 0 ? 250 : 750);
+    await delay(Math.min(1_000 * 2 ** attempt, 5_000));
   }
+  logPreflightFailure(lastFailure, attempts);
   if (lastFailure.protocol && !lastFailure.retryable) {
     throw new VideoProviderFailure("PROVIDER_PROTOCOL_INVALID", false, "PROVIDER", "Reference image delivery returned an invalid response.");
   }
   throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", true, "PROVIDER", "Reference image delivery is temporarily unavailable.");
+};
+
+const DEFAULT_REFERENCE_DELIVERY_READY_TIMEOUT_MS = 120_000;
+const MAX_REFERENCE_DELIVERY_READY_RETRY_DELAY_MS = 8_000;
+
+export class ReferenceDeliveryReadinessError extends Error {
+  constructor(readonly reason: string, readonly httpStatus?: number) {
+    super(`Reference delivery endpoint did not become ready (${reason}${httpStatus === undefined ? "" : `:${httpStatus}`}).`);
+    this.name = "ReferenceDeliveryReadinessError";
+  }
+}
+
+export const waitForWorkerReferenceDeliveryReady = async (input: Readonly<{
+  origin: string;
+  timeoutMs?: number;
+  maxWaitMs?: number;
+  fetcher?: ReferenceDeliveryFetch;
+  now?: () => number;
+  sleep?: (milliseconds: number) => Promise<void>;
+}>) => {
+  const origin = input.origin.trim();
+  if (!origin) throw new ReferenceDeliveryReadinessError("ORIGIN_NOT_CONFIGURED");
+  let parsedOrigin: URL;
+  try {
+    parsedOrigin = new URL(origin);
+  } catch {
+    throw new ReferenceDeliveryReadinessError("INVALID_HTTPS_ORIGIN");
+  }
+  if (parsedOrigin.protocol !== "https:" || parsedOrigin.username || parsedOrigin.password || parsedOrigin.search || parsedOrigin.hash) {
+    throw new ReferenceDeliveryReadinessError("INVALID_HTTPS_ORIGIN");
+  }
+  const fetcher = input.fetcher ?? (typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) as unknown as ReferenceDeliveryFetch : undefined);
+  if (!fetcher) throw new ReferenceDeliveryReadinessError("FETCH_UNAVAILABLE");
+  const timeoutMs = input.timeoutMs ?? DEFAULT_PREFLIGHT_TIMEOUT_MS;
+  const maxWaitMs = input.maxWaitMs ?? DEFAULT_REFERENCE_DELIVERY_READY_TIMEOUT_MS;
+  const now = input.now ?? Date.now;
+  const sleep = input.sleep ?? delay;
+  const url = new URL(`${originPathPrefix(origin)}__worker-readiness__`, parsedOrigin).toString();
+  const startedAt = now();
+  const deadline = startedAt + maxWaitMs;
+  let attempts = 0;
+  let lastFailure: { reason: string; httpStatus?: number; retryable: boolean } = { reason: "NETWORK", retryable: true };
+
+  while (now() < deadline) {
+    attempts += 1;
+    try {
+      const requestTimeoutMs = Math.min(timeoutMs, Math.max(1, deadline - now()));
+      const response = await requestWithTimeout(fetcher, url, "HEAD", requestTimeoutMs);
+      const cacheControl = responseHeader(response.headers, "cache-control")?.toLowerCase() ?? "";
+      const contentLength = responseContentLength(response);
+      await cancelResponseBody(response);
+      if (response.status === 404 && contentLength === 0 && cacheControl.includes("no-store")) {
+        return { attempts, elapsedMs: Math.max(0, now() - startedAt) };
+      }
+      lastFailure = {
+        reason: response.status === 404 ? "UNEXPECTED_404_RESPONSE" : "HTTP_STATUS",
+        httpStatus: response.status,
+        retryable: isTransientStatus(response.status),
+      };
+    } catch (error) {
+      lastFailure = { reason: transportFailureReason(error), retryable: true };
+    }
+
+    if (!lastFailure.retryable || now() >= deadline) break;
+    const retryDelayMs = Math.min(1_000 * 2 ** Math.min(attempts - 1, 3), MAX_REFERENCE_DELIVERY_READY_RETRY_DELAY_MS);
+    await sleep(Math.min(retryDelayMs, Math.max(0, deadline - now())));
+  }
+
+  console.error(JSON.stringify({
+    event: "task_worker.reference_delivery.readiness_failed",
+    reason: lastFailure.reason,
+    ...(lastFailure.httpStatus === undefined ? {} : { http_status: lastFailure.httpStatus }),
+    attempts,
+    elapsed_ms: Math.max(0, now() - startedAt),
+  }));
+  throw new ReferenceDeliveryReadinessError(lastFailure.reason, lastFailure.httpStatus);
 };
 
 export interface ReferenceDeliveryPort {
@@ -318,7 +429,7 @@ export const createWorkerReferenceDeliveryPort = (input: Readonly<{
   const timeoutMs = parseBoundedInteger("REFERENCE_DELIVERY_PREFLIGHT_TIMEOUT_MS", input.environment.REFERENCE_DELIVERY_PREFLIGHT_TIMEOUT_MS, DEFAULT_PREFLIGHT_TIMEOUT_MS, MIN_PREFLIGHT_TIMEOUT_MS, MAX_PREFLIGHT_TIMEOUT_MS);
   const retries = parseBoundedInteger("REFERENCE_DELIVERY_PREFLIGHT_RETRIES", input.environment.REFERENCE_DELIVERY_PREFLIGHT_RETRIES, DEFAULT_PREFLIGHT_RETRIES, 0, MAX_PREFLIGHT_RETRIES);
   if (!isPreflightEnabled(input.environment.REFERENCE_DELIVERY_PREFLIGHT_ENABLED)) {
-    return createSignedReferenceDeliveryPort({ origin, signingKey, ttlMs });
+    throw new ReferenceDeliveryReadinessError("PREFLIGHT_DISABLED");
   }
   const fetcher = input.fetcher ?? (typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) as unknown as ReferenceDeliveryFetch : undefined);
   if (!fetcher) return unavailableReferenceDeliveryPort();

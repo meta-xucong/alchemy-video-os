@@ -86,6 +86,13 @@ The wrapper intentionally has no stop or volume-removal action. Do not use
 the canonical runbook requires retaining PostgreSQL, Redis, MinIO, TaskRun,
 ProviderAttempt, and generated-asset state.
 
+Real-provider Task Workers wait for the Control API's database readiness and
+then probe the configured HTTPS reference-delivery route before queue recovery
+or consumption. The probe must receive the expected invalid-token `404`; it
+does not read an asset or call a Provider. If the bounded readiness wait fails,
+the Worker stays out of queue processing and must not be made to bypass the
+reference preflight. See the C09-C readiness-gate document for release evidence.
+
 `restart-app` applies `--build` and force-recreates the complete application
 set from the current canonical Compose file. Compose builds services that
 declare a `build:` context and recreates all application containers; services

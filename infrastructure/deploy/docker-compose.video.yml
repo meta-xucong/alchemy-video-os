@@ -113,7 +113,7 @@ services:
     volumes:
       - control-api-billing-data:/app/data
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8032/api/v1/health/live').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8032/api/v1/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -158,6 +158,8 @@ services:
       minio:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      control-api:
         condition: service_healthy
     restart: unless-stopped
 
@@ -345,7 +347,7 @@ services:
       studio-web:
         condition: service_started
       control-api:
-        condition: service_started
+        condition: service_healthy
       minio:
         condition: service_healthy
     restart: unless-stopped
