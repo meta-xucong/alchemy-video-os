@@ -3,13 +3,13 @@
     <div class="section-heading">
       <div>
         <p class="eyebrow">制作进度</p>
-        <h2 id="production-progress-title">{{ retrying ? "正在提交重试" : retryError ? "本次重试未提交" : statusLabel }}</h2>
+        <h2 id="production-progress-title">{{ retrying ? "正在提交重试" : retryProjectionPending ? "正在核对重试状态" : retryUnknown ? "重试结果待确认" : retryError ? "本次重试未提交" : statusLabel }}</h2>
       </div>
       <span class="planning-status" :class="statusTone">{{ completedCount }} / {{ totalSegments }} 段</span>
     </div>
 
     <progress class="production-progress-meter" :value="completedCount" :max="totalSegments">{{ completedCount }} / {{ totalSegments }}</progress>
-    <p class="section-copy">{{ retrying ? "正在提交本次重试请求；服务确认后会继续制作。" : retryError ? `本次重试未提交：${retryError} 上次失败状态仅供参考。` : progressSummary }}</p>
+    <p class="section-copy">{{ retrying ? "正在提交本次重试请求；服务确认后会继续制作。" : retryUnknown || retryProjectionPending ? retryError : retryError ? `本次重试未提交：${retryError} 上次失败状态仅供参考。` : progressSummary }}</p>
     <button
       v-if="canRetryComposition"
       class="secondary-button"
@@ -46,7 +46,7 @@
 import { isRecoverableWaitingProduction } from "../../composables/useCreationProgress";
 import type { ProductionRunProgress, ProductionSegment } from "../../composables/useControlApi";
 
-const props = defineProps<{ progress?: ProductionRunProgress; busy?: boolean; retrying?: boolean; retryingSegmentSequence?: number; retryError?: string; billingPending?: boolean }>();
+const props = defineProps<{ progress?: ProductionRunProgress; busy?: boolean; retrying?: boolean; retryingSegmentSequence?: number; retryError?: string; retryUnknown?: boolean; retryProjectionPending?: boolean; billingPending?: boolean }>();
 const emit = defineEmits<{ retry: [sequence: number]; 'retry-composition': [] }>();
 
 const completedCount = computed(() => props.progress?.segments.filter((segment) => segment.status === "ACCEPTED").length ?? 0);
@@ -94,6 +94,8 @@ const statusLabel = computed(() => {
 });
 const statusTone = computed(() => {
   if (props.retrying) return "active";
+  if (props.retryUnknown) return "active";
+  if (props.retryProjectionPending) return "active";
   if (props.retryError) return "error";
   const status = props.progress?.production_run.status;
   if (status === "SUCCEEDED") return "success";

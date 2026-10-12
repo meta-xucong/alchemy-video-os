@@ -1498,7 +1498,7 @@ test("a concurrent execution cannot fail a TaskRun while another Worker owns its
 
   const firstExecution = executor.execute({ workspaceId, taskRunId });
   await submitStarted;
-  await assert.rejects(executor.execute({ workspaceId, taskRunId }), /submission is already reserved/);
+  await assert.rejects(executor.execute({ workspaceId, taskRunId }), /Another execution owns/);
   assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "RUNNING");
 
   releaseSubmit();

@@ -7,7 +7,7 @@ import {
 } from "@alchemy-video/contracts";
 import { assertTaskRunTransition, createPrefixedId, fingerprintRequest, isBillingRetryErrorCode } from "@alchemy-video/domain";
 import { VideoGenerationInputSnapshotSchema } from "@alchemy-video/contracts";
-import { hasTerminalProviderResult, isAssetReleased } from "@alchemy-video/persistence";
+import { hasTerminalProviderResult, InMemoryTaskRunExecutionGuard, isAssetReleased, TaskRunExecutionGenerationAmbiguousError } from "@alchemy-video/persistence";
 import type {
   AssetWorkspaceStore,
   ControlAsset,
@@ -137,6 +137,11 @@ const executionEvent = (
 });
 
 export class InMemoryTaskRunStore implements TaskRunStore {
+  private readonly executionGuard = new InMemoryTaskRunExecutionGuard();
+
+  withTaskRunExecution<T>(scope: { workspaceId: string; taskRunId: string }, execute: (assertActive: () => void) => Promise<T>): Promise<T> {
+    return this.executionGuard.withTaskRunExecution(scope, execute);
+  }
   private readonly commands = new Map<string, StoredCommand>();
   private readonly taskRuns = new Map<string, ControlTaskRun>();
   private readonly attempts = new Map<string, ControlProviderAttempt>();
@@ -179,7 +184,7 @@ export class InMemoryTaskRunStore implements TaskRunStore {
       const parsed = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
       if (!parsed.success || !parsed.data.billing) return this.store(input, { kind: "STATE_INVALID" });
       assertTaskRunTransition(current.status, "BILLING_PENDING");
-      const now = new Date().toISOString();
+      const now = this.nextTaskRunEventTime(current);
       const retried = { ...current, status: "BILLING_PENDING" as const, error: null, retryAt: null, updatedAt: now };
       this.taskRuns.set(retried.id, retried);
       this.addEvent(queuedEvent({ command: input, taskRun: retried, now }));
@@ -190,7 +195,7 @@ export class InMemoryTaskRunStore implements TaskRunStore {
       return this.store(input, { kind: "STATE_INVALID" });
     }
     assertTaskRunTransition(current.status, "QUEUED");
-    const now = new Date().toISOString();
+    const now = this.nextTaskRunEventTime(current);
     const retried = { ...current, status: "QUEUED" as const, error: null, retryAt: null, updatedAt: now };
     this.taskRuns.set(retried.id, retried);
     for (const [attemptId, attempt] of this.attempts.entries()) {
@@ -439,9 +444,20 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     return resumed;
   }
 
-  async finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; code: string; message: string; now: Date }) {
+  async finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; expectedQueuedEventId?: string; code: string; message: string; now: Date }) {
+    return this.withTaskRunExecution(input, () => this.finalizeOwnedExecutionFailure(input));
+  }
+
+  private async finalizeOwnedExecutionFailure(input: { workspaceId: string; taskRunId: string; expectedQueuedEventId?: string; code: string; message: string; now: Date }) {
     const current = this.currentTaskRun(input.workspaceId, input.taskRunId);
     if (!current || current.supersededByTaskRunId != null || current.kind !== "VIDEO_GENERATION" || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(current.status)) return current;
+    if (input.expectedQueuedEventId) {
+      const [latest, preceding] = [...this.events.values()].map((row) => row.event)
+        .filter((event) => event.workspace_id === input.workspaceId && event.event_type === "task_run.queued" && event.data.task_run_id === input.taskRunId)
+        .sort((left, right) => right.occurred_at.localeCompare(left.occurred_at));
+      if (latest && preceding?.occurred_at === latest.occurred_at) throw new TaskRunExecutionGenerationAmbiguousError();
+      if (latest?.event_id !== input.expectedQueuedEventId) return current;
+    }
     const billingSnapshot = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
     if (current.status === "BILLING_PENDING" && billingSnapshot.success && billingSnapshot.data.billing) {
       assertTaskRunTransition(current.status, "BILLING_FAILED");
@@ -451,11 +467,13 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     }
     assertTaskRunTransition(current.status, "FAILED");
     const now = input.now.toISOString();
-    const attempts = this.currentTaskRunAttempts(input.workspaceId, input.taskRunId);
+    const history = this.currentTaskRunAttempts(input.workspaceId, input.taskRunId);
+    const submissionUnknown = history.some((item) => item.submissionReservedAt && !item.providerRequestId);
+    const attempts = history
+      .filter((item) => !["ABANDONED", "SUCCEEDED"].includes(item.status) && !hasTerminalProviderResult(item));
     const attempt = [...attempts].reverse().find((item) => item.submissionReservedAt && !item.providerRequestId)
       ?? [...attempts].reverse().find((item) => item.providerRequestId && !hasTerminalProviderResult(item))
       ?? attempts.at(-1);
-    const submissionUnknown = Boolean(attempt?.submissionReservedAt && !attempt.providerRequestId);
     const retryable = !submissionUnknown;
     const errorCode = submissionUnknown ? "PROVIDER_SUBMISSION_UNKNOWN" : input.code;
     const message = submissionUnknown ? "The video submission outcome is unknown. Reconcile the existing request before retrying." : input.message;
@@ -605,7 +623,14 @@ export class InMemoryTaskRunStore implements TaskRunStore {
   }
 
   private addEvent(event: InternalEventEnvelope) {
-    this.events.set(event.event_id, { workspaceId: event.workspace_id, event, publishAttempts: 0, availableAt: timestamp(event.occurred_at) });
+    this.events.set(event.event_id, { workspaceId: event.workspace_id, event, publishAttempts: 0, availableAt: new Date().toISOString() });
+  }
+
+  private nextTaskRunEventTime(current: ControlTaskRun) {
+    const latest = [...this.events.values()].map((row) => row.event)
+      .filter((event) => event.workspace_id === current.workspaceId && event.aggregate.type === "task_run" && event.aggregate.id === current.id)
+      .reduce((time, event) => event.occurred_at > time ? event.occurred_at : time, current.updatedAt);
+    return afterEvent(latest, new Date());
   }
 
   private queuedSource(taskRunId: string) {

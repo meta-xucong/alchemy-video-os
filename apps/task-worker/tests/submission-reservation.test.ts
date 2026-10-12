@@ -10,6 +10,7 @@ import { InMemoryTaskRunStore } from "../../control-api/src/task-run-repository.
 import { InMemoryAssetWorkspaceStore } from "../../control-api/src/asset-repository.js";
 import { InMemoryControlPlaneStore } from "../../control-api/src/repository.js";
 import { MockVideoTaskExecutor } from "../src/execution-service.js";
+import { TaskRunEventConsumer } from "../src/service.js";
 import { createSub2ApiHttpsTransport, type WorkerFetch, type WorkerFetchResponse } from "../src/sub2api-https-transport.js";
 
 const event = () => ({ eventId: createPrefixedId("evt"), messageId: createPrefixedId("msg"), traceId: createPrefixedId("trc"), correlationId: createPrefixedId("cor") });
@@ -31,7 +32,7 @@ const startQueued = async (store: TaskRunStore, workspaceId: string, taskRunId: 
   started.add(queued.event_id);
 };
 
-const prepareTask = async (start = true) => {
+const prepareTask = async (start = true, firstEventId?: string) => {
   const control = new InMemoryControlPlaneStore();
   const workspaceId = createPrefixedId("ws");
   const projectId = createPrefixedId("prj");
@@ -47,7 +48,7 @@ const prepareTask = async (start = true) => {
     scope: "reservation:task", idempotencyKey: "task", requestHash: "c".repeat(64), workspaceId, taskRunId, shotId,
     kind: "VIDEO_GENERATION",
     inputSnapshot: { model: "grok-imagine-video-1.5", prompt: "Offline request.", duration: 1, resolution: "480p", ratio: "16:9", reference_asset_ids: [] },
-    event: event(),
+    event: { ...event(), ...(firstEventId ? { eventId: firstEventId } : {}) },
   })).kind, "NEW");
   if (start) await startQueued(store, workspaceId, taskRunId);
   return { store, workspaceId, taskRunId };
@@ -190,7 +191,7 @@ test("duplicate execution during a slow POST cannot resubmit or discard the late
   };
   const first = runtime(context.store, fetcher).execute(context);
   await accepted;
-  await assert.rejects(runtime(context.store, fetcher).execute(context), /submission is already reserved/);
+  await assert.rejects(runtime(context.store, fetcher).execute(context), /Another execution owns/);
   assert.equal((await context.store.findTaskRun(context.workspaceId, context.taskRunId))?.status, "RUNNING");
   deliverResponse(response({ id: "late-durable-id" }));
   await assert.rejects(first, /still processing/);
@@ -235,4 +236,69 @@ test("queue exception finalization preserves an unknown submission and rejects e
   assert.equal(failed?.error?.retryable, false);
   assert.equal((await retry(context)).kind, "STATE_INVALID");
   assert.ok((await context.store.listTaskRunAttempts(context.workspaceId, context.taskRunId))[0]?.submissionReservedAt);
+});
+
+test("an exhausted duplicate delivery cannot finalize another execution's in-flight POST", async () => {
+  const context = await prepareTask();
+  const accepted = Promise.withResolvers<void>();
+  const reply = Promise.withResolvers<WorkerFetchResponse>();
+  const executor = runtime(context.store, async (_url, init) => {
+    if (init.method === "POST") { accepted.resolve(); return reply.promise; }
+    return response({ status: "processing" });
+  });
+  const consumer = new TaskRunEventConsumer(context.store, { consumerName: "closure", workerId: "duplicate", leaseMs: 100 }, executor);
+  const finished = executor.execute(context).then((result) => ({ result, error: undefined }), (error: unknown) => ({ result: undefined, error }));
+  await accepted.promise;
+  let statusDuringPost: string | undefined;
+  try {
+    await consumer.finalizeExecutionFailure({ workspace_id: context.workspaceId, task_run_id: context.taskRunId, reason: "exhausted duplicate" }).catch(() => undefined);
+    statusDuringPost = (await context.store.findTaskRun(context.workspaceId, context.taskRunId))?.status;
+  } finally {
+    reply.resolve(response({ id: "closure-in-flight-id" }));
+  }
+  const result = await finished;
+  assert.equal(statusDuringPost, "RUNNING");
+  assert.ok(result.error instanceof Error && /still processing/.test(result.error.message));
+  assert.equal((await context.store.findTaskRun(context.workspaceId, context.taskRunId))?.status, "PROVIDER_PROCESSING");
+});
+
+test("consumer retry exhaustion before a new attempt preserves all terminal historical evidence", async () => {
+  const context = await prepareTask();
+  const historical = await ensureAttempt(context);
+  assert.ok(historical);
+  await context.store.reserveProviderSubmission({ ...context, providerAttemptId: historical.id, now: new Date() });
+  await context.store.recordProviderSubmission({ ...context, providerAttemptId: historical.id, providerRequestId: "terminal-history-id", now: new Date() });
+  await context.store.failTaskRun({ ...context, providerAttemptId: historical.id, failureStage: "PROVIDER", providerRequestTerminal: true, code: "PROVIDER_REJECTED", message: "Controlled terminal result.", retryable: false, now: new Date() });
+  assert.equal((await retry(context)).kind, "NEW");
+  const before = structuredClone(await context.store.listTaskRunAttempts(context.workspaceId, context.taskRunId));
+  assert.equal(before[0]?.status, "ABANDONED");
+  const queued = (await context.store.listWorkspaceEvents({ workspaceId: context.workspaceId, limit: 100 })).filter((item) => item.event_type === "task_run.queued").at(-1);
+  assert.ok(queued?.event_type === "task_run.queued");
+  const message = { contract_version: "1.0" as const, event_id: queued.event_id, workspace_id: context.workspaceId, task_run_id: context.taskRunId, attempt_no: 1, correlation_id: queued.correlation_id, input_snapshot: queued.data.input_snapshot };
+  const list = context.store.listTaskRunAttempts.bind(context.store);
+  context.store.listTaskRunAttempts = async () => { throw new Error("Controlled database read outage before creating an attempt."); };
+  let posts = 0;
+  const consumer = new TaskRunEventConsumer(context.store, { consumerName: "closure", workerId: "retry", leaseMs: 100 }, runtime(context.store, async () => { posts += 1; throw new Error("No POST expected."); }));
+  for (let index = 0; index < 3; index += 1) await assert.rejects(consumer.process(message), /could not complete/);
+  await consumer.finalizeExecutionFailure({ workspace_id: context.workspaceId, task_run_id: context.taskRunId, reason: "controlled exhaustion" });
+  context.store.listTaskRunAttempts = list;
+  assert.equal((await context.store.findTaskRun(context.workspaceId, context.taskRunId))?.status, "FAILED");
+  assert.deepEqual(await list(context.workspaceId, context.taskRunId), before);
+  assert.equal(posts, 0);
+});
+
+test("same-millisecond queued generations do not use random event IDs as execution order", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-12T18:00:00.000Z") });
+  const oldEventId = "evt_7ZZZZZZZZZZZZZZZZZZZZZZZZZ";
+  const newEventId = "evt_00000000000000000000000000";
+  const context = await prepareTask(true, oldEventId);
+  await context.store.failTaskRun({ ...context, code: "PROVIDER_UNAVAILABLE", message: "Controlled pre-submit failure.", retryable: true, now: new Date() });
+  assert.equal((await context.store.retryTaskRun({ scope: "closure:clock-retry", idempotencyKey: "retry", requestHash: "a".repeat(64), ...context, event: { ...event(), eventId: newEventId } })).kind, "NEW");
+  assert.ok((await context.store.claimOutboxEvents({ relayId: "clock-test", now: new Date(), leaseMs: 100, limit: 100, workspaceId: context.workspaceId })).some((item) => item.id === newEventId));
+  await context.store.finalizeTaskRunExecutionFailure({ ...context, expectedQueuedEventId: oldEventId, code: "PROVIDER_UNAVAILABLE", message: "Stale callback.", now: new Date() });
+  assert.equal((await context.store.findTaskRun(context.workspaceId, context.taskRunId))?.status, "QUEUED");
+  await context.store.finalizeTaskRunExecutionFailure({ ...context, expectedQueuedEventId: newEventId, code: "PROVIDER_UNAVAILABLE", message: "Current callback.", now: new Date() });
+  assert.equal((await context.store.findTaskRun(context.workspaceId, context.taskRunId))?.status, "FAILED");
+  const queued = (await context.store.listWorkspaceEvents({ workspaceId: context.workspaceId, limit: 100 })).filter((item) => item.event_type === "task_run.queued");
+  assert.ok(queued.find((item) => item.event_id === newEventId)!.occurred_at > queued.find((item) => item.event_id === oldEventId)!.occurred_at);
 });

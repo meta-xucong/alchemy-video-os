@@ -8,6 +8,7 @@ import json
 import math
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 from tempfile import TemporaryDirectory
@@ -17,6 +18,7 @@ from unittest.mock import patch
 import unittest
 import wave
 
+from tests.media_tools import media_tool_paths
 from main import boundary_frames, burn_captions, compose_video, encode_pixabay_header, forbidden_response, health_live, health_ready, inspect_audio, inspect_video, final_review, pixabay_music, synthesize_narration, transcribe_video
 import runtime
 from adapters.openmontage_audio.pixabay_music import PixabayMusicResult
@@ -48,37 +50,6 @@ from runtime import (
 PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x02\x00\x00\x00\x03\x08\x02\x00\x00\x00\x12\x16\xf1M"
 TEST_FFMPEG_PATH = str(Path.cwd() / "test-ffmpeg")
 TEST_FFPROBE_PATH = str(Path.cwd() / "test-ffprobe")
-
-
-def media_tool_paths(
-    root: Path,
-    *,
-    ffmpeg_override: str | None = None,
-    ffprobe_override: str | None = None,
-) -> tuple[Path, Path]:
-    """Resolve the lockfile-installed media binaries on the current platform."""
-    suffix = ".exe" if os.name == "nt" else ""
-    package_store = root / "node_modules" / ".pnpm"
-    ffmpeg_candidates = sorted(package_store.glob("ffmpeg-static@*/node_modules/ffmpeg-static/ffmpeg*"))
-    ffprobe_candidates = sorted(package_store.glob("ffprobe-static@*/node_modules/ffprobe-static/bin/*/*/ffprobe*"))
-    ffmpeg = Path(ffmpeg_override) if ffmpeg_override is not None else next(
-        (path for path in ffmpeg_candidates if path.name == f"ffmpeg{suffix}" and path.is_file()), None
-    )
-    ffprobe = Path(ffprobe_override) if ffprobe_override is not None else next(
-        (path for path in ffprobe_candidates if path.name == f"ffprobe{suffix}" and path.is_file()), None
-    )
-    if ffmpeg is None:
-        found = shutil.which("ffmpeg")
-        ffmpeg = Path(found) if found else None
-    if ffprobe is None:
-        found = shutil.which("ffprobe")
-        ffprobe = Path(found) if found else None
-    if ffmpeg is None or ffprobe is None:
-        message = "FFmpeg/ffprobe are required for media integration fixtures."
-        if os.environ.get("CI", "").lower() == "true":
-            raise AssertionError(message)
-        raise unittest.SkipTest(message)
-    return ffmpeg, ffprobe
 
 
 class StreamRequest:
@@ -450,6 +421,39 @@ def music_replacement_bundle(
 
 
 class MediaRuntimeTests(unittest.TestCase):
+    def test_media_tool_paths_selects_only_current_platform_and_architecture(self) -> None:
+        with TemporaryDirectory(prefix="alchemy-media-tools-") as directory:
+            root = Path(directory)
+            store = root / "node_modules" / ".pnpm"
+            ffmpeg_root = store / "ffmpeg-static@5.3.0" / "node_modules" / "ffmpeg-static"
+            ffmpeg_root.mkdir(parents=True)
+            for name in ("ffmpeg", "ffmpeg.exe"):
+                (ffmpeg_root / name).touch()
+            cases = (
+                ("linux", "x86_64", "x64"), ("linux", "aarch64", "arm64"),
+                ("darwin", "x86_64", "x64"), ("darwin", "arm64", "arm64"),
+                ("win32", "AMD64", "x64"), ("win32", "ARM64", "arm64"),
+                ("linux", "i686", "ia32"), ("linux", "armv7l", "arm"),
+            )
+            for system, _machine, arch in cases:
+                binary = store / "ffprobe-static@3.1.0" / "node_modules" / "ffprobe-static" / "bin" / system / arch / ("ffprobe.exe" if system == "win32" else "ffprobe")
+                binary.parent.mkdir(parents=True, exist_ok=True)
+                binary.touch()
+            for system, machine, arch in cases:
+                with self.subTest(platform=system, machine=machine), patch.object(sys, "platform", system), patch.object(platform, "machine", return_value=machine), patch.object(shutil, "which", return_value=None):
+                    ffmpeg, ffprobe = media_tool_paths(root)
+                    self.assertEqual(ffmpeg.name, "ffmpeg.exe" if system == "win32" else "ffmpeg")
+                    self.assertEqual(ffprobe.parent.parts[-2:], (system, arch))
+
+    def test_media_tool_paths_uses_system_tool_instead_of_foreign_bundled_binary(self) -> None:
+        with TemporaryDirectory(prefix="alchemy-media-tools-") as directory:
+            root = Path(directory)
+            foreign = root / "node_modules" / ".pnpm" / "ffprobe-static@3.1.0" / "node_modules" / "ffprobe-static" / "bin" / "darwin" / "arm64" / "ffprobe"
+            foreign.parent.mkdir(parents=True)
+            foreign.touch()
+            with patch.object(sys, "platform", "linux"), patch.object(platform, "machine", return_value="x86_64"), patch.object(shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"):
+                self.assertEqual(media_tool_paths(root), (Path("/usr/bin/ffmpeg"), Path("/usr/bin/ffprobe")))
+
     def test_health_live_is_side_effect_free(self) -> None:
         self.assertEqual(asyncio.run(health_live()), {"status": "ok"})
 

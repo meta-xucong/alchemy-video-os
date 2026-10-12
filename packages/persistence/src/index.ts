@@ -12,5 +12,6 @@ export * from "./production-repository.js";
 export { hasTerminalProviderResult } from "./provider-attempt-recovery.js";
 export * from "./schema.js";
 export * from "./task-run-repository.js";
+export * from "./task-run-execution-guard.js";
 export * from "./workspace-repositories.js";
 export * from "./narration-quality-repository.js";

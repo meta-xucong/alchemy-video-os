@@ -234,8 +234,12 @@
             @retry="retryGeneration"
             @preview="previewResult"
           />
+          <div v-if="retryOutcomeUnknown" class="generation-material-gate" role="status">
+            <p>可以按原请求继续；会使用原幂等键避免重复。如果上次请求未到达服务，继续操作可能首次提交执行。</p>
+            <button class="secondary-button" type="button" :disabled="retrySubmitting || productionBusy || creationBusy" @click="continueRetryRequest">按原请求继续</button>
+          </div>
           <p v-if="documentGenerationGateMessage" class="generation-material-gate" role="status">{{ documentGenerationGateMessage }}</p>
-          <ProductionProgressPanel :progress="currentProductionProgress" :busy="productionBusy || retrySubmitting" :retrying="retrySubmitting" :retrying-segment-sequence="retryingSegmentSequence" :retry-error="retryCommandError" :billing-pending="billingPending" @retry="retryProductionSegment" @retry-composition="retryProductionComposition" />
+          <ProductionProgressPanel :progress="currentProductionProgress" :busy="productionBusy || retrySubmitting || retryOutcomeUnknown || retryProjectionPending" :retrying="retrySubmitting" :retrying-segment-sequence="retryingSegmentSequence" :retry-error="retryCommandError" :retry-unknown="retryOutcomeUnknown" :retry-projection-pending="retryProjectionPending" :billing-pending="billingPending" @retry="retryProductionSegment" @retry-composition="retryProductionComposition" />
         </div>
 
         <aside class="project-results-column" aria-label="项目成果">
@@ -310,7 +314,7 @@ import ProjectResultsPanel, { type ProjectResultItem } from "../../components/st
 import ProductionProgressPanel from "../../components/studio/ProductionProgressPanel.vue";
 import ReferenceShelf from "../../components/studio/ReferenceShelf.vue";
 import StoryPlanningPanel from "../../components/studio/StoryPlanningPanel.vue";
-import { createAsyncOperationFence, creationProgressFor, isRecoverableWaitingProduction, mergeProductionProgressLists, mergeProductionProgressSnapshots, productionProgressFor } from "../../composables/useCreationProgress";
+import { createAsyncOperationFence, creationProgressFor, isDefinitiveRetryRejection, isRecoverableWaitingProduction, mergeProductionProgressLists, mergeProductionProgressSnapshots, productionProgressFor, retryTargetHasAdvanced, type RetryReconciliationTarget } from "../../composables/useCreationProgress";
 import type { Asset, CreativeBriefRevision, DeliveryPlanRevision, DocumentConversion, DocumentKnowledgeDetail, ProductionRun, ProductionRunProgress, Shot, StoryboardRevision, TaskRun, VideoVersion } from "../../composables/useControlApi";
 import { useRelayConnection } from "../../composables/useRelayConnection";
 import { readMusicDurationMs } from "../../composables/musicUploadMetadata";
@@ -372,6 +376,15 @@ const creationBusy = ref(false);
 const retrySubmitting = ref(false);
 const retryingSegmentSequence = ref<number>();
 const retryCommandError = ref("");
+const retryOutcomeUnknown = ref(false);
+const retryProjectionPending = ref(false);
+let retryReconciliationTarget: RetryReconciliationTarget | undefined;
+type RetryCommandRequest = { projectId: string; idempotencyKey: string } & (
+  | { kind: "task"; taskRunId: string }
+  | { kind: "segment"; productionRunId: string; sequence: number }
+  | { kind: "composition"; productionRunId: string }
+);
+let retryCommandRequest: RetryCommandRequest | undefined;
 const creationError = ref("");
 const referenceError = ref("");
 const documentFile = ref<File>();
@@ -442,7 +455,11 @@ let hydratedProjectId = "";
 let resultPreviewRequest = 0;
 let projectRefreshInFlight: Promise<void> | undefined;
 let projectRefreshEpoch = 0;
+let productionRefreshRequest = 0;
+let productionReadRevision = 0;
+let projectReadRevision = 0;
 const retryOperationFence = createAsyncOperationFence();
+const planningOperationFence = createAsyncOperationFence();
 
 const projectId = computed(() => typeof route.params.project_id === "string" ? route.params.project_id : "");
 const musicAssets = computed(() => {
@@ -672,6 +689,8 @@ const canStartGeneration = computed(() => Boolean(
   && !creationBusy.value
   && !planningBusy.value
   && !productionBusy.value
+  && !retryOutcomeUnknown.value
+  && !retryProjectionPending.value
   && blockingDocumentMaterials.value.length === 0
   && (!currentProductionRun.value || !activeProductionStatuses.has(currentProductionRun.value.status)),
 ));
@@ -683,16 +702,17 @@ const billingPending = computed(() => {
   return task.status === "RETRY_SCHEDULED"
     && ["AUTH_FORBIDDEN", "AUTH_UNAVAILABLE", "CREDIT_UNAVAILABLE"].includes(task.error?.code ?? "");
 });
-const canRetry = computed(() => latestTask.value?.status === "FAILED" && Boolean(failedProductionSegment.value || !currentProductionProgress.value));
+const canRetry = computed(() => !retryOutcomeUnknown.value && !retryProjectionPending.value && latestTask.value?.status === "FAILED" && Boolean(failedProductionSegment.value || !currentProductionProgress.value));
 const createsNewVersion = computed(() => hasProjectResult.value || Boolean(latestTask.value && newVersionTaskStatuses.has(latestTask.value.status)));
-const creationProgress = computed(() => currentProductionProgress.value
-  ? productionProgressFor(currentProductionProgress.value, Boolean(planningDraft.sourceText.trim()), creationBusy.value || planningBusy.value || productionBusy.value, billingPending.value, retrySubmitting.value)
+const creationProgress = computed(() => currentProductionProgress.value || retrySubmitting.value || retryOutcomeUnknown.value || retryProjectionPending.value
+  ? productionProgressFor(currentProductionProgress.value, Boolean(planningDraft.sourceText.trim()), creationBusy.value || planningBusy.value || productionBusy.value, billingPending.value, retrySubmitting.value, retryOutcomeUnknown.value, retryProjectionPending.value)
   : creationProgressFor(latestTask.value?.status, Boolean(currentCreation.value)));
 const generationFeedback = computed<GenerationFeedback | undefined>(() => {
   if (retrySubmitting.value) {
     return { tone: "active", message: "正在提交重试请求；页面中的上一轮失败状态暂不代表本次重试结果。" };
   }
   if (retryCommandError.value) {
+    if (retryOutcomeUnknown.value || retryProjectionPending.value) return { tone: "active", message: retryCommandError.value };
     return { tone: "error", message: `本次重试未提交：${retryCommandError.value} 上一轮失败状态仅供参考。` };
   }
   const productionRun = currentProductionProgress.value?.production_run;
@@ -1002,24 +1022,125 @@ async function refreshCurrentProject() {
       const response = await project(expectedProjectId);
       if (expectedProjectId !== selectedProjectId.value || refreshEpoch !== projectRefreshEpoch) return;
       replaceProjectDetail(response.data);
+      projectReadRevision += 1;
+      reconcileRetryCommand("task");
       syncProjectResultPreview();
       await Promise.all([refreshDocuments(expectedProjectId), refreshProductionViews(expectedProjectId, refreshEpoch), refreshAudioCapabilities(expectedProjectId)]);
     } catch (error) {
       if (expectedProjectId === selectedProjectId.value && refreshEpoch === projectRefreshEpoch) {
         projectError.value = safeErrorMessage(error, "项目暂时无法刷新，请稍后重试。");
       }
-    } finally {
-      if (projectRefreshInFlight === refresh) projectRefreshInFlight = undefined;
     }
   })();
 
   projectRefreshInFlight = refresh;
-  return refresh;
+  try {
+    await refresh;
+  } finally {
+    if (projectRefreshInFlight === refresh) projectRefreshInFlight = undefined;
+  }
 }
 
 function invalidateProjectRefresh() {
   projectRefreshEpoch += 1;
   projectRefreshInFlight = undefined;
+}
+
+function clearRetryCommandFeedback() {
+  if (productionError.value === retryCommandError.value) productionError.value = "";
+  if (creationError.value === retryCommandError.value) creationError.value = "";
+  retryCommandError.value = "";
+  retryOutcomeUnknown.value = false;
+  retryProjectionPending.value = false;
+  retryReconciliationTarget = undefined;
+  retryCommandRequest = undefined;
+}
+
+function reconcileRetryCommand(currentAuthoritativeRead?: "task" | "production") {
+  // A same-key continuation still needs its identity when its receipt arrives.
+  if (retrySubmitting.value && retryOutcomeUnknown.value) return;
+  if (!retryCommandError.value || !retryReconciliationTarget
+    || retryReconciliationTarget.projectId !== selectedProjectId.value) return;
+  const allowEqualTimestamp = retryReconciliationTarget.kind === "task"
+    ? currentAuthoritativeRead === "task"
+    : currentAuthoritativeRead === "production";
+  if (retryProjectionPending.value && !allowEqualTimestamp) return;
+  if (retryTargetHasAdvanced(retryReconciliationTarget, detail.value?.task_runs ?? [], productionProgress.value, allowEqualTimestamp, retryProjectionPending.value)) {
+    if (retryReconciliationTarget.kind === "task") lastSubmittedTaskRunId.value = retryReconciliationTarget.taskRunId;
+    clearRetryCommandFeedback();
+  }
+}
+
+function recordRetryCommandError(error: unknown, fallback: string) {
+  retryProjectionPending.value = false;
+  retryOutcomeUnknown.value = !isDefinitiveRetryRejection(error);
+  retryCommandError.value = retryOutcomeUnknown.value
+    ? "重试结果待确认：未收到明确回执，服务可能已接受。请刷新项目核对进度，确认前不要再次提交。"
+    : safeErrorMessage(error, fallback);
+  reconcileRetryCommand();
+  invalidateProjectRefresh();
+  void refreshCurrentProject();
+}
+
+function markRetryReceiptConfirmed() {
+  retryOutcomeUnknown.value = false;
+  retryProjectionPending.value = true;
+  retryCommandError.value = "原请求已受理，正在核对最新状态。请刷新项目，确认前不要再次提交。";
+}
+
+async function performRetryRequest(request: RetryCommandRequest, receiptOnly = false) {
+  const epoch = projectRefreshEpoch;
+  const previousProductionRead = productionReadRevision;
+  const previousProjectRead = projectReadRevision;
+  if (request.kind === "task") {
+    const response = await retryTaskRun(request.taskRunId, request.idempotencyKey);
+    if (selectedProjectId.value !== request.projectId || epoch !== projectRefreshEpoch) return;
+    markRetryReceiptConfirmed();
+    invalidateProjectRefresh();
+    lastSubmittedTaskRunId.value = response.data.id;
+    const current = detail.value?.task_runs.find((item) => item.id === response.data.id);
+    if (!receiptOnly && (!current || current.updated_at < response.data.updated_at
+      || (current.updated_at === response.data.updated_at && previousProjectRead === projectReadRevision))) {
+      applyTaskRun(response.data);
+    }
+  } else {
+    const response = request.kind === "segment"
+      ? await retryProductionSegmentCommand(request.productionRunId, request.sequence, request.idempotencyKey)
+      : await retryProductionCompositionCommand(request.productionRunId, request.idempotencyKey);
+    if (selectedProjectId.value !== request.projectId || epoch !== projectRefreshEpoch) return;
+    markRetryReceiptConfirmed();
+    invalidateProjectRefresh();
+    if (!receiptOnly) {
+      productionProgress.value = productionProgress.value.map((item) => item.production_run.id === response.data.production_run.id
+        ? mergeProductionProgressSnapshots(item, response.data, previousProductionRead === productionReadRevision)
+        : item);
+    }
+  }
+  // An idempotent command receipt is a commit snapshot, not a live projection.
+  void refreshCurrentProject();
+}
+
+async function continueRetryRequest() {
+  const request = retryCommandRequest;
+  if (!retryOutcomeUnknown.value || retryProjectionPending.value || !request || request.projectId !== selectedProjectId.value
+    || retrySubmitting.value || productionBusy.value || creationBusy.value) return;
+  const retryOperationToken = retryOperationFence.begin();
+  productionBusy.value = true;
+  retrySubmitting.value = true;
+  invalidateProjectRefresh();
+  const epoch = projectRefreshEpoch;
+  try {
+    await performRetryRequest(request, true);
+  } catch (error) {
+    if (request.projectId === selectedProjectId.value && epoch === projectRefreshEpoch) {
+      recordRetryCommandError(error, "原重试请求未被接受，请刷新项目查看原因。");
+    }
+  } finally {
+    if (retryOperationFence.isCurrent(retryOperationToken)) {
+      productionBusy.value = false;
+      retrySubmitting.value = false;
+    }
+  }
 }
 
 async function refreshProjectAndRelay() {
@@ -1116,19 +1237,22 @@ async function retryDocumentKnowledge(knowledgeRevisionId: string) {
 
 async function refreshProductionViews(expectedProjectId = selectedProjectId.value, expectedEpoch = projectRefreshEpoch) {
   if (!expectedProjectId) return;
+  const request = ++productionRefreshRequest;
   try {
     const [deliveryPlansResponse, progressResponse, versionsResponse] = await Promise.all([
       deliveryPlanRevisions(expectedProjectId),
       productionRuns(expectedProjectId),
       videoVersions(expectedProjectId),
     ]);
-    if (expectedProjectId !== selectedProjectId.value || expectedEpoch !== projectRefreshEpoch) return;
+    if (expectedProjectId !== selectedProjectId.value || expectedEpoch !== projectRefreshEpoch || request !== productionRefreshRequest) return;
     projectDeliveryPlans.value = deliveryPlansResponse.data;
-    productionProgress.value = mergeProductionProgressLists(productionProgress.value, progressResponse.data);
+    productionProgress.value = mergeProductionProgressLists(productionProgress.value, progressResponse.data, true);
+    productionReadRevision += 1;
+    reconcileRetryCommand("production");
     projectVideoVersions.value = versionsResponse.data;
     syncProjectResultPreview();
   } catch (error) {
-    if (expectedProjectId === selectedProjectId.value && expectedEpoch === projectRefreshEpoch) {
+    if (expectedProjectId === selectedProjectId.value && expectedEpoch === projectRefreshEpoch && request === productionRefreshRequest) {
       resultPreviewError.value = safeErrorMessage(error, "项目制作进度暂时无法读取，请稍后重试。");
     }
   }
@@ -1181,17 +1305,20 @@ const delay = (milliseconds: number) => new Promise((resolveDelay) => setTimeout
 const AUTO_STORYBOARD_MAX_WAIT_MS = 180_000;
 const AUTO_STORYBOARD_POLL_INTERVAL_MS = 1_000;
 
-async function waitForAutoStoryboard(projectId: string, startedAt: string) {
+async function waitForAutoStoryboard(projectId: string, startedAt: string, assertCurrent: () => void) {
   const deadline = Date.now() + AUTO_STORYBOARD_MAX_WAIT_MS;
   let nextBriefRefreshAt = 0;
   while (Date.now() < deadline) {
+    assertCurrent();
     const response = await storyboardRevisions(projectId);
+    assertCurrent();
     const candidate = response.data
       .filter((storyboard) => storyboard.status === "READY_FOR_REVIEW" && storyboard.created_at >= startedAt)
       .sort((left, right) => right.created_at.localeCompare(left.created_at))[0];
     if (candidate) return candidate;
     if (Date.now() >= nextBriefRefreshAt) {
       await refreshCurrentProject();
+      assertCurrent();
       const failedBrief = currentPlanningBrief.value;
       if (failedBrief?.status === "FAILED" && failedBrief.created_at >= startedAt) {
         throw new Error("PLANNING_FAILED");
@@ -1199,32 +1326,59 @@ async function waitForAutoStoryboard(projectId: string, startedAt: string) {
       nextBriefRefreshAt = Date.now() + 5_000;
     }
     await delay(Math.min(AUTO_STORYBOARD_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
+    assertCurrent();
   }
   throw new Error("PLANNING_TIMEOUT");
 }
 
-async function startAutomatedProduction(projectId: string) {
+async function startAutomatedProduction(projectId: string, operationToken: number) {
+  const assertCurrent = () => {
+    if (!planningOperationFence.isCurrent(operationToken) || selectedProjectId.value !== projectId) {
+      throw new Error("PLANNING_CANCELLED");
+    }
+  };
+  assertCurrent();
+  // Freeze this project's command inputs before the first asynchronous step.
+  const briefCommand = {
+    source_text: planningDraft.sourceText.trim(),
+    target_duration_seconds: planningDraft.targetDurationSeconds,
+    target_resolution: planningDraft.targetResolution,
+    style_preferences: planningDraft.stylePreferences.trim(),
+    source_asset_ids: [...eligiblePlanningSourceIds(planningDraft.sourceAssetIds)],
+  };
+  const deliveryCommand = {
+    duration_policy: deliverySettings.durationPolicy,
+    flexible_duration_percent: deliverySettings.durationPolicy === "EXACT" ? 0 : deliverySettings.flexibleDurationPercent,
+    caption_policy: captionPolicy.value,
+    lip_sync_requirement: deliverySettings.lipSyncRequirement,
+    voice_mode: deliverySettings.voiceMode,
+  };
+  const productionCommand = {
+    music_plan: {
+      mode: musicPlan.mode,
+      ...(musicPlan.mode === "MANUAL" ? { asset_id: musicPlan.assetId } : {}),
+      ...(musicPlan.mode === "AUTO" && musicPlan.styleHint.trim() ? { style_hint: musicPlan.styleHint.trim() } : {}),
+    },
+    audio_selection: audioSelection.value,
+  };
   const startedAt = new Date(Date.now() - 1_000).toISOString();
   // Resolve the source-backed audio owner immediately before creating the
   // delivery plan. Project opening also refreshes this capability, but an
   // in-flight refresh must not make a native Provider run take the
   // non-native narration approval path by accident.
   await refreshAudioCapabilities(projectId);
-  const sourceText = planningDraft.sourceText.trim();
+  assertCurrent();
   planningMessage.value = "AI 正在理解你的描述。";
-  const briefResponse = await createCreativeBriefRevision(projectId, {
-    source_text: sourceText,
-    target_duration_seconds: planningDraft.targetDurationSeconds,
-    target_resolution: planningDraft.targetResolution,
-    style_preferences: planningDraft.stylePreferences.trim(),
-    source_asset_ids: eligiblePlanningSourceIds(planningDraft.sourceAssetIds),
-  }, commandKey("studio-auto-brief"));
+  const briefResponse = await createCreativeBriefRevision(projectId, briefCommand, commandKey("studio-auto-brief"));
+  assertCurrent();
   applyCreativeBriefRevision(briefResponse.data);
 
   planningMessage.value = "AI 正在准备视频内容。";
   const planResponse = await requestCreativePlan(briefResponse.data.id, commandKey("studio-auto-plan"));
+  assertCurrent();
   applyCreativeBriefRevision(planResponse.data);
-  const storyboard = await waitForAutoStoryboard(projectId, startedAt);
+  const storyboard = await waitForAutoStoryboard(projectId, startedAt, assertCurrent);
+  assertCurrent();
   applyStoryboardRevision(storyboard);
 
   // The browser no longer exposes an approval step. Keep the existing
@@ -1235,17 +1389,15 @@ async function startAutomatedProduction(projectId: string) {
   const approvedStoryboard = storyboard.status === "READY_FOR_REVIEW"
     ? (await approveStoryboardRevision(storyboard.id, commandKey("studio-auto-storyboard-approve"))).data
     : storyboard;
+  assertCurrent();
   applyStoryboardRevision(approvedStoryboard);
 
   const plan = (await createDeliveryPlanRevision(projectId, {
     creative_brief_revision_id: brief.id,
     storyboard_revision_id: approvedStoryboard.id,
-    duration_policy: deliverySettings.durationPolicy,
-    flexible_duration_percent: deliverySettings.durationPolicy === "EXACT" ? 0 : deliverySettings.flexibleDurationPercent,
-    caption_policy: captionPolicy.value,
-    lip_sync_requirement: deliverySettings.lipSyncRequirement,
-    voice_mode: deliverySettings.voiceMode,
+    ...deliveryCommand,
   }, commandKey("studio-auto-delivery-create"))).data;
+  assertCurrent();
   applyDeliveryPlan(plan);
   if (plan.status === "PREFLIGHT_BLOCKED") {
     throw new Error(plan.safe_summary);
@@ -1253,50 +1405,43 @@ async function startAutomatedProduction(projectId: string) {
   const approvedPlan = plan.status === "AWAITING_APPROVAL"
     ? (await approveDeliveryPlanRevision(plan.id, commandKey("studio-auto-delivery-approve"))).data
     : plan;
+  assertCurrent();
   applyDeliveryPlan(approvedPlan);
   if (approvedPlan.status !== "APPROVED") throw new Error("DELIVERY_PLAN_STATE_INVALID");
 
   const production = await createProductionRun(projectId, {
     storyboard_revision_id: approvedStoryboard.id,
     delivery_plan_revision_id: approvedPlan.id,
-    music_plan: {
-      mode: musicPlan.mode,
-      ...(musicPlan.mode === "MANUAL" ? { asset_id: musicPlan.assetId } : {}),
-      ...(musicPlan.mode === "AUTO" && musicPlan.styleHint.trim() ? { style_hint: musicPlan.styleHint.trim() } : {}),
-    },
-    audio_selection: audioSelection.value,
+    ...productionCommand,
   }, commandKey("studio-auto-production-start"));
+  assertCurrent();
   applyProductionRun(production.data);
   planningMessage.value = "AI 已开始制作视频。";
   await refreshCurrentProject();
+  assertCurrent();
 }
 
 async function retryProductionSegment(sequence: number) {
   const progress = currentProductionProgress.value;
-  if (!progress || productionBusy.value || retrySubmitting.value) return;
+  if (!progress || productionBusy.value || retrySubmitting.value || retryOutcomeUnknown.value || retryProjectionPending.value) return;
   const segment = progress.segments.find((item) => item.sequence === sequence);
   if (!segment || segment.status !== "FAILED" || !segment.retryable) return;
   const retryOperationToken = retryOperationFence.begin();
   productionBusy.value = true;
   retrySubmitting.value = true;
   retryingSegmentSequence.value = sequence;
-  retryCommandError.value = "";
+  clearRetryCommandFeedback();
+  retryReconciliationTarget = { kind: "segment", projectId: progress.production_run.project_id, productionRunId: progress.production_run.id, segmentId: segment.id, sequence, updatedAt: segment.updated_at };
+  retryCommandRequest = { kind: "segment", projectId: progress.production_run.project_id, productionRunId: progress.production_run.id, sequence, idempotencyKey: commandKey("studio-production-segment-retry") };
   productionError.value = "";
   creationError.value = "";
   invalidateProjectRefresh();
   const retryEpoch = projectRefreshEpoch;
   try {
-    const response = await retryProductionSegmentCommand(progress.production_run.id, sequence, commandKey("studio-production-segment-retry"));
-    if (selectedProjectId.value === progress.production_run.project_id && retryEpoch === projectRefreshEpoch) {
-      invalidateProjectRefresh();
-      productionProgress.value = productionProgress.value.map((item) => item.production_run.id === response.data.production_run.id
-        ? mergeProductionProgressSnapshots(item, response.data)
-        : item);
-    }
+    await performRetryRequest(retryCommandRequest);
   } catch (error) {
     if (selectedProjectId.value === progress.production_run.project_id && retryEpoch === projectRefreshEpoch) {
-      retryCommandError.value = safeErrorMessage(error, "这一段暂时无法重新制作，请稍后重试。");
-      productionError.value = retryCommandError.value;
+      recordRetryCommandError(error, "这一段暂时无法重新制作，请稍后重试。");
     }
   } finally {
     if (retryOperationFence.isCurrent(retryOperationToken)) {
@@ -1360,29 +1505,34 @@ async function generateVideo() {
     planningError.value = message;
     return;
   }
+  const operationToken = planningOperationFence.begin();
+  clearRetryCommandFeedback();
   creationBusy.value = true;
   planningBusy.value = true;
   creationError.value = "";
   planningError.value = "";
   productionError.value = "";
   try {
-    await startAutomatedProduction(current.project.id);
+    await startAutomatedProduction(current.project.id, operationToken);
   } catch (error) {
+    if (!planningOperationFence.isCurrent(operationToken) || selectedProjectId.value !== current.project.id) return;
     const message = error instanceof Error && error.message === "PLANNING_TIMEOUT"
       ? "AI 正在整理这个故事，但暂时没有完成。请稍后刷新项目，或精简描述后生成新版本。"
       : safeErrorMessage(error, "AI 语义规划暂时无法完成，尚未提交视频生成。请检查想法和参考素材后重试。");
     planningError.value = message;
     creationError.value = message;
   } finally {
-    if (planningError.value) planningMessage.value = "";
-    planningBusy.value = false;
-    creationBusy.value = false;
+    if (planningOperationFence.isCurrent(operationToken)) {
+      if (planningError.value) planningMessage.value = "";
+      planningBusy.value = false;
+      creationBusy.value = false;
+    }
   }
 }
 
 async function retryGeneration() {
   const task = latestTask.value;
-  if (!task || !canRetry.value || creationBusy.value || retrySubmitting.value) return;
+  if (!task || !canRetry.value || creationBusy.value || retrySubmitting.value || retryOutcomeUnknown.value || retryProjectionPending.value) return;
   const projectIdAtStart = selectedProjectId.value;
   const production = currentProductionProgress.value;
   const failedSegment = failedProductionSegment.value;
@@ -1390,32 +1540,22 @@ async function retryGeneration() {
   creationBusy.value = true;
   retrySubmitting.value = true;
   retryingSegmentSequence.value = failedSegment?.sequence;
-  retryCommandError.value = "";
+  clearRetryCommandFeedback();
+  retryReconciliationTarget = production && failedSegment
+    ? { kind: "segment", projectId: production.production_run.project_id, productionRunId: production.production_run.id, segmentId: failedSegment.id, sequence: failedSegment.sequence, updatedAt: failedSegment.updated_at }
+    : { kind: "task", projectId: task.project_id, taskRunId: task.id, updatedAt: task.updated_at };
+  retryCommandRequest = production && failedSegment
+    ? { kind: "segment", projectId: production.production_run.project_id, productionRunId: production.production_run.id, sequence: failedSegment.sequence, idempotencyKey: commandKey("studio-production-segment-retry") }
+    : { kind: "task", projectId: task.project_id, taskRunId: task.id, idempotencyKey: commandKey("studio-task-retry") };
   creationError.value = "";
   productionError.value = "";
   invalidateProjectRefresh();
   const retryEpoch = projectRefreshEpoch;
   try {
-    if (production && failedSegment) {
-      const response = await retryProductionSegmentCommand(production.production_run.id, failedSegment.sequence, commandKey("studio-production-segment-retry"));
-      if (projectIdAtStart && selectedProjectId.value === projectIdAtStart && retryEpoch === projectRefreshEpoch) {
-        invalidateProjectRefresh();
-        productionProgress.value = productionProgress.value.map((item) => item.production_run.id === response.data.production_run.id
-          ? mergeProductionProgressSnapshots(item, response.data)
-          : item);
-      }
-    } else {
-      const response = await retryTaskRun(task.id, commandKey("studio-task-retry"));
-      if (projectIdAtStart && selectedProjectId.value === projectIdAtStart && retryEpoch === projectRefreshEpoch) {
-        invalidateProjectRefresh();
-        lastSubmittedTaskRunId.value = response.data.id;
-        applyTaskRun(response.data);
-      }
-    }
+    await performRetryRequest(retryCommandRequest);
   } catch (error) {
     if (projectIdAtStart && selectedProjectId.value === projectIdAtStart && retryEpoch === projectRefreshEpoch) {
-      retryCommandError.value = safeErrorMessage(error, "这次生成暂时无法重试，请稍后再试。");
-      creationError.value = retryCommandError.value;
+      recordRetryCommandError(error, "这次生成暂时无法重试，请稍后再试。");
     }
   } finally {
     if (retryOperationFence.isCurrent(retryOperationToken)) {
@@ -1590,7 +1730,7 @@ async function retryDocument(conversionId: string) {
 
 async function retryProductionComposition() {
   const progress = currentProductionProgress.value;
-  if (!progress || productionBusy.value) return;
+  if (!progress || productionBusy.value || retrySubmitting.value || retryOutcomeUnknown.value || retryProjectionPending.value) return;
   const allSegmentsAccepted = progress.segments.length > 0
     && progress.segments.every((segment) => segment.status === "ACCEPTED");
   if (progress.production_run.status !== "FAILED" || !allSegmentsAccepted) return;
@@ -1598,25 +1738,17 @@ async function retryProductionComposition() {
   const retryOperationToken = retryOperationFence.begin();
   productionBusy.value = true;
   retrySubmitting.value = true;
-  retryCommandError.value = "";
+  clearRetryCommandFeedback();
+  retryReconciliationTarget = { kind: "composition", projectId: projectIdAtStart, productionRunId: progress.production_run.id, updatedAt: progress.production_run.updated_at };
+  retryCommandRequest = { kind: "composition", projectId: projectIdAtStart, productionRunId: progress.production_run.id, idempotencyKey: commandKey("studio-production-composition-retry") };
   productionError.value = "";
   invalidateProjectRefresh();
   const retryEpoch = projectRefreshEpoch;
   try {
-    const response = await retryProductionCompositionCommand(
-      progress.production_run.id,
-      commandKey("studio-production-composition-retry"),
-    );
-    if (selectedProjectId.value === projectIdAtStart && retryEpoch === projectRefreshEpoch) {
-      invalidateProjectRefresh();
-      productionProgress.value = productionProgress.value.map((item) => item.production_run.id === response.data.production_run.id
-        ? mergeProductionProgressSnapshots(item, response.data)
-        : item);
-    }
+    await performRetryRequest(retryCommandRequest);
   } catch (error) {
     if (selectedProjectId.value === projectIdAtStart && retryEpoch === projectRefreshEpoch) {
-      retryCommandError.value = safeErrorMessage(error, "成片暂时无法重新合成，请稍后重试。");
-      productionError.value = retryCommandError.value;
+      recordRetryCommandError(error, "成片暂时无法重新合成，请稍后重试。");
     }
   } finally {
     if (retryOperationFence.isCurrent(retryOperationToken)) {
@@ -1745,16 +1877,27 @@ async function previewResult() {
 watch(projectId, () => {
   invalidateProjectRefresh();
   retryOperationFence.invalidate();
+  planningOperationFence.invalidate();
+  if (planningBusy.value) {
+    planningBusy.value = false;
+    creationBusy.value = false;
+    planningMessage.value = "";
+    planningError.value = "";
+    creationError.value = "";
+  }
   if (retrySubmitting.value) {
     productionBusy.value = false;
     creationBusy.value = false;
   }
-  retryCommandError.value = "";
+  clearRetryCommandFeedback();
   retrySubmitting.value = false;
   retryingSegmentSequence.value = undefined;
   void openProject();
 }, { immediate: true });
 onBeforeUnmount(() => {
+  planningOperationFence.invalidate();
+  retryOperationFence.invalidate();
+  invalidateProjectRefresh();
   if (relayCheckTimer !== undefined) window.clearInterval(relayCheckTimer);
   stopProjectEvents();
   releaseProjectResultPreview();

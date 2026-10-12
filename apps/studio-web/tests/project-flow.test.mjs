@@ -66,7 +66,8 @@ test("retry command rejection is labeled separately from the previous failure", 
   assert.match(panel, /retryError \? "本次重试未提交"/);
   assert.match(panel, /上次失败状态仅供参考/);
   const workspace = read("app/pages/projects/[project_id].vue");
-  assert.match(workspace, /retryCommandError\.value = safeErrorMessage/);
+  assert.match(workspace, /retryOutcomeUnknown\.value = !isDefinitiveRetryRejection\(error\)/);
+  assert.match(workspace, /recordRetryCommandError\(error,/);
   assert.match(workspace, /:retry-error="retryCommandError"/);
 });
 
@@ -91,7 +92,7 @@ test("M2 composes public planning commands and starts production after automatic
   }
 
   assert.match(workspace, /async function generateVideo\(\)/);
-  assert.match(workspace, /await startAutomatedProduction\(current\.project\.id\)/);
+  assert.match(workspace, /await startAutomatedProduction\(current\.project\.id, operationToken\)/);
   assert.match(workspace, /commandKey\("studio-auto-brief"\)/);
   assert.match(workspace, /commandKey\("studio-auto-plan"\)/);
   const autoPlan = workspace.slice(workspace.indexOf("async function startAutomatedProduction"));
@@ -321,7 +322,8 @@ test("FAILED keeps explicit retry while enabling a separate new-version generati
   assert.match(workspace, /hasProjectResult\.value/);
   assert.match(workspace, /const failedProductionSegment = computed/);
   assert.match(workspace, /const canRetry = computed/);
-  assert.match(workspace, /retryTaskRun\(task\.id, commandKey\("studio-task-retry"\)\)/);
+  assert.match(workspace, /taskRunId: task\.id, idempotencyKey: commandKey\("studio-task-retry"\)/);
+  assert.match(workspace, /retryTaskRun\(request\.taskRunId, request\.idempotencyKey\)/);
   assert.match(workspace, /:creates-new-version="createsNewVersion"/);
   assert.doesNotMatch(workspace, /"BILLING_FAILED"/);
   assert.match(generation, /调整后生成新版本/);
@@ -365,7 +367,7 @@ test("Studio projects public production progress into safe Chinese autopilot pro
     assert.match(progress, new RegExp(`"${status}"`));
   }
 
-  assert.match(workspace, /productionProgressFor\(currentProductionProgress\.value,\s*Boolean\(planningDraft\.sourceText\.trim\(\)\),\s*creationBusy\.value \|\| planningBusy\.value \|\| productionBusy\.value,\s*billingPending\.value,\s*retrySubmitting\.value\)/);
+  assert.match(workspace, /productionProgressFor\(currentProductionProgress\.value,\s*Boolean\(planningDraft\.sourceText\.trim\(\)\),\s*creationBusy\.value \|\| planningBusy\.value \|\| productionBusy\.value,\s*billingPending\.value,\s*retrySubmitting\.value,\s*retryOutcomeUnknown\.value,\s*retryProjectionPending\.value\)/);
   assert.match(workspace, /:billing-pending="billingPending"/);
   assert.match(workspace, /retrySubmitting\.value/);
   assert.match(workspace, /正在提交重试/);
@@ -474,7 +476,7 @@ test("Studio defaults every selected image to reference material without exposin
   }
   assert.match(references, /const limit = 7;/);
   assert.match(workspace, /syncPlanningReferenceSourceIds\(next\);/);
-  assert.match(workspace, /source_asset_ids: eligiblePlanningSourceIds\(planningDraft\.sourceAssetIds\)/);
+  assert.match(workspace, /source_asset_ids: \[\.\.\.eligiblePlanningSourceIds\(planningDraft\.sourceAssetIds\)\]/);
   assert.doesNotMatch(source, /作为开场画面|开场画面只能选择一张图片|最多选择 3 张|referenceInputMode|reference_asset_ids:\s*selectedReferenceIds/);
 });
 

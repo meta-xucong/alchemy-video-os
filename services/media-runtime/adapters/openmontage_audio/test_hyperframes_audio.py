@@ -5,6 +5,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 import wave
+from tests.media_tools import media_tool_paths
 
 from .hyperframes_audio import OpenMontageHyperFramesAudio, OpenMontageHyperFramesAudioError
 
@@ -193,9 +194,7 @@ class OpenMontageHyperFramesAudioTests(unittest.TestCase):
 
     def test_source_timing_uses_controlled_ffprobe_fixture(self) -> None:
         project_root = Path(__file__).resolve().parents[4]
-        ffprobe = project_root / "node_modules" / ".pnpm" / "ffprobe-static@3.1.0" / "node_modules" / "ffprobe-static" / "bin" / "win32" / "x64" / "ffprobe.exe"
-        if not ffprobe.is_file():
-            self.skipTest("controlled ffprobe fixture is unavailable")
+        _, ffprobe = media_tool_paths(project_root)
         with TemporaryDirectory(prefix="alchemy-hyperframes-audio-fixture-") as directory:
             root = Path(directory)
             voice = root / "voice.wav"

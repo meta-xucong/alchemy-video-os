@@ -1,5 +1,6 @@
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
+import { Client } from "pg";
 
 import {
   InternalEventEnvelopeSchema,
@@ -15,6 +16,7 @@ import {
 import { assertTaskRunTransition, BILLING_RETRY_ERROR_CODES, createPrefixedId, fingerprintRequest, isBillingRetryErrorCode } from "@alchemy-video/domain";
 
 import type { PlatformDatabase } from "./db.js";
+import { PostgresTaskRunExecutionGuard, TaskRunExecutionGenerationAmbiguousError, type TaskRunExecutionGuard } from "./task-run-execution-guard.js";
 import { releasedAssetScope } from "./asset-release.js";
 import { terminalProviderResultScope, unresolvedProviderRequestScope } from "./provider-attempt-recovery.js";
 import type { ControlAsset } from "./asset-workspace-repository.js";
@@ -136,7 +138,7 @@ export type GeneratedAssetDraft = {
   taskRunId: string;
 };
 
-export interface TaskRunStore extends OutboxRelayStore {
+export interface TaskRunStore extends OutboxRelayStore, TaskRunExecutionGuard {
   createTaskRun(input: CreateTaskRunInput): Promise<TaskRunCommandExecution>;
   retryTaskRun(input: RetryTaskRunInput): Promise<TaskRunCommandExecution>;
   findTaskRun(workspaceId: string, taskRunId: string): Promise<ControlTaskRun | undefined>;
@@ -157,7 +159,7 @@ export interface TaskRunStore extends OutboxRelayStore {
   markBillingFailed(input: { workspaceId: string; taskRunId: string; code: string; safeMessage: string; now: Date }): Promise<void>;
   scheduleBillingRetry(input: { workspaceId: string; taskRunId: string; code: string; safeMessage: string; retryAt: Date; now: Date }): Promise<void>;
   resumeBillingRetry(input: { workspaceId: string; taskRunId: string; now: Date }): Promise<ControlTaskRun | undefined>;
-  finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; code: string; message: string; now: Date }): Promise<ControlTaskRun | undefined>;
+  finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; expectedQueuedEventId?: string; code: string; message: string; now: Date }): Promise<ControlTaskRun | undefined>;
   failTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId?: string; failureStage?: "PROVIDER" | "DOWNLOAD"; providerRequestTerminal?: true; code: string; message: string; retryable: boolean; now: Date }): Promise<ControlTaskRun | undefined>;
   listWorkspaceEvents(input: { workspaceId: string; afterEventId?: string; limit: number }): Promise<InternalEventEnvelope[]>;
   processEvent(input: TaskRunEventProcessingInput): Promise<TaskRunEventResult>;
@@ -326,6 +328,14 @@ const queuedSourceForTaskRun = async (executor: QueryExecutor, workspaceId: stri
 export const lockTaskRun = (executor: QueryExecutor, workspaceId: string, taskRunId: string) =>
   executor.execute(sql`select pg_advisory_xact_lock(hashtext(${workspaceId} || ':' || ${taskRunId}))`);
 
+const nextTaskRunEventTime = async (executor: QueryExecutor, current: typeof taskRuns.$inferSelect) => {
+  const [latest] = await executor.select({ occurredAt: outboxEvents.occurredAt }).from(outboxEvents)
+    .where(and(eq(outboxEvents.workspaceId, current.workspaceId), eq(outboxEvents.aggregateType, "task_run"), eq(outboxEvents.aggregateId, current.id)))
+    .orderBy(sql`${outboxEvents.occurredAt} desc`).limit(1);
+  const prior = new Date(Math.max(Date.parse(current.updatedAt), latest ? Date.parse(latest.occurredAt) : 0)).toISOString();
+  return afterEvent(prior, new Date());
+};
+
 const rawSha256 = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 
 const verifyG02ProviderAttemptSnapshot = async (
@@ -488,7 +498,18 @@ const verifyG02ProviderAttemptSnapshot = async (
 };
 
 export class DrizzleTaskRunRepository implements TaskRunStore {
-  constructor(private readonly db: PlatformDatabase) {}
+  private readonly executionGuard: PostgresTaskRunExecutionGuard;
+
+  constructor(private readonly db: PlatformDatabase) {
+    const client = db.$client;
+    this.executionGuard = new PostgresTaskRunExecutionGuard(client instanceof Client
+      ? { host: client.host, port: client.port, database: client.database, user: client.user, password: client.password, ssl: client.ssl }
+      : client.options);
+  }
+
+  withTaskRunExecution<T>(scope: Parameters<TaskRunExecutionGuard["withTaskRunExecution"]>[0], execute: (assertActive: () => void) => Promise<T>): Promise<T> {
+    return this.executionGuard.withTaskRunExecution(scope, execute);
+  }
 
   async createTaskRun(input: CreateTaskRunInput): Promise<TaskRunCommandExecution> {
     return this.db.transaction(async (transaction) => {
@@ -587,7 +608,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
           return this.storeCommandOutcome(transaction, input.scope, input.idempotencyKey, { kind: "STATE_INVALID" });
         }
         assertTaskRunTransition(current.status, "BILLING_PENDING");
-        const now = new Date().toISOString();
+        const now = await nextTaskRunEventTime(transaction, current);
         const [retried] = await transaction
           .update(taskRuns)
           .set({ status: "BILLING_PENDING", error: null, retryAt: null, updatedAt: now })
@@ -622,7 +643,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
       }
 
       assertTaskRunTransition(current.status, "QUEUED");
-      const now = new Date().toISOString();
+      const now = await nextTaskRunEventTime(transaction, current);
       const [retried] = await transaction
         .update(taskRuns)
         .set({ status: "QUEUED", error: null, retryAt: null, updatedAt: now })
@@ -1025,11 +1046,19 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
     });
   }
 
-  async finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; code: string; message: string; now: Date }) {
-    return this.db.transaction(async (transaction) => {
+  async finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; expectedQueuedEventId?: string; code: string; message: string; now: Date }) {
+    return this.withTaskRunExecution(input, (assertActive) => this.db.transaction(async (transaction) => {
       await lockTaskRun(transaction, input.workspaceId, input.taskRunId);
+      assertActive();
       const [current] = await transaction.select().from(taskRuns).where(taskRunScope(input.workspaceId, input.taskRunId)).limit(1);
       if (!current || current.supersededByTaskRunId != null || current.kind !== "VIDEO_GENERATION" || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(current.status)) return current ? toControlTaskRun(current) : undefined;
+      if (input.expectedQueuedEventId) {
+        const [latest, preceding] = await transaction.select({ id: outboxEvents.id, occurredAt: outboxEvents.occurredAt }).from(outboxEvents)
+          .where(and(eq(outboxEvents.workspaceId, input.workspaceId), eq(outboxEvents.aggregateId, input.taskRunId), eq(outboxEvents.eventType, "task_run.queued")))
+          .orderBy(sql`${outboxEvents.occurredAt} desc`).limit(2);
+        if (latest && preceding?.occurredAt === latest.occurredAt) throw new TaskRunExecutionGenerationAmbiguousError();
+        if (latest?.id !== input.expectedQueuedEventId) return toControlTaskRun(current);
+      }
       const billingSnapshot = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
       if (current.status === "BILLING_PENDING" && billingSnapshot.success && billingSnapshot.data.billing) {
         assertTaskRunTransition(current.status, "BILLING_FAILED");
@@ -1037,25 +1066,31 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
           .set({ status: "BILLING_FAILED", error: { code: "CREDIT_UNAVAILABLE", message: "The credit service is unavailable; retry billing after restoring the credit bridge.", retryable: false }, updatedAt: input.now.toISOString() })
           .where(taskRunScope(input.workspaceId, input.taskRunId))
           .returning();
+        assertActive();
         return failedBilling ? toControlTaskRun(failedBilling) : undefined;
       }
       assertTaskRunTransition(current.status, "FAILED");
+      const [unknownSubmission] = await transaction.select({ id: providerAttempts.id }).from(providerAttempts)
+        .where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.taskRunId, input.taskRunId), isNotNull(providerAttempts.submissionReservedAt), isNull(providerAttempts.providerRequestId))).limit(1);
       const [attempt] = await transaction
         .select({ id: providerAttempts.id, providerRequestId: providerAttempts.providerRequestId, submissionReservedAt: providerAttempts.submissionReservedAt })
         .from(providerAttempts)
         .where(and(
           eq(providerAttempts.workspaceId, input.workspaceId),
           eq(providerAttempts.taskRunId, input.taskRunId),
+          sql`${providerAttempts.status} not in ('ABANDONED', 'SUCCEEDED')`,
+          sql`not (${terminalProviderResultScope()})`,
         ))
         .orderBy(sql`case
           when ${providerAttempts.submissionReservedAt} is not null and ${providerAttempts.providerRequestId} is null then 0
           when ${unresolvedProviderRequestScope()} then 1
           else 2 end`, sql`${providerAttempts.createdAt} desc`)
         .limit(1);
-      const submissionUnknown = Boolean(attempt?.submissionReservedAt && !attempt.providerRequestId);
+      const submissionUnknown = Boolean(unknownSubmission);
       const retryable = !submissionUnknown;
       const errorCode = submissionUnknown ? "PROVIDER_SUBMISSION_UNKNOWN" : input.code;
       const message = submissionUnknown ? "The video submission outcome is unknown. Reconcile the existing request before retrying." : input.message;
+      assertActive();
       if (attempt) {
         await transaction
           .update(providerAttempts)
@@ -1086,8 +1121,9 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
           ...(attempt ? { providerAttemptId: attempt.id } : {}),
         }));
       }
+      assertActive();
       return failed ? toControlTaskRun(failed) : undefined;
-    });
+    }));
   }
 
   async failTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId?: string; failureStage?: "PROVIDER" | "DOWNLOAD"; providerRequestTerminal?: true; code: string; message: string; retryable: boolean; now: Date }) {

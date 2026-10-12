@@ -1,6 +1,6 @@
 import { createPrefixedId, fingerprintRequest, isBillingRetryErrorCode, isVideoUsageModelCompatible } from "@alchemy-video/domain";
 import { findExactEntityAnchor, VideoGenerationInputSnapshotSchema } from "@alchemy-video/contracts";
-import { hasTerminalProviderResult, type AssetWorkspaceStore, type TaskRunStore } from "@alchemy-video/persistence";
+import { hasTerminalProviderResult, TaskRunExecutionBusyError, TaskRunExecutionOwnershipLostError, type AssetWorkspaceStore, type TaskRunStore } from "@alchemy-video/persistence";
 import { StorageObjectAlreadyExistsError, createGeneratedVideoObjectKey, type StoragePort } from "@alchemy-video/storage-client";
 import type { VideoProviderPort } from "@alchemy-video/provider-video";
 import { VideoUsagePortError, type VideoUsagePort } from "@alchemy-video/credit-veyra";
@@ -112,7 +112,7 @@ export class MockVideoTaskExecutor {
   constructor(
     private readonly store: Pick<
       TaskRunStore,
-      "findTaskRun" | "listRecoverableVideoTaskRuns" | "listTaskRunAttempts" | "ensureProviderAttempt" | "reserveProviderSubmission" | "recordProviderSubmission" | "recordProviderProcessing" | "beginDownload" | "recordDownloadRetryableFailure" | "findGeneratedAssetDraft" | "ensureGeneratedAsset" | "completeGeneratedTaskRun" | "failTaskRun" | "resumeBillingRetry"
+      "withTaskRunExecution" | "findTaskRun" | "listRecoverableVideoTaskRuns" | "listTaskRunAttempts" | "ensureProviderAttempt" | "reserveProviderSubmission" | "recordProviderSubmission" | "recordProviderProcessing" | "beginDownload" | "recordDownloadRetryableFailure" | "findGeneratedAssetDraft" | "ensureGeneratedAsset" | "completeGeneratedTaskRun" | "failTaskRun" | "resumeBillingRetry"
     >,
     private readonly provider: VideoProviderPort,
     private readonly storage: StoragePort,
@@ -132,7 +132,12 @@ export class MockVideoTaskExecutor {
   ) {}
 
   async execute(input: { workspaceId: string; taskRunId: string; recovery?: boolean }) {
+    return this.store.withTaskRunExecution(input, (assertActive) => this.executeOwned(input, assertActive));
+  }
+
+  private async executeOwned(input: { workspaceId: string; taskRunId: string; recovery?: boolean }, assertActive: () => void) {
     let taskRun = await this.store.findTaskRun(input.workspaceId, input.taskRunId);
+    assertActive();
     if (!taskRun || taskRun.supersededByTaskRunId != null || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(taskRun.status)) return taskRun;
 
     const inputSnapshot = VideoGenerationInputSnapshotSchema.parse(taskRun.inputSnapshot);
@@ -156,6 +161,7 @@ export class MockVideoTaskExecutor {
         throw error;
       }
       const billingTask = await this.store.findTaskRun(input.workspaceId, input.taskRunId);
+      assertActive();
       if (!billingTask || billingTask.supersededByTaskRunId != null) return billingTask;
       await this.options.billingExecutor.execute({
         workspaceId: input.workspaceId,
@@ -193,6 +199,7 @@ export class MockVideoTaskExecutor {
     let submissionUncertain = false;
     try {
       const priorAttempts = await this.store.listTaskRunAttempts(input.workspaceId, taskRun.id);
+      assertActive();
       const hasPersistedProviderRequest = priorAttempts.some((item) => Boolean(item.providerRequestId) && !hasTerminalProviderResult(item));
       const hasUnresolvedSubmissionReservation = priorAttempts.some((item) => Boolean(item.submissionReservedAt) && !item.providerRequestId);
       // Reference relay is needed only before a first Provider POST. Recovery
@@ -205,7 +212,8 @@ export class MockVideoTaskExecutor {
           workspaceId: input.workspaceId,
           projectId: taskRun.projectId,
           inputSnapshot,
-        });
+        }, assertActive);
+      assertActive();
       const attempt = await this.store.ensureProviderAttempt({
         workspaceId: input.workspaceId,
         taskRunId: input.taskRunId,
@@ -214,6 +222,7 @@ export class MockVideoTaskExecutor {
         model: inputSnapshot.model,
         now: new Date(),
       });
+      assertActive();
       if (!attempt) {
         return this.store.failTaskRun({
           workspaceId: input.workspaceId,
@@ -263,6 +272,7 @@ export class MockVideoTaskExecutor {
         // Commit the same fail-closed reservation used by the C08 certifier
         // before crossing the Provider boundary, never after the response.
         const reserved = await this.store.reserveProviderSubmission({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
+        assertActive();
         if (!reserved) {
           const current = await this.store.findTaskRun(input.workspaceId, taskRun.id);
           if (!current || current.supersededByTaskRunId != null || current.status !== "RUNNING") return current;
@@ -276,6 +286,7 @@ export class MockVideoTaskExecutor {
         });
         providerRequestId = submission.providerRequestId;
         const recorded = await this.store.recordProviderSubmission({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, providerRequestId: submission.providerRequestId, now: new Date() });
+        assertActive();
         if (!recorded) throw new Error("Provider submission could not be recorded.");
         submissionUncertain = false;
         if (["SUCCEEDED", "FAILED", "ABANDONED"].includes(recorded.status)) return recorded;
@@ -285,11 +296,14 @@ export class MockVideoTaskExecutor {
       const getStatusWithTransientRetry = async () => {
         for (let retry = 0; ; retry += 1) {
           try {
+            assertActive();
             const next = await this.provider.getStatus({ providerRequestId });
+            assertActive();
             if (next.state !== "FAILED" || !next.retryable || retry >= retryableStatusPolls) return next;
           } catch (error) {
             if (!(error instanceof VideoProviderFailure) || !error.retryable || retry >= retryableStatusPolls) throw error;
           }
+          assertActive();
           const current = await this.store.recordProviderProcessing({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
           if (current?.supersededByTaskRunId != null) return current;
           const delay = this.options.pollIntervalMs ?? 0;
@@ -328,14 +342,19 @@ export class MockVideoTaskExecutor {
       }
 
       const processing = await this.store.recordProviderProcessing({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
+      assertActive();
       if (processing?.supersededByTaskRunId != null) return processing;
       const downloading = await this.store.beginDownload({ workspaceId: input.workspaceId, taskRunId: taskRun.id, providerAttemptId: attempt.id, now: new Date() });
       if (downloading?.supersededByTaskRunId != null) return downloading;
-      return await this.finishDownload({ workspaceId: input.workspaceId, taskRunId: taskRun.id, attemptId: attempt.id, projectId: taskRun.projectId, inputSnapshot });
+      assertActive();
+      return await this.finishDownload({ workspaceId: input.workspaceId, taskRunId: taskRun.id, attemptId: attempt.id, projectId: taskRun.projectId, inputSnapshot }, assertActive);
     } catch (error) {
+      assertActive();
+      if (error instanceof TaskRunExecutionOwnershipLostError) throw error;
       if (error instanceof RetryableTaskExecutionError) throw error;
       if (error instanceof ReferenceDeliveryUnavailableError) {
         const attempts = await this.store.listTaskRunAttempts(input.workspaceId, taskRun.id);
+        assertActive();
         const submittedAttempt = attempts.find((item) => Boolean(item.providerRequestId) && !hasTerminalProviderResult(item));
         if (submittedAttempt) {
           // A concurrent/recovered execution crossed the durable Provider
@@ -345,6 +364,7 @@ export class MockVideoTaskExecutor {
         }
         const unresolvedAttempt = attempts.find((item) => Boolean(item.submissionReservedAt) && !item.providerRequestId);
         if (unresolvedAttempt) {
+          if (!input.recovery) throw new RetryableTaskExecutionError("A video submission is already reserved and its outcome is being reconciled.");
           return this.store.failTaskRun({
             workspaceId: input.workspaceId,
             taskRunId: taskRun.id,
@@ -395,7 +415,7 @@ export class MockVideoTaskExecutor {
     workspaceId: string;
     projectId: string;
     inputSnapshot: ReturnType<typeof VideoGenerationInputSnapshotSchema.parse>;
-  }>) {
+  }>, assertActive: () => void) {
     const visualInput = input.inputSnapshot.visual_input;
     if (!visualInput) {
       if (input.inputSnapshot.reference_asset_ids.length === 0 || this.options.allowLegacyReferenceAssets) return { mode: "TEXT" as const };
@@ -426,12 +446,14 @@ export class MockVideoTaskExecutor {
       || asset.byteSize > 8 * 1024 * 1024)) {
       throw new VideoProviderProtocolError("A reference image no longer matches the immutable task snapshot.");
     }
+    assertActive();
     return delivery.createVisualInput({ workspaceId: input.workspaceId, projectId: input.projectId, visualInput });
   }
 
-  private async finishDownload(input: { workspaceId: string; taskRunId: string; attemptId: string; projectId: string; inputSnapshot: ReturnType<typeof VideoGenerationInputSnapshotSchema.parse> }) {
+  private async finishDownload(input: { workspaceId: string; taskRunId: string; attemptId: string; projectId: string; inputSnapshot: ReturnType<typeof VideoGenerationInputSnapshotSchema.parse> }, assertActive: () => void) {
     try {
       const attempt = (await this.store.listTaskRunAttempts(input.workspaceId, input.taskRunId)).find((item) => item.id === input.attemptId);
+      assertActive();
       if (!attempt?.providerRequestId) throw new VideoProviderProtocolError("Provider request was not persisted before download.");
       const download = await this.provider.download({ providerRequestId: attempt.providerRequestId });
       const bytes = await readStream(download.stream, this.options.maxDownloadBytes ?? 50 * 1024 * 1024);
@@ -440,6 +462,7 @@ export class MockVideoTaskExecutor {
       }
       const inspection = await validateMp4Bytes(bytes, download.mimeType);
       const afterDownload = await this.store.findTaskRun(input.workspaceId, input.taskRunId);
+      assertActive();
       if (!afterDownload || afterDownload.supersededByTaskRunId != null) return afterDownload;
       const billing = input.inputSnapshot.billing;
       // A usage row may be written by Sub2API after the content endpoint has
@@ -459,6 +482,7 @@ export class MockVideoTaskExecutor {
       }
       const existingDraft = await this.store.findGeneratedAssetDraft(input.workspaceId, input.taskRunId);
       const taskRun = await this.store.findTaskRun(input.workspaceId, input.taskRunId);
+      assertActive();
       if (!taskRun || taskRun.supersededByTaskRunId != null) return taskRun;
       const assetId = existingDraft?.id ?? taskRun.resultAssetId ?? createPrefixedId("ast");
       const draft = existingDraft ?? await this.store.ensureGeneratedAsset({
@@ -470,8 +494,9 @@ export class MockVideoTaskExecutor {
         now: new Date(),
       });
       if (!draft) throw new VideoProviderProtocolError("Generated asset could not be reserved.");
-
+      assertActive();
       const existing = await this.storage.inspectObject({ objectKey: draft.objectKey });
+      assertActive();
       if (existing) {
         if (existing.sha256 !== inspection.sha256 || existing.byteSize !== inspection.byteSize || existing.mimeType !== inspection.mimeType) {
           throw new VideoProviderProtocolError("Generated asset object does not match the validated download.");
@@ -487,6 +512,7 @@ export class MockVideoTaskExecutor {
           }
         }
       }
+      assertActive();
       const completed = await this.store.completeGeneratedTaskRun({
         workspaceId: input.workspaceId,
         taskRunId: input.taskRunId,
@@ -502,6 +528,7 @@ export class MockVideoTaskExecutor {
       if (!completed || completed.supersededByTaskRunId != null) return completed;
       if (!billing) return completed;
       if (!this.options.billingExecutor || usagePending) return this.store.findTaskRun(input.workspaceId, input.taskRunId);
+      assertActive();
       const billingResult = await this.options.billingExecutor.execute({
         workspaceId: input.workspaceId,
         chargeRequest: { taskRunId: input.taskRunId, externalUserId: billing.external_user_id, billingRule: billing.billing_rule },
@@ -510,6 +537,8 @@ export class MockVideoTaskExecutor {
       if (billingResult.kind === "RETRY_SCHEDULED") return this.store.findTaskRun(input.workspaceId, input.taskRunId);
       return this.store.findTaskRun(input.workspaceId, input.taskRunId);
     } catch (error) {
+      assertActive();
+      if (error instanceof TaskRunExecutionOwnershipLostError) throw error;
       const failure = downloadStageError(error);
       if (failure.retryable) {
         await this.store.recordDownloadRetryableFailure({
@@ -567,7 +596,7 @@ export class MockVideoTaskExecutor {
   }
 
   async recoverBillingPending(input: { limit: number; maxAttempts?: number }) {
-    const recovered: Array<{ workspaceId: string; taskRunId: string; attempts: number; status?: string; failure?: string }> = [];
+    const recovered: Array<{ workspaceId: string; taskRunId: string; attempts: number; status?: string; failure?: string; deferred?: true }> = [];
     for (const taskRun of await this.store.listRecoverableVideoTaskRuns({ limit: input.limit, statuses: ["BILLING_PENDING", "RETRY_SCHEDULED"] })) {
       const maxAttempts = input.maxAttempts ?? 1;
       for (let attemptNo = 1; attemptNo <= maxAttempts; attemptNo += 1) {
@@ -576,6 +605,10 @@ export class MockVideoTaskExecutor {
           recovered.push({ workspaceId: taskRun.workspaceId, taskRunId: taskRun.id, attempts: attemptNo, status: result?.status });
           break;
         } catch (error) {
+          if (error instanceof TaskRunExecutionBusyError) {
+            recovered.push({ workspaceId: taskRun.workspaceId, taskRunId: taskRun.id, attempts: attemptNo, deferred: true });
+            break;
+          }
           if (attemptNo === maxAttempts) {
             recovered.push({
               workspaceId: taskRun.workspaceId,
@@ -591,7 +624,7 @@ export class MockVideoTaskExecutor {
   }
 
   async recover(input: { limit: number; maxAttempts?: number }) {
-    const recovered: Array<{ workspaceId: string; taskRunId: string; attempts: number; status?: string; failure?: string }> = [];
+    const recovered: Array<{ workspaceId: string; taskRunId: string; attempts: number; status?: string; failure?: string; deferred?: true }> = [];
     for (const taskRun of await this.store.listRecoverableVideoTaskRuns({ limit: input.limit })) {
       const maxAttempts = input.maxAttempts ?? 3;
       for (let attemptNo = 1; attemptNo <= maxAttempts; attemptNo += 1) {
@@ -600,6 +633,10 @@ export class MockVideoTaskExecutor {
           recovered.push({ workspaceId: taskRun.workspaceId, taskRunId: taskRun.id, attempts: attemptNo, status: result?.status });
           break;
         } catch (error) {
+          if (error instanceof TaskRunExecutionBusyError) {
+            recovered.push({ workspaceId: taskRun.workspaceId, taskRunId: taskRun.id, attempts: attemptNo, deferred: true });
+            break;
+          }
           if (attemptNo === maxAttempts) {
             recovered.push({
               workspaceId: taskRun.workspaceId,

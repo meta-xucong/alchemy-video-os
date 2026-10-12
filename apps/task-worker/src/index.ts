@@ -111,7 +111,7 @@ const worker = createBullMqInternalEventWorker({
     }
   },
   onTerminalFailure: async ({ event_id, workspace_id, task_run_id, reason }) => {
-    await consumer.finalizeExecutionFailure({ workspace_id, task_run_id, reason });
+    await consumer.finalizeExecutionFailure({ workspace_id, task_run_id, event_id, reason });
     await consumer.deadLetter({ event_id, workspace_id, reason });
   },
 });
@@ -143,7 +143,8 @@ const recovery = await recoverC06TaskRuns(executor, {
 });
 console.info(JSON.stringify({
   event: "task_worker.recovery.completed",
-  recovered: recovery.filter((result) => !result.failure).length,
+  recovered: recovery.filter((result) => !result.failure && !result.deferred).length,
+  deferred: recovery.filter((result) => result.deferred).length,
   failed: recovery.filter((result) => result.failure).length,
 }));
 worker.start();
