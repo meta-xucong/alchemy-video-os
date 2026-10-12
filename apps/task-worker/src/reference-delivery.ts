@@ -1,6 +1,7 @@
 import type { VisualInputSnapshot } from "@alchemy-video/contracts";
+import { randomUUID } from "node:crypto";
 import { ReferenceDeliveryTokenCodec, createReferenceDeliveryUrl } from "@alchemy-video/reference-delivery";
-import { VideoProviderFailure, VideoProviderProtocolError, type ResolvedVisualInput, type VideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
+import { VideoProviderProtocolError, type ResolvedVisualInput, type VideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 
 const MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_REFERENCE_DELIVERY_TTL_MS = 15 * 60_000;
@@ -56,15 +57,14 @@ const transportFailureReason = (error: unknown): string => {
   return "NETWORK";
 };
 
-const logPreflightFailure = (failure: PreflightFailure, attempts: number) => {
-  console.warn(JSON.stringify({
-    event: "task_worker.reference_delivery.preflight_failed",
-    reason: failure.reason,
-    ...(failure.status === undefined ? {} : { http_status: failure.status }),
-    attempts,
-    retryable: failure.retryable,
-  }));
-};
+export class ReferenceDeliveryUnavailableError extends Error {
+  constructor(readonly correlationId: string, readonly retryable: boolean, readonly reason: "PRECHECK_UNAVAILABLE" | "CONFIGURATION" | "INVALID_RESPONSE" = "PRECHECK_UNAVAILABLE") {
+    super(retryable
+      ? "Reference image delivery is temporarily unavailable before video submission."
+      : "Reference image delivery is unavailable because its storage configuration or permission must be repaired.");
+    this.name = "ReferenceDeliveryUnavailableError";
+  }
+}
 
 const responseHeader = (headers: ReferenceDeliveryFetchResponse["headers"], name: string) => {
   const direct = headers.get?.(name);
@@ -91,9 +91,14 @@ const isTransientStatus = (status: number) => status === 408 || status === 425 |
 
 const preflightFailure = (failure: PreflightFailure): PreflightFailure => failure;
 
-const validateResponseMetadata = (response: ReferenceDeliveryFetchResponse): PreflightFailure | undefined => {
+const validateResponseMetadata = (response: ReferenceDeliveryFetchResponse, expectedCorrelationId: string): PreflightFailure | undefined => {
   if (response.status < 200 || response.status >= 300) {
-    return preflightFailure({ retryable: isTransientStatus(response.status), protocol: true, reason: "HTTP_STATUS", status: response.status });
+    const retryableHeader = responseHeader(response.headers, "x-reference-delivery-retryable")?.trim().toLowerCase();
+    const echoedCorrelationId = responseHeader(response.headers, "x-reference-delivery-correlation")?.trim().toLowerCase();
+    const explicitlyNonRetryable = response.status === 503
+      && retryableHeader === "false"
+      && echoedCorrelationId === expectedCorrelationId.toLowerCase();
+    return preflightFailure({ retryable: explicitlyNonRetryable ? false : isTransientStatus(response.status), protocol: !explicitlyNonRetryable, reason: explicitlyNonRetryable ? "STORAGE_CONFIGURATION" : "HTTP_STATUS", status: response.status });
   }
   const mimeType = responseMimeType(response);
   if (!mimeType || !SUPPORTED_REFERENCE_MIME_TYPES.has(mimeType)) {
@@ -152,7 +157,7 @@ const cancelResponseBody = async (response: ReferenceDeliveryFetchResponse) => {
 
 const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
-const requestWithTimeout = async (fetcher: ReferenceDeliveryFetch, url: string, method: "HEAD" | "GET", timeoutMs: number) => {
+const requestWithTimeout = async (fetcher: ReferenceDeliveryFetch, url: string, method: "HEAD" | "GET", timeoutMs: number, correlationId?: string) => {
   const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -165,7 +170,10 @@ const requestWithTimeout = async (fetcher: ReferenceDeliveryFetch, url: string, 
     return await Promise.race([
       fetcher(url, {
         method,
-        headers: { accept: "image/jpeg, image/png, image/webp" },
+        headers: {
+          accept: "image/jpeg, image/png, image/webp",
+          ...(correlationId ? { "X-Reference-Delivery-Correlation": correlationId } : {}),
+        },
         signal: controller.signal,
         redirect: "manual",
       }),
@@ -215,20 +223,21 @@ const preflightReferenceUrl = async (input: Readonly<{
   retries: number;
 }>) => {
   assertSafeDeliveryUrl(input.origin, input.url);
+  const correlationId = randomUUID();
   let lastFailure: PreflightFailure = { retryable: true, protocol: false, reason: "NETWORK" };
   let attempts = 0;
   for (let attempt = 0; attempt <= input.retries; attempt += 1) {
     attempts += 1;
     try {
-      const head = await requestWithTimeout(input.fetcher, input.url, "HEAD", input.timeoutMs);
-      let failure = validateResponseMetadata(head);
+      const head = await requestWithTimeout(input.fetcher, input.url, "HEAD", input.timeoutMs, correlationId);
+      let failure = validateResponseMetadata(head, correlationId);
       const headLength = responseContentLength(head);
       const needsGetFallback = head.status === 405 || head.status === 501 || (!failure && headLength === undefined);
       await cancelResponseBody(head);
       if (needsGetFallback) {
-        const get = await requestWithTimeout(input.fetcher, input.url, "GET", input.timeoutMs);
+        const get = await requestWithTimeout(input.fetcher, input.url, "GET", input.timeoutMs, correlationId);
         try {
-          failure = validateResponseMetadata(get);
+          failure = validateResponseMetadata(get, correlationId);
           if (!failure && responseContentLength(get) === undefined) {
             if (!get.body) failure = { retryable: false, protocol: true, reason: "MISSING_BODY" };
             else if ((await readBoundedBodyWithTimeout(get.body, MAX_REFERENCE_IMAGE_BYTES, input.timeoutMs)) > MAX_REFERENCE_IMAGE_BYTES) failure = { retryable: false, protocol: true, reason: "BODY_TOO_LARGE" };
@@ -245,11 +254,18 @@ const preflightReferenceUrl = async (input: Readonly<{
     if (!lastFailure.retryable || attempt >= input.retries) break;
     await delay(Math.min(1_000 * 2 ** attempt, 5_000));
   }
-  logPreflightFailure(lastFailure, attempts);
+  console.warn(JSON.stringify({
+    event: "task_worker.reference_delivery.preflight_failed",
+    correlation_id: correlationId,
+    reason: lastFailure.reason,
+    ...(lastFailure.status === undefined ? {} : { http_status: lastFailure.status }),
+    attempts,
+    retryable: lastFailure.retryable,
+  }));
   if (lastFailure.protocol && !lastFailure.retryable) {
-    throw new VideoProviderFailure("PROVIDER_PROTOCOL_INVALID", false, "PROVIDER", "Reference image delivery returned an invalid response.");
+    throw new ReferenceDeliveryUnavailableError(correlationId, false, "INVALID_RESPONSE");
   }
-  throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", true, "PROVIDER", "Reference image delivery is temporarily unavailable.");
+  throw new ReferenceDeliveryUnavailableError(correlationId, lastFailure.retryable);
 };
 
 const DEFAULT_REFERENCE_DELIVERY_READY_TIMEOUT_MS = 120_000;
@@ -395,12 +411,7 @@ const createSignedReferenceDeliveryPort = (input: Readonly<{
 
 const unavailableReferenceDeliveryPort = (): ReferenceDeliveryPort => ({
   async createVisualInput() {
-    throw new VideoProviderFailure(
-      "PROVIDER_UNAVAILABLE",
-      false,
-      "PROVIDER",
-      "Reference image delivery is not configured for the real video provider.",
-    );
+    throw new ReferenceDeliveryUnavailableError("", false, "CONFIGURATION");
   },
 });
 

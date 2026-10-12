@@ -5,7 +5,6 @@ import {
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
-  PutBucketCorsCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -13,7 +12,6 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const DEFAULT_URL_TTL_SECONDS = 10 * 60;
 const DEFAULT_INSPECTION_TIMEOUT_MS = 30_000;
-const DEFAULT_BROWSER_ORIGINS = ["http://127.0.0.1:3031", "http://localhost:3031"];
 
 export type ObjectInspection = {
   mimeType: string;
@@ -73,8 +71,6 @@ export type S3StorageConfig = {
    * Server-side reads and writes continue to use endpoint on the private network.
    */
   publicEndpoint?: string;
-  /** Browser origins allowed to use upload/download URLs. Defaults to local Studio origins. */
-  browserOrigins?: readonly string[];
   region: string;
   bucket: string;
   accessKeyId: string;
@@ -88,11 +84,33 @@ export type StorageDiagnostic = {
 };
 
 export class StorageUnavailableError extends Error {
-  constructor(message = "Object storage is unavailable.", readonly diagnostic?: StorageDiagnostic) {
+  constructor(message = "Object storage is unavailable.", readonly diagnostic?: StorageDiagnostic, readonly stage: "BUCKET_INIT" | "OBJECT_METADATA_HEAD" | "OBJECT_READ" | "OTHER" = "OTHER") {
     super(message);
     this.name = "StorageUnavailableError";
   }
 }
+
+const safeStorageErrorCodes = new Map<string, string>([
+  ["NotImplemented", "NOT_IMPLEMENTED"],
+  ["PreconditionFailed", "PRECONDITION_FAILED"],
+  ["NotFound", "NOT_FOUND"],
+  ["NoSuchKey", "NO_SUCH_KEY"],
+  ["NoSuchBucket", "NO_SUCH_BUCKET"],
+  ["BucketAlreadyOwnedByYou", "BUCKET_ALREADY_OWNED"],
+  ["AccessDenied", "ACCESS_DENIED"],
+  ["Forbidden", "ACCESS_DENIED"],
+  ["InvalidAccessKeyId", "INVALID_ACCESS_KEY"],
+  ["SignatureDoesNotMatch", "SIGNATURE_MISMATCH"],
+  ["SlowDown", "THROTTLED"],
+  ["RequestTimeout", "TIMEOUT"],
+  ["TimeoutError", "TIMEOUT"],
+  ["NetworkingError", "NETWORK_ERROR"],
+  ["InternalError", "INTERNAL_ERROR"],
+  ["ServiceUnavailable", "SERVICE_UNAVAILABLE"],
+]);
+
+const safeStorageErrorCode = (value: unknown) =>
+  typeof value === "string" ? safeStorageErrorCodes.get(value) ?? "UNKNOWN_STORAGE_ERROR" : "UNKNOWN_STORAGE_ERROR";
 
 export const storageDiagnostic = (error: unknown): StorageDiagnostic => {
   const source = error as {
@@ -101,21 +119,27 @@ export const storageDiagnostic = (error: unknown): StorageDiagnostic => {
     code?: unknown;
     $metadata?: { httpStatusCode?: unknown };
   };
+  const rawCode = typeof source?.Code === "string" ? source.Code : source?.code;
+  const status = source?.$metadata?.httpStatusCode;
   return {
-    name: typeof source?.name === "string" ? source.name : "UnknownStorageError",
-    ...(typeof source?.Code === "string" ? { code: source.Code } : typeof source?.code === "string" ? { code: source.code } : {}),
-    ...(typeof source?.$metadata?.httpStatusCode === "number" ? { httpStatusCode: source.$metadata.httpStatusCode } : {}),
+    name: safeStorageErrorCode(source?.name),
+    code: safeStorageErrorCode(rawCode),
+    ...(typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? { httpStatusCode: status } : {}),
   };
 };
 
-const isMinioCorsNotImplemented = (error: unknown) => {
+const isMissingBucket = (error: unknown) => {
   const diagnostic = storageDiagnostic(error);
-  const server = (error as { $response?: { headers?: { server?: unknown } } } | undefined)?.$response?.headers?.server;
-  const minioServerCorsIsExternal = diagnostic.httpStatusCode === 501
-    && typeof server === "string"
-    && server.toLowerCase() === "minio";
-  return (diagnostic.name === "NotImplemented" && diagnostic.code === "NotImplemented" && diagnostic.httpStatusCode === 501)
-    || minioServerCorsIsExternal;
+  // A proxy or misconfigured endpoint can also return 404. CreateBucket is
+  // allowed only for an S3-recognized missing-bucket response.
+  // Smithy synthesizes `name=NotFound` for a bare HTTP 404, so name-only
+  // NOT_FOUND is not sufficient evidence that this is an S3 missing bucket.
+  return diagnostic.code === "NO_SUCH_BUCKET";
+};
+
+const isBucketAlreadyOwned = (error: unknown) => {
+  const diagnostic = storageDiagnostic(error);
+  return diagnostic.name === "BUCKET_ALREADY_OWNED" || diagnostic.code === "BUCKET_ALREADY_OWNED";
 };
 
 export class StorageObjectAlreadyExistsError extends Error {
@@ -254,7 +278,6 @@ export class S3StoragePort implements StoragePort {
     private readonly client: S3Client,
     private readonly signingClient: S3Client,
     private readonly bucket: string,
-    private readonly browserOrigins: readonly string[],
   ) {}
 
   async createUploadUrl(input: { objectKey: string; mimeType: string; byteSize: number; expiresInSeconds?: number }) {
@@ -367,7 +390,7 @@ export class S3StoragePort implements StoragePort {
       if (error instanceof Error && (error.name === "NotFound" || error.name === "NoSuchKey")) {
         return undefined;
       }
-      throw new StorageUnavailableError("Object storage is unavailable.", storageDiagnostic(error));
+      throw new StorageUnavailableError("Object storage is unavailable.", storageDiagnostic(error), "OBJECT_METADATA_HEAD");
     }
   }
 
@@ -383,7 +406,7 @@ export class S3StoragePort implements StoragePort {
       }));
     } catch (error) {
       const diagnostic = storageDiagnostic(error);
-      if (diagnostic.httpStatusCode === 412 || diagnostic.name === "PreconditionFailed" || diagnostic.code === "PreconditionFailed") {
+      if (diagnostic.httpStatusCode === 412 || diagnostic.name === "PRECONDITION_FAILED" || diagnostic.code === "PRECONDITION_FAILED") {
         throw new StorageObjectAlreadyExistsError();
       }
       throw new StorageUnavailableError("Object storage is unavailable.", diagnostic);
@@ -429,43 +452,35 @@ export class S3StoragePort implements StoragePort {
   }
 
   private async ensureBucket() {
-    this.bucketInitialization ??= this.initializeBucket();
-    return this.bucketInitialization;
+    const initialization = this.bucketInitialization ??= this.initializeBucket();
+    try {
+      await initialization;
+    } catch (error) {
+      // Keep single-flight behavior, but never let a transient rejection poison
+      // this StoragePort instance for its entire lifetime.
+      if (this.bucketInitialization === initialization) this.bucketInitialization = undefined;
+      throw error;
+    }
   }
 
   private async initializeBucket() {
     try {
       await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
-    } catch {
+    } catch (error) {
+      if (!isMissingBucket(error)) throw new StorageUnavailableError("Object storage is unavailable.", storageDiagnostic(error), "BUCKET_INIT");
       try {
         await this.client.send(new CreateBucketCommand({ Bucket: this.bucket }));
       } catch (error) {
-        throw new StorageUnavailableError("Object storage is unavailable.", storageDiagnostic(error));
+        if (isBucketAlreadyOwned(error)) {
+          // Another API/Worker process created the bucket after our HeadBucket.
+        } else {
+          throw new StorageUnavailableError("Object storage is unavailable.", storageDiagnostic(error), "BUCKET_INIT");
+        }
       }
     }
-    try {
-      await this.client.send(
-        new PutBucketCorsCommand({
-          Bucket: this.bucket,
-          CORSConfiguration: {
-            CORSRules: [{
-              AllowedHeaders: ["Content-Type", "If-None-Match"],
-              AllowedMethods: ["GET", "HEAD", "PUT"],
-              AllowedOrigins: [...this.browserOrigins],
-              ExposeHeaders: ["ETag"],
-              MaxAgeSeconds: 300,
-            }],
-          },
-        }),
-      );
-    } catch (error) {
-      if (isMinioCorsNotImplemented(error)) {
-        // The fixed local MinIO image configures API CORS through Compose instead of PutBucketCors.
-        console.warn(JSON.stringify({ event: "storage.bucket.cors.not_implemented", ...storageDiagnostic(error) }));
-        return;
-      }
-      throw new StorageUnavailableError("Object storage is unavailable.", storageDiagnostic(error));
-    }
+    // CORS is configured by storage infrastructure (MINIO_API_CORS_ALLOW_ORIGIN
+    // for the pinned MinIO deployment). The runtime app identity deliberately
+    // has no PutBucketCORS permission; storage reads must not depend on it.
   }
 }
 
@@ -489,7 +504,6 @@ export const createS3StoragePort = (config: S3StorageConfig): StoragePort =>
     createS3Client(config),
     createS3Client({ ...config, endpoint: config.publicEndpoint ?? config.endpoint }, true),
     config.bucket,
-    config.browserOrigins?.length ? config.browserOrigins : DEFAULT_BROWSER_ORIGINS,
   );
 
 export class InMemoryStoragePort implements StoragePort {

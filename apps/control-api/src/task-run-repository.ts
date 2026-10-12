@@ -455,21 +455,23 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     const attempt = [...attempts].reverse().find((item) => item.submissionReservedAt && !item.providerRequestId)
       ?? [...attempts].reverse().find((item) => item.providerRequestId && !hasTerminalProviderResult(item))
       ?? attempts.at(-1);
-    const retryable = !(attempt?.submissionReservedAt && !attempt.providerRequestId);
-    const message = retryable ? input.message : "The video submission outcome is unknown. Reconcile the existing request before retrying.";
+    const submissionUnknown = Boolean(attempt?.submissionReservedAt && !attempt.providerRequestId);
+    const retryable = !submissionUnknown;
+    const errorCode = submissionUnknown ? "PROVIDER_SUBMISSION_UNKNOWN" : input.code;
+    const message = submissionUnknown ? "The video submission outcome is unknown. Reconcile the existing request before retrying." : input.message;
     if (attempt) {
       this.attempts.set(attempt.id, {
         ...attempt,
           status: current.status === "DOWNLOADING" && attempt.providerRequestId ? "DOWNLOAD_FAILED" : "FAILED",
-        responsePayload: { code: input.code },
+        responsePayload: { code: errorCode },
         updatedAt: now,
       });
     }
-    const failed = { ...current, status: "FAILED" as const, error: { code: input.code, message, retryable }, updatedAt: now };
+    const failed = { ...current, status: "FAILED" as const, error: { code: errorCode, message, retryable }, updatedAt: now };
     this.taskRuns.set(failed.id, failed);
     await this.assets.setShotGenerationState({ workspaceId: input.workspaceId, shotId: current.shotId, status: "FAILED" });
     const source = this.queuedSource(current.id);
-    if (source) this.addEvent(executionEvent(source, { type: "task_run.failed", now, code: input.code, retryable, ...(attempt ? { providerAttemptId: attempt.id } : {}) }));
+    if (source) this.addEvent(executionEvent(source, { type: "task_run.failed", now, code: errorCode, retryable, ...(attempt ? { providerAttemptId: attempt.id } : {}) }));
     return failed;
   }
 

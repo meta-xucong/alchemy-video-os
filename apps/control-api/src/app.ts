@@ -997,9 +997,9 @@ export function createApp(options: CreateAppOptions = {}) {
   });
   app.onError(errorHandler);
 
-  const providerInputEmptyResponse = (status: 404 | 503) => new Response(null, {
+  const providerInputEmptyResponse = (status: 404 | 503, headers: Record<string, string> = {}) => new Response(null, {
     status,
-    headers: { "Cache-Control": "no-store", "Content-Length": "0" },
+    headers: { "Cache-Control": "no-store", "Content-Length": "0", ...headers },
   });
 
   // The verified asset/claim SHA-256 binding above is immutable after upload
@@ -1066,7 +1066,33 @@ export function createApp(options: CreateAppOptions = {}) {
       });
     } catch (error) {
       if (error instanceof StorageUnavailableError) {
-        return providerInputEmptyResponse(503);
+        const rawCorrelationId = context.req.header("X-Reference-Delivery-Correlation");
+        const correlationId = rawCorrelationId && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rawCorrelationId)
+          ? rawCorrelationId.toLowerCase()
+          : undefined;
+        console.error(JSON.stringify({
+          event: "control_api.provider_input.storage_failed",
+          request_id: (context as unknown as { get: (key: string) => unknown }).get("requestId"),
+          ...(correlationId ? { reference_delivery_correlation_id: correlationId } : {}),
+          operation: "provider_input_metadata_head",
+          storage_stage: error.stage,
+          storage_error: error.diagnostic?.code ?? error.diagnostic?.name ?? "UNKNOWN_STORAGE_ERROR",
+          ...(error.diagnostic?.httpStatusCode === undefined ? {} : { storage_http_status: error.diagnostic.httpStatusCode }),
+          method: context.req.method,
+          status: 503,
+        }));
+        const nonRetryableStorageErrors = new Set(["ACCESS_DENIED", "INVALID_ACCESS_KEY", "SIGNATURE_MISMATCH"]);
+        const knownCredentialOrPermissionFailure = [error.diagnostic?.code, error.diagnostic?.name]
+          .some((code) => code !== undefined && nonRetryableStorageErrors.has(code));
+        // Explicit 401/403 object-store responses are authorization failures
+        // even when the SDK omitted an S3 Code in its error body.
+        const retryable = !knownCredentialOrPermissionFailure
+          && error.diagnostic?.httpStatusCode !== 401
+          && error.diagnostic?.httpStatusCode !== 403;
+        return providerInputEmptyResponse(503, {
+          "X-Reference-Delivery-Retryable": retryable ? "true" : "false",
+          ...(correlationId ? { "X-Reference-Delivery-Correlation": correlationId } : {}),
+        });
       }
       throw error;
     }

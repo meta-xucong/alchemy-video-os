@@ -120,8 +120,11 @@ test("a crash after reservation and before POST remains uncertain on restart", a
   assert.ok(attempt);
   assert.equal(await context.store.reserveProviderSubmission({ ...context, providerAttemptId: attempt.id, now: new Date() }), true);
   let calls = 0;
-  const failed = await runtime(context.store, async () => { calls += 1; throw new Error("No request is allowed."); }).execute(context);
+  const recovered = await runtime(context.store, async () => { calls += 1; throw new Error("No request is allowed."); }).recover({ limit: 10, maxAttempts: 1 });
+  assert.equal(recovered[0]?.status, "FAILED");
+  const failed = await context.store.findTaskRun(context.workspaceId, context.taskRunId);
   assert.equal(failed?.status, "FAILED");
+  assert.equal(failed?.error?.code, "PROVIDER_SUBMISSION_UNKNOWN");
   assert.equal(failed?.error?.retryable, false);
   assert.equal((await retry(context)).kind, "STATE_INVALID");
   assert.equal(calls, 0);
@@ -144,7 +147,8 @@ for (const commit of [false, true]) {
     assert.equal(posts, 0);
     context.store.reserveProviderSubmission = reserve;
     if (commit) {
-      assert.equal((await runtime(context.store, fetcher).execute(context))?.status, "FAILED");
+      const recovered = await runtime(context.store, fetcher).recover({ limit: 10, maxAttempts: 1 });
+      assert.equal(recovered[0]?.status, "FAILED");
       assert.equal((await retry(context)).kind, "STATE_INVALID");
       assert.equal(posts, 0);
     } else {
@@ -186,14 +190,14 @@ test("duplicate execution during a slow POST cannot resubmit or discard the late
   };
   const first = runtime(context.store, fetcher).execute(context);
   await accepted;
-  assert.equal((await runtime(context.store, fetcher).execute(context))?.status, "FAILED");
+  await assert.rejects(runtime(context.store, fetcher).execute(context), /submission is already reserved/);
+  assert.equal((await context.store.findTaskRun(context.workspaceId, context.taskRunId))?.status, "RUNNING");
   deliverResponse(response({ id: "late-durable-id" }));
-  assert.equal((await first)?.status, "FAILED");
+  await assert.rejects(first, /still processing/);
+  assert.equal((await context.store.findTaskRun(context.workspaceId, context.taskRunId))?.status, "PROVIDER_PROCESSING");
   assert.equal((await context.store.listTaskRunAttempts(context.workspaceId, context.taskRunId))[0]?.providerRequestId, "late-durable-id");
-  assert.equal((await retry(context)).kind, "NEW");
-  await startQueued(context.store, context.workspaceId, context.taskRunId);
   await assert.rejects(runtime(context.store, fetcher).execute(context), /still processing/);
-  assert.deepEqual(methods, ["POST", "GET"]);
+  assert.deepEqual(methods, ["POST", "GET", "GET"]);
 });
 
 test("submission reservation is exclusive, scoped, and unavailable for queued or cancelled tasks", async () => {
@@ -227,6 +231,7 @@ test("queue exception finalization preserves an unknown submission and rejects e
   await context.store.reserveProviderSubmission({ ...context, providerAttemptId: attempt.id, now: new Date() });
   const failed = await context.store.finalizeTaskRunExecutionFailure({ ...context, code: "PROVIDER_UNAVAILABLE", message: "Synthetic exhausted delivery.", now: new Date() });
   assert.equal(failed?.status, "FAILED");
+  assert.equal(failed?.error?.code, "PROVIDER_SUBMISSION_UNKNOWN");
   assert.equal(failed?.error?.retryable, false);
   assert.equal((await retry(context)).kind, "STATE_INVALID");
   assert.ok((await context.store.listTaskRunAttempts(context.workspaceId, context.taskRunId))[0]?.submissionReservedAt);

@@ -150,8 +150,8 @@ test("TaskRunEventConsumer retries a busy delivery and dead-letters within the s
   assert.ok(released[0]?.now instanceof Date);
 });
 
-test("TaskRunEventConsumer invokes the executor for a duplicate durable delivery", async () => {
-  let executions = 0;
+test("TaskRunEventConsumer resumes normal idempotent execution for a duplicate durable delivery", async () => {
+  const executions: Array<{ workspaceId: string; taskRunId: string; recovery?: boolean }> = [];
   const store: Pick<TaskRunStore, "processEvent" | "releaseConsumerEvent" | "finalizeTaskRunExecutionFailure"> = {
     async processEvent() { return "DUPLICATE"; },
     async releaseConsumerEvent() {},
@@ -162,14 +162,14 @@ test("TaskRunEventConsumer invokes the executor for a duplicate durable delivery
     workerId: "worker-c06-duplicate-test",
     leaseMs: 100,
   }, {
-    async execute() {
-      executions += 1;
+    async execute(input) {
+      executions.push(input);
       return undefined;
     },
   });
 
   assert.equal(await consumer.process(queueMessage()), "DUPLICATE");
-  assert.equal(executions, 1);
+  assert.deepEqual(executions, [{ workspaceId: queuedEvent.workspace_id, taskRunId: queuedEvent.data.task_run_id }]);
 });
 
 test("TaskRunEventConsumer finalizes exhausted C06 execution without relying on a consumer lease", async () => {

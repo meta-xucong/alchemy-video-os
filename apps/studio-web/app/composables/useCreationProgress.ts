@@ -1,5 +1,33 @@
 import type { ProductionRunProgress, TaskRun } from "./useControlApi";
 
+export function createAsyncOperationFence() {
+  let revision = 0;
+  return {
+    begin: () => ++revision,
+    invalidate: () => ++revision,
+    isCurrent: (token: number) => token === revision,
+  };
+}
+
+/** Retain newer command/worker snapshots when overlapping refreshes return out of order. */
+export function mergeProductionProgressSnapshots(previous: ProductionRunProgress | undefined, incoming: ProductionRunProgress): ProductionRunProgress {
+  if (!previous || previous.production_run.id !== incoming.production_run.id) return incoming;
+  const productionRun = previous.production_run.updated_at.localeCompare(incoming.production_run.updated_at) >= 0
+    ? previous.production_run
+    : incoming.production_run;
+  const previousSegments = new Map(previous.segments.map((segment) => [segment.sequence, segment]));
+  const segments = incoming.segments.map((segment) => {
+    const current = previousSegments.get(segment.sequence);
+    return current && current.updated_at.localeCompare(segment.updated_at) >= 0 ? current : segment;
+  });
+  return { ...incoming, production_run: productionRun, segments };
+}
+
+export function mergeProductionProgressLists(previous: ProductionRunProgress[], incoming: ProductionRunProgress[]): ProductionRunProgress[] {
+  const previousById = new Map(previous.map((item) => [item.production_run.id, item]));
+  return incoming.map((item) => mergeProductionProgressSnapshots(previousById.get(item.production_run.id), item));
+}
+
 type CreationProgressTone = "idle" | "active" | "success" | "error";
 type CreationStageState = "pending" | "active" | "complete";
 
@@ -87,7 +115,11 @@ export function productionProgressFor(
   hasInput: boolean,
   localBusy: boolean,
   billingPending = false,
+  retrySubmitting = false,
 ): CreationProgress {
+  if (retrySubmitting) {
+    return progress("正在提交重试", "正在提交本次重试请求；服务确认后会继续制作。", "active", 2);
+  }
   if (localBusy) {
     return progress("AI 正在理解内容", "正在后台准备这次视频创作。", "active", 0);
   }

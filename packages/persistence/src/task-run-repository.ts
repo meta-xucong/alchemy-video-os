@@ -1052,21 +1052,23 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
           when ${unresolvedProviderRequestScope()} then 1
           else 2 end`, sql`${providerAttempts.createdAt} desc`)
         .limit(1);
-      const retryable = !(attempt?.submissionReservedAt && !attempt.providerRequestId);
-      const message = retryable ? input.message : "The video submission outcome is unknown. Reconcile the existing request before retrying.";
+      const submissionUnknown = Boolean(attempt?.submissionReservedAt && !attempt.providerRequestId);
+      const retryable = !submissionUnknown;
+      const errorCode = submissionUnknown ? "PROVIDER_SUBMISSION_UNKNOWN" : input.code;
+      const message = submissionUnknown ? "The video submission outcome is unknown. Reconcile the existing request before retrying." : input.message;
       if (attempt) {
         await transaction
           .update(providerAttempts)
           .set({
             status: current.status === "DOWNLOADING" && attempt.providerRequestId ? "DOWNLOAD_FAILED" : "FAILED",
-            responsePayload: { code: input.code },
+            responsePayload: { code: errorCode },
             updatedAt: input.now.toISOString(),
           })
           .where(and(eq(providerAttempts.workspaceId, input.workspaceId), eq(providerAttempts.id, attempt.id), eq(providerAttempts.taskRunId, input.taskRunId)));
       }
       const [failed] = await transaction
         .update(taskRuns)
-        .set({ status: "FAILED", error: { code: input.code, message, retryable }, updatedAt: input.now.toISOString() })
+        .set({ status: "FAILED", error: { code: errorCode, message, retryable }, updatedAt: input.now.toISOString() })
         .where(taskRunScope(input.workspaceId, input.taskRunId))
         .returning();
       await transaction
@@ -1079,7 +1081,7 @@ export class DrizzleTaskRunRepository implements TaskRunStore {
           type: "task_run.failed",
           now: input.now.toISOString(),
           taskRunId: input.taskRunId,
-          errorCode: input.code,
+          errorCode,
           retryable,
           ...(attempt ? { providerAttemptId: attempt.id } : {}),
         }));

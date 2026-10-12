@@ -90,6 +90,11 @@ export class TaskRunEventConsumer {
       throw new Error(`Internal event ${input.event_id} requires another delivery attempt.`);
     }
     if ((result === "PROCESSED" || result === "DUPLICATE") && this.executor) {
+      // The durable event is acknowledged before execution. If execution
+      // throws a retryable error, BullMQ redelivers the same event and the
+      // store returns DUPLICATE. Re-enter the normal idempotent execution path
+      // so active runs do not become stranded; do not mark it as startup
+      // recovery, because another delivery may still be inside Provider POST.
       await this.executor.execute({ workspaceId: input.workspace_id, taskRunId: input.task_run_id });
     }
     return result;

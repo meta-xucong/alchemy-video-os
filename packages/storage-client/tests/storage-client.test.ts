@@ -33,11 +33,182 @@ const readStream = async (stream: ReadableStream<Uint8Array>) => {
   return Buffer.concat(chunks);
 };
 
-test("storage diagnostics retain only stable S3 error metadata", () => {
+test("storage diagnostics map SDK-controlled strings to a finite safe vocabulary", () => {
   assert.deepEqual(
     storageDiagnostic({ name: "NotImplemented", Code: "NotImplemented", $metadata: { httpStatusCode: 501 }, authorization: "never exposed" }),
-    { name: "NotImplemented", code: "NotImplemented", httpStatusCode: 501 },
+    { name: "NOT_IMPLEMENTED", code: "NOT_IMPLEMENTED", httpStatusCode: 501 },
   );
+  assert.deepEqual(
+    storageDiagnostic({ name: "credential-secret\n".repeat(100), code: "private-key-content", $metadata: { httpStatusCode: 9999 }, message: "must not be logged" }),
+    { name: "UNKNOWN_STORAGE_ERROR", code: "UNKNOWN_STORAGE_ERROR" },
+  );
+});
+
+test("failed bucket initialization is evicted so a transient outage can recover", async () => {
+  let headBucketCalls = 0;
+  let headObjectCalls = 0;
+  const calls: string[] = [];
+  const client = { async send(command: { constructor: { name: string } }) {
+    const name = command.constructor.name;
+    calls.push(name);
+    if (name === "HeadBucketCommand") {
+      headBucketCalls += 1;
+      if (headBucketCalls === 1) throw Object.assign(new Error("unavailable"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+      return {};
+    }
+    if (name === "HeadObjectCommand") {
+      headObjectCalls += 1;
+      return { ContentType: "image/png", ContentLength: 18 };
+    }
+    return {};
+  } };
+  const storage = new S3StoragePort(client as never, client as never, "bucket");
+
+  await assert.rejects(storage.inspectObjectMetadata({ objectKey: "asset.png" }), StorageUnavailableError);
+  assert.deepEqual(await storage.inspectObjectMetadata({ objectKey: "asset.png" }), { mimeType: "image/png", byteSize: 18 });
+  assert.equal(headBucketCalls, 2);
+  assert.equal(headObjectCalls, 1);
+  assert.equal(calls.includes("CreateBucketCommand"), false);
+});
+
+test("HeadBucket permission errors do not trigger bucket creation", async () => {
+  const calls: string[] = [];
+  const client = { async send(command: { constructor: { name: string } }) {
+    calls.push(command.constructor.name);
+    if (command.constructor.name === "HeadBucketCommand") {
+      throw Object.assign(new Error("denied"), { name: "AccessDenied", Code: "AccessDenied", $metadata: { httpStatusCode: 403 } });
+    }
+    return {};
+  } };
+  const storage = new S3StoragePort(client as never, client as never, "bucket");
+
+  await assert.rejects(storage.inspectObjectMetadata({ objectKey: "asset.png" }), (error: unknown) => {
+    assert.ok(error instanceof StorageUnavailableError);
+    assert.deepEqual(error.diagnostic, { name: "ACCESS_DENIED", code: "ACCESS_DENIED", httpStatusCode: 403 });
+    return true;
+  });
+  assert.deepEqual(calls, ["HeadBucketCommand"]);
+});
+
+test("an endpoint 404 synthesized by Smithy as NotFound does not authorize bucket creation", async () => {
+  const calls: string[] = [];
+  const client = { async send(command: { constructor: { name: string } }) {
+    calls.push(command.constructor.name);
+    if (command.constructor.name === "HeadBucketCommand") {
+      // Smithy maps an HTTP 404 without an S3 body code to name=NotFound.
+      throw Object.assign(new Error("not found"), { name: "NotFound", $metadata: { httpStatusCode: 404 } });
+    }
+    return {};
+  } };
+  const storage = new S3StoragePort(client as never, client as never, "bucket");
+  await assert.rejects(storage.inspectObjectMetadata({ objectKey: "asset.png" }), StorageUnavailableError);
+  assert.deepEqual(calls, ["HeadBucketCommand"]);
+});
+
+test("an explicit NoSuchBucket error is the only missing-bucket shape that authorizes creation", async () => {
+  const calls: string[] = [];
+  let headBucketCount = 0;
+  const client = { async send(command: { constructor: { name: string } }) {
+    const name = command.constructor.name;
+    calls.push(name);
+    if (name === "HeadBucketCommand" && headBucketCount++ === 0) {
+      throw Object.assign(new Error("missing bucket"), { name: "NotFound", Code: "NoSuchBucket", $metadata: { httpStatusCode: 404 } });
+    }
+    if (name === "HeadObjectCommand") return { ContentType: "image/png", ContentLength: 18 };
+    return {};
+  } };
+  const storage = new S3StoragePort(client as never, client as never, "bucket");
+  assert.deepEqual(await storage.inspectObjectMetadata({ objectKey: "asset.png" }), { mimeType: "image/png", byteSize: 18 });
+  assert.deepEqual(calls, ["HeadBucketCommand", "CreateBucketCommand", "HeadObjectCommand"]);
+});
+
+test("least-privilege app identity can inspect an existing bucket without PutBucketCORS", async () => {
+  const calls: string[] = [];
+  const client = { async send(command: { constructor: { name: string } }) {
+    const name = command.constructor.name;
+    calls.push(name);
+    if (name === "HeadBucketCommand") return {};
+    if (name === "HeadObjectCommand") return { ContentType: "image/png", ContentLength: 321 };
+    if (name === "PutBucketCorsCommand") {
+      throw Object.assign(new Error("denied"), { name: "AccessDenied", Code: "AccessDenied", $metadata: { httpStatusCode: 403 } });
+    }
+    throw new Error(`Unexpected storage command: ${name}`);
+  } };
+  const storage = new S3StoragePort(client as never, client as never, "bucket");
+
+  assert.deepEqual(await storage.inspectObjectMetadata({ objectKey: "asset.png" }), { mimeType: "image/png", byteSize: 321 });
+  assert.deepEqual(calls, ["HeadBucketCommand", "HeadObjectCommand"]);
+});
+
+test("least-privilege app identity can inspect an object after bucket creation without PutBucketCORS", async () => {
+  const calls: string[] = [];
+  let headBucketCount = 0;
+  const client = { async send(command: { constructor: { name: string } }) {
+    const name = command.constructor.name;
+    calls.push(name);
+    if (name === "HeadBucketCommand" && headBucketCount++ === 0) {
+      throw Object.assign(new Error("missing bucket"), { name: "NotFound", Code: "NoSuchBucket", $metadata: { httpStatusCode: 404 } });
+    }
+    if (name === "CreateBucketCommand") return {};
+    if (name === "HeadObjectCommand") return { ContentType: "image/png", ContentLength: 321 };
+    if (name === "PutBucketCorsCommand") {
+      throw Object.assign(new Error("denied"), { name: "AccessDenied", Code: "AccessDenied", $metadata: { httpStatusCode: 403 } });
+    }
+    throw new Error(`Unexpected storage command: ${name}`);
+  } };
+  const storage = new S3StoragePort(client as never, client as never, "bucket");
+
+  assert.deepEqual(await storage.inspectObjectMetadata({ objectKey: "asset.png" }), { mimeType: "image/png", byteSize: 321 });
+  assert.deepEqual(calls, ["HeadBucketCommand", "CreateBucketCommand", "HeadObjectCommand"]);
+});
+
+test("a concurrent bucket creator race accepts only BucketAlreadyOwnedByYou", async () => {
+  const calls: string[] = [];
+  let headBucketCount = 0;
+  const client = { async send(command: { constructor: { name: string } }) {
+    const name = command.constructor.name;
+    calls.push(name);
+    if (name === "HeadBucketCommand" && headBucketCount++ === 0) {
+      throw Object.assign(new Error("missing bucket"), { name: "NotFound", Code: "NoSuchBucket", $metadata: { httpStatusCode: 404 } });
+    }
+    if (name === "CreateBucketCommand") {
+      throw Object.assign(new Error("already created by another process"), {
+        name: "BucketAlreadyOwnedByYou",
+        Code: "BucketAlreadyOwnedByYou",
+        $metadata: { httpStatusCode: 409 },
+      });
+    }
+    if (name === "HeadObjectCommand") return { ContentType: "image/png", ContentLength: 18 };
+    return {};
+  } };
+  const storage = new S3StoragePort(client as never, client as never, "bucket");
+
+  assert.deepEqual(await storage.inspectObjectMetadata({ objectKey: "asset.png" }), { mimeType: "image/png", byteSize: 18 });
+  assert.deepEqual(calls, ["HeadBucketCommand", "CreateBucketCommand", "HeadObjectCommand"]);
+});
+
+test("other CreateBucket conflicts fail closed instead of being treated as a successful race", async () => {
+  const calls: string[] = [];
+  const client = { async send(command: { constructor: { name: string } }) {
+    const name = command.constructor.name;
+    calls.push(name);
+    if (name === "HeadBucketCommand") {
+      throw Object.assign(new Error("missing bucket"), { name: "NotFound", Code: "NoSuchBucket", $metadata: { httpStatusCode: 404 } });
+    }
+    if (name === "CreateBucketCommand") {
+      throw Object.assign(new Error("not owned by this account"), { name: "BucketAlreadyExists", Code: "BucketAlreadyExists", $metadata: { httpStatusCode: 409 } });
+    }
+    return {};
+  } };
+  const storage = new S3StoragePort(client as never, client as never, "bucket");
+
+  await assert.rejects(storage.inspectObjectMetadata({ objectKey: "asset.png" }), (error: unknown) => {
+    assert.ok(error instanceof StorageUnavailableError);
+    assert.equal(error.stage, "BUCKET_INIT");
+    assert.equal(error.diagnostic?.name, "UNKNOWN_STORAGE_ERROR");
+    return true;
+  });
+  assert.deepEqual(calls, ["HeadBucketCommand", "CreateBucketCommand"]);
 });
 
 test("S3 storage source keeps private I/O and public URL signing endpoints separate", () => {
@@ -68,7 +239,7 @@ test("S3 inspection forwards the caller abort signal to both metadata and body r
     },
   };
   const controller = new AbortController();
-  const storage = new S3StoragePort(client as never, client as never, "bucket", []);
+  const storage = new S3StoragePort(client as never, client as never, "bucket");
 
   const inspection = await storage.inspectObject({ objectKey: "asset.png", signal: controller.signal });
 
@@ -109,7 +280,7 @@ test("inspection rejects a known oversize or wrong-MIME HEAD without GET", async
       if (command.constructor.name === "GetObjectCommand") gets += 1;
       return {};
     } };
-    const storage = new S3StoragePort(client as never, client as never, "bucket", []);
+    const storage = new S3StoragePort(client as never, client as never, "bucket");
     await assert.rejects(storage.inspectObject({ objectKey: "asset.png", maxByteSize: 3, expectedMimeType: "image/png" }), StorageObjectInvalidError);
     assert.equal(gets, 0);
   }
@@ -127,7 +298,7 @@ test("inspection stops a size-lying stream before further reads and closes it", 
     }
     return {};
   } };
-  const storage = new S3StoragePort(client as never, client as never, "bucket", []);
+  const storage = new S3StoragePort(client as never, client as never, "bucket");
   await assert.rejects(storage.inspectObject({ objectKey: "asset.png", maxByteSize: 3 }), StorageObjectInvalidError);
   assert.equal(reads, 1);
   assert.equal(destroyed, true);
@@ -147,7 +318,7 @@ test("inspection deadlines abort stalled metadata and stalled streams", async ()
       if (command.constructor.name === "GetObjectCommand") return { Body: body, ContentType: "image/png" };
       return {};
     } };
-    const storage = new S3StoragePort(client as never, client as never, "bucket", []);
+    const storage = new S3StoragePort(client as never, client as never, "bucket");
     await assert.rejects(storage.inspectObject({ objectKey: "asset.png", maxByteSize: 3, timeoutMs: 15 }), StorageUnavailableError);
     assert.equal(signal?.aborted, true);
     assert.equal(destroyed, stallAt === "BODY");
@@ -165,7 +336,7 @@ test("oversize inspection does not wait for a stalled iterator cleanup", { timeo
     if (command.constructor.name === "GetObjectCommand") return { Body: body, ContentType: "image/png" };
     return {};
   } };
-  const storage = new S3StoragePort(client as never, client as never, "bucket", []);
+  const storage = new S3StoragePort(client as never, client as never, "bucket");
   await assert.rejects(storage.inspectObject({ objectKey: "asset.png", maxByteSize: 3 }), StorageObjectInvalidError);
   assert.equal(returned, true);
 });
@@ -177,7 +348,7 @@ test("inspection returns measured bytes and rejects inconsistent metadata length
       if (command.constructor.name === "GetObjectCommand") return { Body: { async *[Symbol.asyncIterator]() { yield new Uint8Array([1, 2, 3]); } } };
       return {};
     } };
-    const storage = new S3StoragePort(client as never, client as never, "bucket", []);
+    const storage = new S3StoragePort(client as never, client as never, "bucket");
     if (declared === undefined) assert.equal((await storage.inspectObject({ objectKey: "asset.png", maxByteSize: 3 }))?.byteSize, 3);
     else await assert.rejects(storage.inspectObject({ objectKey: "asset.png" }), StorageUnavailableError);
   }
@@ -194,7 +365,7 @@ test("S3 metadata inspection for relay HEAD does not download or hash the object
     },
   };
   const controller = new AbortController();
-  const storage = new S3StoragePort(client as never, client as never, "bucket", []);
+  const storage = new S3StoragePort(client as never, client as never, "bucket");
 
   assert.deepEqual(
     await storage.inspectObjectMetadata({ objectKey: "asset.png", signal: controller.signal }),
@@ -216,7 +387,7 @@ test("S3 object reads forward analysis cancellation and memory reads reject abor
     }
     return {};
   } };
-  const storage = new S3StoragePort(client as never, client as never, "bucket", []);
+  const storage = new S3StoragePort(client as never, client as never, "bucket");
   const result = await storage.readObject({ objectKey: "asset.png", signal: controller.signal });
   assert.equal(readSignal, controller.signal);
   await result?.stream.cancel();
@@ -227,7 +398,7 @@ test("S3 object reads forward analysis cancellation and memory reads reject abor
 test("already-aborted inspection does not start storage requests", async () => {
   let calls = 0;
   const client = { async send() { calls += 1; return {}; } };
-  const storage = new S3StoragePort(client as never, client as never, "bucket", []);
+  const storage = new S3StoragePort(client as never, client as never, "bucket");
   const controller = new AbortController();
   controller.abort();
   await assert.rejects(storage.inspectObject({ objectKey: "asset.png", signal: controller.signal }), StorageUnavailableError);
@@ -250,7 +421,7 @@ test("S3 inspection destroys an unreadable body after a failed hash read", async
       return {};
     },
   };
-  const storage = new S3StoragePort(client as never, client as never, "bucket", []);
+  const storage = new S3StoragePort(client as never, client as never, "bucket");
 
   await assert.rejects(() => storage.inspectObject({ objectKey: "asset.png" }), StorageUnavailableError);
   assert.equal(destroyed, true);

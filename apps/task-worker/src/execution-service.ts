@@ -1,13 +1,13 @@
 import { createPrefixedId, fingerprintRequest, isBillingRetryErrorCode, isVideoUsageModelCompatible } from "@alchemy-video/domain";
 import { findExactEntityAnchor, VideoGenerationInputSnapshotSchema } from "@alchemy-video/contracts";
-import type { AssetWorkspaceStore, TaskRunStore } from "@alchemy-video/persistence";
+import { hasTerminalProviderResult, type AssetWorkspaceStore, type TaskRunStore } from "@alchemy-video/persistence";
 import { StorageObjectAlreadyExistsError, createGeneratedVideoObjectKey, type StoragePort } from "@alchemy-video/storage-client";
 import type { VideoProviderPort } from "@alchemy-video/provider-video";
 import { VideoUsagePortError, type VideoUsagePort } from "@alchemy-video/credit-veyra";
 import { VideoBillingExecutor } from "./billing-executor.js";
 import { VideoProviderFailure, VideoProviderProtocolError, validateMp4Bytes } from "@alchemy-video/provider-video";
 
-import type { ReferenceDeliveryPort } from "./reference-delivery.js";
+import { ReferenceDeliveryUnavailableError, type ReferenceDeliveryPort } from "./reference-delivery.js";
 
 const readStream = async (stream: ReadableStream<Uint8Array>, maximumBytes = 50 * 1024 * 1024) => {
   const reader = stream.getReader();
@@ -131,7 +131,7 @@ export class MockVideoTaskExecutor {
     }> = {},
   ) {}
 
-  async execute(input: { workspaceId: string; taskRunId: string }) {
+  async execute(input: { workspaceId: string; taskRunId: string; recovery?: boolean }) {
     let taskRun = await this.store.findTaskRun(input.workspaceId, input.taskRunId);
     if (!taskRun || taskRun.supersededByTaskRunId != null || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(taskRun.status)) return taskRun;
 
@@ -192,11 +192,20 @@ export class MockVideoTaskExecutor {
     let providerAttemptId: string | undefined;
     let submissionUncertain = false;
     try {
-      const visualInput = await this.resolveVisualInput({
-        workspaceId: input.workspaceId,
-        projectId: taskRun.projectId,
-        inputSnapshot,
-      });
+      const priorAttempts = await this.store.listTaskRunAttempts(input.workspaceId, taskRun.id);
+      const hasPersistedProviderRequest = priorAttempts.some((item) => Boolean(item.providerRequestId) && !hasTerminalProviderResult(item));
+      const hasUnresolvedSubmissionReservation = priorAttempts.some((item) => Boolean(item.submissionReservedAt) && !item.providerRequestId);
+      // Reference relay is needed only before a first Provider POST. Recovery
+      // with a durable request ID must query/download that request even if the
+      // reference relay is currently unavailable; an uncertain reservation
+      // must remain fail-closed and never be mislabeled as a pre-submit error.
+      const visualInput = hasPersistedProviderRequest || hasUnresolvedSubmissionReservation
+        ? undefined
+        : await this.resolveVisualInput({
+          workspaceId: input.workspaceId,
+          projectId: taskRun.projectId,
+          inputSnapshot,
+        });
       const attempt = await this.store.ensureProviderAttempt({
         workspaceId: input.workspaceId,
         taskRunId: input.taskRunId,
@@ -229,6 +238,27 @@ export class MockVideoTaskExecutor {
       }
       let providerRequestId = attempt.providerRequestId;
       if (!providerRequestId) {
+        if (attempt.submissionReservedAt) {
+          // Another execution may still be inside the Provider POST. A durable
+          // reservation is a fence, not evidence that the request is terminal.
+          // Leave the TaskRun recoverable instead of failing it under that call.
+          if (input.recovery) {
+            return this.store.failTaskRun({
+              workspaceId: input.workspaceId,
+              taskRunId: taskRun.id,
+              providerAttemptId: attempt.id,
+              failureStage: "PROVIDER",
+              code: "PROVIDER_SUBMISSION_UNKNOWN",
+              message: "The video submission outcome is unknown. Reconcile the existing request before retrying.",
+              retryable: false,
+              now: new Date(),
+            });
+          }
+          throw new RetryableTaskExecutionError("A video submission is already reserved and its outcome is being reconciled.");
+        }
+        if (!visualInput) {
+          throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", false, "PROVIDER", "The video request cannot be recovered without its persisted request ID.");
+        }
         // A transport error cannot prove that an expensive POST was rejected.
         // Commit the same fail-closed reservation used by the C08 certifier
         // before crossing the Provider boundary, never after the response.
@@ -236,7 +266,7 @@ export class MockVideoTaskExecutor {
         if (!reserved) {
           const current = await this.store.findTaskRun(input.workspaceId, taskRun.id);
           if (!current || current.supersededByTaskRunId != null || current.status !== "RUNNING") return current;
-          throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", false, "PROVIDER", "The video submission outcome is unknown. Reconcile the existing request before retrying.");
+          throw new RetryableTaskExecutionError("Another Worker already reserved this video submission; the current execution must finish before recovery.");
         }
         submissionUncertain = true;
         const submission = await this.provider.submit({
@@ -304,6 +334,45 @@ export class MockVideoTaskExecutor {
       return await this.finishDownload({ workspaceId: input.workspaceId, taskRunId: taskRun.id, attemptId: attempt.id, projectId: taskRun.projectId, inputSnapshot });
     } catch (error) {
       if (error instanceof RetryableTaskExecutionError) throw error;
+      if (error instanceof ReferenceDeliveryUnavailableError) {
+        const attempts = await this.store.listTaskRunAttempts(input.workspaceId, taskRun.id);
+        const submittedAttempt = attempts.find((item) => Boolean(item.providerRequestId) && !hasTerminalProviderResult(item));
+        if (submittedAttempt) {
+          // A concurrent/recovered execution crossed the durable Provider
+          // boundary while this attempt was checking references. Re-enter the
+          // normal status/download recovery path instead of failing as pre-submit.
+          throw new RetryableTaskExecutionError("A persisted video request is being recovered.");
+        }
+        const unresolvedAttempt = attempts.find((item) => Boolean(item.submissionReservedAt) && !item.providerRequestId);
+        if (unresolvedAttempt) {
+          return this.store.failTaskRun({
+            workspaceId: input.workspaceId,
+            taskRunId: taskRun.id,
+            providerAttemptId: unresolvedAttempt.id,
+            failureStage: "PROVIDER",
+            code: "PROVIDER_SUBMISSION_UNKNOWN",
+            message: "The video submission outcome is unknown. Reconcile the existing request before retrying.",
+            retryable: false,
+            now: new Date(),
+          });
+        }
+        const unreservedAttempt = [...attempts].reverse().find((item) => item.status === "CREATED" && !item.providerRequestId && !item.submissionReservedAt);
+        console.warn(JSON.stringify({
+          event: "task_worker.reference_delivery.task_failed_before_provider",
+          ...(error.correlationId ? { correlation_id: error.correlationId } : {}),
+          task_run_id_suffix: taskRun.id.slice(-8),
+          reason: error.reason,
+        }));
+        return this.store.failTaskRun({
+          workspaceId: input.workspaceId,
+          taskRunId: taskRun.id,
+          ...(unreservedAttempt ? { providerAttemptId: unreservedAttempt.id } : {}),
+          code: "STORAGE_UNAVAILABLE",
+          message: "Reference image delivery failed before video submission.",
+          retryable: error.retryable,
+          now: new Date(),
+        });
+      }
       const failure = providerStageError(error);
       if (submissionUncertain) {
         return this.store.failTaskRun({
@@ -311,7 +380,7 @@ export class MockVideoTaskExecutor {
           taskRunId: taskRun.id,
           ...(providerAttemptId ? { providerAttemptId } : {}),
           failureStage: "PROVIDER",
-          code: failure.code,
+          code: failure.retryable ? "PROVIDER_SUBMISSION_UNKNOWN" : failure.code,
           message: failure.retryable ? "The video submission outcome is unknown. Reconcile the existing request before retrying." : failure.message,
           retryable: false,
           now: new Date(),
@@ -503,7 +572,7 @@ export class MockVideoTaskExecutor {
       const maxAttempts = input.maxAttempts ?? 1;
       for (let attemptNo = 1; attemptNo <= maxAttempts; attemptNo += 1) {
         try {
-          const result = await this.execute({ workspaceId: taskRun.workspaceId, taskRunId: taskRun.id });
+          const result = await this.execute({ workspaceId: taskRun.workspaceId, taskRunId: taskRun.id, recovery: true });
           recovered.push({ workspaceId: taskRun.workspaceId, taskRunId: taskRun.id, attempts: attemptNo, status: result?.status });
           break;
         } catch (error) {
@@ -527,7 +596,7 @@ export class MockVideoTaskExecutor {
       const maxAttempts = input.maxAttempts ?? 3;
       for (let attemptNo = 1; attemptNo <= maxAttempts; attemptNo += 1) {
         try {
-          const result = await this.execute({ workspaceId: taskRun.workspaceId, taskRunId: taskRun.id });
+          const result = await this.execute({ workspaceId: taskRun.workspaceId, taskRunId: taskRun.id, recovery: true });
           recovered.push({ workspaceId: taskRun.workspaceId, taskRunId: taskRun.id, attempts: attemptNo, status: result?.status });
           break;
         } catch (error) {

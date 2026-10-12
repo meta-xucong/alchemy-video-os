@@ -5,7 +5,7 @@ import { VideoProviderFailure, VideoProviderProtocolError } from "@alchemy-video
 import { ReferenceDeliveryTokenCodec } from "@alchemy-video/reference-delivery";
 
 import { createWorkerVideoProviderRuntime } from "../src/provider-runtime.js";
-import { createWorkerReferenceDeliveryPort, ReferenceDeliveryReadinessError, waitForWorkerReferenceDeliveryReady } from "../src/reference-delivery.js";
+import { createWorkerReferenceDeliveryPort, ReferenceDeliveryReadinessError, ReferenceDeliveryUnavailableError, waitForWorkerReferenceDeliveryReady } from "../src/reference-delivery.js";
 import { createSub2ApiHttpsTransport, type WorkerFetchResponse } from "../src/sub2api-https-transport.js";
 
 const deliveryHeaders = (values: Record<string, string> = {}) => ({
@@ -209,7 +209,7 @@ test("real reference delivery fails before a Provider request when its HTTPS rel
       projectId: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX",
       visualInput: { mode: "FIRST_FRAME", references: [{ asset_id: "ast_01J4N8QZ8PCW2N2G6D2XJXJXJX", sha256: "a".repeat(64), mime_type: "image/png", position: 0 }] },
     }),
-    VideoProviderFailure,
+    ReferenceDeliveryUnavailableError,
   );
 });
 
@@ -304,7 +304,7 @@ test("reference delivery preflight rejects invalid MIME without retrying or expo
   });
   await assert.rejects(
     () => port.createVisualInput({ workspaceId: "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX", projectId: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX", visualInput: referenceInput() }),
-    (error: unknown) => error instanceof VideoProviderFailure && error.code === "PROVIDER_PROTOCOL_INVALID" && !error.retryable && !error.message.includes("video.example.invalid"),
+    (error: unknown) => error instanceof ReferenceDeliveryUnavailableError && error.reason === "INVALID_RESPONSE" && !error.retryable && !error.message.includes("video.example.invalid"),
   );
   assert.equal(urls.length, 1);
 });
@@ -319,7 +319,7 @@ test("reference delivery preflight turns a timeout into a recoverable provider o
   });
   await assert.rejects(
     () => port.createVisualInput({ workspaceId: "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX", projectId: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX", visualInput: referenceInput() }),
-    (error: unknown) => error instanceof VideoProviderFailure && error.code === "PROVIDER_UNAVAILABLE" && error.retryable,
+    (error: unknown) => error instanceof ReferenceDeliveryUnavailableError && error.reason === "PRECHECK_UNAVAILABLE" && error.retryable,
   );
 });
 
@@ -431,7 +431,7 @@ test("reference preflight classifies DNS failures without exposing the signed im
     });
     await assert.rejects(
       () => port.createVisualInput({ workspaceId: "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX", projectId: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX", visualInput: referenceInput() }),
-      (error: unknown) => error instanceof VideoProviderFailure && error.code === "PROVIDER_UNAVAILABLE" && error.retryable,
+      (error: unknown) => error instanceof ReferenceDeliveryUnavailableError && error.retryable,
     );
   } finally {
     console.warn = originalWarn;
@@ -455,7 +455,7 @@ test("reference preflight classifies OpenSSL transport codes as TLS without expo
     });
     await assert.rejects(
       () => port.createVisualInput({ workspaceId: "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX", projectId: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX", visualInput: referenceInput() }),
-      (error: unknown) => error instanceof VideoProviderFailure && error.code === "PROVIDER_UNAVAILABLE" && error.retryable,
+      (error: unknown) => error instanceof ReferenceDeliveryUnavailableError && error.retryable,
     );
   } finally {
     console.warn = originalWarn;
