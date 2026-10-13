@@ -1523,7 +1523,10 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
         workspaceId: targetWorkspaceId, taskRunId, event: eventMetadata(),
       });
       const failCurrent = async (taskRunId: string) => {
-        await tasks.failTaskRun({ workspaceId, taskRunId, code: "PROVIDER_REJECTED", message: "Mock terminal failure.", retryable: false, now: new Date() });
+        const current = await tasks.findTaskRun(workspaceId, taskRunId);
+        if (current?.status !== "FAILED") {
+          await tasks.failTaskRun({ workspaceId, taskRunId, code: "PROVIDER_REJECTED", message: "Mock terminal failure.", retryable: false, now: new Date() });
+        }
         const failed = taskFailedEvent({ workspaceId, projectId, taskRunId, retryable: true });
         failed.data.error_code = "PROVIDER_REJECTED";
         await production.recordProductionTaskFailed({ event: failed, now: new Date() });
@@ -1751,10 +1754,10 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
             }),
             consumerName: "recovery-stale-worker", workerId: "recovery-stale-worker", now: new Date(), leaseMs: 10_000,
           }), "DUPLICATE");
-          assert.equal(await tasks.ensureProviderAttempt({ workspaceId, taskRunId: taskA, providerAttemptId: createPrefixedId("att"), provider: "mock", model: "mock-video-v1", now: new Date() }), undefined);
-          assert.equal(await tasks.reserveProviderSubmission({ workspaceId, taskRunId: taskA, providerAttemptId: attemptA, now: new Date() }), false);
+          await assert.rejects(() => tasks.ensureProviderAttempt({ workspaceId, taskRunId: taskA, providerAttemptId: createPrefixedId("att"), provider: "mock", model: "mock-video-v1", now: new Date() }), TaskRunExecutionOwnershipLostError);
+          await assert.rejects(() => tasks.reserveProviderSubmission({ workspaceId, taskRunId: taskA, providerAttemptId: attemptA, now: new Date() }), TaskRunExecutionOwnershipLostError);
           assert.equal((await tasks.listRecoverableVideoTaskRuns({ limit: 1_000, statuses: ["FAILED"] })).some((task) => task.id === taskA), false);
-          await tasks.failTaskRun({ workspaceId, taskRunId: taskA, providerAttemptId: attemptA, code: "PROVIDER_UNAVAILABLE", message: "Stale callback.", retryable: true, now: new Date() });
+          await assert.rejects(() => tasks.failTaskRun({ workspaceId, taskRunId: taskA, providerAttemptId: attemptA, code: "PROVIDER_UNAVAILABLE", message: "Stale callback.", retryable: true, now: new Date() }), TaskRunExecutionOwnershipLostError);
           await tasks.finalizeTaskRunExecutionFailure({ workspaceId, taskRunId: taskA, code: "PROVIDER_UNAVAILABLE", message: "Stale execution.", now: new Date() });
           assert.deepEqual(await state(), beforeStale, "only the duplicate-consumption receipt may change");
         });
