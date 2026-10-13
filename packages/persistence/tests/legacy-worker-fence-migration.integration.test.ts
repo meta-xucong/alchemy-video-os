@@ -216,7 +216,7 @@ test("PostgreSQL 16 upgrades 0027 in place, retaining all request IDs, reservati
     await migrate(drizzle({ client }), { migrationsFolder });
     assert.deepEqual((await client.query("SELECT to_jsonb(attempt) AS row FROM provider_attempts attempt ORDER BY id")).rows, expectedRows);
     assert.deepEqual((await client.query("SELECT to_jsonb(task) AS row FROM task_runs task ORDER BY id")).rows,
-      beforeTasks.rows.map(({ row }) => ({ row: { ...row, superseded_by_task_run_id: null } })));
+      beforeTasks.rows.map(({ row }) => ({ row: { ...row, superseded_by_task_run_id: null, execution_fence_token: null } })));
     assert.deepEqual(await requestIndex(client), {
       ...beforeIndex,
       definition: beforeIndex.definition.replaceAll("provider_request_id", "provider_request_id_v2"),
@@ -228,7 +228,7 @@ test("PostgreSQL 16 upgrades 0027 in place, retaining all request IDs, reservati
     assert.equal(current[0]?.providerRequestId, "offline-known-request");
     assert.equal(new Date(current[0]!.submissionReservedAt!).toISOString(), "2026-10-09T01:02:03.456Z");
     await assertCurrentMappingAndUniqueness(client);
-    assert.equal((await client.query('SELECT count(*)::integer AS count FROM drizzle.__drizzle_migrations')).rows[0].count, 30);
+    assert.equal((await client.query('SELECT count(*)::integer AS count FROM drizzle.__drizzle_migrations')).rows[0].count, 31);
   });
 });
 
@@ -242,6 +242,6 @@ test("PostgreSQL 16 fresh migrations include the fence and rerun without changin
     const before = await client.query("SELECT to_jsonb(attempt) AS row FROM provider_attempts attempt ORDER BY id");
     await migrate(db, { migrationsFolder });
     assert.deepEqual((await client.query("SELECT to_jsonb(attempt) AS row FROM provider_attempts attempt ORDER BY id")).rows, before.rows);
-    assert.equal((await client.query('SELECT count(*)::integer AS count FROM drizzle.__drizzle_migrations')).rows[0].count, 30);
+    assert.equal((await client.query('SELECT count(*)::integer AS count FROM drizzle.__drizzle_migrations')).rows[0].count, 31);
   });
 });

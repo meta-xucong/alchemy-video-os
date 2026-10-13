@@ -16,6 +16,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  uuid,
   varchar,
 } from "drizzle-orm/pg-core";
 
@@ -1310,6 +1311,7 @@ export const taskRuns = pgTable(
     inputSnapshot: jsonb("input_snapshot").$type<Record<string, unknown>>().notNull(),
     resultAssetId: text("result_asset_id"),
     supersededByTaskRunId: text("superseded_by_task_run_id"),
+      executionFenceToken: uuid("execution_fence_token"),
     error: jsonb().$type<Record<string, unknown>>(),
     retryAt: timestamp("retry_at", { withTimezone: true, mode: "string" }),
     createdAt: createdAt(),

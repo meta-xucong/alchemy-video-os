@@ -5,6 +5,7 @@ import { createPrefixedId } from "@alchemy-video/domain";
 import { Sub2ApiVideoProvider } from "@alchemy-video/provider-video";
 import { createInMemoryStoragePort } from "@alchemy-video/storage-client";
 import type { TaskRunStore } from "@alchemy-video/persistence";
+import { withTestExecutionFence } from "../../../packages/persistence/tests/execution-fence-test-helper.js";
 
 import { InMemoryTaskRunStore } from "../../control-api/src/task-run-repository.js";
 import { InMemoryAssetWorkspaceStore } from "../../control-api/src/asset-repository.js";
@@ -42,7 +43,7 @@ const prepareTask = async (start = true, firstEventId?: string) => {
   const assets = new InMemoryAssetWorkspaceStore(control);
   await assets.createShot({ scope: "reservation:shot", idempotencyKey: "shot", requestHash: "b".repeat(64), workspaceId, projectId, shotId, position: 0, prompt: "Offline request.", model: "grok-imagine-video-1.5", generationSettings: {}, referenceBindings: [] });
   await assets.setShotGenerationState({ workspaceId, shotId, status: "READY" });
-  const store = new InMemoryTaskRunStore(assets);
+  const store = withTestExecutionFence(new InMemoryTaskRunStore(assets));
   const taskRunId = createPrefixedId("tsk");
   assert.equal((await store.createTaskRun({
     scope: "reservation:task", idempotencyKey: "task", requestHash: "c".repeat(64), workspaceId, taskRunId, shotId,
@@ -122,11 +123,11 @@ test("a crash after reservation and before POST remains uncertain on restart", a
   assert.equal(await context.store.reserveProviderSubmission({ ...context, providerAttemptId: attempt.id, now: new Date() }), true);
   let calls = 0;
   const recovered = await runtime(context.store, async () => { calls += 1; throw new Error("No request is allowed."); }).recover({ limit: 10, maxAttempts: 1 });
-  assert.equal(recovered[0]?.status, "FAILED");
-  const failed = await context.store.findTaskRun(context.workspaceId, context.taskRunId);
-  assert.equal(failed?.status, "FAILED");
-  assert.equal(failed?.error?.code, "PROVIDER_SUBMISSION_UNKNOWN");
-  assert.equal(failed?.error?.retryable, false);
+  assert.equal(recovered[0]?.deferred, true);
+  assert.equal(recovered[0]?.deferredKind, "PROVIDER_SUBMISSION_UNKNOWN");
+  assert.match(recovered[0]?.deferredReason ?? "", /video submission is already reserved/u);
+  const deferred = await context.store.findTaskRun(context.workspaceId, context.taskRunId);
+  assert.equal(deferred?.status, "RUNNING", "recovery must preserve an unresolved in-flight reservation");
   assert.equal((await retry(context)).kind, "STATE_INVALID");
   assert.equal(calls, 0);
 });
@@ -149,7 +150,10 @@ for (const commit of [false, true]) {
     context.store.reserveProviderSubmission = reserve;
     if (commit) {
       const recovered = await runtime(context.store, fetcher).recover({ limit: 10, maxAttempts: 1 });
-      assert.equal(recovered[0]?.status, "FAILED");
+      assert.equal(recovered[0]?.deferred, true);
+      assert.equal(recovered[0]?.deferredKind, "PROVIDER_SUBMISSION_UNKNOWN");
+      assert.match(recovered[0]?.deferredReason ?? "", /video submission is already reserved/u);
+      assert.equal((await context.store.findTaskRun(context.workspaceId, context.taskRunId))?.status, "RUNNING");
       assert.equal((await retry(context)).kind, "STATE_INVALID");
       assert.equal(posts, 0);
     } else {
@@ -207,13 +211,13 @@ test("submission reservation is exclusive, scoped, and unavailable for queued or
   assert.ok(attempt);
   const input = { workspaceId: context.workspaceId, taskRunId: context.taskRunId, providerAttemptId: attempt.id, now: new Date() };
   assert.equal(await context.store.reserveProviderSubmission(input), false);
-  assert.equal(await context.store.reserveProviderSubmission({ ...input, workspaceId: createPrefixedId("ws") }), false);
+  await assert.rejects(context.store.reserveProviderSubmission({ ...input, workspaceId: createPrefixedId("ws") }), /ownership was lost/u, "a foreign workspace cannot acquire this TaskRun's fence");
   const task = await context.store.findTaskRun(context.workspaceId, context.taskRunId);
   assert.ok(task);
   // Seed the existing cancellation terminal state; no public cancellation API
   // exists in this repository. The executor and reservation must both refuse it.
   task.status = "ABANDONED";
-  assert.equal(await context.store.reserveProviderSubmission(input), false);
+  await assert.rejects(context.store.reserveProviderSubmission(input), /ownership was lost/u, "terminal rows cannot issue a fresh execution token");
   let calls = 0;
   assert.equal((await runtime(context.store, async () => { calls += 1; throw new Error("No request is allowed."); }).execute(context))?.status, "ABANDONED");
   assert.equal(calls, 0);
@@ -221,19 +225,20 @@ test("submission reservation is exclusive, scoped, and unavailable for queued or
   const running = await prepareTask();
   const active = await ensureAttempt(running);
   assert.ok(active);
-  const reservations = await Promise.all([0, 1].map(() => running.store.reserveProviderSubmission({ ...running, providerAttemptId: active.id, now: new Date() })));
+  const reservations = await running.store.withTaskRunExecution(running, (lease) => Promise.all([0, 1].map(() => running.store.reserveProviderSubmission({
+    ...running, executionFenceToken: lease.fenceToken, providerAttemptId: active.id, now: new Date(),
+  }))));
   assert.deepEqual(reservations, [true, false]);
 });
 
-test("queue exception finalization preserves an unknown submission and rejects explicit retry", async () => {
+test("queue exception finalization defers an unknown submission and rejects explicit retry", async () => {
   const context = await prepareTask();
   const attempt = await ensureAttempt(context);
   assert.ok(attempt);
   await context.store.reserveProviderSubmission({ ...context, providerAttemptId: attempt.id, now: new Date() });
-  const failed = await context.store.finalizeTaskRunExecutionFailure({ ...context, code: "PROVIDER_UNAVAILABLE", message: "Synthetic exhausted delivery.", now: new Date() });
-  assert.equal(failed?.status, "FAILED");
-  assert.equal(failed?.error?.code, "PROVIDER_SUBMISSION_UNKNOWN");
-  assert.equal(failed?.error?.retryable, false);
+  const deferred = await context.store.finalizeTaskRunExecutionFailure({ ...context, code: "PROVIDER_UNAVAILABLE", message: "Synthetic exhausted delivery.", now: new Date() });
+  assert.equal(deferred?.status, "RUNNING");
+  assert.equal(deferred?.error, null);
   assert.equal((await retry(context)).kind, "STATE_INVALID");
   assert.ok((await context.store.listTaskRunAttempts(context.workspaceId, context.taskRunId))[0]?.submissionReservedAt);
 });

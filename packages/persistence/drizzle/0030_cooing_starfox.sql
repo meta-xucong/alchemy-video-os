@@ -1,0 +1,1 @@
+ALTER TABLE "task_runs" ADD COLUMN "execution_fence_token" uuid;

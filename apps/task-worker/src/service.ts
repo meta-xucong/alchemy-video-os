@@ -71,6 +71,36 @@ export const createTaskRunQueueMessage = (outbox: PersistedOutboxEvent): Interna
   });
 };
 
+export const createC06RecoveryScheduler = (input: {
+  intervalMs: number;
+  run: () => Promise<void>;
+  onError?: (error: unknown) => void;
+}) => {
+  let stopped = false;
+  let inFlight: Promise<void> | undefined;
+  const runNow = () => {
+    if (stopped) return Promise.resolve();
+    if (inFlight) return inFlight;
+    const current = Promise.resolve()
+      .then(input.run)
+      .catch((error: unknown) => { input.onError?.(error); })
+      .finally(() => {
+        if (inFlight === current) inFlight = undefined;
+      });
+    inFlight = current;
+    return current;
+  };
+  const timer = input.intervalMs > 0 ? setInterval(() => { void runNow(); }, input.intervalMs) : undefined;
+  return {
+    runNow,
+    async stop() {
+      stopped = true;
+      if (timer) clearInterval(timer);
+      await inFlight;
+    },
+  };
+};
+
 export class TaskRunEventConsumer {
   constructor(
     private readonly store: Pick<TaskRunStore, "processEvent" | "releaseConsumerEvent" | "finalizeTaskRunExecutionFailure">,
@@ -139,10 +169,27 @@ export const recoverC06TaskRuns = async (executor: Pick<MockVideoTaskExecutor, "
   limit?: number;
   maxAttempts?: number;
   onFailure?: (failure: { workspaceId: string; taskRunId: string; reason: string }) => void;
+  onDeferred?: (deferred: { workspaceId: string; taskRunId: string; kind: "EXECUTION_BUSY" | "PROVIDER_SUBMISSION_UNKNOWN" | "PROVIDER_RETRY_PENDING"; reason: string }) => void;
   finalizeFailure?: (failure: { workspaceId: string; taskRunId: string; reason: string }) => Promise<void>;
+  knownProviderRequestOnly?: boolean;
+  deferRetryableErrors?: boolean;
 } = {}) => {
-  const results = await executor.recover({ limit: input.limit ?? 100, maxAttempts: input.maxAttempts ?? 3 });
+  const results = await executor.recover({
+    limit: input.limit ?? 100,
+    maxAttempts: input.maxAttempts ?? 3,
+    ...(input.knownProviderRequestOnly ? { knownProviderRequestOnly: true } : {}),
+    deferRetryableErrors: input.deferRetryableErrors ?? true,
+  });
   for (const result of results) {
+    if (result.deferred) {
+      input.onDeferred?.({
+        workspaceId: result.workspaceId,
+        taskRunId: result.taskRunId,
+        kind: result.deferredKind ?? "EXECUTION_BUSY",
+        reason: result.deferredReason ?? "Execution recovery was safely deferred.",
+      });
+      continue;
+    }
     if (result.failure) {
       const failure = { workspaceId: result.workspaceId, taskRunId: result.taskRunId, reason: result.failure };
       input.onFailure?.(failure);

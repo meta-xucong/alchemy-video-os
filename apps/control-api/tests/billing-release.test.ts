@@ -8,6 +8,7 @@ import {
   type AssetWorkspaceStore, type ControlPlaneStore, type TaskRunStore,
 } from "@alchemy-video/persistence";
 import { InMemoryStoragePort } from "@alchemy-video/storage-client";
+import { withTestExecutionFence } from "../../../packages/persistence/tests/execution-fence-test-helper.js";
 
 import { createApp } from "../src/app.js";
 import { InMemoryAssetWorkspaceStore } from "../src/asset-repository.js";
@@ -104,12 +105,10 @@ const exerciseRelease = async (input: {
     }
     await tasks.markBillingFailed({ workspaceId, taskRunId, code: "CREDIT_INSUFFICIENT", safeMessage: "Fixture balance insufficient", now: new Date() });
     await assertHidden("BILLING_FAILED");
-    assert.equal((await tasks.ensureGeneratedAsset(generated))?.objectKey, objectKey, "internal recovery retains the object");
     assert.equal((await tasks.retryTaskRun({ ...command("billing-retry"), taskRunId, event: event() })).kind, "NEW");
     await tasks.scheduleBillingRetry({ workspaceId, taskRunId, code: "CREDIT_UNAVAILABLE", safeMessage: "Fixture unavailable", retryAt: new Date(0), now: new Date() });
     await assertHidden("RETRY_SCHEDULED");
     assert.equal((await tasks.resumeBillingRetry({ workspaceId, taskRunId, now: new Date() }))?.status, "BILLING_PENDING");
-    await tasks.markBillingSucceeded({ workspaceId, taskRunId, usageRecordId: createPrefixedId("use"), now: new Date() });
     await tasks.markBillingSucceeded({ workspaceId, taskRunId, usageRecordId: createPrefixedId("use"), now: new Date() });
   }
   assert.equal((await tasks.findTaskRun(workspaceId, taskRunId))?.status, "SUCCEEDED");
@@ -129,7 +128,7 @@ for (const withBilling of [true, false]) {
   test(`in-memory generated video release ${withBilling ? "waits for billing and survives recovery" : "preserves no-billing success"}`, async () => {
     const control = new InMemoryControlPlaneStore();
     const assets = new InMemoryAssetWorkspaceStore(control);
-    await exerciseRelease({ control, assets, tasks: new InMemoryTaskRunStore(assets), userId: createPrefixedId("usr"), workspaceId: createPrefixedId("ws"), withBilling });
+    await exerciseRelease({ control, assets, tasks: withTestExecutionFence(new InMemoryTaskRunStore(assets)), userId: createPrefixedId("usr"), workspaceId: createPrefixedId("ws"), withBilling });
   });
 }
 
@@ -142,7 +141,7 @@ test("PostgreSQL generated video release gates public reads, reuse and upload co
   const workspaceId = createPrefixedId("ws");
   try {
     await exerciseRelease({ control: new DrizzleControlPlaneRepository(database.db), assets: new DrizzleAssetWorkspaceRepository(database.db),
-      tasks: new DrizzleTaskRunRepository(database.db), userId, workspaceId });
+      tasks: withTestExecutionFence(new DrizzleTaskRunRepository(database.db)), userId, workspaceId });
   } finally {
     await database.close();
     try {

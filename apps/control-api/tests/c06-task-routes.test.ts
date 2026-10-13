@@ -11,6 +11,7 @@ import { createInMemoryAssetWorkspaceStore } from "../src/asset-repository.js";
 import { createApp } from "../src/app.js";
 import { createInMemoryControlPlaneStore } from "../src/repository.js";
 import { createInMemoryTaskRunStore } from "../src/task-run-repository.js";
+import { withTestExecutionFence } from "../../../packages/persistence/tests/execution-fence-test-helper.js";
 
 const readJson = async (response: Response) => response.json() as Promise<Record<string, any>>;
 
@@ -555,7 +556,7 @@ test("provider-input HEAD emits safe storage diagnostics and accepts only a UUID
 test("C06 retries only failed runs and queues the original immutable snapshot", async () => {
   const control = createInMemoryControlPlaneStore();
   const assets = createInMemoryAssetWorkspaceStore(control);
-  const tasks = createInMemoryTaskRunStore(assets);
+  const tasks = withTestExecutionFence(createInMemoryTaskRunStore(assets));
   const app = createApp({ store: control, assetStore: assets, taskStore: tasks });
   const { shotId } = await createReadyShot(app);
   const created = await readJson(await app.request(`http://localhost/api/v1/shots/${shotId}/generations`, {

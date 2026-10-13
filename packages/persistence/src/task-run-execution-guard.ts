@@ -1,9 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Socket } from "node:net";
 import { Client, type ClientConfig } from "pg";
 
 export type TaskRunExecutionScope = { workspaceId: string; taskRunId: string };
 export type AssertTaskRunExecutionActive = () => void;
+export type TaskRunExecutionLease = AssertTaskRunExecutionActive & { fenceToken: string; assertActive: AssertTaskRunExecutionActive };
 
 export class TaskRunExecutionBusyError extends Error {
   constructor() {
@@ -27,20 +28,21 @@ export class TaskRunExecutionGenerationAmbiguousError extends Error {
 }
 
 export interface TaskRunExecutionGuard {
-  withTaskRunExecution<T>(scope: TaskRunExecutionScope, execute: (assertActive: AssertTaskRunExecutionActive) => Promise<T>): Promise<T>;
+  withTaskRunExecution<T>(scope: TaskRunExecutionScope, execute: (lease: TaskRunExecutionLease) => Promise<T>): Promise<T>;
 }
 
 export class InMemoryTaskRunExecutionGuard implements TaskRunExecutionGuard {
   private readonly active = new Set<string>();
 
-  async withTaskRunExecution<T>(scope: TaskRunExecutionScope, execute: (assertActive: AssertTaskRunExecutionActive) => Promise<T>): Promise<T> {
+  async withTaskRunExecution<T>(scope: TaskRunExecutionScope, execute: (lease: TaskRunExecutionLease) => Promise<T>): Promise<T> {
     const key = JSON.stringify([scope.workspaceId, scope.taskRunId]);
     if (this.active.has(key)) throw new TaskRunExecutionBusyError();
     this.active.add(key);
     try {
-      return await execute(() => {
+      const assertActive = () => {
         if (!this.active.has(key)) throw new TaskRunExecutionOwnershipLostError();
-      });
+      };
+      return await execute(Object.assign(assertActive, { fenceToken: randomUUID(), assertActive }));
     } finally {
       this.active.delete(key);
     }
@@ -53,7 +55,7 @@ export class InMemoryTaskRunExecutionGuard implements TaskRunExecutionGuard {
 export class PostgresTaskRunExecutionGuard implements TaskRunExecutionGuard {
   constructor(private readonly config: ClientConfig) {}
 
-  async withTaskRunExecution<T>(scope: TaskRunExecutionScope, execute: (assertActive: AssertTaskRunExecutionActive) => Promise<T>): Promise<T> {
+  async withTaskRunExecution<T>(scope: TaskRunExecutionScope, execute: (lease: TaskRunExecutionLease) => Promise<T>): Promise<T> {
     const hash = createHash("sha256").update(JSON.stringify(["video-execution-v1", scope.workspaceId, scope.taskRunId])).digest();
     const key = [hash.readInt32BE(0), hash.readInt32BE(4)];
     const socket = new Socket();
@@ -72,7 +74,8 @@ export class PostgresTaskRunExecutionGuard implements TaskRunExecutionGuard {
       acquired = result.rows[0]?.acquired === true;
       assertActive();
       if (!acquired) throw new TaskRunExecutionBusyError();
-      const value = await execute(assertActive);
+      const lease = Object.assign(assertActive, { fenceToken: randomUUID(), assertActive });
+      const value = await execute(lease);
       assertActive();
       return value;
     } finally {

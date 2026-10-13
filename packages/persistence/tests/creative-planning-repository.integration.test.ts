@@ -406,7 +406,11 @@ test("C11 Drizzle planning persists the durable review path without creating exe
     const [consumption] = await database.db
       .select({ completedAt: eventConsumptions.completedAt })
       .from(eventConsumptions)
-      .where(and(eq(eventConsumptions.workspaceId, workspaceId), eq(eventConsumptions.eventId, message.event_id)));
+      .where(and(
+        eq(eventConsumptions.workspaceId, workspaceId),
+        eq(eventConsumptions.eventId, message.event_id),
+        eq(eventConsumptions.consumerName, "c11-pg-consumer"),
+      ));
     assert.ok(consumption?.completedAt);
     const eventTypes = await database.db
       .select({ eventType: outboxEvents.eventType })

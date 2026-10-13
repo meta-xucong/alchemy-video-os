@@ -1927,7 +1927,7 @@ export class DrizzleProductionRepository implements ProductionStore {
 
       if (!taskRun) throw new Error("Production recovery task creation was not persisted.");
       const [superseded] = await transaction.update(taskRuns)
-        .set({ supersededByTaskRunId: taskRunId, updatedAt: now })
+        .set({ supersededByTaskRunId: taskRunId, executionFenceToken: null, updatedAt: now })
         .where(and(
           eq(taskRuns.workspaceId, input.workspaceId),
           eq(taskRuns.projectId, run.projectId),

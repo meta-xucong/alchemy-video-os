@@ -7,6 +7,8 @@ import { createDatabase } from "../src/db.js";
 import { DrizzleControlPlaneRepository } from "../src/control-plane-repository.js";
 import { DrizzleAssetWorkspaceRepository } from "../src/asset-workspace-repository.js";
 import { DrizzleTaskRunRepository } from "../src/task-run-repository.js";
+import { TaskRunExecutionOwnershipLostError } from "../src/task-run-execution-guard.js";
+import { withTestExecutionFence } from "./execution-fence-test-helper.js";
 import { commandDeduplications, providerAttempts, taskRuns, users, workspaces } from "../src/schema.js";
 
 const event = () => ({ eventId: createPrefixedId("evt"), messageId: createPrefixedId("msg"), traceId: createPrefixedId("trc"), correlationId: createPrefixedId("cor") });
@@ -21,7 +23,7 @@ test("PostgreSQL submission reservation is exclusive and survives restart, failu
   const scope = `submission-reservation:${taskRunId}`;
   const control = new DrizzleControlPlaneRepository(database.db);
   const assets = new DrizzleAssetWorkspaceRepository(database.db);
-  const tasks = new DrizzleTaskRunRepository(database.db);
+  const tasks = withTestExecutionFence(new DrizzleTaskRunRepository(database.db));
   const startedEvents = new Set<string>();
   const start = async (repository: DrizzleTaskRunRepository) => {
     const queued = (await repository.listWorkspaceEvents({ workspaceId, limit: 100 }))
@@ -42,22 +44,25 @@ test("PostgreSQL submission reservation is exclusive and survives restart, failu
       scope: `${scope}:create`, idempotencyKey: "create", requestHash: "d".repeat(64), workspaceId, taskRunId, shotId,
       kind: "VIDEO_GENERATION", inputSnapshot: { model: "mock-video-v1", prompt: "Offline request.", duration: 1, resolution: "160x90", ratio: "16:9", reference_asset_ids: [] }, event: event(),
     })).kind, "NEW");
-    const ensure = () => tasks.ensureProviderAttempt({ workspaceId, taskRunId, providerAttemptId: createPrefixedId("att"), provider: "mock", model: "mock-video-v1", now: new Date() });
-    const [first, second] = await Promise.all([ensure(), ensure()]);
+    const ensure = (repository: DrizzleTaskRunRepository = tasks, executionFenceToken?: string) => repository.ensureProviderAttempt({ workspaceId, taskRunId, ...(executionFenceToken ? { executionFenceToken } : {}), providerAttemptId: createPrefixedId("att"), provider: "mock", model: "mock-video-v1", now: new Date() });
+    const [first, second] = await tasks.withTaskRunExecution({ workspaceId, taskRunId }, (lease) => Promise.all([ensure(tasks, lease.fenceToken), ensure(tasks, lease.fenceToken)]));
     assert.ok(first);
     assert.equal(second?.id, first.id);
     const reserveInput = { workspaceId, taskRunId, providerAttemptId: first.id, now: new Date() };
     assert.equal(await tasks.reserveProviderSubmission(reserveInput), false, "QUEUED is not a submit authorization");
-    assert.equal(await tasks.reserveProviderSubmission({ ...reserveInput, workspaceId: createPrefixedId("ws") }), false);
+    await assert.rejects(tasks.reserveProviderSubmission({ ...reserveInput, workspaceId: createPrefixedId("ws") }), TaskRunExecutionOwnershipLostError);
     await start(tasks);
-    const reservations = await Promise.all([tasks.reserveProviderSubmission(reserveInput), tasks.reserveProviderSubmission(reserveInput)]);
+    const reservations = await tasks.withTaskRunExecution({ workspaceId, taskRunId }, (lease) => Promise.all([
+      tasks.reserveProviderSubmission({ ...reserveInput, executionFenceToken: lease.fenceToken }),
+      tasks.reserveProviderSubmission({ ...reserveInput, executionFenceToken: lease.fenceToken }),
+    ]));
     assert.equal(reservations.filter(Boolean).length, 1);
 
-    const restarted = new DrizzleTaskRunRepository(database.db);
+    const restarted = withTestExecutionFence(new DrizzleTaskRunRepository(database.db));
     assert.equal(await restarted.reserveProviderSubmission(reserveInput), false);
-    const failed = await restarted.finalizeTaskRunExecutionFailure({ workspaceId, taskRunId, code: "PROVIDER_UNAVAILABLE", message: "Synthetic delivery exhaustion.", now: new Date() });
-    assert.equal(failed?.status, "FAILED");
-    assert.equal(failed?.error?.retryable, false);
+    const deferred = await restarted.finalizeTaskRunExecutionFailure({ workspaceId, taskRunId, code: "PROVIDER_UNAVAILABLE", message: "Synthetic delivery exhaustion.", now: new Date() });
+    assert.equal(deferred?.status, "RUNNING");
+    assert.equal(deferred?.error, null);
     const retry = (idempotencyKey: string) => restarted.retryTaskRun({ scope: `${scope}:retry`, idempotencyKey, requestHash: "e".repeat(64), workspaceId, taskRunId, event: event() });
     assert.equal((await retry("unknown")).kind, "STATE_INVALID");
     const [uncertain] = await restarted.listTaskRunAttempts(workspaceId, taskRunId);
@@ -65,14 +70,18 @@ test("PostgreSQL submission reservation is exclusive and survives restart, failu
     assert.ok(uncertain?.submissionReservedAt);
     assert.equal(uncertain?.providerRequestId, null);
 
-    // A slow first submit may finish after another delivery has failed closed.
-    // Persist its real ID even in FAILED, then explicit retry resumes GET only.
+    // A slow first submit may finish after queue exhaustion. Persist its late ID
+    // while the run remains RUNNING; only a verified terminal Provider status
+    // may allow a public retry, which then resumes GET only.
     const providerRequestId = `offline-${taskRunId}`;
     await restarted.recordProviderSubmission({ ...reserveInput, providerRequestId, now: new Date() });
     assert.equal((await restarted.listTaskRunAttempts(workspaceId, taskRunId))[0]?.providerRequestId, providerRequestId);
+    assert.equal((await restarted.findTaskRun(workspaceId, taskRunId))?.status, "PROVIDER_PROCESSING");
+    assert.equal((await retry("known-before-status")).kind, "STATE_INVALID");
+    await restarted.failTaskRun({ ...reserveInput, failureStage: "PROVIDER", providerRequestTerminal: true, code: "PROVIDER_REJECTED", message: "Synthetic terminal status from a verified Provider poll.", retryable: false, now: new Date() });
     assert.equal((await retry("known")).kind, "NEW");
     await start(restarted);
-    assert.equal((await ensure())?.providerRequestId, providerRequestId);
+    assert.equal((await restarted.listTaskRunAttempts(workspaceId, taskRunId))[0]?.providerRequestId, providerRequestId);
     assert.equal(await restarted.reserveProviderSubmission(reserveInput), false);
     await assert.rejects(restarted.recordProviderSubmission({ ...reserveInput, providerRequestId: "different-offline-id", now: new Date() }), /PROVIDER_RESUBMIT_FORBIDDEN/);
     assert.equal((await restarted.listTaskRunAttempts(workspaceId, taskRunId)).length, 1);
@@ -85,7 +94,7 @@ test("PostgreSQL submission reservation is exclusive and survives restart, failu
       await database.db.update(providerAttempts).set({ status: legacyStatus, responsePayload: { code: "PROVIDER_REJECTED", provider_request_terminal: flag } }).where(eq(providerAttempts.id, first.id));
       assert.equal((await retry(`unproven-${index}`)).kind, "NEW");
       await start(restarted);
-      assert.equal((await ensure())?.providerRequestId, providerRequestId);
+      assert.equal((await ensure(restarted))?.providerRequestId, providerRequestId);
       assert.equal(await restarted.reserveProviderSubmission(reserveInput), false);
     }
 
@@ -93,18 +102,19 @@ test("PostgreSQL submission reservation is exclusive and survives restart, failu
     await restarted.failTaskRun({ ...reserveInput, failureStage: "PROVIDER", providerRequestTerminal: true, code: "PROVIDER_REJECTED", message: "Synthetic completed failure status.", retryable: false, now: new Date() });
     assert.equal((await retry("proven-terminal")).kind, "NEW");
     await start(restarted);
-    const next = await ensure();
+    const next = await ensure(restarted);
     assert.ok(next);
     assert.notEqual(next.id, first.id);
     assert.equal(await restarted.reserveProviderSubmission({ ...reserveInput, providerAttemptId: next.id }), true);
     const uncertainAfterTerminal = await restarted.finalizeTaskRunExecutionFailure({ workspaceId, taskRunId, code: "PROVIDER_UNAVAILABLE", message: "Synthetic failure after reservation.", now: new Date() });
-    assert.equal(uncertainAfterTerminal?.error?.retryable, false, "old known terminal IDs must not hide a newer uncertain submission");
+    assert.equal(uncertainAfterTerminal?.status, "RUNNING", "an older terminal request must not hide a newer uncertain reservation");
+    assert.equal(uncertainAfterTerminal?.error, null);
     assert.equal((await retry("new-unknown")).kind, "STATE_INVALID");
 
     // Repository-level terminal guard covers cancellation without invoking any
     // external Provider or inventing a public cancellation endpoint.
     await database.db.update(taskRuns).set({ status: "ABANDONED" }).where(eq(taskRuns.id, taskRunId));
-    assert.equal(await restarted.reserveProviderSubmission(reserveInput), false);
+    await assert.rejects(restarted.reserveProviderSubmission(reserveInput), TaskRunExecutionOwnershipLostError);
     assert.ok((await restarted.listTaskRunAttempts(workspaceId, taskRunId))[0]?.submissionReservedAt);
   } finally {
     await database.db.delete(workspaces).where(eq(workspaces.id, workspaceId));

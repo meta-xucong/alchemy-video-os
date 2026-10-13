@@ -6,6 +6,7 @@ import { Sub2ApiVideoProvider, type Sub2ApiTransport } from "@alchemy-video/prov
 import { createInMemoryStoragePort } from "@alchemy-video/storage-client";
 import { hasTerminalProviderResult, type ControlTaskRun } from "@alchemy-video/persistence";
 import { InMemoryTaskRunStore } from "../../control-api/src/task-run-repository.js";
+import { withTestExecutionFence } from "../../../packages/persistence/tests/execution-fence-test-helper.js";
 import { InMemoryAssetWorkspaceStore } from "../../control-api/src/asset-repository.js";
 import { InMemoryControlPlaneStore } from "../../control-api/src/repository.js";
 import { MockVideoTaskExecutor } from "../src/execution-service.js";
@@ -22,7 +23,7 @@ const prepare = async () => {
   const assets = new InMemoryAssetWorkspaceStore(control);
   await assets.createShot({ scope: "known:shot", idempotencyKey: "shot", requestHash: "b".repeat(64), workspaceId, projectId, shotId, position: 0, prompt: "Offline request.", model: "grok-imagine-video-1.5", generationSettings: {}, referenceBindings: [] });
   await assets.setShotGenerationState({ workspaceId, shotId, status: "READY" });
-  const store = new InMemoryTaskRunStore(assets);
+  const store = withTestExecutionFence(new InMemoryTaskRunStore(assets));
   const taskRunId = createPrefixedId("tsk");
   assert.equal((await store.createTaskRun({ scope: "known:task", idempotencyKey: "task", requestHash: "c".repeat(64), workspaceId, taskRunId, shotId, kind: "VIDEO_GENERATION", inputSnapshot: { model: "grok-imagine-video-1.5", prompt: "Offline request.", duration: 1, resolution: "480p", ratio: "16:9", reference_asset_ids: [] }, event: event() })).kind, "NEW");
   const started = new Set<string>();

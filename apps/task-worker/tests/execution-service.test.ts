@@ -10,9 +10,11 @@ import type { ControlTaskRun } from "@alchemy-video/persistence";
 import type { Sub2ApiTransport, Sub2ApiTransportResponse } from "@alchemy-video/provider-video";
 
 import { InMemoryTaskRunStore } from "../../control-api/src/task-run-repository.js";
+import { withTestExecutionFence } from "../../../packages/persistence/tests/execution-fence-test-helper.js";
 import { InMemoryAssetWorkspaceStore } from "../../control-api/src/asset-repository.js";
 import { InMemoryControlPlaneStore } from "../../control-api/src/repository.js";
 import { MockVideoTaskExecutor } from "../src/execution-service.js";
+import { TaskRunEventConsumer } from "../src/service.js";
 import { VideoBillingExecutor, type BillingAttemptStore } from "../src/billing-executor.js";
 import { VideoUsagePortError, type CreditPort } from "@alchemy-video/credit-veyra";
 import { createWorkerReferenceDeliveryPort, ReferenceDeliveryUnavailableError, type ReferenceDeliveryPort } from "../src/reference-delivery.js";
@@ -145,6 +147,21 @@ class NeverTerminalProvider implements VideoProviderPort {
   }
 }
 
+class RetryableStatusProvider implements VideoProviderPort {
+  private readonly provider: MockVideoProvider;
+
+  constructor(fixtureBytes: Uint8Array) {
+    this.provider = new MockVideoProvider({ fixtureBytes });
+  }
+
+  get submitCount() { return this.provider.submitCount; }
+  submit(input: Parameters<VideoProviderPort["submit"]>[0]) { return this.provider.submit(input); }
+  async getStatus() {
+    throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", true, "STATUS", "Controlled temporary status outage.");
+  }
+  download(input: Parameters<VideoProviderPort["download"]>[0]) { return this.provider.download(input); }
+}
+
 class MustNotDebitCreditPort implements CreditPort {
   async getAccount() {
     throw new Error("The failed generation must not query or debit credit.");
@@ -247,7 +264,7 @@ const prepareTask = async (withBilling = false, model = "mock-video-v1") => {
   const assets = new InMemoryAssetWorkspaceStore(control);
   await assets.createShot({ scope: "c06:shot", idempotencyKey: "shot", requestHash: "b".repeat(64), workspaceId, projectId, shotId, position: 0, prompt: "Generate an offline mock video.", model, generationSettings: {}, referenceBindings: [] });
   await assets.setShotGenerationState({ workspaceId, shotId, status: "READY" });
-  const store = new InMemoryTaskRunStore(assets);
+  const store = withTestExecutionFence(new InMemoryTaskRunStore(assets));
   const taskRunId = createPrefixedId("tsk");
   const created = await store.createTaskRun({
     scope: "c06:task",
@@ -350,7 +367,7 @@ const prepareReferenceTask = async (
     referenceBindings: references.map((reference) => ({ assetId: reference.assetId, role: reference.position === 0 ? "STYLE" : "SUBJECT", position: reference.position })),
   });
   await assets.setShotGenerationState({ workspaceId, shotId, status: "READY" });
-  const store = new InMemoryTaskRunStore(assets);
+  const store = withTestExecutionFence(new InMemoryTaskRunStore(assets));
   const taskRunId = createPrefixedId("tsk");
   const created = await store.createTaskRun({
     scope: "c09-c:task",
@@ -658,15 +675,18 @@ for (const pause of ["download", "draft lookup", "completion"] as const) {
     const provider = new MockVideoProvider({ fixtureBytes: bytes });
     const task = await store.findTaskRun(workspaceId, taskRunId);
     assert.ok(task);
+    const executionFenceToken = () => (store as unknown as { executionFenceTokens: Map<string, string> }).executionFenceTokens.get(`${workspaceId}:${taskRunId}`);
     const assetId = createPrefixedId("ast");
     await store.ensureGeneratedAsset({ workspaceId, taskRunId, assetId, objectKey: `${workspaceId}/${task.projectId}/${assetId}/result.mp4`, provider: "mock", now: new Date() });
     const originalComplete = store.completeGeneratedTaskRun.bind(store);
     const closeAndSupersede = async () => {
       const [attempt] = await store.listTaskRunAttempts(workspaceId, taskRunId);
       assert.ok(attempt);
-      await originalComplete({ workspaceId, taskRunId, providerAttemptId: attempt.id, assetId, sha256: createHash("sha256").update(bytes).digest("hex"), byteSize: bytes.byteLength, width: 160, height: 90, durationMs: 1000, now: new Date() });
+      const ownerToken = executionFenceToken();
+      assert.ok(ownerToken, "the controlled in-flight execution must have a persisted owner token");
+      await originalComplete({ workspaceId, taskRunId, executionFenceToken: ownerToken, providerAttemptId: attempt.id, assetId, sha256: createHash("sha256").update(bytes).digest("hex"), byteSize: bytes.byteLength, width: 160, height: 90, durationMs: 1000, now: new Date() });
       // A second executor's completed debit/terminal write is a controlled fixture.
-      await store.markBillingSucceeded({ workspaceId, taskRunId, usageRecordId: createPrefixedId("use"), now: new Date() });
+      await store.markBillingSucceeded({ workspaceId, taskRunId, executionFenceToken: ownerToken, usageRecordId: createPrefixedId("use"), now: new Date() });
       const succeeded = await store.findTaskRun(workspaceId, taskRunId);
       assert.equal(succeeded?.status, "SUCCEEDED");
       const superseded = { ...succeeded!, supersededByTaskRunId: createPrefixedId("tsk") };
@@ -785,6 +805,31 @@ test("billing failure retry resumes the validated artifact without resubmitting 
   const failedBilling = await executor.execute({ workspaceId, taskRunId });
   assert.equal(failedBilling?.status, "BILLING_FAILED");
   assert.equal(provider.submitCount, 1);
+  const executionFenceToken = () => (store as unknown as { executionFenceTokens: Map<string, string> }).executionFenceTokens.get(`${workspaceId}:${taskRunId}`);
+  assert.equal(executionFenceToken(), undefined, "billing failure must revoke its execution fence");
+  const attemptsBeforeDuplicate = await store.listTaskRunAttempts(workspaceId, taskRunId);
+  const initialQueuedEvent = (await store.listWorkspaceEvents({ workspaceId, limit: 30 })).find((item) => item.event_type === "task_run.queued");
+  assert.ok(initialQueuedEvent && initialQueuedEvent.event_type === "task_run.queued");
+  if (!initialQueuedEvent || initialQueuedEvent.event_type !== "task_run.queued") throw new Error("initial billing task event missing");
+  const duplicateConsumer = new TaskRunEventConsumer(store, { consumerName: "task-run-transition", workerId: "billing-failed-duplicate", leaseMs: 100 }, executor);
+  assert.equal(await duplicateConsumer.process({
+    contract_version: "1.0",
+    event_id: initialQueuedEvent.event_id,
+    workspace_id: workspaceId,
+    task_run_id: taskRunId,
+    attempt_no: 2,
+    correlation_id: initialQueuedEvent.correlation_id,
+    input_snapshot: initialQueuedEvent.data.input_snapshot,
+  }), "DUPLICATE");
+  await duplicateConsumer.finalizeExecutionFailure({
+    workspace_id: workspaceId,
+    task_run_id: taskRunId,
+    reason: "a duplicate queue delivery was exhausted after billing failed",
+  });
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "BILLING_FAILED");
+  assert.equal(executionFenceToken(), undefined, "duplicate billing-failed delivery must not install a new execution fence");
+  assert.deepEqual(await store.listTaskRunAttempts(workspaceId, taskRunId), attemptsBeforeDuplicate);
+  assert.equal(provider.submitCount, 1);
 
   const retried = await store.retryTaskRun({
     scope: "c13:billing-retry",
@@ -841,6 +886,26 @@ test("a scheduled credit retry is recovered after restart without a second Provi
   assert.equal(recovered[0]?.failure, undefined);
   assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "SUCCEEDED");
   assert.equal(credit.debitCalls, 2);
+  assert.equal(provider.submitCount, 1);
+});
+
+test("C06 defers a retryable Provider status outage without failing or resubmitting the known request", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask();
+  const provider = new RetryableStatusProvider(await createMockMp4Fixture());
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort());
+
+  await assert.rejects(executor.execute({ workspaceId, taskRunId }), /Controlled temporary status outage/);
+  assert.equal(provider.submitCount, 1);
+  const attemptBeforeRecovery = (await store.listTaskRunAttempts(workspaceId, taskRunId))[0];
+  assert.ok(attemptBeforeRecovery?.providerRequestId);
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "PROVIDER_PROCESSING");
+
+  const recovered = await executor.recover({ limit: 10, maxAttempts: 1, deferRetryableErrors: true });
+  assert.equal(recovered.length, 1);
+  assert.equal(recovered[0]?.deferredKind, "PROVIDER_RETRY_PENDING");
+  assert.equal(recovered[0]?.failure, undefined);
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "PROVIDER_PROCESSING");
+  assert.equal((await store.listTaskRunAttempts(workspaceId, taskRunId))[0]?.providerRequestId, attemptBeforeRecovery?.providerRequestId);
   assert.equal(provider.submitCount, 1);
 });
 

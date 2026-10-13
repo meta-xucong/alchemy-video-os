@@ -20,6 +20,8 @@ import { createDatabase } from "../src/db.js";
 import { DrizzleDeliveryPreflightStore } from "../src/delivery-preflight-repository.js";
 import { DrizzleAssetWorkspaceRepository } from "../src/asset-workspace-repository.js";
 import { DrizzleTaskRunRepository } from "../src/task-run-repository.js";
+import { TaskRunExecutionOwnershipLostError } from "../src/task-run-execution-guard.js";
+import { withTestExecutionFence } from "./execution-fence-test-helper.js";
 import { assertLoopbackTestDatabaseUrl } from "./helpers/legacy-fence-test-database.js";
 import {
   DrizzleProductionRepository,
@@ -1345,6 +1347,11 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
       await concurrentSegmentRetry;
     }
     await database.db.update(taskRuns).set({ status: "FAILED" }).where(eq(taskRuns.id, failedSegment.taskRunId!));
+    const guardedTasks = withTestExecutionFence(new DrizzleTaskRunRepository(database.db));
+    let supersededFenceToken = "";
+    await guardedTasks.withTaskRunExecution({ workspaceId, taskRunId: failedSegment.taskRunId! }, async (lease) => {
+      supersededFenceToken = lease.fenceToken;
+    });
     const retried = await production.retryProductionSegment({
       scope: `${scope}:retry-segment`,
       idempotencyKey: "retry-first-segment",
@@ -1372,6 +1379,31 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     assert.notEqual(retriedSegment?.taskRunId, failedSegment?.taskRunId);
     const [failedTaskAfterRetry] = await database.db.select().from(taskRuns)
       .where(and(eq(taskRuns.workspaceId, workspaceId), eq(taskRuns.id, failedSegment!.taskRunId!)));
+    assert.equal(failedTaskAfterRetry?.executionFenceToken, null, "successful segment supersede must revoke the predecessor execution fence");
+    await assert.rejects(
+      guardedTasks.failTaskRun({
+        workspaceId,
+        taskRunId: failedSegment.taskRunId!,
+        executionFenceToken: supersededFenceToken,
+        code: "STALE_OWNER",
+        message: "A superseded owner must not change task state.",
+        retryable: true,
+        now: new Date(),
+      }),
+      TaskRunExecutionOwnershipLostError,
+    );
+    await assert.rejects(
+      new DrizzleTaskRunRepository(database.db).failTaskRun({
+        workspaceId,
+        taskRunId: failedSegment.taskRunId!,
+        executionFenceToken: "",
+        code: "MISSING_OWNER",
+        message: "A missing fence must fail closed.",
+        retryable: true,
+        now: new Date(),
+      }),
+      TaskRunExecutionOwnershipLostError,
+    );
     assert.deepEqual(failedTaskAfterRetry?.inputSnapshot, failedTaskBeforeRetry?.inputSnapshot);
     const failedAssetId = await generatedAsset(database.db, { workspaceId, projectId, taskRunId: retriedSegment!.taskRunId! });
     await production.recordProductionTaskSucceeded({ event: taskSucceededEvent({ workspaceId, projectId, taskRunId: retriedSegment!.taskRunId!, assetId: failedAssetId }), now: new Date() });
@@ -1460,6 +1492,10 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
     assert.equal((await retryCompleted("completed-media-retry")).kind, "NEW", "verified successful video may be explicitly regenerated after recoverable QC failure");
     const [supersededSuccess] = await database.db.select().from(taskRuns).where(eq(taskRuns.id, legacySegment.taskRunId!));
     assert.ok(supersededSuccess?.supersededByTaskRunId);
+    assert.equal(supersededSuccess?.executionFenceToken, null);
+    await guardedTasks.withTaskRunExecution({ workspaceId, taskRunId: legacySegment.taskRunId! }, async () => undefined);
+    assert.equal((await database.db.select().from(taskRuns).where(eq(taskRuns.id, legacySegment.taskRunId!)))[0]?.executionFenceToken, null,
+      "duplicate delivery of a superseded TaskRun must not install a new execution token");
     assert.deepEqual({ ...supersededSuccess, updatedAt: successfulPredecessor!.updatedAt, supersededByTaskRunId: null }, successfulPredecessor);
     assert.deepEqual((await database.db.select().from(providerAttempts).where(eq(providerAttempts.id, completedAttemptId)))[0], successfulAttempt);
     assert.deepEqual((await database.db.select().from(assets).where(eq(assets.id, legacyAssetId)))[0], successfulAsset);
@@ -1471,7 +1507,7 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
       // restricted to an explicitly named disposable loopback database.
       const observer = new Client({ connectionString: recoveryDatabaseUrl });
       await observer.connect();
-      const tasks = new DrizzleTaskRunRepository(database.db);
+      const tasks = withTestExecutionFence(new DrizzleTaskRunRepository(database.db));
       const recoveryScope = `${scope}:recovery-lineage`;
       const [segmentA] = await database.db.select().from(productionSegments).where(and(
         eq(productionSegments.workspaceId, workspaceId), eq(productionSegments.id, legacySegment.id),
@@ -1672,7 +1708,7 @@ test("C12 Drizzle production persists QC, handoff, dependency scheduling, compos
         await recoveryTest.test("R3 R8 R9 private history survives fresh clients, rejected commands and historical replay", async () => {
           const reopened = createDatabase(recoveryDatabaseUrl!);
           try {
-            const restartedTasks = new DrizzleTaskRunRepository(reopened.db);
+            const restartedTasks = withTestExecutionFence(new DrizzleTaskRunRepository(reopened.db));
             assert.equal((await retryOrdinary(taskA, "after-restart", restartedTasks)).kind, "STATE_INVALID");
             assert.equal((await retryOrdinary(taskA, "wrong-workspace", restartedTasks, createPrefixedId("ws"))).kind, "NOT_FOUND");
             const persisted = await taskRow(taskA);

@@ -9,7 +9,9 @@ import { Client } from "pg";
 
 import { InternalEventEnvelopeSchema, InternalTaskRunQueueMessageSchema } from "@alchemy-video/contracts";
 import { createPrefixedId } from "@alchemy-video/domain";
+import { TaskRunExecutionOwnershipLostError } from "../src/task-run-execution-guard.js";
 import { DrizzleTaskRunRepository } from "../src/task-run-repository.js";
+import { withTestExecutionFence } from "./execution-fence-test-helper.js";
 import { assertLoopbackTestDatabaseUrl } from "./helpers/legacy-fence-test-database.js";
 
 const databaseUrl = process.env.LEGACY_FENCE_TEST_DATABASE_URL;
@@ -38,7 +40,7 @@ const isolated = async (run: (client: Client) => Promise<void>) => {
   }
 };
 
-const seed = async (client: Client, suffix: string) => {
+const seed = async (client: Client, suffix: string, status = "FAILED") => {
   const userId = createPrefixedId("usr");
   const workspaceId = createPrefixedId("ws");
   const projectId = createPrefixedId("prj");
@@ -51,12 +53,28 @@ const seed = async (client: Client, suffix: string) => {
     const shotId = createPrefixedId("sht");
     const taskId = createPrefixedId("tsk");
     await client.query("INSERT INTO shots (id, workspace_id, project_id, position) VALUES ($1, $2, $3, $4)", [shotId, workspaceId, projectId, position]);
-    await client.query("INSERT INTO task_runs (id, workspace_id, project_id, shot_id, kind, status, input_snapshot) VALUES ($1, $2, $3, $4, 'VIDEO_GENERATION', 'FAILED', $5)", [taskId, workspaceId, projectId, shotId, snapshot]);
+    await client.query("INSERT INTO task_runs (id, workspace_id, project_id, shot_id, kind, status, input_snapshot) VALUES ($1, $2, $3, $4, 'VIDEO_GENERATION', $5, $6)", [taskId, workspaceId, projectId, shotId, status, snapshot]);
     taskIds.push(taskId);
     shotIds.push(shotId);
   }
   return { userId, workspaceId, projectId, taskIds, shotIds };
 };
+
+test("BILLING_FAILED duplicate execution does not persist a new owner fence", { skip: !databaseUrl }, async () => {
+  await isolated(async (client) => {
+    const context = await seed(client, "billing failed fence", "BILLING_FAILED");
+    const taskRunId = context.taskIds[0]!;
+    const tasks = new DrizzleTaskRunRepository(drizzle({ client }));
+
+    await tasks.withTaskRunExecution({ workspaceId: context.workspaceId, taskRunId }, async (lease) => {
+      lease.assertActive();
+    });
+
+    const row = (await client.query("SELECT status, execution_fence_token FROM task_runs WHERE id = $1", [taskRunId])).rows[0];
+    assert.equal(row.status, "BILLING_FAILED");
+    assert.equal(row.execution_fence_token, null);
+  });
+});
 
 test("recovery lineage constraints reject invalid links and old reactivation while preserving project/workspace cleanup", { skip: !databaseUrl }, async () => {
   await isolated(async (client) => {
@@ -104,10 +122,11 @@ test("superseded PostgreSQL task rejects recovery and stale mutations but record
     const now = new Date();
     await client.query("INSERT INTO provider_attempts (id, workspace_id, task_run_id, provider, model, status, response_payload) VALUES ($1, $2, $3, 'mock', 'mock-video-v1', 'FAILED', $4)", [attemptId, workspaceId, taskRunId, { code: "PROVIDER_REJECTED" }]);
     await client.query("INSERT INTO assets (id, workspace_id, project_id, kind, origin, status, object_key, metadata) VALUES ($1, $2, $3, 'VIDEO', 'GENERATED', 'PENDING_UPLOAD', $4, $5)", [assetId, workspaceId, projectId, `${workspaceId}/${projectId}/${assetId}/generated.mp4`, { task_run_id: taskRunId }]);
-    const tasks = new DrizzleTaskRunRepository(drizzle({ client }));
+    const tasks = withTestExecutionFence(new DrizzleTaskRunRepository(drizzle({ client })));
     const command = { scope: `${workspaceId}:recovery`, idempotencyKey: "ordinary-before-replacement", requestHash: "a".repeat(64), workspaceId, taskRunId, event: metadata() };
     const accepted = await tasks.retryTaskRun(command);
     assert.equal(accepted.kind, "NEW");
+    await client.query("UPDATE provider_attempts SET submission_reserved_at = $2 WHERE id = $1", [attemptId, now.toISOString()]);
     await client.query("UPDATE task_runs SET status = 'FAILED', superseded_by_task_run_id = $2 WHERE id = $1", [taskRunId, successorId]);
     const before = await tasks.findTaskRun(workspaceId, taskRunId);
     const attemptBefore = await tasks.listTaskRunAttempts(workspaceId, taskRunId);
@@ -122,22 +141,23 @@ test("superseded PostgreSQL task rejects recovery and stale mutations but record
     assert.equal((await tasks.retryTaskRun(rejectedCommand)).kind, "STATE_INVALID");
     assert.equal((await tasks.retryTaskRun({ ...rejectedCommand, requestHash: "b".repeat(64) })).kind, "CONFLICT");
     assert.equal((await tasks.retryTaskRun({ ...command, scope: "other-workspace", workspaceId: createPrefixedId("ws"), idempotencyKey: "other" })).kind, "NOT_FOUND");
-    const rebuilt = new DrizzleTaskRunRepository(drizzle({ client }));
+    const rebuilt = withTestExecutionFence(new DrizzleTaskRunRepository(drizzle({ client })));
     assert.equal((await rebuilt.retryTaskRun({ ...command, idempotencyKey: "new-repository" })).kind, "STATE_INVALID");
     assert.equal((await tasks.listRecoverableVideoTaskRuns({ limit: 100, statuses: ["FAILED"] })).some((task) => task.id === taskRunId), false);
-    assert.equal(await tasks.ensureProviderAttempt({ workspaceId, taskRunId, providerAttemptId: createPrefixedId("att"), provider: "mock", model: "mock-video-v1", now }), undefined);
-    assert.equal(await tasks.reserveProviderSubmission({ workspaceId, taskRunId, providerAttemptId: attemptId, now }), false);
-    assert.deepEqual(await tasks.recordProviderProcessing({ workspaceId, taskRunId, providerAttemptId: attemptId, now }), before);
-    assert.deepEqual(await tasks.beginDownload({ workspaceId, taskRunId, providerAttemptId: attemptId, now }), before);
-    await tasks.recordDownloadRetryableFailure({ workspaceId, taskRunId, providerAttemptId: attemptId, code: "PROVIDER_UNAVAILABLE", now });
-    assert.equal(await tasks.ensureGeneratedAsset({ workspaceId, taskRunId, assetId: createPrefixedId("ast"), objectKey: "offline/no-new-asset", provider: "mock", now }), undefined);
-    assert.deepEqual(await tasks.completeGeneratedTaskRun({ workspaceId, taskRunId, providerAttemptId: attemptId, assetId, sha256: "b".repeat(64), byteSize: 100, width: 16, height: 16, durationMs: 5000, now }), before);
-    await tasks.markBillingSucceeded({ workspaceId, taskRunId, usageRecordId: createPrefixedId("use"), now });
-    await tasks.markBillingFailed({ workspaceId, taskRunId, code: "CREDIT_UNAVAILABLE", safeMessage: "Offline", now });
-    await tasks.scheduleBillingRetry({ workspaceId, taskRunId, code: "CREDIT_UNAVAILABLE", safeMessage: "Offline", retryAt: now, now });
-    assert.deepEqual(await tasks.resumeBillingRetry({ workspaceId, taskRunId, now }), before);
+    const ownershipLost = (error: unknown) => error instanceof TaskRunExecutionOwnershipLostError;
+    await assert.rejects(tasks.ensureProviderAttempt({ workspaceId, taskRunId, providerAttemptId: createPrefixedId("att"), provider: "mock", model: "mock-video-v1", now }), ownershipLost);
+    await assert.rejects(tasks.reserveProviderSubmission({ workspaceId, taskRunId, providerAttemptId: attemptId, now }), ownershipLost);
+    await assert.rejects(tasks.recordProviderProcessing({ workspaceId, taskRunId, providerAttemptId: attemptId, now }), ownershipLost);
+    await assert.rejects(tasks.beginDownload({ workspaceId, taskRunId, providerAttemptId: attemptId, now }), ownershipLost);
+    await assert.rejects(tasks.recordDownloadRetryableFailure({ workspaceId, taskRunId, providerAttemptId: attemptId, code: "PROVIDER_UNAVAILABLE", now }), ownershipLost);
+    await assert.rejects(tasks.ensureGeneratedAsset({ workspaceId, taskRunId, assetId: createPrefixedId("ast"), objectKey: "offline/no-new-asset", provider: "mock", now }), ownershipLost);
+    await assert.rejects(tasks.completeGeneratedTaskRun({ workspaceId, taskRunId, providerAttemptId: attemptId, assetId, sha256: "b".repeat(64), byteSize: 100, width: 16, height: 16, durationMs: 5000, now }), ownershipLost);
+    await assert.rejects(tasks.markBillingSucceeded({ workspaceId, taskRunId, usageRecordId: createPrefixedId("use"), now }), ownershipLost);
+    await assert.rejects(tasks.markBillingFailed({ workspaceId, taskRunId, code: "CREDIT_UNAVAILABLE", safeMessage: "Offline", now }), ownershipLost);
+    await assert.rejects(tasks.scheduleBillingRetry({ workspaceId, taskRunId, code: "CREDIT_UNAVAILABLE", safeMessage: "Offline", retryAt: now, now }), ownershipLost);
+    await assert.rejects(tasks.resumeBillingRetry({ workspaceId, taskRunId, now }), ownershipLost);
     assert.deepEqual(await tasks.finalizeTaskRunExecutionFailure({ workspaceId, taskRunId, code: "PROVIDER_UNAVAILABLE", message: "Offline", now }), before);
-    assert.deepEqual(await tasks.failTaskRun({ workspaceId, taskRunId, providerAttemptId: attemptId, code: "PROVIDER_UNAVAILABLE", message: "Offline", retryable: true, now }), before);
+    await assert.rejects(tasks.failTaskRun({ workspaceId, taskRunId, providerAttemptId: attemptId, code: "PROVIDER_UNAVAILABLE", message: "Offline", retryable: true, now }), ownershipLost);
     const queuedRow = (await client.query("SELECT payload FROM outbox_events WHERE workspace_id = $1 AND event_type = 'task_run.queued'", [workspaceId])).rows[0];
     const queued = InternalEventEnvelopeSchema.parse(queuedRow.payload);
     assert.equal(queued.event_type, "task_run.queued");

@@ -172,7 +172,7 @@ test("recovery supersession is private, nullable, scoped and constrained without
   assert.equal(config.indexes.find((index) => index.config.name === "task_runs_superseded_successor_key")?.config.unique, true);
   assert.doesNotMatch(migration, /UPDATE "task_runs"|DELETE FROM|DROP |provider_request_id/);
   const journal = JSON.parse(await readFile(resolve(migrations, "meta", "_journal.json"), "utf8"));
-  assert.equal(journal.entries.at(-1).tag, "0029_task_run_recovery_supersession");
+  assert.ok(journal.entries.some((entry: { tag: string }) => entry.tag === "0029_task_run_recovery_supersession"));
   const prior = JSON.parse(await readFile(resolve(migrations, "meta", "0028_snapshot.json"), "utf8"));
   const current = JSON.parse(await readFile(resolve(migrations, "meta", "0029_snapshot.json"), "utf8"));
   assert.equal(current.prevId, prior.id);

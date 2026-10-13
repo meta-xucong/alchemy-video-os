@@ -3,12 +3,13 @@ import test from "node:test";
 
 import { InternalTaskRunQueueMessageSchema, type InternalEventEnvelope, type VideoGenerationInputSnapshot } from "@alchemy-video/contracts";
 import { createPrefixedId } from "@alchemy-video/domain";
-import type { ControlAsset, ControlProviderAttempt, ControlTaskRun, RetryTaskRunInput, TaskRunCommandExecution } from "@alchemy-video/persistence";
+import { TaskRunExecutionOwnershipLostError, type ControlAsset, type ControlProviderAttempt, type ControlTaskRun, type RetryTaskRunInput, type TaskRunCommandExecution } from "@alchemy-video/persistence";
 
 import { InMemoryAssetWorkspaceStore } from "../src/asset-repository.js";
 import { InMemoryControlPlaneStore } from "../src/repository.js";
 import { serializeTaskRun } from "../src/serializers.js";
 import { InMemoryTaskRunStore } from "../src/task-run-repository.js";
+import { withTestExecutionFence } from "../../../packages/persistence/tests/execution-fence-test-helper.js";
 
 const event = () => ({ eventId: createPrefixedId("evt"), messageId: createPrefixedId("msg"), traceId: createPrefixedId("trc"), correlationId: createPrefixedId("cor") });
 const now = new Date("2026-10-10T12:00:00.000Z");
@@ -29,7 +30,7 @@ type FixtureState = {
 const fixture = async () => {
   const control = new InMemoryControlPlaneStore();
   const assets = new InMemoryAssetWorkspaceStore(control);
-  const tasks = new InMemoryTaskRunStore(assets);
+  const tasks = withTestExecutionFence(new InMemoryTaskRunStore(assets));
   const state = tasks as unknown as FixtureState;
   const workspaceId = createPrefixedId("ws");
   const userId = createPrefixedId("usr");
@@ -80,6 +81,26 @@ const fixture = async () => {
   };
   return { tasks, assets, state, workspaceId, projectId, ancestor, successor, createRun, replace, supersede, retry, queued, process, seedAttempt };
 };
+
+test("in-memory TaskRun store enforces the same owner token replacement as PostgreSQL", async () => {
+  const f = await fixture();
+  await f.process(await f.queued());
+  const scope = { workspaceId: f.workspaceId, taskRunId: f.ancestor.id };
+  let staleToken = "";
+  let currentToken = "";
+  await f.tasks.withTaskRunExecution(scope, async (lease) => { staleToken = lease.fenceToken; });
+  await f.tasks.withTaskRunExecution(scope, async (lease) => { currentToken = lease.fenceToken; });
+  assert.notEqual(currentToken, staleToken);
+  await assert.rejects(f.tasks.failTaskRun({
+    ...scope,
+    executionFenceToken: staleToken,
+    code: "STALE_OWNER",
+    message: "Old owner must not change the in-memory TaskRun.",
+    retryable: true,
+    now,
+  }), TaskRunExecutionOwnershipLostError);
+  assert.equal((await f.tasks.findTaskRun(f.workspaceId, f.ancestor.id))?.status, "RUNNING");
+});
 
 test("memory recovery relation is private and preserves immutable snapshots and historical successful assets", async () => {
   const f = await fixture();
@@ -151,8 +172,8 @@ test("memory guards reject superseded retry, recovery scan, ensure and reserve e
     assert.deepEqual(await f.tasks.retryTaskRun(f.retry(`retry-${status}`)), { kind: "STATE_INVALID" }, status);
     assert.equal((await f.tasks.listRecoverableVideoTaskRuns({ limit: 100 })).some((task) => task.id === f.ancestor.id), false, status);
     assert.equal((await f.tasks.listRecoverableVideoTaskRuns({ limit: 100, statuses: [status] })).some((task) => task.id === f.ancestor.id), false, status);
-    assert.equal(await f.tasks.ensureProviderAttempt({ ...execution, provider: "mock", model: snapshot.model }), undefined, status);
-    assert.equal(await f.tasks.reserveProviderSubmission(execution), false, status);
+    await assert.rejects(f.tasks.ensureProviderAttempt({ ...execution, provider: "mock", model: snapshot.model }), TaskRunExecutionOwnershipLostError, status);
+    await assert.rejects(f.tasks.reserveProviderSubmission(execution), TaskRunExecutionOwnershipLostError, status);
     assert.deepEqual(f.state.attempts.get(attempt.id), attempt, status);
   }
   f.replace(f.successor, { status: "RUNNING" });
@@ -185,11 +206,11 @@ test("memory legacy missing markers remain compatible while non-null empty marke
   const attempt = f.seedAttempt();
   const execution = { workspaceId: f.workspaceId, taskRunId: f.ancestor.id, providerAttemptId: attempt.id, now };
   assert.deepEqual(await f.tasks.retryTaskRun(f.retry("empty-marker-retry")), { kind: "STATE_INVALID" });
-  assert.equal(await f.tasks.ensureProviderAttempt({ ...execution, provider: "mock", model: snapshot.model }), undefined);
-  assert.equal(await f.tasks.reserveProviderSubmission(execution), false);
+  await assert.rejects(f.tasks.ensureProviderAttempt({ ...execution, provider: "mock", model: snapshot.model }), TaskRunExecutionOwnershipLostError);
+  await assert.rejects(f.tasks.reserveProviderSubmission(execution), TaskRunExecutionOwnershipLostError);
   assert.equal((await f.tasks.listRecoverableVideoTaskRuns({ limit: 100 })).some((task) => task.id === f.ancestor.id), false);
   assert.equal(await f.process(queued), "DUPLICATE");
-  assert.deepEqual(await f.tasks.recordProviderProcessing(execution), marked);
+  await assert.rejects(f.tasks.recordProviderProcessing(execution), TaskRunExecutionOwnershipLostError);
   assert.deepEqual(f.state.attempts.get(attempt.id), attempt);
 });
 
@@ -230,7 +251,11 @@ test("memory late processing, download, asset, billing and failure writes preser
   for (const status of ["FAILED", "SUCCEEDED", "RUNNING", "DOWNLOADING", "BILLING_PENDING", "BILLING_FAILED", "RETRY_SCHEDULED"] as const) {
     const superseded = f.replace(f.supersede(status), { resultAssetId: status === "SUCCEEDED" ? assetId : null, retryAt: new Date(0).toISOString(), error: { code: "CREDIT_UNAVAILABLE", message: "Fixture failure", retryable: true } });
     for (const callback of callbacks) {
-      await callback();
+      try {
+        await callback();
+      } catch (error) {
+        assert.ok(error instanceof TaskRunExecutionOwnershipLostError, status);
+      }
       assert.deepEqual(await f.tasks.findTaskRun(f.workspaceId, f.ancestor.id), superseded, status);
       assert.deepEqual(f.state.attempts.get(attempt.id), attempt, status);
       assert.deepEqual([...f.state.generatedAssets.values()], [asset], status);

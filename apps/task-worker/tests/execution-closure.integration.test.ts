@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash, randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { createServer, connect, type Socket } from "node:net";
 import { and, eq } from "drizzle-orm";
@@ -13,8 +14,9 @@ import { BullMqInternalEventQueue, clearInternalEventQueues, createBullMqInterna
 
 import { MockVideoTaskExecutor } from "../src/execution-service.js";
 import { ReferenceDeliveryUnavailableError } from "../src/reference-delivery.js";
-import { TaskRunEventConsumer } from "../src/service.js";
+import { recoverC06TaskRuns, TaskRunEventConsumer } from "../src/service.js";
 import { acquireC06E2EIsolation } from "../../../packages/persistence/tests/support/c06-e2e-isolation.mjs";
+import { withTestExecutionFence } from "../../../packages/persistence/tests/execution-fence-test-helper.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const redisUrl = process.env.REDIS_URL;
@@ -36,8 +38,8 @@ const prepare = async (reference = false, firstEventId?: string) => {
   assert.ok(databaseUrl);
   const database = createDatabase(databaseUrl);
   const otherDatabase = createDatabase(databaseUrl);
-  const store = new DrizzleTaskRunRepository(database.db);
-  const otherStore = new DrizzleTaskRunRepository(otherDatabase.db);
+  const store = withTestExecutionFence(new DrizzleTaskRunRepository(database.db));
+  const otherStore = withTestExecutionFence(new DrizzleTaskRunRepository(otherDatabase.db));
   const assets = new DrizzleAssetWorkspaceRepository(database.db);
   const control = new DrizzleControlPlaneRepository(database.db);
   const workspaceId = createPrefixedId("ws");
@@ -182,18 +184,20 @@ test("PostgreSQL execution guards use independent sessions, release on errors, a
   const context = await prepare();
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const owner = context.store.withTaskRunExecution(context, async () => { entered.resolve(); await release.promise; throw new Error("original callback failure"); });
+  const guard = new PostgresTaskRunExecutionGuard({ connectionString: databaseUrl });
+  const otherGuard = new PostgresTaskRunExecutionGuard({ connectionString: databaseUrl });
+  const owner = guard.withTaskRunExecution(context, async () => { entered.resolve(); await release.promise; throw new Error("original callback failure"); });
   const rejected = assert.rejects(owner, /original callback failure/);
   try {
     await entered.promise;
-    await assert.rejects(context.otherStore.withTaskRunExecution(context, async () => undefined), TaskRunExecutionBusyError);
-    await context.otherStore.withTaskRunExecution({ ...context, workspaceId: createPrefixedId("ws") }, async () => undefined);
-    await Promise.all(Array.from({ length: 12 }, (_, index) => context.otherStore.withTaskRunExecution({ ...context, taskRunId: `${context.taskRunId}-${index}` }, async () => {
+    await assert.rejects(otherGuard.withTaskRunExecution(context, async () => undefined), TaskRunExecutionBusyError);
+    await otherGuard.withTaskRunExecution({ ...context, workspaceId: createPrefixedId("ws") }, async () => undefined);
+    await Promise.all(Array.from({ length: 12 }, (_, index) => otherGuard.withTaskRunExecution({ ...context, taskRunId: `${context.taskRunId}-${index}` }, async () => {
       assert.ok(await context.store.findTaskRun(context.workspaceId, context.taskRunId));
     })));
     release.resolve();
     await rejected;
-    await context.otherStore.withTaskRunExecution(context, async () => undefined);
+    await otherGuard.withTaskRunExecution(context, async () => undefined);
   } finally { release.resolve(); await rejected; await context.close(); }
 });
 
@@ -215,7 +219,216 @@ test("PostgreSQL guard disconnect invalidates the owner and makes its session lo
   } finally { await admin.end(); }
 });
 
-test("PostgreSQL finalization classifies a migrated abandoned no-ID reservation without rewriting history", timeout, async () => {
+test("PostgreSQL execution fence rejects every stale state writer and limits late Provider IDs to evidence-only", timeout, async () => {
+  const context = await prepare();
+  try {
+    await new TaskRunEventConsumer(context.store, { consumerName: "execution-closure", workerId: "fence-test", leaseMs: 100 }).process(await context.message());
+    const rawStore = new DrizzleTaskRunRepository(context.database.db);
+    let staleToken = "";
+    await rawStore.withTaskRunExecution(context, async (lease) => { staleToken = lease.fenceToken; });
+    let freshToken = "";
+    await rawStore.withTaskRunExecution(context, async (lease) => {
+      freshToken = lease.fenceToken;
+      assert.notEqual(freshToken, staleToken);
+      const beforeTask = await rawStore.findTaskRun(context.workspaceId, context.taskRunId);
+      const beforeAttempts = await rawStore.listTaskRunAttempts(context.workspaceId, context.taskRunId);
+      const beforeEvents = await rawStore.listWorkspaceEvents({ workspaceId: context.workspaceId, limit: 100 });
+      const attemptId = createPrefixedId("att");
+
+      await assert.rejects(rawStore.ensureProviderAttempt({ ...context, executionFenceToken: staleToken, providerAttemptId: createPrefixedId("att"), provider: "mock", model: "mock-video-v1", now: new Date() }), TaskRunExecutionOwnershipLostError);
+      const attempt = await rawStore.ensureProviderAttempt({ ...context, executionFenceToken: freshToken, providerAttemptId: attemptId, provider: "mock", model: "mock-video-v1", now: new Date() });
+      assert.ok(attempt);
+      assert.equal(await rawStore.reserveProviderSubmission({ ...context, executionFenceToken: freshToken, providerAttemptId: attemptId, now: new Date() }), true);
+
+      const staleWrites = [
+        () => rawStore.reserveProviderSubmission({ ...context, executionFenceToken: staleToken, providerAttemptId: attemptId, now: new Date() }),
+        () => rawStore.recordProviderProcessing({ ...context, executionFenceToken: staleToken, providerAttemptId: attemptId, now: new Date() }),
+        () => rawStore.beginDownload({ ...context, executionFenceToken: staleToken, providerAttemptId: attemptId, now: new Date() }),
+        () => rawStore.recordDownloadRetryableFailure({ ...context, executionFenceToken: staleToken, providerAttemptId: attemptId, code: "DOWNLOAD_INVALID", now: new Date() }),
+        () => rawStore.ensureGeneratedAsset({ ...context, executionFenceToken: staleToken, assetId: createPrefixedId("ast"), objectKey: "stale/fenced.mp4", provider: "mock", now: new Date() }),
+        () => rawStore.completeGeneratedTaskRun({ ...context, executionFenceToken: staleToken, providerAttemptId: attemptId, assetId: createPrefixedId("ast"), sha256: "a".repeat(64), byteSize: 1, width: 16, height: 9, durationMs: 1000, now: new Date() }),
+        () => rawStore.markBillingSucceeded({ ...context, executionFenceToken: staleToken, usageRecordId: createPrefixedId("use"), now: new Date() }),
+        () => rawStore.markBillingFailed({ ...context, executionFenceToken: staleToken, code: "CREDIT_UNAVAILABLE", safeMessage: "stale", now: new Date() }),
+        () => rawStore.scheduleBillingRetry({ ...context, executionFenceToken: staleToken, code: "CREDIT_UNAVAILABLE", safeMessage: "stale", retryAt: new Date(), now: new Date() }),
+        () => rawStore.resumeBillingRetry({ ...context, executionFenceToken: staleToken, now: new Date() }),
+        () => rawStore.failTaskRun({ ...context, executionFenceToken: staleToken, providerAttemptId: attemptId, code: "PROVIDER_UNAVAILABLE", message: "stale", retryable: true, now: new Date() }),
+      ];
+      for (const write of staleWrites) await assert.rejects(write(), TaskRunExecutionOwnershipLostError);
+      await assert.rejects(rawStore.failTaskRun({ ...context, executionFenceToken: "", code: "MISSING_OWNER", message: "missing owner", retryable: true, now: new Date() }), TaskRunExecutionOwnershipLostError);
+      await assert.rejects(rawStore.failTaskRun({ ...context, workspaceId: createPrefixedId("ws"), executionFenceToken: freshToken, code: "WRONG_WORKSPACE", message: "wrong workspace", retryable: true, now: new Date() }), TaskRunExecutionOwnershipLostError);
+
+      const staleAcceptedId = await rawStore.recordProviderSubmission({ ...context, executionFenceToken: staleToken, providerAttemptId: attemptId, providerRequestId: "late-accepted-request", now: new Date() });
+      assert.equal(staleAcceptedId?.status, "RUNNING");
+      const lateAttempt = (await rawStore.listTaskRunAttempts(context.workspaceId, context.taskRunId))[0];
+      assert.equal(lateAttempt?.providerRequestId, "late-accepted-request");
+      assert.equal(lateAttempt?.status, "CREATED", "late evidence must not rewrite attempt state");
+      await assert.rejects(rawStore.recordProviderSubmission({ ...context, executionFenceToken: staleToken, providerAttemptId: attemptId, providerRequestId: "conflicting-request", now: new Date() }), /PROVIDER_RESUBMIT_FORBIDDEN/u);
+
+      const afterTask = await rawStore.findTaskRun(context.workspaceId, context.taskRunId);
+      assert.equal(afterTask?.status, beforeTask?.status);
+      assert.equal(afterTask?.error, beforeTask?.error);
+      const afterEvents = await rawStore.listWorkspaceEvents({ workspaceId: context.workspaceId, limit: 100 });
+      assert.equal(afterEvents.length, beforeEvents.length, "stale paths must not emit outbox events");
+      assert.equal((await rawStore.listTaskRunAttempts(context.workspaceId, context.taskRunId)).length, beforeAttempts.length + 1);
+
+      const failureAdmin = new Pool({ connectionString: databaseUrl });
+      const suffix = randomUUID().replaceAll("-", "");
+      const triggerName = `fence_rollback_${suffix}`;
+      const functionName = `fence_rollback_fn_${suffix}`;
+      const workspaceLiteral = context.workspaceId.replaceAll("'", "''");
+      try {
+        await failureAdmin.query(`CREATE FUNCTION public.${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.workspace_id::text = TG_ARGV[0] THEN RAISE EXCEPTION 'injected fenced transaction failure'; END IF; RETURN NEW; END $$`);
+        await failureAdmin.query(`CREATE TRIGGER ${triggerName} BEFORE UPDATE ON shots FOR EACH ROW EXECUTE FUNCTION public.${functionName}('${workspaceLiteral}')`);
+        const beforeRollbackTask = await rawStore.findTaskRun(context.workspaceId, context.taskRunId);
+        const beforeRollbackAttempts = await rawStore.listTaskRunAttempts(context.workspaceId, context.taskRunId);
+        const beforeRollbackEvents = await rawStore.listWorkspaceEvents({ workspaceId: context.workspaceId, limit: 100 });
+        await assert.rejects(
+          rawStore.failTaskRun({ ...context, executionFenceToken: freshToken, providerAttemptId: attemptId, code: "INJECTED", message: "rollback probe", retryable: true, now: new Date() }),
+          (error: Error & { cause?: Error }) => error.cause?.message === "injected fenced transaction failure",
+        );
+        assert.deepEqual(await rawStore.findTaskRun(context.workspaceId, context.taskRunId), beforeRollbackTask, "TaskRun transition must roll back with the failed transaction");
+        assert.deepEqual(await rawStore.listTaskRunAttempts(context.workspaceId, context.taskRunId), beforeRollbackAttempts, "Attempt write must roll back with the failed transaction");
+        assert.deepEqual(await rawStore.listWorkspaceEvents({ workspaceId: context.workspaceId, limit: 100 }), beforeRollbackEvents, "Outbox must remain unchanged after rollback");
+      } finally {
+        await failureAdmin.query(`DROP TRIGGER IF EXISTS ${triggerName} ON shots`).catch(() => undefined);
+        await failureAdmin.query(`DROP FUNCTION IF EXISTS public.${functionName}()`).catch(() => undefined);
+        await failureAdmin.end();
+      }
+
+      const failed = await rawStore.failTaskRun({ ...context, executionFenceToken: freshToken, code: "PROVIDER_UNAVAILABLE", message: "Controlled fence revocation.", retryable: true, now: new Date() });
+      assert.equal(failed?.status, "FAILED");
+      assert.equal((await rawStore.retryTaskRun({ scope: `fence-retry:${context.taskRunId}`, idempotencyKey: "retry", requestHash: "c".repeat(64), ...context, event: event() })).kind, "NEW");
+      await assert.rejects(rawStore.failTaskRun({ ...context, executionFenceToken: freshToken, code: "PROVIDER_UNAVAILABLE", message: "stale after retry", retryable: true, now: new Date() }), TaskRunExecutionOwnershipLostError);
+      assert.equal((await rawStore.findTaskRun(context.workspaceId, context.taskRunId))?.status, "QUEUED");
+    });
+  } finally { await context.close(); }
+});
+
+test("PostgreSQL fence claim waits for an already-authorized row transaction, then replaces its token", timeout, async () => {
+  const context = await prepare();
+  const admin = new Pool({ connectionString: databaseUrl });
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let rowClient: Awaited<ReturnType<Pool["connect"]>> | undefined;
+  let oldToken = "";
+  let newToken = "";
+  const rawStore = new DrizzleTaskRunRepository(context.database.db);
+  let oldOwner: Promise<unknown> | undefined;
+  let newOwner: Promise<unknown> | undefined;
+  try {
+    await new TaskRunEventConsumer(context.store, { consumerName: "execution-closure", workerId: "fence-handoff", leaseMs: 100 }).process(await context.message());
+    oldOwner = rawStore.withTaskRunExecution(context, async (lease) => {
+      oldToken = lease.fenceToken;
+      rowClient = await admin.connect();
+      await rowClient.query("begin");
+      const locked = await rowClient.query("select id from task_runs where workspace_id = $1 and id = $2 and execution_fence_token = $3 for update", [context.workspaceId, context.taskRunId, oldToken]);
+      assert.equal(locked.rowCount, 1);
+      const updated = await rowClient.query("update task_runs set updated_at = updated_at where workspace_id = $1 and id = $2 and execution_fence_token = $3 returning id", [context.workspaceId, context.taskRunId, oldToken]);
+      assert.equal(updated.rowCount, 1, "the row transaction is authorized by its expected token");
+      entered.resolve();
+      await release.promise;
+      await rowClient.query("commit");
+      rowClient.release();
+      rowClient = undefined;
+      lease.assertActive();
+    });
+    const oldOwnerRejected = assert.rejects(oldOwner, TaskRunExecutionOwnershipLostError);
+    await entered.promise;
+
+    const digest = createHash("sha256").update(JSON.stringify(["video-execution-v1", context.workspaceId, context.taskRunId])).digest();
+    const key = [digest.readInt32BE(0) >>> 0, digest.readInt32BE(4) >>> 0];
+    const lock = await admin.query<{ pid: number }>("select pid from pg_locks where locktype = 'advisory' and classid = $1 and objid = $2 and objsubid = 2 and granted", key);
+    assert.equal(lock.rows.length, 1);
+    await admin.query("select pg_terminate_backend($1)", [lock.rows[0]!.pid]);
+
+    let replacementEntered = false;
+    newOwner = context.otherStore.withTaskRunExecution(context, async (lease) => { replacementEntered = true; newToken = lease.fenceToken; });
+    await waitFor(async () => {
+      const blocked = await admin.query<{ count: string }>("select count(*)::text as count from pg_stat_activity where wait_event_type = 'Lock' and query ilike '%task_runs%'");
+      return Number(blocked.rows[0]?.count ?? 0) > 0;
+    });
+    assert.equal(replacementEntered, false, "replacement claim must wait for the older authorized transaction to commit");
+
+    release.resolve();
+    await Promise.all([oldOwnerRejected, newOwner]);
+    assert.ok(newToken);
+    assert.notEqual(newToken, oldToken);
+    const rows = await admin.query<{ execution_fence_token: string }>("select execution_fence_token from task_runs where workspace_id = $1 and id = $2", [context.workspaceId, context.taskRunId]);
+    assert.equal(rows.rows[0]?.execution_fence_token, newToken);
+    await assert.rejects(rawStore.failTaskRun({ ...context, executionFenceToken: oldToken, code: "PROVIDER_UNAVAILABLE", message: "stale after replacement", retryable: true, now: new Date() }), TaskRunExecutionOwnershipLostError);
+    assert.equal((await rawStore.findTaskRun(context.workspaceId, context.taskRunId))?.status, "RUNNING");
+  } finally {
+    release.resolve();
+    if (rowClient) { await rowClient.query("rollback").catch(() => undefined); rowClient.release(); }
+    await Promise.allSettled([...(oldOwner ? [oldOwner] : []), ...(newOwner ? [newOwner] : [])]);
+    await admin.end();
+    await context.close();
+  }
+});
+
+test("a recovered owner preserves a late Provider ID after the execution guard connection is lost", { ...timeout, skip: !databaseUrl }, async () => {
+  const context = await prepare();
+  const admin = new Pool({ connectionString: databaseUrl });
+  const base = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let submitCalls = 0;
+  let first: Promise<unknown> | undefined;
+  try {
+    const message = await context.message();
+    const provider: VideoProviderPort = {
+      async submit(input) { submitCalls += 1; entered.resolve(); await release.promise; return base.submit(input); },
+      getStatus: (input) => base.getStatus(input),
+      download: (input) => base.download(input),
+    };
+    first = context.consumer(new MockVideoTaskExecutor(context.store, provider, context.storage)).process(message);
+    await entered.promise;
+    assert.deepEqual(await context.store.listRecoverableKnownProviderTaskRuns!({ limit: 10 }), [], "a reserved but unknown submission must never enter automatic polling recovery");
+
+    const digest = createHash("sha256").update(JSON.stringify(["video-execution-v1", context.workspaceId, context.taskRunId])).digest();
+    const key = [digest.readInt32BE(0) >>> 0, digest.readInt32BE(4) >>> 0];
+    const lock = await admin.query<{ pid: number }>("select pid from pg_locks where locktype = 'advisory' and classid = $1 and objid = $2 and objsubid = 2 and granted", key);
+    assert.equal(lock.rows.length, 1, "the held Provider request must own its PostgreSQL session lock");
+    const terminated = await admin.query<{ terminated: boolean }>("select pg_terminate_backend($1) as terminated", [lock.rows[0]!.pid]);
+    assert.equal(terminated.rows[0]?.terminated, true);
+
+    await assert.rejects(
+      new MockVideoTaskExecutor(context.otherStore, provider, context.storage).execute({ workspaceId: context.workspaceId, taskRunId: context.taskRunId, recovery: true }),
+      /video submission is already reserved/u,
+    );
+    const deferredFinalization = await context.store.finalizeTaskRunExecutionFailure({ ...context, expectedQueuedEventId: message.event_id, code: "PROVIDER_UNAVAILABLE", message: "Duplicate delivery exhausted while the original POST is still unresolved.", now: new Date() });
+    assert.equal(deferredFinalization?.status, "RUNNING", "queue exhaustion must not terminalize an unresolved submission owned by the in-flight POST");
+    assert.equal(deferredFinalization?.error, null);
+    assert.equal((await context.store.findTaskRun(context.workspaceId, context.taskRunId))?.status, "RUNNING", "recovery must not terminalize an in-flight POST reservation");
+
+    release.resolve();
+    await assert.rejects(first, InternalEventDeferredError);
+    const lateAttempt = (await context.store.listTaskRunAttempts(context.workspaceId, context.taskRunId))[0];
+    assert.ok(lateAttempt?.providerRequestId);
+    assert.equal(submitCalls, 1);
+    assert.equal(base.submitCount, 1);
+    assert.deepEqual((await context.store.listRecoverableKnownProviderTaskRuns!({ limit: 10 })).map((task) => task.id), [context.taskRunId]);
+
+    const resumed = await recoverC06TaskRuns(new MockVideoTaskExecutor(context.otherStore, provider, context.storage), {
+      limit: 25,
+      maxAttempts: 1,
+      knownProviderRequestOnly: true,
+      deferRetryableErrors: true,
+    });
+    assert.equal(resumed.length, 1);
+    assert.equal(resumed[0]?.status, "SUCCEEDED", "periodic recovery must poll the late persisted request ID");
+    assert.equal((await context.store.findTaskRun(context.workspaceId, context.taskRunId))?.status, "SUCCEEDED");
+    assert.equal(submitCalls, 1, "reconciliation of the late persisted Provider ID must not POST again");
+    assert.equal(base.submitCount, 1);
+  } finally {
+    release.resolve();
+    if (first) await Promise.allSettled([first]);
+    await admin.end();
+    await context.close();
+  }
+});
+
+test("PostgreSQL finalization defers a migrated abandoned no-ID reservation without rewriting history", timeout, async () => {
   const context = await prepare();
   try {
     const message = await context.message();
@@ -226,8 +439,31 @@ test("PostgreSQL finalization classifies a migrated abandoned no-ID reservation 
     await context.database.db.update(providerAttempts).set({ status: "ABANDONED" }).where(and(eq(providerAttempts.workspaceId, context.workspaceId), eq(providerAttempts.id, attempt.id)));
     const before = await context.store.listTaskRunAttempts(context.workspaceId, context.taskRunId);
     const result = await context.store.finalizeTaskRunExecutionFailure({ ...context, expectedQueuedEventId: message.event_id, code: "PROVIDER_UNAVAILABLE", message: "Controlled exhaustion.", now: new Date() });
-    assert.equal(result?.error?.code, "PROVIDER_SUBMISSION_UNKNOWN");
-    assert.equal(result?.error?.retryable, false);
+    assert.equal(result?.status, "RUNNING");
+    assert.equal(result?.error, null);
+    assert.deepEqual(await context.store.listTaskRunAttempts(context.workspaceId, context.taskRunId), before);
+  } finally { await context.close(); }
+});
+
+test("PostgreSQL startup recovery preserves a migrated abandoned no-ID reservation row", timeout, async () => {
+  const context = await prepare();
+  try {
+    const message = await context.message();
+    await new TaskRunEventConsumer(context.store, { consumerName: "execution-closure", workerId: "first", leaseMs: 100 }).process(message);
+    const attempt = await context.store.ensureProviderAttempt({ ...context, providerAttemptId: createPrefixedId("att"), provider: "mock", model: "mock-video-v1", now: new Date() });
+    assert.ok(attempt);
+    assert.equal(await context.store.reserveProviderSubmission({ ...context, providerAttemptId: attempt.id, now: new Date() }), true);
+    await context.database.db.update(providerAttempts).set({ status: "ABANDONED", responsePayload: { legacy_marker: "must-remain" } }).where(and(eq(providerAttempts.workspaceId, context.workspaceId), eq(providerAttempts.id, attempt.id)));
+    const before = await context.store.listTaskRunAttempts(context.workspaceId, context.taskRunId);
+
+    const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+    await assert.rejects(
+      new MockVideoTaskExecutor(context.store, provider, context.storage).execute({ workspaceId: context.workspaceId, taskRunId: context.taskRunId, recovery: true }),
+      /video submission is already reserved/u,
+    );
+    const result = await context.store.findTaskRun(context.workspaceId, context.taskRunId);
+    assert.equal(result?.status, "RUNNING");
+    assert.equal(provider.submitCount, 0);
     assert.deepEqual(await context.store.listTaskRunAttempts(context.workspaceId, context.taskRunId), before);
   } finally { await context.close(); }
 });
@@ -274,9 +510,10 @@ test("startup recovery reacquires a lost guard and resumes the recorded request 
   const base = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
   const withExecution = context.store.withTaskRunExecution.bind(context.store);
   let lost = false;
-  context.store.withTaskRunExecution = (scope, execute) => withExecution(scope, (assertActive) => {
+  context.store.withTaskRunExecution = (scope, execute) => withExecution(scope, (lease) => {
     lost = false;
-    return execute(() => { assertActive(); if (lost) throw new TaskRunExecutionOwnershipLostError(); });
+    const assertActive = () => { lease.assertActive(); if (lost) throw new TaskRunExecutionOwnershipLostError(); };
+    return execute(Object.assign(assertActive, { fenceToken: lease.fenceToken, assertActive }));
   });
   try {
     await new TaskRunEventConsumer(context.store, { consumerName: "execution-closure", workerId: "first", leaseMs: 100 }).process(await context.message());

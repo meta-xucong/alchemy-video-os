@@ -13,6 +13,7 @@ import { InMemoryStoragePort } from "@alchemy-video/storage-client";
 
 import { createApp } from "../src/app.js";
 import type { IdentityPort } from "../src/identity.js";
+import { withTestExecutionFence } from "../../../packages/persistence/tests/execution-fence-test-helper.js";
 
 const taskCommand = {
   model: "c05-sse-only",
@@ -48,7 +49,7 @@ test("C05 SSE replays PostgreSQL events by Last-Event-ID without exposing intern
   try {
     const control = new DrizzleControlPlaneRepository(database.db);
     const assets = new DrizzleAssetWorkspaceRepository(database.db);
-    const tasks = new DrizzleTaskRunRepository(database.db);
+    const tasks = withTestExecutionFence(new DrizzleTaskRunRepository(database.db));
     await control.ensureDevIdentity({
       user: { id: userId, displayName: "C05 SSE Test" },
       workspace: { id: workspaceId, name: "C05 SSE Test" },

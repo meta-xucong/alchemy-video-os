@@ -22,6 +22,7 @@ import {
 } from "@alchemy-video/persistence";
 import { createMockMp4Fixture, MockVideoProvider, resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import { createInMemoryStoragePort } from "@alchemy-video/storage-client";
+import { withTestExecutionFence } from "../../../packages/persistence/tests/execution-fence-test-helper.js";
 import { MockVideoTaskExecutor } from "../../task-worker/src/execution-service.js";
 import { createTaskRunQueueMessage, TaskRunEventConsumer } from "../../task-worker/src/service.js";
 import {
@@ -746,7 +747,7 @@ test("G02 PostgreSQL planning, active identity mapping, scheduler TaskRun, and W
     });
     assert.equal(createdRun.kind, "NEW");
 
-    const taskStore = new DrizzleTaskRunRepository(database.db);
+    const taskStore = withTestExecutionFence(new DrizzleTaskRunRepository(database.db));
     const confirmation = (await taskStore.listWorkspaceEvents({ workspaceId, limit: 100 }))
       .find((event) => event.event_type === "production_run.confirmed"
         && event.data.production_run_id === productionRunId);

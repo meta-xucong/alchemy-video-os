@@ -25,6 +25,7 @@ import {
   workspaces,
 } from "../src/schema.js";
 import { DrizzleTaskRunRepository } from "../src/task-run-repository.js";
+import { withTestExecutionFence } from "./execution-fence-test-helper.js";
 
 const taskCommand = {
   model: "c05-queue-only",
@@ -73,7 +74,7 @@ test("Drizzle TaskRunRepository persists outbox facts, leases, deduplication, an
   try {
     const control = new DrizzleControlPlaneRepository(database.db);
     const assets = new DrizzleAssetWorkspaceRepository(database.db);
-    const tasks = new DrizzleTaskRunRepository(database.db);
+    const tasks = withTestExecutionFence(new DrizzleTaskRunRepository(database.db));
     await control.ensureDevIdentity({
       user: { id: userA, displayName: "C05 PostgreSQL A" },
       workspace: { id: workspaceA, name: "C05 PostgreSQL A" },
@@ -133,7 +134,7 @@ test("Drizzle TaskRunRepository persists outbox facts, leases, deduplication, an
     if (created.kind !== "NEW") return;
     assert.equal(created.value.status, "QUEUED");
 
-    const reconstructed = new DrizzleTaskRunRepository(database.db);
+    const reconstructed = withTestExecutionFence(new DrizzleTaskRunRepository(database.db));
     const replay = await reconstructed.createTaskRun({ ...firstInput, taskRunId: createPrefixedId("tsk") });
     assert.equal(replay.kind, "REPLAY");
     if (replay.kind === "REPLAY") assert.equal(replay.value.id, firstTaskId);
@@ -473,7 +474,7 @@ test("G02 serializes mapping revocation against attempt creation and preserves c
     const control = new DrizzleControlPlaneRepository(database.db);
     const assetRepository = new DrizzleAssetWorkspaceRepository(database.db);
     const planning = new DrizzleCreativePlanningRepository(database.db);
-    const tasks = new DrizzleTaskRunRepository(database.db);
+    const tasks = withTestExecutionFence(new DrizzleTaskRunRepository(database.db));
     await control.ensureDevIdentity({ user: { id: userId, displayName: "G02 attempt race" }, workspace: { id: workspaceId, name: "G02 attempt race" } });
     assert.equal((await control.createProject({
       scope: `${scope}:project`,
