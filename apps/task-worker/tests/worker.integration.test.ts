@@ -727,7 +727,7 @@ test("C06 startup recovery retries transient storage failures, prefers a persist
     const recoverableBeforeStart = await tasks.listRecoverableVideoTaskRuns({ limit: 10 });
     assert.deepEqual(recoverableBeforeStart.map((taskRun) => taskRun.id), [recoveryTaskRunId]);
     assert.deepEqual(recoverableBeforeStart.map((taskRun) => taskRun.status), ["PROVIDER_PROCESSING"]);
-    const recovered = await recoverC06TaskRuns(executor);
+    const recovered = await recoverC06TaskRuns(executor, { deferRetryableErrors: false });
     assert.deepEqual(recovered.map((result) => result.taskRunId), [recoveryTaskRunId]);
     assert.equal(recovered[0]?.attempts, 3);
     assert.equal(recovered[0]?.failure, undefined);
@@ -1037,6 +1037,7 @@ test("C06 startup scan exhausts a no-job recovery into FAILED, then public retry
     await worker.waitUntilReady();
     const scan = await recoverC06TaskRuns(executor, {
       maxAttempts: 3,
+      deferRetryableErrors: false,
       finalizeFailure: ({ workspaceId: failedWorkspaceId, taskRunId: failedTaskRunId, reason }) =>
         recoveryConsumer.finalizeExecutionFailure({ workspace_id: failedWorkspaceId, task_run_id: failedTaskRunId, reason }),
     });
