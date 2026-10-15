@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from tests.media_tools import media_tool_paths
 
 from .piper import PIPER_PACE_LENGTH_SCALES, PiperConfig, build_piper_command, length_scale_for_pace
 from .pixabay_music import PixabayMusic, PixabayMusicResult
@@ -185,10 +186,7 @@ class OpenMontageAudioAdapterTests(unittest.TestCase):
 
     def test_full_mix_produces_source_equivalent_media_fixture_when_ffmpeg_is_available(self):
         project_root = Path(__file__).resolve().parents[4]
-        ffmpeg = project_root / "node_modules" / ".pnpm" / "ffmpeg-static@5.3.0" / "node_modules" / "ffmpeg-static" / "ffmpeg.exe"
-        ffprobe = project_root / "node_modules" / ".pnpm" / "ffprobe-static@3.1.0" / "node_modules" / "ffprobe-static" / "bin" / "win32" / "x64" / "ffprobe.exe"
-        if not ffmpeg.is_file() or not ffprobe.is_file():
-            self.skipTest("controlled ffmpeg/ffprobe fixtures are unavailable")
+        ffmpeg, ffprobe = media_tool_paths(project_root)
 
         def run_command(binary, args, timeout):
             completed = subprocess.run([binary, *args], check=True, capture_output=True, text=True, timeout=timeout)

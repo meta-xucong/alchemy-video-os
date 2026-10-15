@@ -100,7 +100,7 @@ test("certifier requires every explicit candidate capability and at least three 
   assert.equal(unstableResult.code, "CONFIGURATION_INVALID");
   assert.equal(fetchCalls, 0);
 });
-test("certifier runs the fixed fixture repeatedly and returns only a hash-only candidate report", async () => {
+test("certifier validates fenced JSON through the fixed fixture and returns only a hash-only candidate report", async () => {
   let fetchCalls = 0;
   const output: string[] = [];
   const result = await runSemanticDirectorCertification({
@@ -109,7 +109,7 @@ test("certifier runs the fixed fixture repeatedly and returns only a hash-only c
     fetcher: async () => {
       fetchCalls += 1;
       return new Response(JSON.stringify({
-        choices: [{ message: { content: JSON.stringify(rawPlanFixture) } }],
+        choices: [{ message: { content: `\`\`\`json\n${JSON.stringify(rawPlanFixture)}\n\`\`\`` } }],
       }), { headers: { "content-type": "application/json" } });
     },
     writeOutput: (line) => output.push(line),
@@ -194,7 +194,7 @@ test("certifier writes a safe local report only after full success and removes s
 });
 
 const fixtureSourceForLeakCheck = () => semanticDirectorCertificationBundle.source_text;
-test("certifier never repairs Markdown or promotes a partial response", async () => {
+test("certifier normalizes only the outer JSON fence and never promotes a partial response", async () => {
   const output: string[] = [];
   const result = await runSemanticDirectorCertification({
     argv: ["--live"],
@@ -206,7 +206,8 @@ test("certifier never repairs Markdown or promotes a partial response", async ()
   });
   assert.equal(result.status, "FAILED");
   if (result.status !== "FAILED") return;
-  assert.equal(result.code, "DIRECTOR_CONTENT_FORMAT_INVALID");
+  assert.equal(result.code, "CERTIFICATION_DECISION_SCHEMA_FAILED");
+  assert.equal(result.stage, "SCHEMA");
   assert.equal(result.attempt, 1);
   assert.equal(output.join("\n").includes("```json"), false);
 });

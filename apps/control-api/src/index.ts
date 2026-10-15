@@ -41,9 +41,6 @@ if (requiredStorageConfig.some((name) => !process.env[name])) {
 const storage = createS3StoragePort({
   endpoint: process.env.S3_ENDPOINT!,
   ...(process.env.S3_PUBLIC_ENDPOINT ? { publicEndpoint: process.env.S3_PUBLIC_ENDPOINT } : {}),
-  ...(process.env.S3_BROWSER_ORIGINS
-    ? { browserOrigins: process.env.S3_BROWSER_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean) }
-    : {}),
   region: process.env.S3_REGION!,
   bucket: process.env.S3_BUCKET!,
   accessKeyId: process.env.S3_ACCESS_KEY!,

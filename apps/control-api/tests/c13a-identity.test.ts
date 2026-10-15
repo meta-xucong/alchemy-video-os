@@ -353,7 +353,7 @@ test("C13-A callback exchanges a video ticket with POST and establishes an HttpO
     } as never,
   });
   const form = new URLSearchParams({ ticket: "a-valid-video-ticket-123456" });
-  const response = await app.request("http://localhost/auth/veyra/callback", { method: "POST", body: form });
+  const response = await app.request("http://localhost/auth/veyra/callback", { method: "POST", headers: { Origin: "https://aiself.vip" }, body: form });
   assert.equal(response.status, 303);
   assert.match(response.headers.get("set-cookie") ?? "", /__Host-video_session=/);
   assert.match(response.headers.get("set-cookie") ?? "", /HttpOnly/i);
@@ -392,6 +392,7 @@ test("C13-A refuses to issue a session for an inactive shared account", async ()
   });
   const response = await app.request("http://localhost/auth/veyra/callback", {
     method: "POST",
+    headers: { Origin: "https://aiself.vip" },
     body: new URLSearchParams({ ticket: "a-valid-video-ticket-123456" }),
   });
   const body = await readJson(response);

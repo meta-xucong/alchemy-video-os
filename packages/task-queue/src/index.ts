@@ -1,4 +1,4 @@
-import { Queue, UnrecoverableError, Worker, type ConnectionOptions, type Job } from "bullmq";
+import { DelayedError, Queue, UnrecoverableError, Worker, type ConnectionOptions, type Job } from "bullmq";
 
 import {
   InternalCreativePlanningQueueMessageSchema,
@@ -58,6 +58,20 @@ export type InternalEventWorkerOptions = {
   deadLetterQueueName?: string;
   autoStart?: boolean;
 };
+
+export class InternalEventDeferredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InternalEventDeferredError";
+  }
+}
+
+export class InternalEventRequiresRecoveryError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InternalEventRequiresRecoveryError";
+  }
+}
 
 const toConnectionOptions = (redisUrl: string): ConnectionOptions => {
   const parsed = new URL(redisUrl);
@@ -121,14 +135,42 @@ export const createBullMqInternalEventWorker = (input: InternalEventWorkerOption
   const queueName = input.queueName ?? INTERNAL_EVENT_QUEUE_NAME;
   const deadLetterQueueName = input.deadLetterQueueName ?? INTERNAL_EVENT_DEAD_LETTER_QUEUE_NAME;
   const deadLetterQueue = new Queue<DeadLetterQueueJob>(deadLetterQueueName, { connection });
+  const finalized = new WeakSet<Job<InternalEventQueueJob>>();
+  const terminalHandlers = new Set<Promise<void>>();
   const worker = new Worker<InternalEventQueueJob>(
     queueName,
-    async (job) => input.processor(InternalTaskRunQueueMessageSchema.parse(job.data)),
+    async (job, token) => {
+      const message = InternalTaskRunQueueMessageSchema.parse(job.data);
+      try {
+        await input.processor(message);
+      } catch (error) {
+        let defer = error instanceof InternalEventDeferredError;
+        if (!defer && job.attemptsMade + 1 >= (job.opts.attempts ?? 1)) {
+          try {
+            // Commit terminal handling while this durable job is still active.
+            // If another execution owns the TaskRun, or persistence is down,
+            // retain the wake-up instead of failing/dead-lettering it first.
+            await input.onTerminalFailure({ event_id: message.event_id, workspace_id: message.workspace_id, task_run_id: message.task_run_id, attempts: job.attemptsMade + 1, reason: safeReason(error) });
+            finalized.add(job);
+          } catch (finalizationError) {
+            if (finalizationError instanceof InternalEventRequiresRecoveryError) {
+              finalized.add(job);
+              console.warn(JSON.stringify({ event: "queue.controlled_recovery.required", event_id: message.event_id, reason: finalizationError.message }));
+            } else defer = true;
+          }
+        }
+        if (defer) {
+          await job.moveToDelayed(Date.now() + 250, token);
+          throw new DelayedError();
+        }
+        throw error;
+      }
+    },
     { connection, concurrency: input.concurrency ?? 1, autorun: input.autoStart ?? true },
   );
 
   worker.on("failed", (job: Job<InternalEventQueueJob> | undefined, error) => {
-    if (!job || job.attemptsMade < (job.opts.attempts ?? 1)) return;
+    if (!job || job.attemptsMade < (job.opts.attempts ?? 1) && !(error instanceof UnrecoverableError)) return;
     const message = InternalTaskRunQueueMessageSchema.safeParse(job.data);
     if (!message.success) {
       console.error(JSON.stringify({ event: "queue.invalid_message", attempts: job.attemptsMade, reason: "schema_validation_failed" }));
@@ -141,17 +183,36 @@ export const createBullMqInternalEventWorker = (input: InternalEventWorkerOption
       attempts: job.attemptsMade,
       reason: safeReason(error),
     };
-    void Promise.all([
-      input.onTerminalFailure(payload),
-      deadLetterQueue.add("dead-letter", payload, { jobId: `dead-${payload.event_id}`, removeOnComplete: false, removeOnFail: false }),
-    ]).catch((deadLetterError) => {
+    const handling = (async () => {
+      if (!finalized.has(job)) {
+        // BullMQ can exhaust stalled/deferred work before invoking processor.
+        // Keep that finalizer guarded too. On contention/failure, retry the
+        // durable failed job. Its next delivery re-enters normal idempotent
+        // recovery under the execution guard and submission reservation.
+        try { await input.onTerminalFailure(payload); }
+        catch (finalizationError) {
+          if (finalizationError instanceof InternalEventRequiresRecoveryError) {
+            console.warn(JSON.stringify({ event: "queue.controlled_recovery.required", event_id: message.data.event_id, reason: finalizationError.message }));
+          } else {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            await job.retry("failed");
+            return;
+          }
+        }
+      }
+      finalized.delete(job);
+      await deadLetterQueue.add("dead-letter", payload, { jobId: `dead-${payload.event_id}`, removeOnComplete: false, removeOnFail: false });
+    })().catch((deadLetterError) => {
       console.error(JSON.stringify({ event: "queue.dead_letter.failed", event_id: payload.event_id, reason: safeReason(deadLetterError) }));
     });
+    terminalHandlers.add(handling);
+    void handling.finally(() => terminalHandlers.delete(handling));
   });
 
   return {
     close: async () => {
       await worker.close();
+      await Promise.all(terminalHandlers);
       await deadLetterQueue.close();
     },
     start: () => {

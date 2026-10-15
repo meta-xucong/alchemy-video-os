@@ -145,11 +145,18 @@ export class InMemoryAssetWorkspaceStore implements AssetWorkspaceStore {
 
   async confirmAssetUpload(input: ConfirmAssetInput) {
     const replay = this.replayConfirmationAsset(input, 200);
-    if (replay) return replay;
+    if (replay) {
+      if (replay.kind === "REPLAY" && replay.value.origin !== "USER_UPLOAD") return { kind: "INVALID_UPLOAD" } as const;
+      return replay;
+    }
     const current = await this.findAsset(input.workspaceId, input.assetId);
     if (!current) {
       this.storeNotFound(input);
       return { kind: "NOT_FOUND", status: 404 } as const;
+    }
+    if (current.origin !== "USER_UPLOAD") {
+      this.storeInvalidUpload(input);
+      return { kind: "INVALID_UPLOAD" } as const;
     }
     if (current.status === "PENDING_UPLOAD" && !(await input.verifyUpload(current))) {
       this.storeInvalidUpload(input);

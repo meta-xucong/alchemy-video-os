@@ -573,7 +573,7 @@ export const ConfirmAssetUploadCommandSchema = z.object({
   byte_size: z.number().int().positive(),
   width: z.number().int().positive().optional(),
   height: z.number().int().positive().optional(),
-  duration_ms: z.number().int().nonnegative().optional(),
+  duration_ms: z.number().int().nonnegative().max(2_147_483_647).optional(),
 });
 
 const ReferenceBindingsInputSchema = z.array(ReferenceBindingInputSchema).max(8).superRefine((bindings, context) => {

@@ -4,6 +4,7 @@ import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from tests.media_tools import media_tool_paths
 
 from .segmented_music import OpenMontageSegmentedMusicError, OpenMontageSegmentedMusicMixer
 
@@ -164,10 +165,7 @@ class OpenMontageSegmentedMusicAdapterTests(unittest.TestCase):
 
     def test_source_operation_produces_verified_local_av_fixture(self) -> None:
         project_root = Path(__file__).resolve().parents[4]
-        ffmpeg = project_root / "node_modules" / ".pnpm" / "ffmpeg-static@5.3.0" / "node_modules" / "ffmpeg-static" / "ffmpeg.exe"
-        ffprobe = project_root / "node_modules" / ".pnpm" / "ffprobe-static@3.1.0" / "node_modules" / "ffprobe-static" / "bin" / "win32" / "x64" / "ffprobe.exe"
-        if not ffmpeg.is_file() or not ffprobe.is_file():
-            self.skipTest("controlled ffmpeg/ffprobe fixtures are unavailable")
+        ffmpeg, ffprobe = media_tool_paths(project_root)
 
         def run_command(binary: str, args: list[str], timeout: int) -> str:
             completed = subprocess.run(

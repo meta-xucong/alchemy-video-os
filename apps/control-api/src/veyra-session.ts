@@ -52,6 +52,9 @@ export class VideoSessionIdentityAdapter implements IdentityPort {
     const identity = this.codec.read(request);
     if (!identity) throw new Error("Video session is missing or expired.");
     if (this.activeChecker && !(await this.activeChecker(identity))) throw new Error("Video session has been revoked.");
-    return createVeyraCurrentIdentity(identity);
+    // Account lookup may outlive a short session. Never authenticate with an
+    // identity whose signed deadline passed while the upstream was pending.
+    if (!this.codec.read(request)) throw new Error("Video session is missing or expired.");
+    return { ...createVeyraCurrentIdentity(identity), sessionExpiresAt: identity.expiresAt };
   }
 }

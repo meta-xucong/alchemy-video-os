@@ -1,6 +1,6 @@
 import { InternalTaskRunQueueMessageSchema, type InternalTaskRunQueueMessage } from "@alchemy-video/contracts";
-import type { InternalEventQueuePort } from "@alchemy-video/task-queue";
-import type { OutboxRelayStore, PersistedOutboxEvent, TaskRunEventResult, TaskRunStore } from "@alchemy-video/persistence";
+import { InternalEventDeferredError, InternalEventRequiresRecoveryError, type InternalEventQueuePort } from "@alchemy-video/task-queue";
+import { TaskRunExecutionBusyError, TaskRunExecutionGenerationAmbiguousError, TaskRunExecutionOwnershipLostError, type OutboxRelayStore, type PersistedOutboxEvent, type TaskRunEventResult, type TaskRunStore } from "@alchemy-video/persistence";
 import type { MockVideoTaskExecutor } from "./execution-service.js";
 
 const failureReason = (error: unknown) =>
@@ -71,6 +71,36 @@ export const createTaskRunQueueMessage = (outbox: PersistedOutboxEvent): Interna
   });
 };
 
+export const createC06RecoveryScheduler = (input: {
+  intervalMs: number;
+  run: () => Promise<void>;
+  onError?: (error: unknown) => void;
+}) => {
+  let stopped = false;
+  let inFlight: Promise<void> | undefined;
+  const runNow = () => {
+    if (stopped) return Promise.resolve();
+    if (inFlight) return inFlight;
+    const current = Promise.resolve()
+      .then(input.run)
+      .catch((error: unknown) => { input.onError?.(error); })
+      .finally(() => {
+        if (inFlight === current) inFlight = undefined;
+      });
+    inFlight = current;
+    return current;
+  };
+  const timer = input.intervalMs > 0 ? setInterval(() => { void runNow(); }, input.intervalMs) : undefined;
+  return {
+    runNow,
+    async stop() {
+      stopped = true;
+      if (timer) clearInterval(timer);
+      await inFlight;
+    },
+  };
+};
+
 export class TaskRunEventConsumer {
   constructor(
     private readonly store: Pick<TaskRunStore, "processEvent" | "releaseConsumerEvent" | "finalizeTaskRunExecutionFailure">,
@@ -86,11 +116,22 @@ export class TaskRunEventConsumer {
       now: new Date(),
       leaseMs: this.input.leaseMs,
     });
-    if (result === "RETRY" || result === "BUSY") {
+    if (result === "BUSY") throw new InternalEventDeferredError(`Internal event ${input.event_id} requires another delivery attempt.`);
+    if (result === "RETRY") {
       throw new Error(`Internal event ${input.event_id} requires another delivery attempt.`);
     }
     if ((result === "PROCESSED" || result === "DUPLICATE") && this.executor) {
-      await this.executor.execute({ workspaceId: input.workspace_id, taskRunId: input.task_run_id });
+      // The durable event is acknowledged before execution. If execution
+      // throws a retryable error, BullMQ redelivers the same event and the
+      // store returns DUPLICATE. Re-enter the normal idempotent execution path
+      // so active runs do not become stranded; do not mark it as startup
+      // recovery, because another delivery may still be inside Provider POST.
+      try {
+        await this.executor.execute({ workspaceId: input.workspace_id, taskRunId: input.task_run_id });
+      } catch (error) {
+        if (error instanceof TaskRunExecutionBusyError || error instanceof TaskRunExecutionOwnershipLostError) throw new InternalEventDeferredError(error.message);
+        throw error;
+      }
     }
     return result;
   }
@@ -107,14 +148,20 @@ export class TaskRunEventConsumer {
     });
   }
 
-  async finalizeExecutionFailure(input: { workspace_id: string; task_run_id: string; reason: string }) {
-    await this.store.finalizeTaskRunExecutionFailure({
-      workspaceId: input.workspace_id,
-      taskRunId: input.task_run_id,
-      code: "PROVIDER_UNAVAILABLE",
-      message: "Video execution exhausted its recoverable delivery attempts.",
-      now: new Date(),
-    });
+  async finalizeExecutionFailure(input: { workspace_id: string; task_run_id: string; event_id?: string; reason: string }) {
+    try {
+      await this.store.finalizeTaskRunExecutionFailure({
+        workspaceId: input.workspace_id,
+        taskRunId: input.task_run_id,
+        ...(input.event_id ? { expectedQueuedEventId: input.event_id } : {}),
+        code: "PROVIDER_UNAVAILABLE",
+        message: "Video execution exhausted its recoverable delivery attempts.",
+        now: new Date(),
+      });
+    } catch (error) {
+      if (error instanceof TaskRunExecutionGenerationAmbiguousError) throw new InternalEventRequiresRecoveryError(error.message);
+      throw error;
+    }
   }
 }
 
@@ -122,10 +169,27 @@ export const recoverC06TaskRuns = async (executor: Pick<MockVideoTaskExecutor, "
   limit?: number;
   maxAttempts?: number;
   onFailure?: (failure: { workspaceId: string; taskRunId: string; reason: string }) => void;
+  onDeferred?: (deferred: { workspaceId: string; taskRunId: string; kind: "EXECUTION_BUSY" | "PROVIDER_SUBMISSION_UNKNOWN" | "PROVIDER_RETRY_PENDING"; reason: string }) => void;
   finalizeFailure?: (failure: { workspaceId: string; taskRunId: string; reason: string }) => Promise<void>;
+  knownProviderRequestOnly?: boolean;
+  deferRetryableErrors?: boolean;
 } = {}) => {
-  const results = await executor.recover({ limit: input.limit ?? 100, maxAttempts: input.maxAttempts ?? 3 });
+  const results = await executor.recover({
+    limit: input.limit ?? 100,
+    maxAttempts: input.maxAttempts ?? 3,
+    ...(input.knownProviderRequestOnly ? { knownProviderRequestOnly: true } : {}),
+    deferRetryableErrors: input.deferRetryableErrors ?? true,
+  });
   for (const result of results) {
+    if (result.deferred) {
+      input.onDeferred?.({
+        workspaceId: result.workspaceId,
+        taskRunId: result.taskRunId,
+        kind: result.deferredKind ?? "EXECUTION_BUSY",
+        reason: result.deferredReason ?? "Execution recovery was safely deferred.",
+      });
+      continue;
+    }
     if (result.failure) {
       const failure = { workspaceId: result.workspaceId, taskRunId: result.taskRunId, reason: result.failure };
       input.onFailure?.(failure);

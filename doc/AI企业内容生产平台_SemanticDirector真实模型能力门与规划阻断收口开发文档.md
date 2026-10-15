@@ -1,12 +1,12 @@
 # AI 企业内容生产平台：Semantic Director 真实模型能力门与规划阻断收口开发文档
 
-版本：`1.2.0`
+版本：`1.4.0`
 
-日期：`2026-09-28`
+日期：`2026-10-11`
 
-状态：`IMPLEMENTED / READY_FOR_PROVIDER_TEST / VIDEO_PROVIDER_PENDING`
+状态：`IMPLEMENTED / SAME_INPUT_VIDEO_REPLAY_PASS / FRESH_PLANNING_BLOCKED`
 
-当前业务结论：`BLOCKED / NOT_READY_FOR_PROVIDER_TEST`
+当前业务结论：`历史 storyboard 重放通过；Semantic Director 新鲜重规划仍 BLOCKED；人工画面验收待完成`
 
 ## 1. 事件结论
 
@@ -113,9 +113,11 @@ canonical_source_bundle
 - `JSON_OBJECT`：仅供实测支持 `json_object` 的模型；
 - `PROMPT_ONLY`：模型不支持 `response_format` 时省略该字段，但仍严格要求纯 JSON 对象。
 
-任何模式都不会接受：
+所有模式仍拒绝语义内容修补。为兼容已观察到的 Aiself 上游格式，仅在响应内容整体**恰好**为一个 Markdown fenced JSON block 时，客户端允许剥除外层传输围栏：开围栏必须是 ``` 或 ```json（大小写不敏感），闭围栏必须单独位于末行，围栏外不得有解释文字。该步骤只移除围栏字符，不改写 JSON 正文；随后仍执行普通 `JSON.parse`、对象根检查、原始计划 Schema、provenance 与现有 canonicalizer 全部门禁。
 
-- Markdown code fence；
+以下内容仍不会接受：
+
+- 围栏外的解释/前后缀、非 JSON 语言标签、嵌套或不完整围栏；
 - 数组根节点；
 - 空内容；
 - 半截或畸形 JSON；
@@ -295,7 +297,7 @@ DeliveryPlan user-approved
 
 - 不放宽 `SemanticDirectorDecisionSchema`；
 - 不自动补 `source_hash`、offset、reference usage 或 segment；
-- 不修 Markdown、数组或半截 JSON；
+- 不提取围栏以外的文本，不修数组、半截 JSON、畸形 JSON、缺字段、错误字段或 provenance；唯一允许的格式适配是第 4 节定义的完整单层 JSON 围栏解包；
 - 不恢复固定 15 秒、机械均分、关键词分段；
 - 不回退 deterministic planner；
 - 不给旧 PromptPackage 手工注入 projection；
@@ -390,6 +392,24 @@ READY_FOR_PROVIDER_TEST
 
 真实 Provider 测试和最终成片验收必须另立证据，不得由本文件的本地绿测代替。
 
+## 14. 2026-10-11 Aiself 围栏 JSON 适配补充
+
+### 14.1 实际故障证据
+
+用户授权的 `claude-sonnet-5` 规划请求返回 HTTP 200、JSON 响应封套正常，但 `choices[0].message.content` 是 Markdown fenced JSON；客户端安全诊断为 `CONTENT / MARKDOWN_FENCE`。canary brief 转为 `FAILED`，未创建 storyboard 或 production run，Grok 视频 Provider 未收到提交。原始响应正文没有写入日志或证据文件。
+
+该情况不是连接或认证失败；此前已完成模型列表读取及一次最小文本 completion。为遵守用户最新指示，仅在本地 Semantic Director client 增加窄范围外层围栏解包，不调整上游、不更换 model/profile、不放宽 RawSemanticPlan/Decision Schema、不自动修补规划内容。
+
+### 14.2 实施边界与验收
+
+- 只识别一个完整 fenced JSON block，可带 `json` 标签或无标签；围栏外存在任何文本则拒绝。
+- 解析后的 JSON 必须继续通过对象根、RawSemanticPlan schema、Decision schema、source/provenance、canonicalization 和既有业务门禁；任何失败仍阻断 Provider submit。
+- 成功诊断只记录固定枚举 `content_normalization=MARKDOWN_JSON_FENCE`，不记录模型响应正文或来源内容。
+- 单测必须覆盖 json/无标签/大小写标签/CRLF 的允许形式，以及前后文、其他语言、畸形 fenced JSON、数组根的拒绝或既有分类。
+- 本轮状态在固定 profile 的实时认证与单次真实视频 canary 全部完成前保持 `LIVE_RECERTIFICATION_PENDING / VIDEO_PROVIDER_PENDING`；规划通过不代表视频 Provider 或成片验收。
+
+本补充优先于本文件早期关于“任何 Markdown code fence 一律拒绝”的历史表述；仅对严格完整围栏提供传输格式归一化，不改变语义规划契约。
+
 ## 13. 开发侧最终审计结论
 
 开发侧代码、配置、文档、静态安全和隔离基础设施模拟测试已经完成，状态为：
@@ -405,3 +425,74 @@ BLOCKED / NOT_READY_FOR_PROVIDER_TEST
 ```
 
 这两个状态不矛盾：前者表示实现已具备交给实机测试同事复核的条件；后者表示在真实模型通过固定 fixture、旧项目重新规划并产生新 projection 之前，系统必须继续阻止 Grok/KIE submit 和费用事实。开发侧验收不得冒充真实模型、真实 Provider、真实成片或人工质量验收。
+
+## 15. 2026-10-11 本机真实链路修复与 canary 结果
+
+### 15.1 本地启动配置缺陷
+
+第一次运行失败后，按实际数据库证据复核：失败 TaskRun 为 `tsk_01M4MZ68YPEQ7YHPBEX89310S5`，错误为参考图 relay 返回非法响应；该任务没有 ProviderAttempt，也没有提交预留或 request ID。因此该次没有向 Grok 提交任务。失败原因不是上游视频响应。
+
+本地栈当时使用固定远端 `REFERENCE_DELIVERY_ORIGIN`，但没有配置与该远端匹配的 `REFERENCE_DELIVERY_SIGNING_KEY`；启动脚本静默生成随机本地 key，令本机签名 URL 无法由远端验证。修复 `start-full-local-stack.ps1`：无固定签名密钥时，必须显式使用 `-AllowEphemeralReferenceTunnel`；否则在启动服务前 fail-fast，并解释两种正确配置。增加静态回归测试。临时隧道只转发到本机 Control API，未改变远端 Provider 上游或生产配置。
+
+### 15.2 本次本地输出归一化
+
+在用户固定上游的约束下，只对上游传输包络做本地适配，不把不符合语义契约的内容“修成”通过：
+
+- Semantic Director 的严格完整 Markdown JSON 外围 fence 被剥离后，内层仍完整执行 RawSemanticPlan、Decision、来源/溯源、canonicalization 与业务门禁。
+- 实际 planner 首次返回 fence JSON；客户端只接受单个完整 fence（`json` 或无标签），拒绝围栏外说明、非 JSON 语言和畸形内容。
+- canary 参考图显式冻结为 `STYLE` 角色，避免用未声明角色的素材进入 canonicalization。
+- 移除已被 strict API schema 拒绝、且当前创建契约不再支持的 `budget_limit` 字段；没有变更服务端合同。
+- 未更换 API base、模型、profile、请求语义或 Provider adapter；本次视频上游响应已由现有 adapter 识别，无需新增猜测字段或宽松解析。
+
+### 15.3 实际真实 canary 结果
+
+- Semantic Director：Aiself OpenAI-compatible endpoint，`claude-sonnet-5`，规划成功并通过既有 schema/canonicalization/来源门禁。
+- Video Provider：用户固定 Aiself endpoint，Grok `grok-imagine-video-1.5`；仅一个单段任务。
+- ProductionRun：`prd_01M4MZR4986EXWF3YC9EP9FM67`；唯一 TaskRun：`tsk_01M4MZR4WBQKQWHQCK1QS6ZA7W`；数据库确认恰有一条 ProviderAttempt，request ID 已持久化；之后只查询恢复，无重复 submit。
+- 成片：`vvr_01M4MZWBW8W91ST3G5KP0WW6K7`，资产 `ast_01M4MZW0V5NNM3Q50NBDXJF7DT`。实测 H.264 1280×720、24 fps、15.042 秒；AAC 48 kHz stereo；下载体积 1,296,945 bytes。
+- 成片副本：`.codex-longrun/local-acceptance/artifacts/real-provider-canary_20261011.mp4`。此文件为本地测试产物，不加入源码/发布包。
+- 本次 BGM 为关闭；本 canary 只证明单段视频生成、下载和编码探测成功，不代表 BGM、多段合成、完整浏览器验收或主观画质验收。
+
+### 15.4 最新状态
+
+固定上游真实单段视频链路已完成一次端到端成功验证。之前 `VIDEO_PROVIDER_PENDING` 的旧状态由本节结果覆盖；但平台整体仍需按对应生产/发布清单验收。VPS 部署、真实 BGM、多段合成、账单核对及人工画质判断不在本次成功证据内。
+
+## 16. 2026-10-11 护肤品旧项目同输入真实重放
+
+### 16.1 输入身份与规划阶段
+
+- 复测项目：`prj_01M2YK2DXF6NMDNFJ0PM87VSXJ`；输入沿用已批准 Brief `cbr_01M4194HKDQJQ6KXDV4J4CNV43` rev14、30 秒、480p、原 4 张参考图及其逐项角色/用途映射。
+- 历史画面基线：Storyboard `sbr_01M4196A1AQ4QBSCNBYWSHR5FQ` rev1；由旧成功 ProductionRun `prd_01M43R309JXXS973H9SXQZ74GN` 绑定，3 段时长为 9/10/11 秒。
+- 为验证修正后的围栏解析器，按 rev14 的完全相同内容新建 Brief rev15、rev16 并各调用一次已登记 Semantic Director profile。两次响应封套均为 HTTP 200，安全诊断均记录 `content_normalization=MARKDOWN_JSON_FENCE`；随后两次分别被既有 canonicalizer 以 `CANONICALIZATION_SEGMENT_SUBSHOT_INVALID` fail-closed。原始模型正文未记录，两个失败 Brief 未创建 Storyboard/ProductionRun，且没有对应视频 ProviderAttempt。
+- 未放宽 canonicalizer，也未伪造新规划通过。为了满足同项目视频画质对照，随后仅复用上述已审批、此前成功的同一 storyboard 与 Brief rev14；因此本次新视频重放**不构成新鲜 Semantic Director 规划成功证据**。
+
+### 16.2 同输入真实视频重放
+
+- 新 DeliveryPlan `dpr_01M4N0PZA46B7ADQF0DK25F49V` rev22：`EXACT` 30 秒、480p 对应已批准 storyboard、字幕/旁白关闭；新 ProductionRun `prd_01M4N0PZDXMD4BHV1GPCN81HWR` 最终 `SUCCEEDED`，3/3 段接受。
+- 数据库逐段对照旧/新 TaskRun：三段 Provider-facing prompt 完全相同；每段的模型、分辨率、时长与 `reference_asset_ids` 完全相同。ProviderAttempt 为 `SUCCEEDED=3`，无额外失败或重试 attempt。
+- BGM 精确复用旧 run 的同一完整音源：资产 `ast_01M43H4X75RGA5498Y58Y1CXKW`，SHA-256 `492f7620a98222e479413eadf1163ea6d000cd409f4e94bde8989f18f94bbe8e`，80 秒；新 run 冻结 `MUSIC_REPLACE_PROVIDER_AUDIO`。输出 AAC 48 kHz 双声道、30.052 秒；音频 QC `music_applied=true`、`unexpected_silence=false`、`integrated_lufs=-13.4`、`true_peak_db=-1.2`。
+- 新 VideoVersion `vvr_01M4N0XZ13MMZ5TRPEM2PJ9RJ6`；输出 H.264 848×480、24 fps、30.125 秒、3,717,606 bytes，SHA-256 `8f238bd6427649d47b418991776e3cdb35c7f277dda12540195278052f79697f`。旧基线文件已按数据库 SHA 验证为 4,147,528 bytes / `f2d7e8d255096994078da1a3d57cb88ee1a81feb6189ed5aa2f8c1f08de68fa7`。
+- 新 QC 为 `PASS`，旧 QC 仍为 `NEEDS_ATTENTION / COMPOSITION`。新 QC 的 `review_completeness=PARTIAL`、仅采样 4 帧，语义画面/素材身份等未运行项目保持 `null`；PASS 仅代表实际执行的基础检查通过，不替代人工观看验收。新旧音频测量均为 -13.4 LUFS / -1.2 dBTP 且无检测静音；新 QC 未报峰值问题，旧 QC 曾以 -1.5 dBTP 限值报 `NEEDS_ATTENTION`，不能把评估阈值变化误说成音质或声音内容变化。
+- 本地对照文件：`.codex-longrun/local-acceptance/artifacts/skincare-baseline_20261004.mp4` 与 `skincare-current_20261011.mp4`；contact sheet 同目录。测试没有修改旧资产/QC，没有提交、推送或部署。
+
+### 16.3 结论边界
+
+本次证明：相同历史 storyboard、相同逐段 provider prompt/参考图、相同完整 BGM 下，现行本地多段生产、提交、合成、下载和基础音频技术门可以生成新的完整 30 秒视频；BGM 覆盖全片，没有检测到意外静音。画面仍需人工主观验收，QC 覆盖为部分。
+
+本次同时证明：围栏 JSON 传输格式适配生效，但该项目新鲜语义规划仍连续两次被严格 canonicalizer 阻断，确切子镜头标注失败原因尚未从不记录原始正文的安全日志中细分。不得宣称 Semantic Director 对本项目已通过，亦不得为获得视频而弱化来源、时间线或子镜头门禁。两个 fresh planning fail-closed 结果与历史 storyboard 重放必须分开陈述。
+
+## 17. 2026-10-11 规划拒绝诊断与 VPS 应用栈一致性修复
+
+专项方案与精确写集见 `AI企业内容生产平台_新规划诊断与VPS应用栈一致性修复开发文档_20261011.md`。在固定基线 `894ece07af2c5f1ac54f1a307d301f1e2b7b32b0` 上，本轮仅增加 G02 时间轴拒绝的固定诊断 code，不改校验 predicate、顺序、拒绝结果、自动修复、重试或 Provider 可达性；VPS wrapper 增加应用容器统一 build/recreate 及只读一致性检查。
+
+验证证据：
+
+- Worker 全套 Node 测试：115 passed、0 failed、1 skipped；跳过项是依赖 `DATABASE_URL` 的 PostgreSQL 端到端集成测试，本机未配置该变量，故该路径仍未验证。
+- `apps/workflow-worker/tests/semantic-director-canonicalizer.test.ts` 定向：19/19 passed；诊断 issue 只含固定 code，不泄漏 prompt/source/asset 值，非法结构继续 fail-closed。
+- Studio 项目流程测试：66/66 passed，包含规划失败与视频 Provider 错误的 UI 状态区分。
+- Worker `typecheck` 通过：pnpm 包命令通过；另以 Node 24.19.0 直接执行 workspace TypeScript 5.9.3 `tsc --noEmit` 通过。pnpm 本身仍显示宿主 Node 为 20.11.1（仓库声明要求 Node >=24），故完整 pnpm 生命周期/构建未宣称由 Node24 驱动；独立测试使用 Node 24.19.0。
+- VPS shell `bash -n` 与隔离 fake-Docker wrapper 测试通过；验证 build/recreate 服务集合、排除数据/迁移服务，以及混目录/缺服务 fail-closed 和无 secret 输出。
+- 独立只读代码终审：PASS，无本轮 P0/P1/P2 未关闭项。复审建议补充 `config_files` 错配负例后已新增并复跑通过；该门禁也 fail-closed。
+- `git diff --check` 通过；仅有现存 contracts 文件 LF/CRLF 转换警告。
+
+边界：fake-Docker 测试不是实际 Compose daemon、VPS 部署或服务健康凭证。真实 Semantic Director 新鲜规划、完整登录前端生成、真实 Provider、本轮 VPS restart/deploy 与源码 SHA 证明仍未完成；平台发布/商业验收不得据此标为通过。

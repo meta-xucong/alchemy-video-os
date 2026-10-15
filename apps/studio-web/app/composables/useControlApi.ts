@@ -403,7 +403,7 @@ export function useControlApi() {
       headers: commandHeaders(idempotencyKey),
       body: input,
     });
-  const project = (projectId: string, signal?: AbortSignal) => $fetch<ProjectDetailResponse>(`/api/v1/projects/${projectId}`, { signal });
+  const project = (projectId: string, signal?: AbortSignal) => $fetch<ProjectDetailResponse>(`/api/v1/projects/${projectId}`, { signal, cache: "no-store" });
   const audioCapabilities = (projectId: string) => $fetch<AudioCapabilitiesResponse>(`/api/v1/projects/${projectId}/audio-capabilities`);
   const importPixabayMusic = (projectId: string, input: { query: string; min_duration?: number; max_duration?: number }, idempotencyKey: string) =>
     $fetch<PixabayMusicImportResponse>(`/api/v1/projects/${projectId}/audio/pixabay/import`, {
@@ -429,7 +429,7 @@ export function useControlApi() {
       body: input,
     });
 
-  const confirmAssetUpload = (assetId: string, input: { sha256: string; mime_type: string; byte_size: number }, idempotencyKey: string) =>
+  const confirmAssetUpload = (assetId: string, input: { sha256: string; mime_type: string; byte_size: number; duration_ms?: number }, idempotencyKey: string) =>
     $fetch<AssetResponse>(`/api/v1/assets/${assetId}/confirm-upload`, {
       method: "POST",
       headers: commandHeaders(idempotencyKey),
@@ -510,7 +510,7 @@ export function useControlApi() {
     });
 
   const productionRuns = (projectId: string) =>
-    $fetch<ProductionRunProgressListResponse>(`/api/v1/projects/${projectId}/production-runs`);
+    $fetch<ProductionRunProgressListResponse>(`/api/v1/projects/${projectId}/production-runs`, { cache: "no-store" });
   const videoVersions = (projectId: string) =>
     $fetch<VideoVersionListResponse>(`/api/v1/projects/${projectId}/video-versions`);
   const retryProductionSegment = (productionRunId: string, sequence: number, idempotencyKey: string) =>

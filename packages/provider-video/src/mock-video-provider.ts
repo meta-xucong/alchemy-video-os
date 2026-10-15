@@ -57,6 +57,7 @@ export class MockVideoProvider implements VideoProviderPort {
         code: "PROVIDER_REJECTED",
         message: "Mock video generation was configured to fail.",
         retryable: false,
+        providerRequestTerminal: true,
       };
     }
     const reads = (this.statusReads.get(input.providerRequestId) ?? 0) + 1;

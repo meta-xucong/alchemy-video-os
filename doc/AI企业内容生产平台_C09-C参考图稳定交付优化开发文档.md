@@ -51,7 +51,7 @@ Grok/KIE 视频接口只接收公网可读取的 `image_urls`。平台当前把�
 | --- | ---: | --- |
 | `REFERENCE_DELIVERY_ORIGIN` | `https://video.aiself.vip` | 仅 HTTPS origin，无凭据/query/fragment |
 | `REFERENCE_DELIVERY_TTL_MS` | `900000`（15 分钟） | 60 秒至 1 小时；非法值启动即失败 |
-| `REFERENCE_DELIVERY_PREFLIGHT_ENABLED` | real provider 为 `true` | 仅显式 `false` 可关闭，建议仅诊断使用 |
+| `REFERENCE_DELIVERY_PREFLIGHT_ENABLED` | `true`（默认） | 真实 Provider Worker 显式设为 `false` 时启动 fail-closed；不能绕过逐图片预检 |
 | `REFERENCE_DELIVERY_PREFLIGHT_TIMEOUT_MS` | `5000` | 500 至 30000 毫秒 |
 | `REFERENCE_DELIVERY_PREFLIGHT_RETRIES` | `2` | 0 至 3 次额外预检 |
 
@@ -83,6 +83,10 @@ Mock 模式保持现有离线行为，不访问公网。生产 compose 将上述
 发布前备份 Video VPS 的 compose/env/Nginx 配置和当前镜像摘要。发布只更新 task-worker、control-api、edge；不执行 `down -v`，不触碰 Sub2API。若健康检查失败、Provider-input 404 延迟异常或 Worker 启动配置错误，立即用备份镜像/配置恢复这三个服务；数据库和对象存储不回滚。
 
 本方案不承诺改变 KIE 自身 5xx/额度/权限问题；它只确保图片交付可观测、可恢复且不会因 Aiself relay 短暂不可达而盲目发起一次注定失败的提交。
+
+## 9. 2026-10-12 启动竞态补充
+
+VPS 故障复核发现，初版 C09-C 虽在每个任务的 Provider POST 前检查参考图，但 Worker 可能在 Control API/Edge 尚未 ready 时开始消费队列。原有 250ms/750ms 预检退避不足以覆盖服务启动窗口。新增的部署就绪门禁和安全诊断以《C09-C 参考图交付就绪门禁修复（2026-10-12）》为准；该文档在退避策略和启动验收方面取代本文第 3.1 节的短等待描述，其他 URL、安全、MIME、尺寸和提交顺序约束保持不变。
 
 ## 7. 本轮实现与审计结果
 

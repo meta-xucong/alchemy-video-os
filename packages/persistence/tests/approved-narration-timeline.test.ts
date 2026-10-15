@@ -153,6 +153,17 @@ test("approved timeline normalizes PostgreSQL timestamp strings at the DB bounda
   assert.equal(result?.narrationAsset?.durationMs, 1_000);
 });
 
+test("approved timeline rejects a frozen asset version that does not match the TimelinePlan identity", async () => {
+  const result = await findApprovedNarrationTimeline(fakeDatabase({
+    timeline_plans: [timelineRow({ narrationAssetVersionId: "nav_other_formal_version" })],
+    narration_script_revisions: [scriptRow()],
+    narration_asset_versions: [assetVersionRow()],
+    assets: [audioAssetRow()],
+  }), workspaceId, projectId, deliveryPlanRevisionId);
+
+  assert.equal(result, undefined);
+});
+
 test("approved timeline preserves an explicit HOLD tail without treating it as spoken text", async () => {
   const result = await findApprovedNarrationTimeline(fakeDatabase({
     timeline_plans: [timelineRow({ narrationAssetVersionId: null,

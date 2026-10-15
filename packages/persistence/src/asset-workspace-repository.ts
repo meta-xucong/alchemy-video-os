@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 
 import type { PlatformDatabase } from "./db.js";
+import { releasedAssetScope } from "./asset-release.js";
 import { assets, commandDeduplications, documentConversions, productionRuns, productionSegments, projects, referenceBindings, shots, taskRuns } from "./schema.js";
 import { assetScope, projectScope, shotScope } from "./workspace-repositories.js";
 
@@ -284,6 +285,7 @@ const referenceBindingsAreReady = async (
         eq(assets.workspaceId, workspaceId),
         eq(assets.projectId, projectId),
         eq(assets.status, "READY"),
+        releasedAssetScope(),
         inArray(assets.id, bindings.map((binding) => binding.assetId)),
       ),
     );
@@ -351,7 +353,7 @@ export class DrizzleAssetWorkspaceRepository implements AssetWorkspaceStore {
     const [project] = await this.db.select().from(projects).where(and(projectScope(workspaceId, projectId), ne(projects.status, "DELETED"))).limit(1);
     if (!project || project.status === "DELETED") return undefined;
     const [projectAssets, projectShots] = await Promise.all([
-      this.db.select().from(assets).where(and(eq(assets.workspaceId, workspaceId), eq(assets.projectId, projectId))).orderBy(asc(assets.createdAt)),
+      this.db.select().from(assets).where(and(eq(assets.workspaceId, workspaceId), eq(assets.projectId, projectId), releasedAssetScope())).orderBy(asc(assets.createdAt)),
       this.db.select().from(shots).where(and(eq(shots.workspaceId, workspaceId), eq(shots.projectId, projectId))).orderBy(asc(shots.position)),
     ]);
     const bindings = await this.db
@@ -368,7 +370,7 @@ export class DrizzleAssetWorkspaceRepository implements AssetWorkspaceStore {
   }
 
   async findAsset(workspaceId: string, assetId: string) {
-    return (await this.db.select().from(assets).where(assetScope(workspaceId, assetId)).limit(1))[0];
+    return (await this.db.select().from(assets).where(and(assetScope(workspaceId, assetId), releasedAssetScope())).limit(1))[0];
   }
 
   async ensureGeneratedAudioAsset(input: GeneratedAudioAssetInput) {
@@ -502,6 +504,7 @@ export class DrizzleAssetWorkspaceRepository implements AssetWorkspaceStore {
         if (isInvalidUploadSnapshot(reservation.value)) return { kind: "INVALID_UPLOAD" } as const;
         if (!isAssetSnapshot(reservation.value)) return { kind: "CONFLICT" } as const;
         const [asset] = await transaction.select().from(assets).where(assetScope(input.workspaceId, reservation.value.asset_id)).limit(1);
+        if (asset && asset.origin !== "USER_UPLOAD") return { kind: "INVALID_UPLOAD" } as const;
         return asset ? { kind: "REPLAY", value: asset, status: 200 } as const : { kind: "CONFLICT" } as const;
       }
 
@@ -509,6 +512,10 @@ export class DrizzleAssetWorkspaceRepository implements AssetWorkspaceStore {
       if (!asset) {
         await storeNotFound(transaction, input.scope, input.idempotencyKey);
         return { kind: "NOT_FOUND", status: 404 } as const;
+      }
+      if (asset.origin !== "USER_UPLOAD") {
+        await storeSnapshot(transaction, input.scope, input.idempotencyKey, { kind: "INVALID_UPLOAD" });
+        return { kind: "INVALID_UPLOAD" } as const;
       }
       if (asset.status === "PENDING_UPLOAD" && !(await input.verifyUpload(asset))) {
         await storeSnapshot(transaction, input.scope, input.idempotencyKey, { kind: "INVALID_UPLOAD" });
@@ -744,7 +751,7 @@ export class DrizzleAssetWorkspaceRepository implements AssetWorkspaceStore {
         const [selectedAsset] = await transaction
           .select({ id: assets.id })
           .from(assets)
-          .where(and(eq(assets.workspaceId, input.workspaceId), eq(assets.projectId, current.projectId), eq(assets.id, input.selectedAssetId), eq(assets.status, "READY")))
+          .where(and(eq(assets.workspaceId, input.workspaceId), eq(assets.projectId, current.projectId), eq(assets.id, input.selectedAssetId), eq(assets.status, "READY"), releasedAssetScope()))
           .limit(1);
         if (!selectedAsset) {
           await storeSnapshot(transaction, input.scope, input.idempotencyKey, { kind: "INVALID_REFERENCE" });

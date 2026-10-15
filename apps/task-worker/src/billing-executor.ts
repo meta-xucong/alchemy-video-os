@@ -26,10 +26,11 @@ export type BillingAttemptStore = {
     kind: "RECORDED" | "REPLAYED";
     record: { id: string };
   }>;
-  markBillingSucceeded(input: { workspaceId: string; taskRunId: string; usageRecordId: string; now: Date }): Promise<void>;
+  markBillingSucceeded(input: { workspaceId: string; taskRunId: string; executionFenceToken: string; usageRecordId: string; now: Date }): Promise<void>;
   markBillingFailed(input: {
     workspaceId: string;
     taskRunId: string;
+    executionFenceToken: string;
     code: BillingErrorCode;
     retryable: false;
     safeMessage: string;
@@ -38,6 +39,7 @@ export type BillingAttemptStore = {
   scheduleBillingRetry(input: {
     workspaceId: string;
     taskRunId: string;
+    executionFenceToken: string;
     code: BillingErrorCode;
     retryable: true;
     safeMessage: string;
@@ -106,7 +108,7 @@ export class VideoBillingExecutor {
     } = {},
   ) {}
 
-  async execute(input: { workspaceId: string; chargeRequest: BillingChargeRequest; usage?: MediaUsageFact }): Promise<BillingExecutionResult> {
+  async execute(input: { workspaceId: string; executionFenceToken: string; chargeRequest: BillingChargeRequest; usage?: MediaUsageFact }): Promise<BillingExecutionResult> {
     const now = this.options.now ?? (() => new Date());
     const plan = createBillingDebitPlan(input.chargeRequest, input.usage);
     try {
@@ -120,6 +122,7 @@ export class VideoBillingExecutor {
       await this.store.markBillingSucceeded({
         workspaceId: input.workspaceId,
         taskRunId: plan.taskRunId,
+        executionFenceToken: input.executionFenceToken,
         usageRecordId: record.record.id,
         now: now(),
       });
@@ -132,6 +135,7 @@ export class VideoBillingExecutor {
         await this.store.scheduleBillingRetry({
           workspaceId: input.workspaceId,
           taskRunId: plan.taskRunId,
+          executionFenceToken: input.executionFenceToken,
           code: failure.code,
           retryable: true,
           safeMessage: safeBillingMessage(failure.code),
@@ -143,6 +147,7 @@ export class VideoBillingExecutor {
       await this.store.markBillingFailed({
         workspaceId: input.workspaceId,
         taskRunId: plan.taskRunId,
+        executionFenceToken: input.executionFenceToken,
         code: failure.code,
         retryable: false,
         safeMessage: safeBillingMessage(failure.code),

@@ -4,6 +4,7 @@ import { after, before, test } from "node:test";
 import { and, eq } from "drizzle-orm";
 
 import { acquireC06E2EIsolation } from "../../../packages/persistence/tests/support/c06-e2e-isolation.mjs";
+import { withTestExecutionFence } from "../../../packages/persistence/tests/execution-fence-test-helper.js";
 
 import { InternalEventEnvelopeSchema, type InternalTaskRunQueueMessage } from "@alchemy-video/contracts";
 import { createPrefixedId, fingerprintRequest } from "@alchemy-video/domain";
@@ -126,7 +127,7 @@ test("a restarted C05 Worker consumes durable BullMQ events once and dead-letter
     await clearInternalEventQueues({ redisUrl, queueName: tamperedQueueName, deadLetterQueueName: tamperedDeadLetterQueueName });
     const control = new DrizzleControlPlaneRepository(database.db);
     const assets = new DrizzleAssetWorkspaceRepository(database.db);
-    const tasks = new DrizzleTaskRunRepository(database.db);
+    const tasks = withTestExecutionFence(new DrizzleTaskRunRepository(database.db));
     await control.ensureDevIdentity({
       user: { id: userId, displayName: "C05 Worker Test" },
       workspace: { id: workspaceId, name: "C05 Worker Test" },
@@ -371,6 +372,9 @@ const hasC06Infrastructure = Boolean(
   && process.env.S3_ACCESS_KEY
   && process.env.S3_SECRET_KEY,
 );
+if (process.env.CI && !hasC06Infrastructure) {
+  throw new Error("CI must provide isolated PostgreSQL, Redis, and MinIO configuration for the C06 BullMQ integration tests.");
+}
 
 test("C06 BullMQ retry resumes a persisted Mock request after executor interruption without resubmitting", { skip: !hasC06Infrastructure }, async () => {
   const databaseUrl = process.env.DATABASE_URL;
@@ -401,7 +405,7 @@ test("C06 BullMQ retry resumes a persisted Mock request after executor interrupt
     await clearInternalEventQueues({ redisUrl, queueName, deadLetterQueueName });
     const control = new DrizzleControlPlaneRepository(database.db);
     const assets = new DrizzleAssetWorkspaceRepository(database.db);
-    const tasks = new DrizzleTaskRunRepository(database.db);
+    const tasks = withTestExecutionFence(new DrizzleTaskRunRepository(database.db));
     await control.ensureDevIdentity({ user: { id: userId, displayName: "C06 Mock Worker" }, workspace: { id: workspaceId, name: "C06 Mock Worker" } });
     assert.equal((await control.createProject({
       scope: `${baseScope}:project`,
@@ -573,7 +577,7 @@ test("C06 startup recovery retries transient storage failures, prefers a persist
     await clearInternalEventQueues({ redisUrl, queueName, deadLetterQueueName });
     const control = new DrizzleControlPlaneRepository(database.db);
     const assets = new DrizzleAssetWorkspaceRepository(database.db);
-    const tasks = new DrizzleTaskRunRepository(database.db);
+    const tasks = withTestExecutionFence(new DrizzleTaskRunRepository(database.db));
     await control.ensureDevIdentity({ user: { id: userId, displayName: "C06 Recovery Worker" }, workspace: { id: workspaceId, name: "C06 Recovery Worker" } });
     assert.equal((await control.createProject({
       scope: `${baseScope}:project`,
@@ -723,7 +727,7 @@ test("C06 startup recovery retries transient storage failures, prefers a persist
     const recoverableBeforeStart = await tasks.listRecoverableVideoTaskRuns({ limit: 10 });
     assert.deepEqual(recoverableBeforeStart.map((taskRun) => taskRun.id), [recoveryTaskRunId]);
     assert.deepEqual(recoverableBeforeStart.map((taskRun) => taskRun.status), ["PROVIDER_PROCESSING"]);
-    const recovered = await recoverC06TaskRuns(executor);
+    const recovered = await recoverC06TaskRuns(executor, { deferRetryableErrors: false });
     assert.deepEqual(recovered.map((result) => result.taskRunId), [recoveryTaskRunId]);
     assert.equal(recovered[0]?.attempts, 3);
     assert.equal(recovered[0]?.failure, undefined);
@@ -800,7 +804,7 @@ test("C06 BullMQ exhaustion persists a public retryable failure and public retry
     await clearInternalEventQueues({ redisUrl, queueName, deadLetterQueueName });
     const control = new DrizzleControlPlaneRepository(database.db);
     const assets = new DrizzleAssetWorkspaceRepository(database.db);
-    const tasks = new DrizzleTaskRunRepository(database.db);
+    const tasks = withTestExecutionFence(new DrizzleTaskRunRepository(database.db));
     await control.ensureDevIdentity({ user: { id: userId, displayName: "C06 Exhaustion Worker" }, workspace: { id: workspaceId, name: "C06 Exhaustion Worker" } });
     assert.equal((await control.createProject({
       scope: `${baseScope}:project`,
@@ -952,7 +956,7 @@ test("C06 startup scan exhausts a no-job recovery into FAILED, then public retry
     await clearInternalEventQueues({ redisUrl, queueName, deadLetterQueueName });
     const control = new DrizzleControlPlaneRepository(database.db);
     const assets = new DrizzleAssetWorkspaceRepository(database.db);
-    const tasks = new DrizzleTaskRunRepository(database.db);
+    const tasks = withTestExecutionFence(new DrizzleTaskRunRepository(database.db));
     await control.ensureDevIdentity({ user: { id: userId, displayName: "C06 Startup Exhaustion" }, workspace: { id: workspaceId, name: "C06 Startup Exhaustion" } });
     assert.equal((await control.createProject({
       scope: `${baseScope}:project`,
@@ -1033,6 +1037,7 @@ test("C06 startup scan exhausts a no-job recovery into FAILED, then public retry
     await worker.waitUntilReady();
     const scan = await recoverC06TaskRuns(executor, {
       maxAttempts: 3,
+      deferRetryableErrors: false,
       finalizeFailure: ({ workspaceId: failedWorkspaceId, taskRunId: failedTaskRunId, reason }) =>
         recoveryConsumer.finalizeExecutionFailure({ workspace_id: failedWorkspaceId, task_run_id: failedTaskRunId, reason }),
     });

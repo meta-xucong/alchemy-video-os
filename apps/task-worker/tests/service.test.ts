@@ -5,7 +5,7 @@ import { InternalEventEnvelopeSchema, InternalTaskRunQueueMessageSchema, type In
 import type { InternalEventQueuePort } from "@alchemy-video/task-queue";
 import type { PersistedOutboxEvent, TaskRunStore } from "@alchemy-video/persistence";
 
-import { OutboxRelay, TaskRunEventConsumer } from "../src/service.js";
+import { createC06RecoveryScheduler, OutboxRelay, recoverC06TaskRuns, TaskRunEventConsumer } from "../src/service.js";
 
 const queuedEvent = InternalEventEnvelopeSchema.parse({
   contract_version: "1.0",
@@ -150,8 +150,8 @@ test("TaskRunEventConsumer retries a busy delivery and dead-letters within the s
   assert.ok(released[0]?.now instanceof Date);
 });
 
-test("TaskRunEventConsumer invokes the executor for a duplicate durable delivery", async () => {
-  let executions = 0;
+test("TaskRunEventConsumer resumes normal idempotent execution for a duplicate durable delivery", async () => {
+  const executions: Array<{ workspaceId: string; taskRunId: string; recovery?: boolean }> = [];
   const store: Pick<TaskRunStore, "processEvent" | "releaseConsumerEvent" | "finalizeTaskRunExecutionFailure"> = {
     async processEvent() { return "DUPLICATE"; },
     async releaseConsumerEvent() {},
@@ -162,14 +162,14 @@ test("TaskRunEventConsumer invokes the executor for a duplicate durable delivery
     workerId: "worker-c06-duplicate-test",
     leaseMs: 100,
   }, {
-    async execute() {
-      executions += 1;
+    async execute(input) {
+      executions.push(input);
       return undefined;
     },
   });
 
   assert.equal(await consumer.process(queueMessage()), "DUPLICATE");
-  assert.equal(executions, 1);
+  assert.deepEqual(executions, [{ workspaceId: queuedEvent.workspace_id, taskRunId: queuedEvent.data.task_run_id }]);
 });
 
 test("TaskRunEventConsumer finalizes exhausted C06 execution without relying on a consumer lease", async () => {
@@ -201,4 +201,96 @@ test("TaskRunEventConsumer finalizes exhausted C06 execution without relying on 
     now: finalized[0]?.now,
   }]);
   assert.ok(finalized[0]?.now instanceof Date);
+});
+
+test("recovery reports a safely deferred submission for operator reconciliation without finalizing it", async () => {
+  const deferred: Array<{ workspaceId: string; taskRunId: string; kind: "EXECUTION_BUSY" | "PROVIDER_SUBMISSION_UNKNOWN" | "PROVIDER_RETRY_PENDING"; reason: string }> = [];
+  const failures: Array<{ workspaceId: string; taskRunId: string; reason: string }> = [];
+  let finalized = 0;
+  const result = await recoverC06TaskRuns({
+    async recover() {
+      return [{ workspaceId: queuedEvent.workspace_id, taskRunId: queuedEvent.data.task_run_id, attempts: 1, deferred: true as const, deferredKind: "PROVIDER_SUBMISSION_UNKNOWN" as const, deferredReason: "Provider outcome remains unknown." }];
+    },
+  }, {
+    onDeferred: (value) => deferred.push(value),
+    onFailure: (value) => failures.push(value),
+    async finalizeFailure() { finalized += 1; },
+  });
+
+  assert.equal(result[0]?.deferred, true);
+  assert.deepEqual(deferred, [{ workspaceId: queuedEvent.workspace_id, taskRunId: queuedEvent.data.task_run_id, kind: "PROVIDER_SUBMISSION_UNKNOWN", reason: "Provider outcome remains unknown." }]);
+  assert.deepEqual(failures, []);
+  assert.equal(finalized, 0);
+});
+
+test("periodic C06 recovery requests only known Provider IDs and defers retryable polling errors", async () => {
+  let received: unknown;
+  const result = await recoverC06TaskRuns({
+    async recover(input) {
+      received = input;
+      return [{ workspaceId: queuedEvent.workspace_id, taskRunId: queuedEvent.data.task_run_id, attempts: 1, deferred: true as const, deferredKind: "PROVIDER_RETRY_PENDING" as const, deferredReason: "Provider is still processing." }];
+    },
+  }, { limit: 25, maxAttempts: 1, knownProviderRequestOnly: true, deferRetryableErrors: true });
+
+  assert.deepEqual(received, { limit: 25, maxAttempts: 1, knownProviderRequestOnly: true, deferRetryableErrors: true });
+  assert.equal(result[0]?.deferredKind, "PROVIDER_RETRY_PENDING");
+});
+
+test("startup C06 recovery defaults to deferring retryable Provider errors", async () => {
+  let received: unknown;
+  await recoverC06TaskRuns({
+    async recover(input) {
+      received = input;
+      return [];
+    },
+  });
+
+  assert.deepEqual(received, { limit: 100, maxAttempts: 3, deferRetryableErrors: true });
+});
+
+test("C06 recovery scheduler stop waits for its active tick and prevents new ticks", async () => {
+  let started = 0;
+  let releaseTick: (() => void) | undefined;
+  let notifyStarted: (() => void) | undefined;
+  const tickGate = new Promise<void>((resolve) => { releaseTick = resolve; });
+  const firstTickStarted = new Promise<void>((resolve) => { notifyStarted = resolve; });
+  const scheduler = createC06RecoveryScheduler({
+    intervalMs: 5,
+    async run() {
+      started += 1;
+      notifyStarted?.();
+      await tickGate;
+    },
+  });
+
+  let startupTimeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      firstTickStarted,
+      new Promise<never>((_, reject) => { startupTimeout = setTimeout(() => reject(new Error("C06 interval did not start a recovery tick.")), 1_000); }),
+    ]);
+  } finally {
+    if (startupTimeout) clearTimeout(startupTimeout);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(started, 1);
+  let stopFinished = false;
+  const stopping = scheduler.stop().then(() => { stopFinished = true; });
+  await Promise.resolve();
+  assert.equal(stopFinished, false);
+  releaseTick?.();
+  await stopping;
+  assert.equal(stopFinished, true);
+  await scheduler.runNow();
+  assert.equal(started, 1);
+});
+
+test("recovery distinguishes a temporary execution-owner conflict from Provider reconciliation", async () => {
+  const deferred: Array<{ kind: string; reason: string }> = [];
+  await recoverC06TaskRuns({
+    async recover() {
+      return [{ workspaceId: queuedEvent.workspace_id, taskRunId: queuedEvent.data.task_run_id, attempts: 1, deferred: true as const, deferredKind: "EXECUTION_BUSY" as const, deferredReason: "Another owner is active." }];
+    },
+  }, { onDeferred: ({ kind, reason }) => deferred.push({ kind, reason }) });
+  assert.deepEqual(deferred, [{ kind: "EXECUTION_BUSY", reason: "Another owner is active." }]);
 });

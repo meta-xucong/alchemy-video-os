@@ -1,0 +1,2 @@
+# The legacy Worker SHA-256 manifest pins the original LF source bytes.
+/apps/task-worker/tests/fixtures/legacy-worker-44da842/** text eol=lf

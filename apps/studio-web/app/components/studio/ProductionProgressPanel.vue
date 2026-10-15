@@ -3,13 +3,13 @@
     <div class="section-heading">
       <div>
         <p class="eyebrow">制作进度</p>
-        <h2 id="production-progress-title">{{ statusLabel }}</h2>
+        <h2 id="production-progress-title">{{ retrying ? "正在提交重试" : retryProjectionPending ? "正在核对重试状态" : retryUnknown ? "重试结果待确认" : retryError ? "本次重试未提交" : statusLabel }}</h2>
       </div>
       <span class="planning-status" :class="statusTone">{{ completedCount }} / {{ totalSegments }} 段</span>
     </div>
 
     <progress class="production-progress-meter" :value="completedCount" :max="totalSegments">{{ completedCount }} / {{ totalSegments }}</progress>
-    <p class="section-copy">{{ progressSummary }}</p>
+    <p class="section-copy">{{ retrying ? "正在提交本次重试请求；服务确认后会继续制作。" : retryUnknown || retryProjectionPending ? retryError : retryError ? `本次重试未提交：${retryError} 上次失败状态仅供参考。` : progressSummary }}</p>
     <button
       v-if="canRetryComposition"
       class="secondary-button"
@@ -18,16 +18,16 @@
       @click="emit('retry-composition')"
     >{{ busy ? "正在重新合成" : "重新合成成片" }}</button>
 
-    <details v-if="progress.segments.length" class="production-segment-details">
+    <details v-if="progress.segments.length && !retrying" class="production-segment-details">
       <summary>查看制作细节（{{ progress.segments.length }}）</summary>
       <ol class="production-segment-list" aria-label="制作细节">
         <li v-for="segment in progress.segments" :key="segment.id" :class="segment.status.toLowerCase()">
           <span class="production-segment-number">{{ segment.sequence }}</span>
           <div class="production-segment-copy">
             <strong>{{ segment.title }}</strong>
-            <p class="production-segment-reason">{{ segmentSummary(segment) }}</p>
+            <p class="production-segment-reason">{{ retrying && retryingSegmentSequence === segment.sequence ? "正在提交本次重试；上一轮失败信息暂不代表本次结果。" : segmentSummary(segment) }}</p>
           </div>
-          <span class="production-segment-status">{{ segmentLabel(segment.status) }}</span>
+          <span class="production-segment-status">{{ retrying && retryingSegmentSequence === segment.sequence ? "正在提交重试" : segmentLabel(segment.status) }}</span>
           <div v-if="segment.status === 'FAILED' && segment.retryable" class="production-segment-actions">
             <button
               class="text-button"
@@ -46,7 +46,7 @@
 import { isRecoverableWaitingProduction } from "../../composables/useCreationProgress";
 import type { ProductionRunProgress, ProductionSegment } from "../../composables/useControlApi";
 
-const props = defineProps<{ progress?: ProductionRunProgress; busy?: boolean; billingPending?: boolean }>();
+const props = defineProps<{ progress?: ProductionRunProgress; busy?: boolean; retrying?: boolean; retryingSegmentSequence?: number; retryError?: string; retryUnknown?: boolean; retryProjectionPending?: boolean; billingPending?: boolean }>();
 const emit = defineEmits<{ retry: [sequence: number]; 'retry-composition': [] }>();
 
 const completedCount = computed(() => props.progress?.segments.filter((segment) => segment.status === "ACCEPTED").length ?? 0);
@@ -93,6 +93,10 @@ const statusLabel = computed(() => {
   return "正在制作视频";
 });
 const statusTone = computed(() => {
+  if (props.retrying) return "active";
+  if (props.retryUnknown) return "active";
+  if (props.retryProjectionPending) return "active";
+  if (props.retryError) return "error";
   const status = props.progress?.production_run.status;
   if (status === "SUCCEEDED") return "success";
   if (recoverableWaiting.value) return "active";

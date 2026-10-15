@@ -1,6 +1,7 @@
 import { and, asc, eq, ne } from "drizzle-orm";
 
 import type { PlatformDatabase } from "./db.js";
+import { releasedAssetScope } from "./asset-release.js";
 import {
   assets,
   outboxEvents,
@@ -54,7 +55,7 @@ export class WorkspaceRepositories {
   }
 
   async findAsset(workspaceId: string, assetId: string) {
-    return (await this.db.select().from(assets).where(assetScope(workspaceId, assetId)).limit(1))[0];
+    return (await this.db.select().from(assets).where(and(assetScope(workspaceId, assetId), releasedAssetScope())).limit(1))[0];
   }
 
   async listShots(workspaceId: string, projectId: string) {

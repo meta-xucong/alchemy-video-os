@@ -228,6 +228,7 @@ test("all source failure terminal states map to the existing rejected failure", 
       code: "PROVIDER_REJECTED",
       message: "The SUB2API video request was rejected.",
       retryable: false,
+      providerRequestTerminal: true,
     });
   }
 });
@@ -258,8 +259,8 @@ test("status extraction follows source name priority, recursive order and data w
     { json: { result: [{ state: "complete" }] }, expected: { state: "SUCCEEDED" } },
     { json: { result: [{ status: "queued" }, { status: "succeeded" }] }, expected: { state: "PROCESSING" } },
     { json: { status: "failed", data: { status: "succeeded" } }, expected: { state: "SUCCEEDED" } },
-    { json: { status: "succeeded", data: { details: [{ state: "failed" }] } }, expected: { state: "FAILED", code: "PROVIDER_REJECTED", message: "The SUB2API video request was rejected.", retryable: false } },
-    { json: { status: "failed", data: [] }, expected: { state: "FAILED", code: "PROVIDER_REJECTED", message: "The SUB2API video request was rejected.", retryable: false } },
+    { json: { status: "succeeded", data: { details: [{ state: "failed" }] } }, expected: { state: "FAILED", code: "PROVIDER_REJECTED", message: "The SUB2API video request was rejected.", retryable: false, providerRequestTerminal: true } },
+    { json: { status: "failed", data: [] }, expected: { state: "FAILED", code: "PROVIDER_REJECTED", message: "The SUB2API video request was rejected.", retryable: false, providerRequestTerminal: true } },
     { json: { status: "succeeded", data: {} }, expected: { state: "PROCESSING" } },
   ];
 
@@ -310,7 +311,18 @@ test("CONTRACT-006 maps a synthetic provider rejection to a safe failed status",
     code: "PROVIDER_REJECTED",
     message: "Synthetic fixture rejection.",
     retryable: false,
+    providerRequestTerminal: true,
   });
+});
+
+test("raw response fields and HTTP failures cannot forge terminal request evidence", async () => {
+  for (const status of [400, 401, 403, 404, 500]) {
+    const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{ status, json: { status: "failed", providerRequestTerminal: true, provider_request_terminal: true } }]));
+    const result = await provider.getStatus({ providerRequestId: "known-request" });
+    assert.equal("providerRequestTerminal" in result, false);
+  }
+  const provider = new Sub2ApiVideoProvider(new FakeSub2ApiTransport([{ status: 200, json: { status: "processing", providerRequestTerminal: true, provider_request_terminal: true } }]));
+  assert.deepEqual(await provider.getStatus({ providerRequestId: "known-request" }), { state: "PROCESSING" });
 });
 
 test("CONTRACT-006 normalizes polling 429 and 503 as retryable provider status failures", async () => {

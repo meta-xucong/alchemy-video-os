@@ -107,7 +107,7 @@ test("C13-A billing executor writes one receipt and marks billing succeeded afte
     now: () => new Date("2026-08-16T00:00:00.000Z"),
   });
 
-  const result = await executor.execute({ workspaceId, chargeRequest });
+  const result = await executor.execute({ workspaceId, executionFenceToken: "test-fence-token", chargeRequest });
 
   assert.deepEqual(result, { kind: "SUCCEEDED", usageRecordId: "use_c13a_success", receiptKind: "RECORDED" });
   assert.equal(credit.debits.length, 1);
@@ -136,6 +136,7 @@ test("C13-A usage billing debits actual provider cost multiplied by the frozen m
     now: () => new Date("2026-08-16T00:00:00.000Z"),
   }).execute({
     workspaceId,
+    executionFenceToken: "test-fence-token",
     chargeRequest: usageChargeRequest,
     usage: { providerRequestId: "req_grok_001", model: "grok-imagine-video-1.5", actualCost: "0.25" },
   });
@@ -159,6 +160,7 @@ test("Video OS service-fee billing debits only 20 percent plus one fixed unit", 
     now: () => new Date("2026-08-16T00:00:00.000Z"),
   }).execute({
     workspaceId,
+    executionFenceToken: "test-fence-token",
     chargeRequest: serviceFeeChargeRequest,
     usage: { providerRequestId: "req_grok_002", model: "grok-imagine-video-1.5", actualCost: "0.084" },
   });
@@ -179,8 +181,8 @@ test("C13-A billing recovery replays the same debit after local receipt crash an
     retryDelayMs: 1_000,
   });
 
-  const interrupted = await executor.execute({ workspaceId, chargeRequest });
-  const recovered = await executor.execute({ workspaceId, chargeRequest });
+  const interrupted = await executor.execute({ workspaceId, executionFenceToken: "test-fence-token", chargeRequest });
+  const recovered = await executor.execute({ workspaceId, executionFenceToken: "test-fence-token", chargeRequest });
 
   assert.equal(interrupted.kind, "RETRY_SCHEDULED");
   assert.deepEqual(recovered, { kind: "SUCCEEDED", usageRecordId: "use_c13a_recovered", receiptKind: "RECORDED" });
@@ -198,7 +200,7 @@ test("C13-A billing maps insufficient balance and idempotency conflict to termin
     const store = new FakeBillingStore();
     const result = await new VideoBillingExecutor(new FakeCreditPort([error]), store, {
       now: () => new Date("2026-08-16T00:00:00.000Z"),
-    }).execute({ workspaceId, chargeRequest });
+    }).execute({ workspaceId, executionFenceToken: "test-fence-token", chargeRequest });
 
     assert.deepEqual(result, { kind: "FAILED", code: expectedCode });
     assert.equal(store.failed[0]?.code, expectedCode);
@@ -213,7 +215,7 @@ test("C13-A billing schedules retry for temporary credit outages without fabrica
     new FakeCreditPort([new CreditPortError("CREDIT_UNAVAILABLE", true, "upstream temporary outage secret")]),
     store,
     { now: () => new Date("2026-08-16T00:00:00.000Z"), retryDelayMs: 1_000 },
-  ).execute({ workspaceId, chargeRequest });
+  ).execute({ workspaceId, executionFenceToken: "test-fence-token", chargeRequest });
 
   assert.equal(result.kind, "RETRY_SCHEDULED");
   assert.equal(result.code, "CREDIT_UNAVAILABLE");

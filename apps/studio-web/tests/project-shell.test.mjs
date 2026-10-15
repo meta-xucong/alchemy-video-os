@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import ts from "typescript";
 
 const root = new URL("..", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
@@ -116,9 +117,63 @@ test("Studio exposes an explicit, default-preserve ProductionRun audio choice", 
   assert.match(page, /DOUBAO_TTS_REPLACE/);
   assert.match(page, /MUSIC_REPLACE_PROVIDER_AUDIO/);
   assert.match(page, /会移除视频 Provider 原声/);
-  assert.match(page, /musicPlan\.mode !== "MANUAL" \|\| !selectedMusicAsset\.value/);
+  assert.match(page, /audioConfig\.musicPlan\.mode !== "MANUAL" \|\| !selectedMusicAssetAtStart/);
+  const musicReplacementLabel = page.match(/<label class="music-plan-option"[\s\S]*?value="MUSIC_REPLACE_PROVIDER_AUDIO"[\s\S]*?<\/label>/)?.[0];
+  assert.ok(musicReplacementLabel);
+  assert.match(musicReplacementLabel, /:disabled="audioSelectionLocked"/, "audio source intent stays selectable until a run is active");
+  assert.match(page, /先上传或导入一首工作区 MUSIC 曲目[\s\S]*?此选择不会自动选曲/);
+  assert.match(page, /自动模式或关闭模式不能用于本次替换/);
   assert.match(page, /aria-labelledby="audio-selection-title"[\s\S]{0,220}id="audio-selection-title"/);
   assert.match(page, /const audioSelection = ref<.*>\("PRESERVE_PROVIDER_AUDIO"\)/);
-  assert.match(page, /audio_selection: audioSelection\.value/);
+  assert.match(page, /const audioConfig = snapshotAudioConfig\(audioSelection\.value, musicPlan\)/);
+  assert.match(page, /startAutomatedProduction\(current\.project\.id, operationToken, audioConfig\)/);
+  assert.match(page, /audio_selection: audioConfig\.audioSelection/);
+  assert.match(page, /mode: audioConfig\.musicPlan\.mode/);
+  assert.match(page, /asset_id: audioConfig\.musicPlan\.assetId/);
+  assert.match(page, /value="MUSIC_REPLACE_PROVIDER_AUDIO" :disabled="audioSelectionLocked"/);
+  assert.match(page, /value="AUTO" :disabled="audioSelectionLocked"/);
+  assert.match(page, /class="music-plan-select" aria-label="选择工作区音乐" :disabled="audioSelectionLocked"/);
+  assert.match(page, /type="file" accept="audio\/mpeg,audio\/wav,audio\/ogg" :disabled="audioSelectionLocked"/);
+  assert.match(page, /const audioSelectionLocked = computed\(\(\) => Boolean\([\s\S]*?activeProductionStatuses\.has\(currentProductionRun\.value\.status\)/);
+  assert.match(page, /async function importPixabayMusicAsset\(\)[\s\S]*?if \(!projectIdAtStart \|\| !query \|\| audioSelectionLocked\.value\) return/);
+  assert.match(page, /&& !pixabayImportBusy\.value/);
+  assert.match(page, /selectedMusicAssetAtStart = musicAssets\.value\.find\(\(asset\) => asset\.id === audioConfig\.musicPlan\.assetId\)/);
+  assert.match(page, /AUTH_FORBIDDEN: "登录状态已失效或当前账号无权执行此操作，请重新登录或检查账号权限后重试。"/);
+  assert.match(page, /safeResultMediaErrorMessage\(error, "这版成片暂时无法播放/);
+  assert.match(page, /safeResultMediaErrorMessage\(error, "这版成片暂时无法下载/);
+  assert.match(page, /function safeResultMediaErrorMessage[\s\S]*?已生成的成片仍保留，无需重新生成。/);
   assert.match(api, /audio_selection: "PRESERVE_PROVIDER_AUDIO" \| "DOUBAO_TTS_REPLACE" \| "MUSIC_REPLACE_PROVIDER_AUDIO"/);
+});
+
+test("Studio freezes the selected audio configuration instead of retaining reactive music state", () => {
+  const page = read("app/pages/projects/[project_id].vue");
+  const helper = page.slice(page.indexOf("function snapshotAudioConfig("), page.indexOf("async function generateVideo()"));
+  const javascript = ts.transpileModule(helper, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const snapshotAudioConfig = new Function(`${javascript}\nreturn snapshotAudioConfig;`)();
+  const musicPlan = { mode: "MANUAL", assetId: "ast_selected", styleHint: "gentle" };
+  const config = snapshotAudioConfig("MUSIC_REPLACE_PROVIDER_AUDIO", musicPlan);
+
+  musicPlan.mode = "OFF";
+  musicPlan.assetId = "";
+  musicPlan.styleHint = "changed while planning";
+  assert.deepEqual(config, {
+    audioSelection: "MUSIC_REPLACE_PROVIDER_AUDIO",
+    musicPlan: { mode: "MANUAL", assetId: "ast_selected", styleHint: "gentle" },
+  });
+  assert.notEqual(config.musicPlan, musicPlan);
+});
+
+test("Studio scopes retained-result auth guidance to preview/download errors", () => {
+  const page = read("app/pages/projects/[project_id].vue");
+  const helpers = page.slice(page.indexOf("function apiErrorCode("), page.indexOf("function uniqueReferenceIds("));
+  const javascript = ts.transpileModule(helpers, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const { safeErrorMessage, safeResultMediaErrorMessage } = new Function(`${javascript}\nreturn { safeErrorMessage, safeResultMediaErrorMessage };`)();
+  const forbidden = { data: { error: { code: "AUTH_FORBIDDEN" } } };
+
+  const generic = safeErrorMessage(forbidden, "操作失败");
+  const media = safeResultMediaErrorMessage(forbidden, "无法播放");
+  assert.match(generic, /重新登录或检查账号权限/);
+  assert.doesNotMatch(generic, /成片仍保留/);
+  assert.match(media, /重新登录或检查账号权限/);
+  assert.match(media, /已生成的成片仍保留，无需重新生成/);
 });

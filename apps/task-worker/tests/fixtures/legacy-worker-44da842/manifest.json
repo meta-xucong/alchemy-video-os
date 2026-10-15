@@ -1,0 +1,37 @@
+{
+  "commit": "44da8428d2c1b73648eb1616cd0350dac798eba8",
+  "files": [
+    {
+      "source": "apps/task-worker/src/execution-service.ts",
+      "sha256": "76ac68c894723861cae029429d6fecf39700ff584e9025b3af580cae4e3f6e0b"
+    },
+    {
+      "source": "apps/task-worker/src/service.ts",
+      "sha256": "f1a7bebbeb821e7d227f6c812442e7f7b6006f243d5071b2493e77527e51284c"
+    },
+    {
+      "source": "apps/task-worker/src/billing-executor.ts",
+      "sha256": "07a090324a66f3c880bcd12d8df723edf3d444af9b2ef963dff5bab8bd1ce776"
+    },
+    {
+      "source": "packages/persistence/src/task-run-repository.ts",
+      "sha256": "c0d7ef606b3e36314650f8fc2ac765aabeed96336bb23a18877f97a4e4b8fd31"
+    },
+    {
+      "source": "packages/persistence/src/schema.ts",
+      "sha256": "4723c91c70a045ee767ae90c28f6c9cdd755cee5a6204a2497e53a87c36744a9"
+    },
+    {
+      "source": "packages/persistence/src/workspace-repositories.ts",
+      "sha256": "f3d52d2ab0b2faa9b14e309a00c9408394f4b7d7be8c453fbf23a472b617efd3"
+    },
+    {
+      "source": "packages/provider-video/src/mock-video-provider.ts",
+      "sha256": "e2f51a2c8ba9eb16c962f474d9eee0f741fa4e7bd320ab0e5d2904ea1c195f36"
+    },
+    {
+      "source": "packages/provider-video/src/port.ts",
+      "sha256": "f56ef9939de5bbad3d167c68d08dcedaa0e20b3c9e7b120829820e2c58ea3afb"
+    }
+  ]
+}

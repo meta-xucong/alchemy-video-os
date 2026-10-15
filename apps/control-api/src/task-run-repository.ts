@@ -7,6 +7,7 @@ import {
 } from "@alchemy-video/contracts";
 import { assertTaskRunTransition, createPrefixedId, fingerprintRequest, isBillingRetryErrorCode } from "@alchemy-video/domain";
 import { VideoGenerationInputSnapshotSchema } from "@alchemy-video/contracts";
+import { hasTerminalProviderResult, InMemoryTaskRunExecutionGuard, isAssetReleased, TaskRunExecutionGenerationAmbiguousError, TaskRunExecutionOwnershipLostError } from "@alchemy-video/persistence";
 import type {
   AssetWorkspaceStore,
   ControlAsset,
@@ -18,6 +19,7 @@ import type {
   TaskRunCommandExecution,
   TaskRunEventResult,
   TaskRunStore,
+  TaskRunExecutionLease,
   GeneratedAssetDraft,
 } from "@alchemy-video/persistence";
 
@@ -56,6 +58,7 @@ const taskRun = (input: {
   status: input.status ?? "QUEUED",
   inputSnapshot: input.inputSnapshot,
   resultAssetId: null,
+  supersededByTaskRunId: null,
   error: null,
   retryAt: null,
   createdAt: input.now ?? new Date().toISOString(),
@@ -135,6 +138,21 @@ const executionEvent = (
 });
 
 export class InMemoryTaskRunStore implements TaskRunStore {
+  private readonly executionGuard = new InMemoryTaskRunExecutionGuard();
+  private readonly executionFenceTokens = new Map<string, string>();
+
+  withTaskRunExecution<T>(scope: { workspaceId: string; taskRunId: string }, execute: (lease: TaskRunExecutionLease) => Promise<T>): Promise<T> {
+    return this.executionGuard.withTaskRunExecution(scope, async (lease) => {
+      const key = this.executionFenceKey(scope.workspaceId, scope.taskRunId);
+      const current = this.currentTaskRun(scope.workspaceId, scope.taskRunId);
+      if (!current || current.supersededByTaskRunId != null || ["SUCCEEDED", "FAILED", "ABANDONED", "BILLING_FAILED"].includes(current.status)) {
+        this.executionFenceTokens.delete(key);
+      } else {
+        this.executionFenceTokens.set(key, lease.fenceToken);
+      }
+      return execute(lease);
+    });
+  }
   private readonly commands = new Map<string, StoredCommand>();
   private readonly taskRuns = new Map<string, ControlTaskRun>();
   private readonly attempts = new Map<string, ControlProviderAttempt>();
@@ -172,26 +190,32 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     if (prior) return prior.requestHash === input.requestHash ? prior.outcome : { kind: "CONFLICT" };
     const current = this.taskRuns.get(input.taskRunId);
     if (!current || current.workspaceId !== input.workspaceId) return this.store(input, { kind: "NOT_FOUND", status: 404 });
+    if (current.supersededByTaskRunId != null) return this.store(input, { kind: "STATE_INVALID" });
     if (current.status === "BILLING_FAILED") {
       const parsed = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
       if (!parsed.success || !parsed.data.billing) return this.store(input, { kind: "STATE_INVALID" });
       assertTaskRunTransition(current.status, "BILLING_PENDING");
-      const now = new Date().toISOString();
+      const now = this.nextTaskRunEventTime(current);
       const retried = { ...current, status: "BILLING_PENDING" as const, error: null, retryAt: null, updatedAt: now };
+      this.executionFenceTokens.delete(this.executionFenceKey(input.workspaceId, input.taskRunId));
       this.taskRuns.set(retried.id, retried);
       this.addEvent(queuedEvent({ command: input, taskRun: retried, now }));
       return this.store(input, { kind: "NEW", value: retried, status: 202 });
     }
     if (current.status !== "FAILED") return this.store(input, { kind: "STATE_INVALID" });
+    if ([...this.attempts.values()].some((attempt) => attempt.taskRunId === current.id && attempt.submissionReservedAt && !attempt.providerRequestId)) {
+      return this.store(input, { kind: "STATE_INVALID" });
+    }
     assertTaskRunTransition(current.status, "QUEUED");
-    const now = new Date().toISOString();
+    const now = this.nextTaskRunEventTime(current);
     const retried = { ...current, status: "QUEUED" as const, error: null, retryAt: null, updatedAt: now };
+    this.executionFenceTokens.delete(this.executionFenceKey(input.workspaceId, input.taskRunId));
     this.taskRuns.set(retried.id, retried);
     for (const [attemptId, attempt] of this.attempts.entries()) {
       if (attempt.taskRunId === retried.id && !attempt.providerRequestId && !["FAILED", "DOWNLOAD_FAILED", "ABANDONED"].includes(attempt.status)) {
         this.attempts.set(attemptId, { ...attempt, status: "ABANDONED", updatedAt: now });
       }
-      if (attempt.taskRunId === retried.id && current.error?.code === "PROVIDER_REJECTED" && attempt.providerRequestId && !["SUCCEEDED", "ABANDONED"].includes(attempt.status)) {
+      if (attempt.taskRunId === retried.id && current.error?.code === "PROVIDER_REJECTED" && attempt.status === "FAILED" && hasTerminalProviderResult(attempt)) {
         this.attempts.set(attemptId, { ...attempt, status: "ABANDONED", updatedAt: now });
       }
     }
@@ -201,8 +225,22 @@ export class InMemoryTaskRunStore implements TaskRunStore {
   }
 
   async findTaskRun(workspaceId: string, taskRunId: string) {
+    return this.currentTaskRun(workspaceId, taskRunId);
+  }
+
+  // Memory guards and writes must not yield between reading and replacing a row.
+  private currentTaskRun(workspaceId: string, taskRunId: string) {
     const found = this.taskRuns.get(taskRunId);
     return found?.workspaceId === workspaceId ? found : undefined;
+  }
+
+  private executionFenceKey(workspaceId: string, taskRunId: string) { return `${workspaceId}:${taskRunId}`; }
+
+  private requireExecutionFence(input: { workspaceId: string; taskRunId: string; executionFenceToken: string }) {
+    if (this.executionFenceTokens.get(this.executionFenceKey(input.workspaceId, input.taskRunId)) !== input.executionFenceToken) {
+      throw new TaskRunExecutionOwnershipLostError();
+    }
+    return this.currentTaskRun(input.workspaceId, input.taskRunId);
   }
 
   async listProjectTaskRuns(workspaceId: string, projectId: string) {
@@ -217,7 +255,7 @@ export class InMemoryTaskRunStore implements TaskRunStore {
       ? new Set(input.statuses)
       : new Set<ControlTaskRun["status"]>(["RUNNING", "PROVIDER_PROCESSING", "DOWNLOADING", "BILLING_PENDING"]);
     return [...this.taskRuns.values()]
-      .filter((taskRun) => taskRun.kind === "VIDEO_GENERATION" && (
+      .filter((taskRun) => taskRun.kind === "VIDEO_GENERATION" && taskRun.supersededByTaskRunId == null && (
         (recoverableStatuses.has(taskRun.status) && taskRun.status !== "RETRY_SCHEDULED")
         || recoverableStatuses.has("RETRY_SCHEDULED") && taskRun.status === "RETRY_SCHEDULED"
           && (!taskRun.retryAt || taskRun.retryAt <= now)
@@ -231,9 +269,11 @@ export class InMemoryTaskRunStore implements TaskRunStore {
   }
 
   async findTaskRunResultAsset(workspaceId: string, assetId: string) {
-    const generated = this.generatedAssets.get(assetId);
-    if (generated?.workspaceId === workspaceId) return generated;
-    return this.assets.findAsset(workspaceId, assetId);
+    const asset = this.generatedAssets.get(assetId) ?? await this.assets.findAsset(workspaceId, assetId);
+    if (!asset || asset.workspaceId !== workspaceId) return undefined;
+    const taskRunId = asset.metadata.task_run_id;
+    const owner = typeof taskRunId === "string" ? await this.findTaskRun(workspaceId, taskRunId) : undefined;
+    return isAssetReleased(asset, owner) ? asset : undefined;
   }
 
   async findGeneratedAssetDraft(workspaceId: string, taskRunId: string) {
@@ -246,36 +286,62 @@ export class InMemoryTaskRunStore implements TaskRunStore {
   }
 
   async listTaskRunAttempts(workspaceId: string, taskRunId: string) {
+    return this.currentTaskRunAttempts(workspaceId, taskRunId);
+  }
+
+  private currentTaskRunAttempts(workspaceId: string, taskRunId: string) {
     return [...this.attempts.values()]
       .filter((attempt) => attempt.taskRunId === taskRunId && this.taskRuns.get(taskRunId)?.workspaceId === workspaceId)
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
-  async ensureProviderAttempt(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; provider: string; model: string; now: Date }) {
-    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
-    if (!current || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(current.status)) return undefined;
-    const attempts = await this.listTaskRunAttempts(input.workspaceId, input.taskRunId);
+  async ensureProviderAttempt(input: { workspaceId: string; taskRunId: string; executionFenceToken: string; providerAttemptId: string; provider: string; model: string; now: Date }) {
+    const current = this.requireExecutionFence(input);
+    if (!current || current.workspaceId !== input.workspaceId || current.supersededByTaskRunId != null || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(current.status)) return undefined;
+    const attempts = [...this.attempts.values()].filter((attempt) => attempt.taskRunId === current.id)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     // A persisted Provider request is a durable submit boundary. Prefer it over
     // any later unsubmitted row, which may have been left by an interrupted run.
-    const submitted = [...attempts].reverse().find((attempt) => Boolean(attempt.providerRequestId) && attempt.status !== "ABANDONED");
+    const submitted = [...attempts].reverse().find((attempt) => Boolean(attempt.providerRequestId) && (attempt.status !== "ABANDONED" || !hasTerminalProviderResult(attempt)));
     if (submitted) return submitted;
+    const uncertainSubmission = attempts.find((attempt) => attempt.submissionReservedAt && !attempt.providerRequestId);
+    if (uncertainSubmission) return uncertainSubmission;
     const existing = attempts.at(-1);
     if (existing && !["FAILED", "DOWNLOAD_FAILED", "ABANDONED"].includes(existing.status)) return existing;
     const now = input.now.toISOString();
-    const attempt: ControlProviderAttempt = { id: input.providerAttemptId, taskRunId: input.taskRunId, provider: input.provider, model: input.model, providerRequestId: null, status: "CREATED", requestPayload: {}, responsePayload: {}, createdAt: now, updatedAt: now };
+    const attempt: ControlProviderAttempt = { id: input.providerAttemptId, taskRunId: input.taskRunId, provider: input.provider, model: input.model, providerRequestId: null, submissionReservedAt: null, status: "CREATED", requestPayload: {}, responsePayload: {}, createdAt: now, updatedAt: now };
     this.attempts.set(attempt.id, attempt);
     return attempt;
   }
 
-  async recordProviderSubmission(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; providerRequestId: string; now: Date }) {
-    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
+  async reserveProviderSubmission(input: { workspaceId: string; taskRunId: string; executionFenceToken: string; providerAttemptId: string; now: Date }) {
+    const current = this.requireExecutionFence(input);
+    if (!current || current.workspaceId !== input.workspaceId || current.supersededByTaskRunId != null || current.status !== "RUNNING") return false;
+    const attempts = [...this.attempts.values()].filter((attempt) => attempt.taskRunId === current.id);
+    if (attempts.some((attempt) => attempt.submissionReservedAt && !attempt.providerRequestId
+      || attempt.providerRequestId && (attempt.status !== "ABANDONED" || !hasTerminalProviderResult(attempt)))) return false;
+    const attempt = this.attempts.get(input.providerAttemptId);
+    if (!attempt || attempt.taskRunId !== current.id || attempt.status !== "CREATED" || attempt.providerRequestId || attempt.submissionReservedAt) return false;
+    this.attempts.set(attempt.id, { ...attempt, submissionReservedAt: input.now.toISOString(), updatedAt: input.now.toISOString() });
+    return true;
+  }
+
+  async recordProviderSubmission(input: { workspaceId: string; taskRunId: string; executionFenceToken: string; providerAttemptId: string; providerRequestId: string; now: Date }) {
+    const current = this.currentTaskRun(input.workspaceId, input.taskRunId);
     const attempt = this.attempts.get(input.providerAttemptId);
     if (!current || !attempt || attempt.taskRunId !== current.id) return undefined;
     if (attempt.providerRequestId && attempt.providerRequestId !== input.providerRequestId) throw new Error("PROVIDER_RESUBMIT_FORBIDDEN");
+    const ownerIsCurrent = this.executionFenceTokens.get(this.executionFenceKey(input.workspaceId, input.taskRunId)) === input.executionFenceToken;
+    if (!ownerIsCurrent && !attempt.submissionReservedAt) throw new TaskRunExecutionOwnershipLostError();
     const now = input.now.toISOString();
     if (!attempt.providerRequestId) {
-      this.attempts.set(attempt.id, { ...attempt, providerRequestId: input.providerRequestId, status: "SUBMITTED", updatedAt: now });
-      if (current.status === "RUNNING") {
+      if (!ownerIsCurrent) {
+        this.attempts.set(attempt.id, { ...attempt, providerRequestId: input.providerRequestId, updatedAt: now });
+        return current;
+      }
+      // Keep late external acceptance evidence without reviving superseded history.
+      this.attempts.set(attempt.id, { ...attempt, providerRequestId: input.providerRequestId, status: current.supersededByTaskRunId == null ? "SUBMITTED" : attempt.status, updatedAt: now });
+      if (current.supersededByTaskRunId == null && current.status === "RUNNING") {
         assertTaskRunTransition(current.status, "PROVIDER_PROCESSING");
         const updated = { ...current, status: "PROVIDER_PROCESSING" as const, updatedAt: now };
         this.taskRuns.set(updated.id, updated);
@@ -287,10 +353,11 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     return this.findTaskRun(input.workspaceId, input.taskRunId);
   }
 
-  async recordProviderProcessing(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; now: Date }) {
-    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
+  async recordProviderProcessing(input: { workspaceId: string; taskRunId: string; executionFenceToken: string; providerAttemptId: string; now: Date }) {
+    const current = this.requireExecutionFence(input);
     const attempt = this.attempts.get(input.providerAttemptId);
     if (!current || !attempt || attempt.taskRunId !== current.id) return undefined;
+    if (current.supersededByTaskRunId != null) return current;
     const now = input.now.toISOString();
     let updated = current;
     if (current.status === "RUNNING") {
@@ -304,10 +371,11 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     return updated;
   }
 
-  async beginDownload(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; now: Date }) {
-    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
+  async beginDownload(input: { workspaceId: string; taskRunId: string; executionFenceToken: string; providerAttemptId: string; now: Date }) {
+    const current = this.requireExecutionFence(input);
     const attempt = this.attempts.get(input.providerAttemptId);
     if (!current || !attempt || attempt.taskRunId !== current.id) return undefined;
+    if (current.supersededByTaskRunId != null) return current;
     const now = input.now.toISOString();
     const updated = current.status === "DOWNLOADING" ? current : (() => {
       assertTaskRunTransition(current.status, "DOWNLOADING");
@@ -321,10 +389,10 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     return updated;
   }
 
-  async recordDownloadRetryableFailure(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; code: string; now: Date }) {
-    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
+  async recordDownloadRetryableFailure(input: { workspaceId: string; taskRunId: string; executionFenceToken: string; providerAttemptId: string; code: string; now: Date }) {
+    const current = this.requireExecutionFence(input);
     const attempt = this.attempts.get(input.providerAttemptId);
-    if (!current || current.status !== "DOWNLOADING" || !attempt?.providerRequestId || attempt.taskRunId !== current.id) return;
+    if (!current || current.supersededByTaskRunId != null || current.status !== "DOWNLOADING" || !attempt?.providerRequestId || attempt.taskRunId !== current.id) return;
     this.attempts.set(attempt.id, {
       ...attempt,
       status: "DOWNLOAD_FAILED",
@@ -333,9 +401,9 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     });
   }
 
-  async ensureGeneratedAsset(input: { workspaceId: string; taskRunId: string; assetId: string; objectKey: string; provider: string; now: Date }): Promise<GeneratedAssetDraft | undefined> {
-    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
-    if (!current) return undefined;
+  async ensureGeneratedAsset(input: { workspaceId: string; taskRunId: string; executionFenceToken: string; assetId: string; objectKey: string; provider: string; now: Date }): Promise<GeneratedAssetDraft | undefined> {
+    const current = this.requireExecutionFence(input);
+    if (!current || current.supersededByTaskRunId != null) return undefined;
     const existing = this.generatedAssets.get(input.assetId);
     if (existing) {
       if (existing.kind !== "VIDEO" || existing.origin !== "GENERATED" || existing.metadata.task_run_id !== input.taskRunId) return undefined;
@@ -346,8 +414,9 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     return { id: input.assetId, objectKey: input.objectKey, taskRunId: input.taskRunId };
   }
 
-  async completeGeneratedTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId: string; assetId: string; sha256: string; byteSize: number; width: number; height: number; durationMs: number; now: Date }) {
-    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
+  async completeGeneratedTaskRun(input: { workspaceId: string; taskRunId: string; executionFenceToken: string; providerAttemptId: string; assetId: string; sha256: string; byteSize: number; width: number; height: number; durationMs: number; now: Date }) {
+    const current = this.requireExecutionFence(input);
+    if (current?.supersededByTaskRunId != null) return current;
     const draft = this.generatedAssets.get(input.assetId);
     if (!current || !draft) return undefined;
     if (current.status === "SUCCEEDED") return current;
@@ -357,6 +426,7 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     this.generatedAssets.set(ready.id, ready);
     const needsBilling = Boolean((current.inputSnapshot as { billing?: unknown }).billing);
     const completed = { ...current, status: needsBilling ? "BILLING_PENDING" as const : "SUCCEEDED" as const, resultAssetId: needsBilling ? null : ready.id, error: null, updatedAt: now };
+    if (!needsBilling) this.executionFenceTokens.delete(this.executionFenceKey(input.workspaceId, input.taskRunId));
     this.taskRuns.set(completed.id, completed);
     if (!needsBilling) await this.assets.setShotGenerationState({ workspaceId: input.workspaceId, shotId: current.shotId, status: "GENERATED", selectedAssetId: ready.id });
     const source = this.queuedSource(current.id);
@@ -364,36 +434,38 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     return completed;
   }
 
-  async markBillingSucceeded(input: { workspaceId: string; taskRunId: string; usageRecordId: string; now: Date }) {
-    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
-    if (!current || current.status === "SUCCEEDED") return;
+  async markBillingSucceeded(input: { workspaceId: string; taskRunId: string; executionFenceToken: string; usageRecordId: string; now: Date }) {
+    const current = this.requireExecutionFence(input);
+    if (!current || current.supersededByTaskRunId != null || current.status === "SUCCEEDED") return;
     assertTaskRunTransition(current.status, "SUCCEEDED");
     const generated = [...this.generatedAssets.values()].find((asset) => asset.workspaceId === input.workspaceId && asset.metadata.task_run_id === input.taskRunId && asset.status === "READY");
     if (!generated) throw new Error("Generated asset is missing before billing completion.");
     const completed = { ...current, status: "SUCCEEDED" as const, resultAssetId: generated.id, error: null, updatedAt: input.now.toISOString() };
+    this.executionFenceTokens.delete(this.executionFenceKey(input.workspaceId, input.taskRunId));
     this.taskRuns.set(completed.id, completed);
     await this.assets.setShotGenerationState({ workspaceId: input.workspaceId, shotId: current.shotId, status: "GENERATED", selectedAssetId: generated.id });
     const source = this.queuedSource(current.id);
     if (source) this.addEvent(executionEvent(source, { type: "task_run.succeeded", now: input.now.toISOString(), assetId: generated.id, sha256: generated.sha256 ?? "" }));
   }
 
-  async markBillingFailed(input: { workspaceId: string; taskRunId: string; code: string; safeMessage: string; now: Date }) {
-    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
-    if (!current || current.status === "BILLING_FAILED") return;
+  async markBillingFailed(input: { workspaceId: string; taskRunId: string; executionFenceToken: string; code: string; safeMessage: string; now: Date }) {
+    const current = this.requireExecutionFence(input);
+    if (!current || current.supersededByTaskRunId != null || current.status === "BILLING_FAILED") return;
     assertTaskRunTransition(current.status, "BILLING_FAILED");
+    this.executionFenceTokens.delete(this.executionFenceKey(input.workspaceId, input.taskRunId));
     this.taskRuns.set(current.id, { ...current, status: "BILLING_FAILED", error: { code: input.code, message: input.safeMessage, retryable: false }, updatedAt: input.now.toISOString() });
   }
 
-  async scheduleBillingRetry(input: { workspaceId: string; taskRunId: string; code: string; safeMessage: string; retryAt: Date; now: Date }) {
-    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
-    if (!current || current.status === "RETRY_SCHEDULED") return;
+  async scheduleBillingRetry(input: { workspaceId: string; taskRunId: string; executionFenceToken: string; code: string; safeMessage: string; retryAt: Date; now: Date }) {
+    const current = this.requireExecutionFence(input);
+    if (!current || current.supersededByTaskRunId != null || current.status === "RETRY_SCHEDULED") return;
     assertTaskRunTransition(current.status, "RETRY_SCHEDULED");
     this.taskRuns.set(current.id, { ...current, status: "RETRY_SCHEDULED", retryAt: input.retryAt.toISOString(), error: { code: input.code, message: input.safeMessage, retryable: true }, updatedAt: input.now.toISOString() });
   }
 
-  async resumeBillingRetry(input: { workspaceId: string; taskRunId: string; now: Date }) {
-    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
-    if (!current || current.status !== "RETRY_SCHEDULED") return current;
+  async resumeBillingRetry(input: { workspaceId: string; taskRunId: string; executionFenceToken: string; now: Date }) {
+    const current = this.requireExecutionFence(input);
+    if (!current || current.supersededByTaskRunId != null || current.status !== "RETRY_SCHEDULED") return current;
     if (current.retryAt && current.retryAt > input.now.toISOString()) return current;
     const parsed = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
     if (!parsed.success || !parsed.data.billing || !isBillingRetryErrorCode(current.error?.code)) return current;
@@ -403,39 +475,65 @@ export class InMemoryTaskRunStore implements TaskRunStore {
     return resumed;
   }
 
-  async finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; code: string; message: string; now: Date }) {
-    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
-    if (!current || current.kind !== "VIDEO_GENERATION" || ["SUCCEEDED", "FAILED", "ABANDONED"].includes(current.status)) return current;
+  async finalizeTaskRunExecutionFailure(input: { workspaceId: string; taskRunId: string; expectedQueuedEventId?: string; code: string; message: string; now: Date }) {
+    return this.withTaskRunExecution(input, async (lease) => {
+      const observed = this.currentTaskRun(input.workspaceId, input.taskRunId);
+      if (!observed || observed.supersededByTaskRunId != null || ["SUCCEEDED", "FAILED", "ABANDONED", "BILLING_FAILED"].includes(observed.status)) return observed;
+      return this.finalizeOwnedExecutionFailure({ ...input, executionFenceToken: lease.fenceToken });
+    });
+  }
+
+  private async finalizeOwnedExecutionFailure(input: { workspaceId: string; taskRunId: string; executionFenceToken: string; expectedQueuedEventId?: string; code: string; message: string; now: Date }) {
+    const current = this.requireExecutionFence(input);
+    if (!current || current.supersededByTaskRunId != null || current.kind !== "VIDEO_GENERATION" || ["SUCCEEDED", "FAILED", "ABANDONED", "BILLING_FAILED"].includes(current.status)) return current;
+    if (input.expectedQueuedEventId) {
+      const [latest, preceding] = [...this.events.values()].map((row) => row.event)
+        .filter((event) => event.workspace_id === input.workspaceId && event.event_type === "task_run.queued" && event.data.task_run_id === input.taskRunId)
+        .sort((left, right) => right.occurred_at.localeCompare(left.occurred_at));
+      if (latest && preceding?.occurred_at === latest.occurred_at) throw new TaskRunExecutionGenerationAmbiguousError();
+      if (latest?.event_id !== input.expectedQueuedEventId) return current;
+    }
+    const now = input.now.toISOString();
+    const history = this.currentTaskRunAttempts(input.workspaceId, input.taskRunId);
+    const submissionUnknown = history.some((item) => item.submissionReservedAt && !item.providerRequestId);
+    if (submissionUnknown) return current;
     const billingSnapshot = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
     if (current.status === "BILLING_PENDING" && billingSnapshot.success && billingSnapshot.data.billing) {
       assertTaskRunTransition(current.status, "BILLING_FAILED");
       const failedBilling = { ...current, status: "BILLING_FAILED" as const, error: { code: "CREDIT_UNAVAILABLE", message: "The credit service is unavailable; retry billing after restoring the credit bridge.", retryable: false }, updatedAt: input.now.toISOString() };
+      this.executionFenceTokens.delete(this.executionFenceKey(input.workspaceId, input.taskRunId));
       this.taskRuns.set(failedBilling.id, failedBilling);
       return failedBilling;
     }
     assertTaskRunTransition(current.status, "FAILED");
-    const now = input.now.toISOString();
-    const attempts = await this.listTaskRunAttempts(input.workspaceId, input.taskRunId);
-    const attempt = [...attempts].reverse().find((item) => Boolean(item.providerRequestId)) ?? attempts.at(-1);
+    const attempts = history
+      .filter((item) => !["ABANDONED", "SUCCEEDED"].includes(item.status) && !hasTerminalProviderResult(item));
+    const attempt = [...attempts].reverse().find((item) => item.submissionReservedAt && !item.providerRequestId)
+      ?? [...attempts].reverse().find((item) => item.providerRequestId && !hasTerminalProviderResult(item))
+      ?? attempts.at(-1);
+    const retryable = true;
+    const errorCode = input.code;
+    const message = input.message;
     if (attempt) {
       this.attempts.set(attempt.id, {
         ...attempt,
           status: current.status === "DOWNLOADING" && attempt.providerRequestId ? "DOWNLOAD_FAILED" : "FAILED",
-        responsePayload: { code: input.code },
+        responsePayload: { code: errorCode },
         updatedAt: now,
       });
     }
-    const failed = { ...current, status: "FAILED" as const, error: { code: input.code, message: input.message, retryable: true }, updatedAt: now };
+    const failed = { ...current, status: "FAILED" as const, error: { code: errorCode, message, retryable }, updatedAt: now };
+    this.executionFenceTokens.delete(this.executionFenceKey(input.workspaceId, input.taskRunId));
     this.taskRuns.set(failed.id, failed);
     await this.assets.setShotGenerationState({ workspaceId: input.workspaceId, shotId: current.shotId, status: "FAILED" });
     const source = this.queuedSource(current.id);
-    if (source) this.addEvent(executionEvent(source, { type: "task_run.failed", now, code: input.code, retryable: true, ...(attempt ? { providerAttemptId: attempt.id } : {}) }));
+    if (source) this.addEvent(executionEvent(source, { type: "task_run.failed", now, code: errorCode, retryable, ...(attempt ? { providerAttemptId: attempt.id } : {}) }));
     return failed;
   }
 
-  async failTaskRun(input: { workspaceId: string; taskRunId: string; providerAttemptId?: string; failureStage?: "PROVIDER" | "DOWNLOAD"; code: string; message: string; retryable: boolean; now: Date }) {
-    const current = await this.findTaskRun(input.workspaceId, input.taskRunId);
-    if (!current || current.status === "SUCCEEDED" || current.status === "FAILED") return current;
+  async failTaskRun(input: { workspaceId: string; taskRunId: string; executionFenceToken: string; providerAttemptId?: string; failureStage?: "PROVIDER" | "DOWNLOAD"; providerRequestTerminal?: true; code: string; message: string; retryable: boolean; now: Date }) {
+    const current = this.requireExecutionFence(input);
+    if (!current || current.supersededByTaskRunId != null || current.status === "SUCCEEDED" || current.status === "FAILED") return current;
     assertTaskRunTransition(current.status, "FAILED");
     const now = input.now.toISOString();
     if (input.providerAttemptId) {
@@ -444,12 +542,13 @@ export class InMemoryTaskRunStore implements TaskRunStore {
         this.attempts.set(attempt.id, {
           ...attempt,
           status: input.failureStage === "DOWNLOAD" && attempt.providerRequestId ? "DOWNLOAD_FAILED" : "FAILED",
-          responsePayload: { code: input.code },
+          responsePayload: { code: input.code, ...(input.providerRequestTerminal === true && input.failureStage === "PROVIDER" && input.code === "PROVIDER_REJECTED" && !input.retryable && attempt.providerRequestId ? { provider_request_terminal: true } : {}) },
           updatedAt: now,
         });
       }
     }
     const failed = { ...current, status: "FAILED" as const, error: { code: input.code, message: input.message, retryable: input.retryable }, updatedAt: now };
+    this.executionFenceTokens.delete(this.executionFenceKey(input.workspaceId, input.taskRunId));
     this.taskRuns.set(failed.id, failed);
     await this.assets.setShotGenerationState({ workspaceId: input.workspaceId, shotId: current.shotId, status: "FAILED" });
     const source = this.queuedSource(current.id);
@@ -519,13 +618,13 @@ export class InMemoryTaskRunStore implements TaskRunStore {
       leaseExpiresAt: new Date(input.now.getTime() + input.leaseMs).toISOString(),
     };
     this.consumptions.set(key, consumption);
-    const current = await this.findTaskRun(message.workspace_id, message.task_run_id);
+    const current = this.currentTaskRun(message.workspace_id, message.task_run_id);
     if (!current) return "RETRY";
     const billingWakeSnapshot = VideoGenerationInputSnapshotSchema.safeParse(current.inputSnapshot);
     const isBillingWake = current.status === "BILLING_PENDING"
       && billingWakeSnapshot.success
       && Boolean(billingWakeSnapshot.data.billing);
-    if (current.status !== "QUEUED" && !isBillingWake) {
+    if (current.supersededByTaskRunId != null || current.status !== "QUEUED" && !isBillingWake) {
       consumption.completedAt = now;
       consumption.leaseOwner = undefined;
       consumption.leaseExpiresAt = undefined;
@@ -563,7 +662,14 @@ export class InMemoryTaskRunStore implements TaskRunStore {
   }
 
   private addEvent(event: InternalEventEnvelope) {
-    this.events.set(event.event_id, { workspaceId: event.workspace_id, event, publishAttempts: 0, availableAt: timestamp(event.occurred_at) });
+    this.events.set(event.event_id, { workspaceId: event.workspace_id, event, publishAttempts: 0, availableAt: new Date().toISOString() });
+  }
+
+  private nextTaskRunEventTime(current: ControlTaskRun) {
+    const latest = [...this.events.values()].map((row) => row.event)
+      .filter((event) => event.workspace_id === current.workspaceId && event.aggregate.type === "task_run" && event.aggregate.id === current.id)
+      .reduce((time, event) => event.occurred_at > time ? event.occurred_at : time, current.updatedAt);
+    return afterEvent(latest, new Date());
   }
 
   private queuedSource(taskRunId: string) {

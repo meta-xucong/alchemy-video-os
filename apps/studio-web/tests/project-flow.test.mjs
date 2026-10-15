@@ -1,9 +1,75 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { createAsyncOperationFence, mergeProductionProgressSnapshots, productionProgressFor } from "../app/composables/useCreationProgress.ts";
 
 const root = new URL("..", import.meta.url);
 const read = (path) => readFileSync(new URL(path, root), "utf8");
+
+test("retry pending overrides the previous FAILED snapshot until the command settles", () => {
+  const previousFailure = {
+    production_run: { status: "FAILED", total_segment_count: 1, total_shot_count: 1 },
+    segments: [{ sequence: 1, status: "FAILED", retryable: true, safe_summary: "上一轮素材交付失败" }],
+  };
+  const pending = productionProgressFor(previousFailure, true, true, false, true);
+  assert.equal(pending.statusLabel, "正在提交重试");
+  assert.equal(pending.tone, "active");
+  assert.match(pending.message, /正在提交本次重试请求/);
+  assert.doesNotMatch(pending.message, /上一轮素材交付失败/);
+});
+
+test("late older progress cannot overwrite the accepted retry command snapshot", () => {
+  const commandSnapshot = {
+    production_run: { id: "run_1", status: "GENERATING", updated_at: "2026-10-12T10:00:02.000Z" },
+    segments: [{ sequence: 1, status: "GENERATING", updated_at: "2026-10-12T10:00:02.000Z", safe_summary: "正在重新生成本段视频。" }],
+  };
+  const staleFailure = {
+    production_run: { id: "run_1", status: "BLOCKED", updated_at: "2026-10-12T10:00:01.000Z" },
+    segments: [{ sequence: 1, status: "FAILED", updated_at: "2026-10-12T10:00:01.000Z", safe_summary: "上一轮参考图交付失败" }],
+  };
+  const merged = mergeProductionProgressSnapshots(commandSnapshot, staleFailure);
+  assert.equal(merged.production_run.status, "GENERATING");
+  assert.equal(merged.segments[0].status, "GENERATING");
+  assert.match(merged.segments[0].safe_summary, /重新生成/);
+});
+
+test("equal-timestamp progress does not guess which snapshot is newer", () => {
+  const accepted = {
+    production_run: { id: "run_1", status: "GENERATING", updated_at: "2026-10-12T10:00:02.000Z" },
+    segments: [{ sequence: 1, status: "GENERATING", updated_at: "2026-10-12T10:00:02.000Z", safe_summary: "正在重新生成本段视频。" }],
+  };
+  const ambiguous = {
+    production_run: { id: "run_1", status: "BLOCKED", updated_at: "2026-10-12T10:00:02.000Z" },
+    segments: [{ sequence: 1, status: "FAILED", updated_at: "2026-10-12T10:00:02.000Z", safe_summary: "较早失败状态" }],
+  };
+
+  const merged = mergeProductionProgressSnapshots(accepted, ambiguous);
+  assert.equal(merged.production_run.status, "GENERATING");
+  assert.equal(merged.segments[0].status, "GENERATING");
+});
+
+test("a retry from a previous project cannot release the current project's pending state", () => {
+  const fence = createAsyncOperationFence();
+  const retryInProjectA = fence.begin();
+  fence.invalidate(); // project route changes from A to B
+  const retryInProjectB = fence.begin();
+
+  assert.equal(fence.isCurrent(retryInProjectA), false);
+  assert.equal(fence.isCurrent(retryInProjectB), true);
+  const workspace = read("app/pages/projects/[project_id].vue");
+  assert.match(workspace, /if \(retryOperationFence\.isCurrent\(retryOperationToken\)\)/);
+  assert.match(workspace, /watch\(projectId, \(\) => \{[\s\S]*?invalidateProjectRefresh\(\);[\s\S]*?retryOperationFence\.invalidate\(\);/);
+});
+
+test("retry command rejection is labeled separately from the previous failure", () => {
+  const panel = read("app/components/studio/ProductionProgressPanel.vue");
+  assert.match(panel, /retryError \? "本次重试未提交"/);
+  assert.match(panel, /上次失败状态仅供参考/);
+  const workspace = read("app/pages/projects/[project_id].vue");
+  assert.match(workspace, /retryOutcomeUnknown\.value = !isDefinitiveRetryRejection\(error\)/);
+  assert.match(workspace, /recordRetryCommandError\(error,/);
+  assert.match(workspace, /:retry-error="retryCommandError"/);
+});
 
 test("M2 composes public planning commands and starts production after automatic internal approval", () => {
   const workspace = read("app/pages/projects/[project_id].vue");
@@ -26,7 +92,7 @@ test("M2 composes public planning commands and starts production after automatic
   }
 
   assert.match(workspace, /async function generateVideo\(\)/);
-  assert.match(workspace, /await startAutomatedProduction\(current\.project\.id\)/);
+  assert.match(workspace, /await startAutomatedProduction\(current\.project\.id, operationToken, audioConfig\)/);
   assert.match(workspace, /commandKey\("studio-auto-brief"\)/);
   assert.match(workspace, /commandKey\("studio-auto-plan"\)/);
   const autoPlan = workspace.slice(workspace.indexOf("async function startAutomatedProduction"));
@@ -224,6 +290,12 @@ test("Studio keeps one visible input and hides story planning orchestration", ()
   assert.match(generation, /开始生成视频/);
   assert.match(workspace, /async function startAutomatedProduction/);
   assert.match(workspace, /waitForAutoStoryboard/);
+  assert.match(workspace, /AUTO_STORYBOARD_MAX_WAIT_MS = 180_000/);
+  assert.match(workspace, /AUTO_STORYBOARD_POLL_INTERVAL_MS = 1_000/);
+  assert.match(workspace, /storyboard\.created_at >= startedAt/);
+  assert.match(workspace, /failedBrief\?\.status === "FAILED"[\s\S]*?throw new Error\("PLANNING_FAILED"\)/);
+  assert.match(workspace, /throw new Error\("PLANNING_TIMEOUT"\)/);
+  assert.doesNotMatch(workspace, /attempt < 40; attempt \+= 1/);
   assert.match(workspace, /AI 正在确认分镜并开始制作视频/);
   const autoPlan = workspace.slice(workspace.indexOf("async function startAutomatedProduction"));
   assert.match(autoPlan, /approveStoryboardRevision|approveDeliveryPlanRevision|createProductionRun/);
@@ -250,7 +322,8 @@ test("FAILED keeps explicit retry while enabling a separate new-version generati
   assert.match(workspace, /hasProjectResult\.value/);
   assert.match(workspace, /const failedProductionSegment = computed/);
   assert.match(workspace, /const canRetry = computed/);
-  assert.match(workspace, /retryTaskRun\(latestTask\.value\.id, commandKey\("studio-task-retry"\)\)/);
+  assert.match(workspace, /taskRunId: task\.id, idempotencyKey: commandKey\("studio-task-retry"\)/);
+  assert.match(workspace, /retryTaskRun\(request\.taskRunId, request\.idempotencyKey\)/);
   assert.match(workspace, /:creates-new-version="createsNewVersion"/);
   assert.doesNotMatch(workspace, /"BILLING_FAILED"/);
   assert.match(generation, /调整后生成新版本/);
@@ -294,8 +367,13 @@ test("Studio projects public production progress into safe Chinese autopilot pro
     assert.match(progress, new RegExp(`"${status}"`));
   }
 
-  assert.match(workspace, /productionProgressFor\(currentProductionProgress\.value,\s*Boolean\(planningDraft\.sourceText\.trim\(\)\),\s*creationBusy\.value \|\| planningBusy\.value \|\| productionBusy\.value,\s*billingPending\.value\)/);
+  assert.match(workspace, /productionProgressFor\(currentProductionProgress\.value,\s*Boolean\(planningDraft\.sourceText\.trim\(\)\),\s*creationBusy\.value \|\| planningBusy\.value \|\| productionBusy\.value,\s*billingPending\.value,\s*retrySubmitting\.value,\s*retryOutcomeUnknown\.value,\s*retryProjectionPending\.value\)/);
   assert.match(workspace, /:billing-pending="billingPending"/);
+  assert.match(workspace, /retrySubmitting\.value/);
+  assert.match(workspace, /正在提交重试/);
+  assert.match(workspace, /projectRefreshEpoch/);
+  assert.match(productionPanel, /retryingSegmentSequence/);
+  assert.match(productionPanel, /上一轮失败信息暂不代表本次结果/);
   assert.match(progress, /等待费用结算/);
   assert.match(productionPanel, /不会重复提交视频任务/);
   assert.match(progress, /export function isRecoverableWaitingProduction/);
@@ -398,7 +476,7 @@ test("Studio defaults every selected image to reference material without exposin
   }
   assert.match(references, /const limit = 7;/);
   assert.match(workspace, /syncPlanningReferenceSourceIds\(next\);/);
-  assert.match(workspace, /source_asset_ids: eligiblePlanningSourceIds\(planningDraft\.sourceAssetIds\)/);
+  assert.match(workspace, /source_asset_ids: \[\.\.\.eligiblePlanningSourceIds\(planningDraft\.sourceAssetIds\)\]/);
   assert.doesNotMatch(source, /作为开场画面|开场画面只能选择一张图片|最多选择 3 张|referenceInputMode|reference_asset_ids:\s*selectedReferenceIds/);
 });
 
@@ -458,6 +536,13 @@ test("local real-provider startup requires an explicit certified Semantic Direct
   assert.doesNotMatch(localRunner, /\$semanticPlannerBaseUrl = \$referenceVisionBaseUrl/u);
   assert.doesNotMatch(localRunner, /\$semanticPlannerApiKey = \$referenceVisionApiKey/u);
   assert.doesNotMatch(localRunner, /\$semanticPlannerModel = \$referenceVisionModel/u);
+});
+
+test("local real-provider startup rejects an ephemeral signing key with a fixed remote reference origin", () => {
+  const localRunner = read("../../infrastructure/local/start-full-local-stack.ps1");
+
+  assert.match(localRunner, /if \(-not \$referenceDeliverySigningKey\) \{[\s\S]*?if \(-not \$AllowEphemeralReferenceTunnel\) \{[\s\S]*?A generated local key cannot authenticate against a fixed remote origin[\s\S]*?New-ReferenceDeliverySigningKey/u);
+  assert.match(localRunner, /if \(\$AllowEphemeralReferenceTunnel\) \{[\s\S]*?Start-CloudflareTunnel -TargetUrl \$controlApiOrigin/u);
 });
 
 test("Studio distinguishes Semantic Director planning failure from video Provider failure", () => {

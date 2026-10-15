@@ -58,6 +58,7 @@ test("the Mock provider has a deterministic failure mode and validates request I
     code: "PROVIDER_REJECTED",
     message: "Mock video generation was configured to fail.",
     retryable: false,
+    providerRequestTerminal: true,
   });
   await assert.rejects(
     () => provider.getStatus({ providerRequestId: "untrusted" }),

@@ -8,6 +8,7 @@ import {
   ApplicationErrorCodeSchema,
   ApiFailureEnvelopeSchema,
   AssetSchema,
+  ConfirmAssetUploadCommandSchema,
   CreateCreativeBriefRevisionCommandSchema,
   CreateDeliveryPlanRevisionCommandSchema,
   CreateProductionRunCommandSchema,
@@ -57,6 +58,13 @@ import {
   createContractDocuments,
 } from "../src/index.js";
 import { CONTRACT_ARTIFACT_NAMES, writeContractDocuments } from "../src/write-contract-documents.js";
+
+test("asset upload duration is bounded by the PostgreSQL integer storage range", () => {
+  const command = { sha256: "a".repeat(64), mime_type: "audio/mpeg", byte_size: 1 };
+
+  assert.equal(ConfirmAssetUploadCommandSchema.parse({ ...command, duration_ms: 2_147_483_647 }).duration_ms, 2_147_483_647);
+  assert.throws(() => ConfirmAssetUploadCommandSchema.parse({ ...command, duration_ms: 2_147_483_648 }));
+});
 
 test("failure envelopes always include details", () => {
   const result = ApiFailureEnvelopeSchema.parse({

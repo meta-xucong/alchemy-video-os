@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { DeleteObjectCommand, GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { clearCreativePlanningQueues, clearInternalEventQueues, clearMediaRuntimeQueues, clearProductionQueues } from "@alchemy-video/task-queue";
+import { verifyBundledMediaTools } from "@alchemy-video/provider-video";
 import { Client } from "pg";
+import { createOwnedResources, currentOwnedServices, installOwnedServiceSignalHandlers, mockChildEnvironment, ownedRunInterrupted, readMockE2EConfig, runOwnedCommand, startOwnedService, stopOwnedService } from "./support/mock-e2e-resources.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const controlApiRoot = resolve(repoRoot, "apps", "control-api");
@@ -34,24 +34,11 @@ const host = "127.0.0.1";
 const apiOrigin = `http://${host}:${controlApiPort}`;
 const studioOrigin = `http://${host}:${studioPort}`;
 const runtimeOrigin = `http://${host}:${runtimePort}/`;
-const databaseAdminUrl = "postgresql://video_local:video_local@127.0.0.1:15432/postgres";
-const redisUrl = "redis://127.0.0.1:6380";
-const storageConfig = {
-  endpoint: "http://127.0.0.1:9002",
-  region: "us-east-1",
-  bucket: "video-local",
-  accessKeyId: "video_local",
-  secretAccessKey: "video_local_secret",
-};
-const ffmpegPath = resolve(repoRoot, "node_modules", ".pnpm", "ffmpeg-static@5.3.0", "node_modules", "ffmpeg-static", "ffmpeg.exe");
-const ffprobePath = resolve(repoRoot, "node_modules", ".pnpm", "ffprobe-static@3.1.0", "node_modules", "ffprobe-static", "bin", "win32", "x64", "ffprobe.exe");
-// Keep the media Runtime on the same controlled Python environment that owns
-// faster-whisper/Piper.  Falling back to the system interpreter is safe for
-// video-only smoke tests but cannot silently claim caption/TTS capability.
-const controlledRuntimePython = resolve(repoRoot, ".codex-longrun", "c10-document-runtime-venv", "Scripts", "python.exe");
-const mediaRuntimePython = existsSync(controlledRuntimePython)
-  ? controlledRuntimePython
-  : process.platform === "win32" ? "python.exe" : "python3";
+const config = readMockE2EConfig(process.env, "c12");
+const { databaseUrl, redisUrl, storageConfig } = config;
+const resources = createOwnedResources(config);
+const mediaRuntimePython = process.env.MOCK_E2E_PYTHON || (process.platform === "win32" ? "python.exe" : "python3");
+const browserArgs = process.env.MOCK_E2E_BROWSER_EXECUTABLE ? ["--browser-executable", process.env.MOCK_E2E_BROWSER_EXECUTABLE] : [];
 const resultPrefix = "C12_STUDIO_UI_E2E_RESULT=";
 const artifactDirectory = process.env.C12_E2E_ARTIFACT_DIR?.trim() || "";
 
@@ -75,29 +62,6 @@ const assertPortAvailable = (port) => new Promise((resolveAvailable, rejectAvail
   probe.listen(port, host, () => probe.close(resolveAvailable));
 });
 
-const createIsolatedDatabase = async (databaseName) => {
-  if (!/^c12_e2e_[a-z0-9]+$/.test(databaseName)) throw new Error("C12 E2E generated an unsafe database name.");
-  const administrator = new Client({ connectionString: databaseAdminUrl });
-  await administrator.connect();
-  try {
-    await administrator.query(`CREATE DATABASE ${databaseName}`);
-  } finally {
-    await administrator.end();
-  }
-  return `postgresql://video_local:video_local@127.0.0.1:15432/${databaseName}`;
-};
-
-const dropIsolatedDatabase = async (databaseName) => {
-  const administrator = new Client({ connectionString: databaseAdminUrl });
-  await administrator.connect();
-  try {
-    await administrator.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()", [databaseName]);
-    await administrator.query(`DROP DATABASE IF EXISTS ${databaseName}`);
-  } finally {
-    await administrator.end();
-  }
-};
-
 const pnpmCommand = (args) => process.platform === "win32"
   ? { command: process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", `pnpm.cmd ${args.join(" ")}`] }
   : { command: "pnpm", args };
@@ -107,24 +71,7 @@ const requireSuccess = (result, name) => {
   if (result.status !== 0) throw new Error(`${name} failed with exit status ${result.status ?? "unknown"}.`);
 };
 
-const startService = (command, args, cwd, environment) => {
-  const child = spawn(command, args, { cwd, env: environment, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-  let output = "";
-  const append = (chunk) => { output = `${output}${chunk.toString("utf8")}`.slice(-4_000); };
-  child.stdout?.on("data", append);
-  child.stderr?.on("data", append);
-  Object.defineProperty(child, "supervisorOutput", { get: () => output });
-  return child;
-};
-
-const stopService = (processHandle) => {
-  if (!processHandle || processHandle.exitCode !== null || !processHandle.pid) return;
-  if (process.platform === "win32") {
-    spawnSync("taskkill", ["/pid", String(processHandle.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-    return;
-  }
-  processHandle.kill("SIGTERM");
-};
+const startService = startOwnedService;
 
 const waitFor = async (url, name, processes) => {
   const deadline = Date.now() + 90_000;
@@ -158,15 +105,7 @@ const waitForTcp = async (port, name, processes) => {
   throw new Error(`${name} did not accept a local TCP connection before timeout.`);
 };
 
-const waitForStopped = async (processHandle, name) => {
-  stopService(processHandle);
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    if (!processHandle || processHandle.exitCode !== null || processHandle.signalCode !== null) return;
-    await sleep(100);
-  }
-  throw new Error(`${name} did not stop after the controlled C12 test.`);
-};
+const waitForStopped = stopOwnedService;
 
 const waitForPortsReleased = async () => {
   const deadline = Date.now() + 15_000;
@@ -181,11 +120,12 @@ const waitForPortsReleased = async () => {
   throw new Error("C12 E2E did not release its isolated API, Studio, and Runtime ports.");
 };
 
-const runStudioUiTest = (input) => {
-  const uiTest = spawnSync(process.platform === "win32" ? "python.exe" : "python3", [
+const runStudioUiTest = async (input) => {
+  const uiTest = await runOwnedCommand(mediaRuntimePython, [
     uiScriptPath,
     "--studio-origin", studioOrigin,
     "--project-name", input.projectName,
+    ...browserArgs,
   ], { cwd: repoRoot, env: input.environment, encoding: "utf8", timeout: 180_000, windowsHide: true });
   const output = `${uiTest.stdout ?? ""}\n${uiTest.stderr ?? ""}`;
   const resultLine = output.split(/\r?\n/).find((line) => line.startsWith(resultPrefix));
@@ -206,8 +146,11 @@ const assertFinalProduction = async (projectId, databaseUrl) => {
         (SELECT count(*)::integer FROM task_runs WHERE workspace_id = $1 AND project_id = $2 AND status = 'SUCCEEDED') AS completed_tasks,
         (SELECT count(*)::integer FROM video_versions WHERE workspace_id = $1 AND project_id = $2 AND status = 'SUCCEEDED') AS completed_versions,
         (SELECT asset.object_key FROM video_versions version JOIN assets asset ON asset.workspace_id = version.workspace_id AND asset.project_id = version.project_id AND asset.id = version.asset_id WHERE version.workspace_id = $1 AND version.project_id = $2 AND version.status = 'SUCCEEDED' ORDER BY version.created_at DESC LIMIT 1) AS final_object_key,
+        (SELECT json_build_object('sha256', asset.sha256, 'byte_size', asset.byte_size, 'duration_ms', asset.duration_ms) FROM video_versions version JOIN assets asset ON asset.workspace_id = version.workspace_id AND asset.project_id = version.project_id AND asset.id = version.asset_id WHERE version.workspace_id = $1 AND version.project_id = $2 AND version.status = 'SUCCEEDED' ORDER BY version.created_at DESC LIMIT 1) AS final_metadata,
+        (SELECT count(*)::integer FROM production_runs run JOIN delivery_plan_revisions plan ON plan.workspace_id = run.workspace_id AND plan.project_id = run.project_id AND plan.storyboard_revision_id = run.storyboard_revision_id AND plan.id = run.delivery_plan_revision_id AND plan.consumed_by_production_run_id = run.id WHERE run.workspace_id = $1 AND run.project_id = $2 AND plan.status = 'CONSUMED') AS consumed_delivery_plans,
+        (SELECT report.details FROM video_versions version JOIN qc_reports report ON report.workspace_id = version.workspace_id AND report.project_id = version.project_id AND report.id = version.qc_report_id AND report.subject_type = 'VIDEO_VERSION' AND report.subject_id = version.id AND report.kind = 'COMPOSITION' WHERE version.workspace_id = $1 AND version.project_id = $2 AND version.status = 'SUCCEEDED') AS final_review,
         (SELECT count(*)::integer FROM handoff_reviews WHERE workspace_id = $1 AND project_id = $2) AS handoff_reviews,
-        (SELECT count(*)::integer FROM transition_repairs WHERE workspace_id = $1 AND project_id = $2 AND strategy = 'BLEND' AND status = 'ACCEPTED') AS safe_blend_repairs,
+        (SELECT count(*)::integer FROM transition_repairs WHERE workspace_id = $1 AND project_id = $2) AS transition_repairs,
         (SELECT continuity_status FROM production_runs WHERE workspace_id = $1 AND project_id = $2 ORDER BY created_at DESC LIMIT 1) AS continuity_status,
         (SELECT target_resolution FROM creative_brief_revisions WHERE workspace_id = $1 AND project_id = $2 ORDER BY revision DESC LIMIT 1) AS target_resolution,
         (SELECT array_agg(DISTINCT input_snapshot ->> 'resolution') FROM task_runs WHERE workspace_id = $1 AND project_id = $2) AS task_resolutions,
@@ -219,12 +162,17 @@ const assertFinalProduction = async (projectId, databaseUrl) => {
     assert.equal(row.accepted_segments, 2, "C12 E2E did not accept all planned segments.");
     assert.equal(row.completed_tasks, 2, "C12 E2E did not complete exactly one TaskRun per planned segment.");
     assert.equal(row.completed_versions, 1, "C12 E2E did not create one immutable final video version.");
-    assert.equal(row.handoff_reviews, 1, "C12.1 E2E did not persist every adjacent handoff review.");
-    assert.equal(row.safe_blend_repairs, 0, "C12.1 E2E created a transition repair without an available semantic evaluation.");
-    assert.equal(row.continuity_status, "NEEDS_ATTENTION", "C12.1 E2E did not safely project the unavailable evaluator.");
+    assert.equal(row.consumed_delivery_plans, 1, "C12 E2E did not bind its run to the consumed same-project DeliveryPlan and Storyboard.");
+    assert.equal(row.handoff_reviews, 0, "C12 DeliveryPlan hard-cut composition unexpectedly created a legacy handoff review.");
+    assert.equal(row.transition_repairs, 0, "C12 DeliveryPlan hard-cut composition unexpectedly created a transition repair.");
+    assert.equal(row.continuity_status, "NOT_CHECKED", "C12 DeliveryPlan hard-cut composition claimed a continuity evaluation.");
+    assert.equal(row.final_review?.review_completeness, "PARTIAL", "C12 Mock composition must retain incomplete semantic coverage.");
+    assert.equal(row.final_review?.semantic_evaluation?.status, "UNAVAILABLE", "C12 Mock composition claimed unavailable semantic evaluation.");
+    assert.equal(row.final_review?.audio_spotcheck?.has_audio, true, "C12 final review did not detect the uploaded MUSIC audio.");
+    assert.equal(row.final_review?.audio_summary?.music_applied, true, "C12 composition did not record its selected MUSIC asset.");
     assert.equal(row.target_resolution, "480p", "C12 E2E did not persist the selected target resolution.");
     assert.deepEqual(row.task_resolutions, ["480p"], "C12 E2E did not propagate the selected resolution to every TaskRun snapshot.");
-    return { objectKeys: row.object_keys ?? [], finalObjectKey: row.final_object_key ?? "" };
+    return { objectKeys: row.object_keys ?? [], finalObjectKey: row.final_object_key ?? "", finalMetadata: row.final_metadata };
   } finally {
     await database.end();
   }
@@ -239,7 +187,7 @@ const assertPublicPlaybackProjection = async (projectId) => {
   assert.equal(versionsResponse.status, 200);
   const [progress, versions] = await Promise.all([progressResponse.json(), versionsResponse.json()]);
   assert.equal(progress.data[0].production_run.status, "SUCCEEDED");
-  assert.equal(progress.data[0].production_run.continuity_status, "NEEDS_ATTENTION");
+  assert.equal(progress.data[0].production_run.continuity_status, "NOT_CHECKED");
   assert.equal(progress.data[0].segments.filter((segment) => segment.status === "ACCEPTED").length, 2);
   assert.equal(versions.data.length, 1);
   assert.equal(versions.data[0].status, "SUCCEEDED");
@@ -257,19 +205,13 @@ const captureProductionDiagnostic = async (databaseUrl) => {
       SELECT json_build_object(
         'runs', (SELECT coalesce(json_agg(json_build_object('status', status, 'accepted', accepted_shot_count, 'total', total_shot_count) ORDER BY created_at), '[]'::json) FROM production_runs),
         'segments', (SELECT coalesce(json_agg(json_build_object('sequence', sequence, 'status', status, 'retryable', retryable) ORDER BY sequence), '[]'::json) FROM production_segments),
-        'tasks', (SELECT coalesce(json_agg(json_build_object('status', task.status, 'submitted', EXISTS (SELECT 1 FROM provider_attempts attempt WHERE attempt.workspace_id = task.workspace_id AND attempt.task_run_id = task.id AND attempt.provider_request_id IS NOT NULL)) ORDER BY task.created_at), '[]'::json) FROM task_runs task),
+        'tasks', (SELECT coalesce(json_agg(json_build_object('status', task.status, 'submitted', EXISTS (SELECT 1 FROM provider_attempts attempt WHERE attempt.workspace_id = task.workspace_id AND attempt.task_run_id = task.id AND attempt.provider_request_id_v2 IS NOT NULL)) ORDER BY task.created_at), '[]'::json) FROM task_runs task),
         'outbox', (SELECT coalesce(json_agg(json_build_object('type', event_type, 'published', published_at IS NOT NULL, 'dead_lettered', dead_lettered_at IS NOT NULL, 'attempts', publish_attempts) ORDER BY available_at), '[]'::json) FROM outbox_events)
       ) AS diagnostic
     `);
     return JSON.stringify(result.rows[0]?.diagnostic ?? {});
   } finally {
     await database.end();
-  }
-};
-
-const removeObjects = async (storage, objectKeys) => {
-  for (const objectKey of objectKeys) {
-    await storage.send(new DeleteObjectCommand({ Bucket: storageConfig.bucket, Key: objectKey })).catch(() => undefined);
   }
 };
 
@@ -287,11 +229,11 @@ const preserveFinalArtifact = async (storage, objectKey, projectId) => {
 const run = async () => {
   const suffix = randomUUID();
   const compactSuffix = suffix.replaceAll("-", "").slice(0, 8);
-  const databaseName = `c12_e2e_${compactSuffix}`;
   const projectName = `C12 Local Final Video ${suffix}`;
   const queuePrefix = `alchemy-video-c12-${suffix}`;
+  installOwnedServiceSignalHandlers(() => `${resources.residualDescription()}; queues=${queuePrefix}; build=${suffix}`);
   const environment = {
-    ...process.env,
+    ...mockChildEnvironment(process.env),
     CONTROL_API_PORT: String(controlApiPort),
     CONTROL_API_ORIGIN: apiOrigin,
     REDIS_URL: redisUrl,
@@ -300,16 +242,14 @@ const run = async () => {
     S3_BUCKET: storageConfig.bucket,
     S3_ACCESS_KEY: storageConfig.accessKeyId,
     S3_SECRET_KEY: storageConfig.secretAccessKey,
+    S3_BROWSER_ORIGINS: studioOrigin,
+    ...(process.env.DOCUMENT_RUNTIME_PYTHON ? { DOCUMENT_RUNTIME_PYTHON: process.env.DOCUMENT_RUNTIME_PYTHON } : {}),
+    DATABASE_URL: databaseUrl,
     LOCAL_AUTH_MODE: "dev",
     VIDEO_PROVIDER: "mock",
     VEYRA_AUTH_ENABLED: "false",
     MEDIA_RUNTIME_URL: runtimeOrigin,
     MEDIA_RUNTIME_TOKEN: `c12-runtime-${compactSuffix}`,
-    MEDIA_RUNTIME_FFMPEG_PATH: ffmpegPath,
-    MEDIA_RUNTIME_FFPROBE_PATH: ffprobePath,
-    PIPER_PYTHON_PATH: mediaRuntimePython,
-    MEDIA_TRANSCRIBER_PYTHON_PATH: mediaRuntimePython,
-    HF_HOME: resolve(repoRoot, ".codex-longrun", "hf-cache"),
     TASK_QUEUE_NAME: `${queuePrefix}-task`,
     TASK_DEAD_LETTER_QUEUE_NAME: `${queuePrefix}-task-dead-letter`,
     CREATIVE_PLANNING_QUEUE_NAME: `${queuePrefix}-planning`,
@@ -330,41 +270,38 @@ const run = async () => {
     STUDIO_NUXT_BUILD_DIR: resolve(repoRoot, ".codex-longrun", "c12-studio-build", suffix),
     STUDIO_NITRO_OUTPUT_DIR: resolve(repoRoot, ".codex-longrun", "c12-studio-output", suffix),
   };
-  const storage = new S3Client({
-    endpoint: storageConfig.endpoint,
-    region: storageConfig.region,
-    forcePathStyle: true,
-    credentials: { accessKeyId: storageConfig.accessKeyId, secretAccessKey: storageConfig.secretAccessKey },
-  });
-  let databaseUrl = "";
-  let databaseCreated = false;
+  const storage = resources.storage;
   let apiProcess;
   let workflowWorkerProcess;
   let taskWorkerProcess;
   let productionWorkerProcess;
   let runtimeProcess;
   let studioProcess;
-  let objectKeys = [];
+  let portsClaimed = false;
   let executionError;
   const cleanupFailures = [];
 
   try {
     await Promise.all([
-      assertTcpReachable(15432, "PostgreSQL"),
-      assertTcpReachable(6380, "Redis"),
-      assertTcpReachable(9002, "MinIO"),
+      assertTcpReachable(Number(new URL(config.databaseAdminUrl).port), "PostgreSQL"),
+      assertTcpReachable(Number(new URL(redisUrl).port), "Redis"),
+      assertTcpReachable(Number(new URL(storageConfig.endpoint).port), "MinIO"),
       assertPortAvailable(controlApiPort),
       assertPortAvailable(studioPort),
       assertPortAvailable(runtimePort),
     ]);
-    databaseUrl = await createIsolatedDatabase(databaseName);
-    databaseCreated = true;
-    environment.DATABASE_URL = databaseUrl;
+    portsClaimed = true;
+    const mediaTools = await verifyBundledMediaTools();
+    environment.MEDIA_RUNTIME_FFMPEG_PATH = mediaTools.ffmpegPath;
+    environment.MEDIA_RUNTIME_FFPROBE_PATH = mediaTools.ffprobePath;
+    await resources.create();
     const migrate = pnpmCommand(["--filter", "@alchemy-video/persistence", "db:migrate"]);
-    requireSuccess(spawnSync(migrate.command, migrate.args, { cwd: repoRoot, env: environment, stdio: "ignore", windowsHide: true }), "C12 E2E database migration");
+    requireSuccess(await runOwnedCommand(migrate.command, migrate.args, { cwd: repoRoot, env: environment }), "C12 E2E database migration");
+    resources.markMigrated();
 
     apiProcess = startService(process.execPath, ["--import", "tsx", "src/index.ts"], controlApiRoot, environment);
-    await waitFor(`${apiOrigin}/api/v1/health`, "C12 Control API", [apiProcess]);
+    const apiHealth = await waitFor(`${apiOrigin}/api/v1/health`, "C12 Control API", [apiProcess]);
+    assert.equal((await apiHealth.json()).data.build_version, environment.BUILD_VERSION, "C12 API is not the owned instance.");
     workflowWorkerProcess = startService(process.execPath, ["--import", "tsx", "src/index.ts"], workflowWorkerRoot, environment);
     taskWorkerProcess = startService(process.execPath, ["--import", "tsx", "src/index.ts"], taskWorkerRoot, environment);
     runtimeProcess = startService(mediaRuntimePython, ["-m", "uvicorn", "main:app", "--host", host, "--port", String(runtimePort)], mediaRuntimeRoot, environment);
@@ -376,17 +313,19 @@ const run = async () => {
     }
     studioProcess = startService(process.execPath, [studioServerScriptPath], studioWebRoot, environment);
     await waitFor(`${studioOrigin}/projects`, "C12 Studio", [apiProcess, workflowWorkerProcess, taskWorkerProcess, productionWorkerProcess, runtimeProcess, studioProcess]);
-    await waitFor(`${studioOrigin}/api/v1/health`, "C12 Studio API proxy", [apiProcess, workflowWorkerProcess, taskWorkerProcess, productionWorkerProcess, runtimeProcess, studioProcess]);
+    const proxyHealth = await waitFor(`${studioOrigin}/api/v1/health`, "C12 Studio API proxy", [apiProcess, workflowWorkerProcess, taskWorkerProcess, productionWorkerProcess, runtimeProcess, studioProcess]);
+    assert.equal((await proxyHealth.json()).data.build_version, environment.BUILD_VERSION, "C12 Studio proxy is not bound to the owned API.");
 
-    const browserResult = runStudioUiTest({ projectName, environment });
+    const browserResult = await runStudioUiTest({ projectName, environment });
     assert.equal(browserResult.segment_count, 2);
     assert.equal(browserResult.mobile_viewport, "390x844");
     const production = await assertFinalProduction(browserResult.project_id, databaseUrl);
-    objectKeys = production.objectKeys;
+    assert.equal(browserResult.download_sha256, production.finalMetadata.sha256, "C12 browser download differs from the immutable final asset.");
+    assert.equal(browserResult.download_byte_size, production.finalMetadata.byte_size, "C12 browser download byte size differs from the immutable final asset.");
     await preserveFinalArtifact(storage, production.finalObjectKey, browserResult.project_id);
     await assertPublicPlaybackProjection(browserResult.project_id);
   } catch (error) {
-    const diagnostic = databaseCreated
+    const diagnostic = resources.migrated
       ? await captureProductionDiagnostic(databaseUrl).catch((diagnosticError) => `unavailable: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}`)
       : "not available";
     const processOutput = (name, processHandle) => `${name}: ${String(processHandle?.supervisorOutput ?? "<not started>").trim().slice(-2_000)}`;
@@ -402,41 +341,48 @@ const run = async () => {
     ].join("\n"));
   }
 
+  let allStopped = !ownedRunInterrupted();
   for (const [processHandle, name] of [[studioProcess, "C12 Studio"], [productionWorkerProcess, "C12 Production Worker"], [taskWorkerProcess, "C12 Task Worker"], [workflowWorkerProcess, "C12 Workflow Worker"], [runtimeProcess, "C12 Media Runtime"], [apiProcess, "C12 Control API"]]) {
     try {
       await waitForStopped(processHandle, name);
     } catch (error) {
+      allStopped = false;
       cleanupFailures.push(error);
     }
   }
-  try {
+  for (const child of currentOwnedServices()) {
+    try { await stopOwnedService(child, `C12 command ${child.pid}`); } catch (error) { allStopped = false; cleanupFailures.push(error); }
+  }
+  if (portsClaimed) try {
     await waitForPortsReleased();
   } catch (error) {
+    allStopped = false;
     cleanupFailures.push(error);
   }
-  try {
+  if (allStopped && (workflowWorkerProcess || taskWorkerProcess || productionWorkerProcess)) try {
     await Promise.all([
       clearInternalEventQueues({ redisUrl, queueName: environment.TASK_QUEUE_NAME, deadLetterQueueName: environment.TASK_DEAD_LETTER_QUEUE_NAME }),
       clearCreativePlanningQueues({ redisUrl, queueName: environment.CREATIVE_PLANNING_QUEUE_NAME, deadLetterQueueName: environment.CREATIVE_PLANNING_DEAD_LETTER_QUEUE_NAME }),
       clearProductionQueues({ redisUrl, queueName: environment.PRODUCTION_QUEUE_NAME, deadLetterQueueName: environment.PRODUCTION_DEAD_LETTER_QUEUE_NAME }),
       clearMediaRuntimeQueues({ redisUrl, queueName: environment.MEDIA_RUNTIME_QUEUE_NAME, deadLetterQueueName: environment.MEDIA_RUNTIME_DEAD_LETTER_QUEUE_NAME }),
-      removeObjects(storage, objectKeys),
       rm(environment.STUDIO_NUXT_BUILD_DIR, { recursive: true, force: true }),
       rm(environment.STUDIO_NITRO_OUTPUT_DIR, { recursive: true, force: true }),
     ]);
   } catch (error) {
     cleanupFailures.push(error);
   }
-  if (databaseCreated) {
+  if (allStopped && cleanupFailures.length === 0) {
     try {
-      await dropIsolatedDatabase(databaseName);
+      await resources.cleanupAfterStopped();
     } catch (error) {
       cleanupFailures.push(error);
     }
   }
-  if (cleanupFailures.length) throw new AggregateError(executionError ? [executionError, ...cleanupFailures] : cleanupFailures, "C12 E2E cleanup failed.");
+  storage.destroy();
+  if (ownedRunInterrupted()) cleanupFailures.push(new Error("C12 E2E was interrupted; owned resources are preserved and acceptance did not complete."));
+  if (cleanupFailures.length) throw new AggregateError(executionError ? [executionError, ...cleanupFailures] : cleanupFailures, `C12 E2E cleanup failed; retained/inspect ${resources.residualDescription()}; queues=${queuePrefix}; files=${environment.STUDIO_NUXT_BUILD_DIR},${environment.STUDIO_NITRO_OUTPUT_DIR}.`);
   if (executionError) throw executionError;
-  console.log("C12 local E2E passed: Studio project planning, Mock segment generation, QC/handoff, versioned composition, final-video playback/download, public redaction, mobile layout, and isolated cleanup.");
+  console.log("C12 local E2E passed: Studio project planning, Mock segment generation, consumed DeliveryPlan hard-cut composition, partial technical/audio QC, final-video playback and byte-matched download, public redaction, mobile layout, and isolated cleanup.");
 };
 
 await run();

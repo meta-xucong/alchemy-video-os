@@ -2028,6 +2028,7 @@ components:
             - CREDIT_UNAVAILABLE
             - CREDIT_REJECTED
             - PROVIDER_UNAVAILABLE
+            - PROVIDER_SUBMISSION_UNKNOWN
             - PROVIDER_REJECTED
             - PROVIDER_PROTOCOL_INVALID
             - DOWNLOAD_INVALID
@@ -2098,6 +2099,7 @@ components:
                 - CREDIT_UNAVAILABLE
                 - CREDIT_REJECTED
                 - PROVIDER_UNAVAILABLE
+                - PROVIDER_SUBMISSION_UNKNOWN
                 - PROVIDER_REJECTED
                 - PROVIDER_PROTOCOL_INVALID
                 - DOWNLOAD_INVALID
@@ -7843,6 +7845,7 @@ components:
         duration_ms:
           type: integer
           minimum: 0
+          maximum: 2147483647
       required:
         - sha256
         - mime_type

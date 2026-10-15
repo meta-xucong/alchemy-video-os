@@ -1,5 +1,86 @@
 import type { ProductionRunProgress, TaskRun } from "./useControlApi";
 
+export function createAsyncOperationFence() {
+  let revision = 0;
+  return {
+    begin: () => ++revision,
+    invalidate: () => ++revision,
+    isCurrent: (token: number) => token === revision,
+  };
+}
+
+export type RetryReconciliationTarget = { projectId: string; updatedAt: string } & (
+  | { kind: "task"; taskRunId: string }
+  | { kind: "segment"; productionRunId: string; segmentId: string; sequence: number }
+  | { kind: "composition"; productionRunId: string }
+);
+
+/** Only explicit Control API rejections prove that this command was not accepted. */
+export function isDefinitiveRetryRejection(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const response = error as { statusCode?: unknown; status?: unknown; data?: { error?: { code?: unknown } } };
+  const status = response.statusCode ?? response.status;
+  if (typeof status !== "number" || status < 400 || status >= 500 || status === 408) return false;
+  const code = response.data?.error?.code;
+  return typeof code === "string" && [
+    "VALIDATION_FAILED", "NOT_FOUND", "WORKSPACE_FORBIDDEN", "AUTH_FORBIDDEN",
+    "IDEMPOTENCY_CONFLICT", "TASK_STATE_INVALID", "TASK_RUN_ACTIVE_CONFLICT",
+    "PRODUCTION_SEGMENT_STATE_INVALID", "PRODUCTION_RUN_STATE_INVALID",
+  ].includes(code);
+}
+
+/** A newer state must belong to the exact retry target, never a historical result. */
+export function retryTargetHasAdvanced(
+  target: RetryReconciliationTarget,
+  tasks: TaskRun[],
+  production: ProductionRunProgress[],
+  currentAuthoritativeRead = false,
+  confirmedReceipt = false,
+): boolean {
+  const newer = (updatedAt: string) => {
+    const before = Date.parse(target.updatedAt);
+    const after = Date.parse(updatedAt);
+    return Number.isFinite(before) && Number.isFinite(after)
+      && (after > before || (currentAuthoritativeRead && after === before));
+  };
+  if (target.kind === "task") {
+    const task = tasks.find((item) => item.id === target.taskRunId && item.project_id === target.projectId);
+    return Boolean(task && newer(task.updated_at) && (confirmedReceipt || [
+      "QUEUED", "RUNNING", "PROCESSING", "DOWNLOADING", "BILLING_PENDING", "RETRY_SCHEDULED", "SUCCEEDED",
+    ].includes(task.status)));
+  }
+  const progress = production.find((item) => item.production_run.id === target.productionRunId
+    && item.production_run.project_id === target.projectId);
+  if (!progress) return false;
+  if (target.kind === "composition") {
+    return newer(progress.production_run.updated_at) && (confirmedReceipt || ["REVIEWING", "RENDERING", "SUCCEEDED"].includes(progress.production_run.status));
+  }
+  const segment = progress.segments.find((item) => item.id === target.segmentId
+    && item.production_run_id === target.productionRunId && item.sequence === target.sequence);
+  return Boolean(segment && newer(segment.updated_at) && (confirmedReceipt || ["PENDING", "WAITING", "GENERATING", "CHECKING", "ACCEPTED"].includes(segment.status)));
+}
+
+/** Retain newer command/worker snapshots when overlapping refreshes return out of order. */
+export function mergeProductionProgressSnapshots(previous: ProductionRunProgress | undefined, incoming: ProductionRunProgress, currentAuthoritativeRead = false): ProductionRunProgress {
+  if (!previous || previous.production_run.id !== incoming.production_run.id) return incoming;
+  const preservePrevious = (before: string, after: string) => before.localeCompare(after) > 0
+    || (!currentAuthoritativeRead && before === after);
+  const productionRun = preservePrevious(previous.production_run.updated_at, incoming.production_run.updated_at)
+    ? previous.production_run
+    : incoming.production_run;
+  const previousSegments = new Map(previous.segments.map((segment) => [segment.sequence, segment]));
+  const segments = incoming.segments.map((segment) => {
+    const current = previousSegments.get(segment.sequence);
+    return current && preservePrevious(current.updated_at, segment.updated_at) ? current : segment;
+  });
+  return { ...incoming, production_run: productionRun, segments };
+}
+
+export function mergeProductionProgressLists(previous: ProductionRunProgress[], incoming: ProductionRunProgress[], currentAuthoritativeRead = false): ProductionRunProgress[] {
+  const previousById = new Map(previous.map((item) => [item.production_run.id, item]));
+  return incoming.map((item) => mergeProductionProgressSnapshots(previousById.get(item.production_run.id), item, currentAuthoritativeRead));
+}
+
 type CreationProgressTone = "idle" | "active" | "success" | "error";
 type CreationStageState = "pending" | "active" | "complete";
 
@@ -87,7 +168,19 @@ export function productionProgressFor(
   hasInput: boolean,
   localBusy: boolean,
   billingPending = false,
+  retrySubmitting = false,
+  retryOutcomeUnknown = false,
+  retryProjectionPending = false,
 ): CreationProgress {
+  if (retrySubmitting) {
+    return progress("正在提交重试", "正在提交本次重试请求；服务确认后会继续制作。", "active", 2);
+  }
+  if (retryOutcomeUnknown) {
+    return progress("重试结果待确认", "服务可能已接受重试，请刷新项目核对；确认前不要再次提交。", "active", 2);
+  }
+  if (retryProjectionPending) {
+    return progress("正在核对重试状态", "原请求已受理，正在核对最新状态；确认前不要再次提交。", "active", 2);
+  }
   if (localBusy) {
     return progress("AI 正在理解内容", "正在后台准备这次视频创作。", "active", 0);
   }

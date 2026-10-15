@@ -6,15 +6,18 @@ import { createPrefixedId, fingerprintRequest } from "@alchemy-video/domain";
 import { StorageUnavailableError, createInMemoryStoragePort, type StoragePort } from "@alchemy-video/storage-client";
 import { MockVideoProvider, Sub2ApiVideoProvider, VideoProviderFailure, createMockMp4Fixture, resolveVideoProviderRuntimeProfile } from "@alchemy-video/provider-video";
 import type { VideoProviderPort } from "@alchemy-video/provider-video";
+import type { ControlTaskRun } from "@alchemy-video/persistence";
 import type { Sub2ApiTransport, Sub2ApiTransportResponse } from "@alchemy-video/provider-video";
 
 import { InMemoryTaskRunStore } from "../../control-api/src/task-run-repository.js";
+import { withTestExecutionFence } from "../../../packages/persistence/tests/execution-fence-test-helper.js";
 import { InMemoryAssetWorkspaceStore } from "../../control-api/src/asset-repository.js";
 import { InMemoryControlPlaneStore } from "../../control-api/src/repository.js";
 import { MockVideoTaskExecutor } from "../src/execution-service.js";
+import { TaskRunEventConsumer } from "../src/service.js";
 import { VideoBillingExecutor, type BillingAttemptStore } from "../src/billing-executor.js";
 import { VideoUsagePortError, type CreditPort } from "@alchemy-video/credit-veyra";
-import { createWorkerReferenceDeliveryPort, type ReferenceDeliveryPort } from "../src/reference-delivery.js";
+import { createWorkerReferenceDeliveryPort, ReferenceDeliveryUnavailableError, type ReferenceDeliveryPort } from "../src/reference-delivery.js";
 
 const event = () => ({ eventId: createPrefixedId("evt"), messageId: createPrefixedId("msg"), traceId: createPrefixedId("trc"), correlationId: createPrefixedId("cor") });
 
@@ -144,6 +147,21 @@ class NeverTerminalProvider implements VideoProviderPort {
   }
 }
 
+class RetryableStatusProvider implements VideoProviderPort {
+  private readonly provider: MockVideoProvider;
+
+  constructor(fixtureBytes: Uint8Array) {
+    this.provider = new MockVideoProvider({ fixtureBytes });
+  }
+
+  get submitCount() { return this.provider.submitCount; }
+  submit(input: Parameters<VideoProviderPort["submit"]>[0]) { return this.provider.submit(input); }
+  async getStatus() {
+    throw new VideoProviderFailure("PROVIDER_UNAVAILABLE", true, "STATUS", "Controlled temporary status outage.");
+  }
+  download(input: Parameters<VideoProviderPort["download"]>[0]) { return this.provider.download(input); }
+}
+
 class MustNotDebitCreditPort implements CreditPort {
   async getAccount() {
     throw new Error("The failed generation must not query or debit credit.");
@@ -246,7 +264,7 @@ const prepareTask = async (withBilling = false, model = "mock-video-v1") => {
   const assets = new InMemoryAssetWorkspaceStore(control);
   await assets.createShot({ scope: "c06:shot", idempotencyKey: "shot", requestHash: "b".repeat(64), workspaceId, projectId, shotId, position: 0, prompt: "Generate an offline mock video.", model, generationSettings: {}, referenceBindings: [] });
   await assets.setShotGenerationState({ workspaceId, shotId, status: "READY" });
-  const store = new InMemoryTaskRunStore(assets);
+  const store = withTestExecutionFence(new InMemoryTaskRunStore(assets));
   const taskRunId = createPrefixedId("tsk");
   const created = await store.createTaskRun({
     scope: "c06:task",
@@ -293,7 +311,10 @@ const prepareTask = async (withBilling = false, model = "mock-video-v1") => {
   return { assets, store, workspaceId, taskRunId };
 };
 
-const prepareReferenceTask = async (semanticSnapshot?: (references: Array<{ assetId: string; sha256: string; position: number }>) => Record<string, unknown>) => {
+const prepareReferenceTask = async (
+  semanticSnapshot?: (references: Array<{ assetId: string; sha256: string; position: number }>) => Record<string, unknown>,
+  prompt = "Generate a reference-set Mock video.",
+) => {
   const control = new InMemoryControlPlaneStore();
   const workspaceId = createPrefixedId("ws");
   const userId = createPrefixedId("usr");
@@ -340,13 +361,13 @@ const prepareReferenceTask = async (semanticSnapshot?: (references: Array<{ asse
     projectId,
     shotId,
     position: 0,
-    prompt: "Generate a reference-set Mock video.",
+    prompt,
     model: "mock-video-v1",
     generationSettings: {},
     referenceBindings: references.map((reference) => ({ assetId: reference.assetId, role: reference.position === 0 ? "STYLE" : "SUBJECT", position: reference.position })),
   });
   await assets.setShotGenerationState({ workspaceId, shotId, status: "READY" });
-  const store = new InMemoryTaskRunStore(assets);
+  const store = withTestExecutionFence(new InMemoryTaskRunStore(assets));
   const taskRunId = createPrefixedId("tsk");
   const created = await store.createTaskRun({
     scope: "c09-c:task",
@@ -358,7 +379,7 @@ const prepareReferenceTask = async (semanticSnapshot?: (references: Array<{ asse
     kind: "VIDEO_GENERATION",
     inputSnapshot: {
       model: "mock-video-v1",
-      prompt: "Generate a reference-set Mock video.",
+      prompt,
       duration: 1,
       resolution: "160x90",
       ratio: "16:9",
@@ -384,6 +405,69 @@ const prepareReferenceTask = async (semanticSnapshot?: (references: Array<{ asse
   });
   return { assets, store, workspaceId, projectId, taskRunId, references };
 };
+
+test("G02 scheduled TaskRun with an ordered identity projection passes Worker preflight", async () => {
+  const sourceText = [
+    "G02_APPROVED_BEAT_1: Snowy picks up Copper Flask.",
+    "G02_APPROVED_BEAT_2: Snowy turns toward the window.",
+  ].join("\n");
+  const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
+  const quote = sourceText.split("\n")[0]!;
+  const quoteHash = createHash("sha256").update(quote, "utf8").digest("hex");
+  const beat = {
+    sequence: 1 as const,
+    span: { start: 0, end: quote.length, quote },
+    exact_quote_sha256: quoteHash,
+    identity_sha256: fingerprintRequest({ brief_revision_id: "cbr_g02_positive", sequence: 1, exact_quote_sha256: quoteHash }),
+  };
+  const lineage = { version: 1 as const, brief_revision_id: "cbr_g02_positive", source_hash: sourceHash, beat };
+  const decisionHash = "e".repeat(64);
+  const prompt = "@Snowy picks up @Copper Flask.";
+  const { assets, store, workspaceId, taskRunId } = await prepareReferenceTask((references) => {
+    const projection = {
+      version: 1 as const,
+      brief_revision_id: "cbr_g02_positive",
+      source_hash: sourceHash,
+      decision_hash: decisionHash,
+      segment_id: "seg_g02_positive_1",
+      prompt_package_id: "ppk_g02_positive",
+      bindings: references.map((reference, position) => ({
+        entity_kind: position === 0 ? "CHARACTER" as const : "PROP" as const,
+        entity_id: `cve_g02_positive_${position}`,
+        entity_revision_id: `cvr_g02_positive_${position}`,
+        exact_name: position === 0 ? "Snowy" : "Copper Flask",
+        asset_id: reference.assetId,
+        asset_sha256: reference.sha256,
+        provider_position: reference.position,
+        mapping_evidence_id: createPrefixedId("mpe"),
+      })),
+    };
+    return {
+      generation_segment_sequence: 1,
+      narrative_beat_sequences: [1],
+      semantic_entity_reference_projection: projection,
+      semantic_entity_reference_projection_hash: fingerprintRequest(projection),
+      semantic_narrative_beat_lineage: lineage,
+      semantic_narrative_beat_lineage_hash: fingerprintRequest(lineage),
+    };
+  }, prompt);
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const deliveryInputs: string[][] = [];
+  const result = await new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    assetStore: assets,
+    referenceDelivery: {
+      async createVisualInput(input) {
+        deliveryInputs.push(input.visualInput.references.map((reference) => reference.asset_id));
+        return { mode: "REFERENCE_SET", urls: input.visualInput.references.map((reference) => `https://provider-input.invalid/${reference.asset_id}`) };
+      },
+    },
+  }).execute({ workspaceId, taskRunId });
+
+  assert.equal(result?.status, "SUCCEEDED", JSON.stringify(result?.error));
+  assert.equal(provider.submitCount, 1);
+  assert.deepEqual(deliveryInputs, [[...(result?.inputSnapshot.reference_asset_ids ?? [])]]);
+  assert.equal((await store.listTaskRunAttempts(workspaceId, taskRunId)).length, 1);
+});
 
 test("G02 Worker preflight rejects a missing exact entity prompt anchor before an attempt or Provider submit", async () => {
   const sourceText = [
@@ -584,6 +668,82 @@ test("invalid video output never enters billing even when a service-fee rule is 
   assert.equal(result?.resultAssetId, null);
 });
 
+for (const pause of ["download", "draft lookup", "completion"] as const) {
+  test(`supersession observed after ${pause} stops stale storage or billing continuation`, async () => {
+    const { store, workspaceId, taskRunId } = await prepareTask(true);
+    const bytes = await createMockMp4Fixture();
+    const provider = new MockVideoProvider({ fixtureBytes: bytes });
+    const task = await store.findTaskRun(workspaceId, taskRunId);
+    assert.ok(task);
+    const executionFenceToken = () => (store as unknown as { executionFenceTokens: Map<string, string> }).executionFenceTokens.get(`${workspaceId}:${taskRunId}`);
+    const assetId = createPrefixedId("ast");
+    await store.ensureGeneratedAsset({ workspaceId, taskRunId, assetId, objectKey: `${workspaceId}/${task.projectId}/${assetId}/result.mp4`, provider: "mock", now: new Date() });
+    const originalComplete = store.completeGeneratedTaskRun.bind(store);
+    const closeAndSupersede = async () => {
+      const [attempt] = await store.listTaskRunAttempts(workspaceId, taskRunId);
+      assert.ok(attempt);
+      const ownerToken = executionFenceToken();
+      assert.ok(ownerToken, "the controlled in-flight execution must have a persisted owner token");
+      await originalComplete({ workspaceId, taskRunId, executionFenceToken: ownerToken, providerAttemptId: attempt.id, assetId, sha256: createHash("sha256").update(bytes).digest("hex"), byteSize: bytes.byteLength, width: 160, height: 90, durationMs: 1000, now: new Date() });
+      // A second executor's completed debit/terminal write is a controlled fixture.
+      await store.markBillingSucceeded({ workspaceId, taskRunId, executionFenceToken: ownerToken, usageRecordId: createPrefixedId("use"), now: new Date() });
+      const succeeded = await store.findTaskRun(workspaceId, taskRunId);
+      assert.equal(succeeded?.status, "SUCCEEDED");
+      const superseded = { ...succeeded!, supersededByTaskRunId: createPrefixedId("tsk") };
+      (store as unknown as { taskRuns: Map<string, ControlTaskRun> }).taskRuns.set(taskRunId, superseded);
+      return superseded;
+    };
+    if (pause === "download") {
+      const original = provider.download.bind(provider);
+      provider.download = async (input) => { const value = await original(input); await closeAndSupersede(); return value; };
+    } else if (pause === "draft lookup") {
+      const original = store.findGeneratedAssetDraft.bind(store);
+      store.findGeneratedAssetDraft = async (workspace, taskId) => { const captured = await original(workspace, taskId); await closeAndSupersede(); return captured; };
+    } else {
+      store.completeGeneratedTaskRun = async () => closeAndSupersede();
+    }
+    const storage = createInMemoryStoragePort();
+    const inspect = storage.inspectObject.bind(storage);
+    let inspections = 0;
+    storage.inspectObject = async (input) => { inspections += 1; return inspect(input); };
+    const credit = new SuccessfulCreditPort();
+    const billingExecutor = new VideoBillingExecutor(credit, new InMemoryBillingAttemptStore(store));
+    let usageCalls = 0;
+    const executor = new MockVideoTaskExecutor(store, provider, storage, {
+      billingExecutor,
+      videoUsage: { async getUsage(input) { usageCalls += 1; return { providerRequestId: input.providerRequestId, model: "mock-video-v1", actualCost: "0.12" }; } },
+    });
+    const result = await executor.execute({ workspaceId, taskRunId });
+    assert.equal(result?.status, "SUCCEEDED");
+    assert.ok(result?.supersededByTaskRunId);
+    assert.equal(provider.submitCount, 1);
+    assert.equal(credit.debitCalls, 0, "the stale executor must not request even an idempotent debit after observing supersession");
+    if (pause === "download") assert.equal(usageCalls, 0);
+    if (pause !== "completion") assert.equal(inspections, 0, "captured drafts cannot bypass the refreshed task guard");
+  });
+}
+
+test("billing recovery rechecks supersession after an awaited usage lookup", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask(true);
+  const task = await store.findTaskRun(workspaceId, taskRunId);
+  assert.ok(task);
+  const rows = (store as unknown as { taskRuns: Map<string, ControlTaskRun> }).taskRuns;
+  rows.set(taskRunId, { ...task, status: "BILLING_PENDING" });
+  const attempt = await store.ensureProviderAttempt({ workspaceId, taskRunId, providerAttemptId: createPrefixedId("att"), provider: "mock", model: "mock-video-v1", now: new Date() });
+  assert.ok(attempt);
+  await store.recordProviderSubmission({ workspaceId, taskRunId, providerAttemptId: attempt.id, providerRequestId: "offline-billing-resume", now: new Date() });
+  const credit = new SuccessfulCreditPort();
+  const executor = new MockVideoTaskExecutor(store, new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() }), createInMemoryStoragePort(), {
+    billingExecutor: new VideoBillingExecutor(credit, new InMemoryBillingAttemptStore(store)),
+    videoUsage: { async getUsage(input) {
+      rows.set(taskRunId, { ...task, status: "SUCCEEDED", resultAssetId: createPrefixedId("ast"), supersededByTaskRunId: createPrefixedId("tsk") });
+      return { providerRequestId: input.providerRequestId, model: "mock-video-v1", actualCost: "0.12" };
+    } },
+  });
+  assert.equal((await executor.execute({ workspaceId, taskRunId }))?.status, "SUCCEEDED");
+  assert.equal(credit.debitCalls, 0);
+});
+
 test("the documented KIE preview usage model alias completes billing without rewriting the usage fact", async () => {
   const { store, workspaceId, taskRunId } = await prepareTask(true, "grok-imagine-video-1.5");
   const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
@@ -645,6 +805,31 @@ test("billing failure retry resumes the validated artifact without resubmitting 
   const failedBilling = await executor.execute({ workspaceId, taskRunId });
   assert.equal(failedBilling?.status, "BILLING_FAILED");
   assert.equal(provider.submitCount, 1);
+  const executionFenceToken = () => (store as unknown as { executionFenceTokens: Map<string, string> }).executionFenceTokens.get(`${workspaceId}:${taskRunId}`);
+  assert.equal(executionFenceToken(), undefined, "billing failure must revoke its execution fence");
+  const attemptsBeforeDuplicate = await store.listTaskRunAttempts(workspaceId, taskRunId);
+  const initialQueuedEvent = (await store.listWorkspaceEvents({ workspaceId, limit: 30 })).find((item) => item.event_type === "task_run.queued");
+  assert.ok(initialQueuedEvent && initialQueuedEvent.event_type === "task_run.queued");
+  if (!initialQueuedEvent || initialQueuedEvent.event_type !== "task_run.queued") throw new Error("initial billing task event missing");
+  const duplicateConsumer = new TaskRunEventConsumer(store, { consumerName: "task-run-transition", workerId: "billing-failed-duplicate", leaseMs: 100 }, executor);
+  assert.equal(await duplicateConsumer.process({
+    contract_version: "1.0",
+    event_id: initialQueuedEvent.event_id,
+    workspace_id: workspaceId,
+    task_run_id: taskRunId,
+    attempt_no: 2,
+    correlation_id: initialQueuedEvent.correlation_id,
+    input_snapshot: initialQueuedEvent.data.input_snapshot,
+  }), "DUPLICATE");
+  await duplicateConsumer.finalizeExecutionFailure({
+    workspace_id: workspaceId,
+    task_run_id: taskRunId,
+    reason: "a duplicate queue delivery was exhausted after billing failed",
+  });
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "BILLING_FAILED");
+  assert.equal(executionFenceToken(), undefined, "duplicate billing-failed delivery must not install a new execution fence");
+  assert.deepEqual(await store.listTaskRunAttempts(workspaceId, taskRunId), attemptsBeforeDuplicate);
+  assert.equal(provider.submitCount, 1);
 
   const retried = await store.retryTaskRun({
     scope: "c13:billing-retry",
@@ -701,6 +886,26 @@ test("a scheduled credit retry is recovered after restart without a second Provi
   assert.equal(recovered[0]?.failure, undefined);
   assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "SUCCEEDED");
   assert.equal(credit.debitCalls, 2);
+  assert.equal(provider.submitCount, 1);
+});
+
+test("C06 defers a retryable Provider status outage without failing or resubmitting the known request", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask();
+  const provider = new RetryableStatusProvider(await createMockMp4Fixture());
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort());
+
+  await assert.rejects(executor.execute({ workspaceId, taskRunId }), /Controlled temporary status outage/);
+  assert.equal(provider.submitCount, 1);
+  const attemptBeforeRecovery = (await store.listTaskRunAttempts(workspaceId, taskRunId))[0];
+  assert.ok(attemptBeforeRecovery?.providerRequestId);
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "PROVIDER_PROCESSING");
+
+  const recovered = await executor.recover({ limit: 10, maxAttempts: 1, deferRetryableErrors: true });
+  assert.equal(recovered.length, 1);
+  assert.equal(recovered[0]?.deferredKind, "PROVIDER_RETRY_PENDING");
+  assert.equal(recovered[0]?.failure, undefined);
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "PROVIDER_PROCESSING");
+  assert.equal((await store.listTaskRunAttempts(workspaceId, taskRunId))[0]?.providerRequestId, attemptBeforeRecovery?.providerRequestId);
   assert.equal(provider.submitCount, 1);
 });
 
@@ -891,13 +1096,12 @@ test("C07 rejected submit is preserved as non-retryable PROVIDER_REJECTED by C06
   assert.deepEqual(transport.requests.map((request) => request.method), ["POST"]);
 });
 
-test("C09 explicit retry after a missing provider task creates a fresh provider attempt", async () => {
+test("C09 explicit retry after HTTP 404 retains the known request until status can be recovered", async () => {
   const { store, workspaceId, taskRunId } = await prepareTask();
   const fixture = await createMockMp4Fixture();
   const transport = new C07FakeTransport([
     { status: 202, json: { id: "req_c09_missing" } },
     { status: 404, json: { message: "Video request not found" } },
-    { status: 202, json: { id: "req_c09_fresh" } },
     { status: 200, json: { status: "succeeded" } },
     { status: 200, headers: { "content-type": "video/mp4", "content-length": String(fixture.byteLength) }, stream: streamFromBytes(fixture) },
   ]);
@@ -931,11 +1135,11 @@ test("C09 explicit retry after a missing provider task creates a fresh provider 
   });
   const succeeded = await executor.execute({ workspaceId, taskRunId });
   assert.equal(succeeded?.status, "SUCCEEDED");
-  assert.equal(transport.requests.filter((request) => request.method === "POST").length, 2);
+  assert.equal(transport.requests.filter((request) => request.method === "POST").length, 1);
   const attempts = await store.listTaskRunAttempts(workspaceId, taskRunId);
-  assert.equal(attempts.length, 2);
-  assert.equal(attempts[0]?.status, "ABANDONED");
-  assert.equal(attempts[1]?.providerRequestId, "req_c09_fresh");
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0]?.status, "SUCCEEDED");
+  assert.equal(attempts[0]?.providerRequestId, "req_c09_missing");
 });
 
 test("C07 temporary polling 429 and 503 stay processing and recover without resubmission", async () => {
@@ -1125,29 +1329,245 @@ test("C09-C fails before submission when reference delivery is unavailable", asy
   assert.deepEqual(await store.listTaskRunAttempts(workspaceId, taskRunId), []);
 });
 
+test("C09-C reference relay outage closes a pre-existing unreserved attempt", async () => {
+  const { assets, store, workspaceId, taskRunId } = await prepareReferenceTask();
+  const attempt = await store.ensureProviderAttempt({
+    workspaceId,
+    taskRunId,
+    providerAttemptId: createPrefixedId("att"),
+    provider: "mock",
+    model: "mock-video-v1",
+    now: new Date(),
+  });
+  assert.ok(attempt);
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    assetStore: assets,
+    referenceDelivery: { async createVisualInput() { throw new ReferenceDeliveryUnavailableError("", false, "CONFIGURATION"); } },
+  });
+  const result = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(result?.status, "FAILED");
+  assert.equal(result?.error?.code, "STORAGE_UNAVAILABLE");
+  assert.equal(provider.submitCount, 0);
+  const [failedAttempt] = await store.listTaskRunAttempts(workspaceId, taskRunId);
+  assert.equal(failedAttempt?.status, "FAILED");
+  assert.equal(failedAttempt?.providerRequestId, null);
+});
+
+test("C09-C missing relay configuration is reported as reference delivery, not Provider unavailable", async () => {
+  const { assets, store, workspaceId, taskRunId } = await prepareReferenceTask();
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const delivery = createWorkerReferenceDeliveryPort({ profile: resolveVideoProviderRuntimeProfile("sub2api"), environment: {} });
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), { assetStore: assets, referenceDelivery: delivery });
+  const result = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(result?.error?.code, "STORAGE_UNAVAILABLE");
+  assert.equal(result?.error?.retryable, false);
+  assert.equal(provider.submitCount, 0);
+  assert.deepEqual(await store.listTaskRunAttempts(workspaceId, taskRunId), []);
+});
+
 test("C09-C relay preflight fails before creating an attempt or submitting the Provider", async () => {
   const { assets, store, workspaceId, taskRunId } = await prepareReferenceTask();
   const provider = new CapturingProvider(new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() }));
   const key = "execution-preflight-secret-with-at-least-32-characters";
+  const requestHeaders: Array<Readonly<Record<string, string>>> = [];
   const delivery = createWorkerReferenceDeliveryPort({
     profile: resolveVideoProviderRuntimeProfile("sub2api"),
     environment: {
       REFERENCE_DELIVERY_ORIGIN: "https://video.example.invalid",
       REFERENCE_DELIVERY_SIGNING_KEY: key,
       REFERENCE_DELIVERY_PREFLIGHT_TIMEOUT_MS: "500",
-      REFERENCE_DELIVERY_PREFLIGHT_RETRIES: "0",
+      REFERENCE_DELIVERY_PREFLIGHT_RETRIES: "1",
     },
-    fetcher: async () => ({
-      status: 503,
-      headers: { get: () => "text/plain" },
-      body: null,
-    }),
+    fetcher: async (_url, init) => {
+      requestHeaders.push(init.headers);
+      return { status: 503, headers: { get: (name) => {
+        const normalized = name.toLowerCase();
+        if (normalized === "x-reference-delivery-retryable") return "false";
+        if (normalized === "x-reference-delivery-correlation") return init.headers["X-Reference-Delivery-Correlation"] ?? null;
+        return null;
+      } }, body: null };
+    },
   });
   const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
     assetStore: assets,
     referenceDelivery: delivery,
   });
-  await assert.rejects(() => executor.execute({ workspaceId, taskRunId }), /temporarily unavailable/);
+  const result = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(result?.status, "FAILED");
+  assert.equal(result?.error?.code, "STORAGE_UNAVAILABLE");
+  assert.equal(result?.error?.retryable, false);
   assert.equal(provider.submitCount, 0);
   assert.deepEqual(await store.listTaskRunAttempts(workspaceId, taskRunId), []);
+  assert.equal(requestHeaders.length, 2);
+  const correlationIds = requestHeaders.map((headers) => headers["X-Reference-Delivery-Correlation"] ?? "");
+  assert.ok(correlationIds.every((correlationId) => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(correlationId)));
+  assert.equal(new Set(correlationIds).size, 2);
+  assert.equal(requestHeaders[0]?.accept, "image/jpeg, image/png, image/webp");
+});
+
+test("C09-C ignores an unbound non-retryable hint from the reference relay", async () => {
+  const { assets, store, workspaceId, taskRunId } = await prepareReferenceTask();
+  const provider = new CapturingProvider(new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() }));
+  const delivery = createWorkerReferenceDeliveryPort({
+    profile: resolveVideoProviderRuntimeProfile("sub2api"),
+    environment: {
+      REFERENCE_DELIVERY_ORIGIN: "https://video.example.invalid",
+      REFERENCE_DELIVERY_SIGNING_KEY: "execution-preflight-secret-with-at-least-32-characters",
+      REFERENCE_DELIVERY_PREFLIGHT_TIMEOUT_MS: "500",
+      REFERENCE_DELIVERY_PREFLIGHT_RETRIES: "0",
+    },
+    fetcher: async () => ({ status: 503, headers: { get: (name) => name.toLowerCase() === "x-reference-delivery-retryable" ? "false" : null }, body: null }),
+  });
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), { assetStore: assets, referenceDelivery: delivery });
+  const result = await executor.execute({ workspaceId, taskRunId });
+  assert.equal(result?.status, "FAILED");
+  assert.equal(result?.error?.code, "STORAGE_UNAVAILABLE");
+  assert.equal(result?.error?.retryable, true);
+  assert.equal(provider.submitCount, 0);
+});
+
+test("C09-C recovery with a persisted Provider request skips reference preflight", async () => {
+  const { assets, store, workspaceId, taskRunId } = await prepareReferenceTask();
+  const mockProvider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const attempt = await store.ensureProviderAttempt({ workspaceId, taskRunId, providerAttemptId: createPrefixedId("att"), provider: "mock", model: "mock-video-v1", now: new Date() });
+  assert.ok(attempt);
+  assert.ok(await store.reserveProviderSubmission({ workspaceId, taskRunId, providerAttemptId: attempt.id, now: new Date() }));
+  await store.recordProviderSubmission({ workspaceId, taskRunId, providerAttemptId: attempt.id, providerRequestId: `mock_${taskRunId}_recovery`, now: new Date() });
+  const [persistedAttempt] = await store.listTaskRunAttempts(workspaceId, taskRunId);
+  assert.ok(persistedAttempt?.providerRequestId);
+
+  let referencePreflightCalls = 0;
+  const secondExecutor = new MockVideoTaskExecutor(store, mockProvider, createInMemoryStoragePort(), {
+    assetStore: assets,
+    referenceDelivery: { async createVisualInput() { referencePreflightCalls += 1; throw new Error("reference relay is unavailable"); } },
+  });
+  const recovered = await secondExecutor.execute({ workspaceId, taskRunId });
+  assert.equal(recovered?.status, "SUCCEEDED");
+  assert.equal(mockProvider.submitCount, 0);
+  assert.equal(referencePreflightCalls, 0);
+});
+
+test("C09-C explicit retry after a terminal Provider rejection redelivers references for the new attempt", async () => {
+  const { assets, store, workspaceId, taskRunId } = await prepareReferenceTask();
+  const oldAttempt = await store.ensureProviderAttempt({ workspaceId, taskRunId, providerAttemptId: createPrefixedId("att"), provider: "mock", model: "mock-video-v1", now: new Date() });
+  assert.ok(oldAttempt);
+  assert.equal(await store.reserveProviderSubmission({ workspaceId, taskRunId, providerAttemptId: oldAttempt.id, now: new Date() }), true);
+  await store.recordProviderSubmission({ workspaceId, taskRunId, providerAttemptId: oldAttempt.id, providerRequestId: "terminal-reference-retry", now: new Date() });
+  await store.failTaskRun({ workspaceId, taskRunId, providerAttemptId: oldAttempt.id, failureStage: "PROVIDER", providerRequestTerminal: true, code: "PROVIDER_REJECTED", message: "The request was terminally rejected.", retryable: false, now: new Date() });
+
+  assert.equal((await store.retryTaskRun({
+    scope: "c09-c:terminal-reference-retry",
+    idempotencyKey: "terminal-reference-retry",
+    requestHash: "e".repeat(64),
+    workspaceId,
+    taskRunId,
+    event: event(),
+  })).kind, "NEW");
+  const queued = (await store.listWorkspaceEvents({ workspaceId, limit: 30 })).filter((item) => item.event_type === "task_run.queued").at(-1);
+  assert.ok(queued && queued.event_type === "task_run.queued");
+  if (!queued || queued.event_type !== "task_run.queued") throw new Error("terminal reference retry event missing");
+  assert.equal(await store.processEvent({
+    message: { contract_version: "1.0", event_id: queued.event_id, workspace_id: workspaceId, task_run_id: taskRunId, attempt_no: 1, correlation_id: queued.correlation_id, input_snapshot: queued.data.input_snapshot },
+    consumerName: "c09-c-terminal-reference-retry",
+    workerId: "c09-c-terminal-reference-retry-worker",
+    now: new Date(),
+    leaseMs: 100,
+  }), "PROCESSED");
+
+  let referenceDeliveries = 0;
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const result = await new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    assetStore: assets,
+    referenceDelivery: { async createVisualInput(input) {
+      referenceDeliveries += 1;
+      return { mode: "REFERENCE_SET", urls: input.visualInput.references.map((reference) => `https://provider-input.invalid/${reference.asset_id}`) };
+    } },
+  }).execute({ workspaceId, taskRunId });
+
+  assert.equal(result?.status, "SUCCEEDED");
+  assert.equal(referenceDeliveries, 1);
+  assert.equal(provider.submitCount, 1);
+  const attempts = await store.listTaskRunAttempts(workspaceId, taskRunId);
+  assert.equal(attempts.length, 2);
+  assert.equal(attempts[0]?.status, "ABANDONED");
+  assert.equal(attempts[1]?.status, "SUCCEEDED");
+});
+
+test("C09-C terminal historical request does not mask a new retry reference-delivery failure", async () => {
+  const { assets, store, workspaceId, taskRunId } = await prepareReferenceTask();
+  const oldAttempt = await store.ensureProviderAttempt({ workspaceId, taskRunId, providerAttemptId: createPrefixedId("att"), provider: "mock", model: "mock-video-v1", now: new Date() });
+  assert.ok(oldAttempt);
+  assert.equal(await store.reserveProviderSubmission({ workspaceId, taskRunId, providerAttemptId: oldAttempt.id, now: new Date() }), true);
+  await store.recordProviderSubmission({ workspaceId, taskRunId, providerAttemptId: oldAttempt.id, providerRequestId: "terminal-reference-preflight-failure", now: new Date() });
+  await store.failTaskRun({ workspaceId, taskRunId, providerAttemptId: oldAttempt.id, failureStage: "PROVIDER", providerRequestTerminal: true, code: "PROVIDER_REJECTED", message: "The request was terminally rejected.", retryable: false, now: new Date() });
+  assert.equal((await store.retryTaskRun({
+    scope: "c09-c:terminal-reference-preflight-failure",
+    idempotencyKey: "terminal-reference-preflight-failure",
+    requestHash: "f".repeat(64),
+    workspaceId,
+    taskRunId,
+    event: event(),
+  })).kind, "NEW");
+  const queued = (await store.listWorkspaceEvents({ workspaceId, limit: 30 })).filter((item) => item.event_type === "task_run.queued").at(-1);
+  assert.ok(queued && queued.event_type === "task_run.queued");
+  if (!queued || queued.event_type !== "task_run.queued") throw new Error("terminal reference preflight retry event missing");
+  assert.equal(await store.processEvent({
+    message: { contract_version: "1.0", event_id: queued.event_id, workspace_id: workspaceId, task_run_id: taskRunId, attempt_no: 1, correlation_id: queued.correlation_id, input_snapshot: queued.data.input_snapshot },
+    consumerName: "c09-c-terminal-reference-preflight-failure",
+    workerId: "c09-c-terminal-reference-preflight-worker",
+    now: new Date(),
+    leaseMs: 100,
+  }), "PROCESSED");
+
+  let referenceDeliveries = 0;
+  const provider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  const result = await new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort(), {
+    assetStore: assets,
+    referenceDelivery: { async createVisualInput() {
+      referenceDeliveries += 1;
+      throw new ReferenceDeliveryUnavailableError("", false, "CONFIGURATION");
+    } },
+  }).execute({ workspaceId, taskRunId });
+
+  assert.equal(result?.status, "FAILED");
+  assert.equal(result?.error?.code, "STORAGE_UNAVAILABLE");
+  assert.equal(result?.error?.retryable, false);
+  assert.equal(referenceDeliveries, 1);
+  assert.equal(provider.submitCount, 0);
+  const attempts = await store.listTaskRunAttempts(workspaceId, taskRunId);
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0]?.providerRequestId, "terminal-reference-preflight-failure");
+  assert.equal(attempts[0]?.status, "ABANDONED");
+});
+
+test("a concurrent execution cannot fail a TaskRun while another Worker owns its submission reservation", async () => {
+  const { store, workspaceId, taskRunId } = await prepareTask();
+  const baseProvider = new MockVideoProvider({ fixtureBytes: await createMockMp4Fixture() });
+  let submitCount = 0;
+  let signalSubmitStarted!: () => void;
+  const submitStarted = new Promise<void>((resolve) => { signalSubmitStarted = resolve; });
+  let releaseSubmit!: () => void;
+  const submitGate = new Promise<void>((resolve) => { releaseSubmit = resolve; });
+  const provider: VideoProviderPort = {
+    async submit(input) {
+      submitCount += 1;
+      signalSubmitStarted();
+      await submitGate;
+      return baseProvider.submit(input);
+    },
+    getStatus(input) { return baseProvider.getStatus(input); },
+    download(input) { return baseProvider.download(input); },
+  };
+  const executor = new MockVideoTaskExecutor(store, provider, createInMemoryStoragePort());
+
+  const firstExecution = executor.execute({ workspaceId, taskRunId });
+  await submitStarted;
+  await assert.rejects(executor.execute({ workspaceId, taskRunId }), /Another execution owns/);
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "RUNNING");
+
+  releaseSubmit();
+  assert.equal((await firstExecution)?.status, "SUCCEEDED");
+  assert.equal((await store.findTaskRun(workspaceId, taskRunId))?.status, "SUCCEEDED");
+  assert.equal(submitCount, 1);
 });

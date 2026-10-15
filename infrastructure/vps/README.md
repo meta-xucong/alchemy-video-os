@@ -67,6 +67,9 @@ sh infrastructure/vps/scripts/compose-vps.sh logs control-api task-worker edge
 # Recreate application-facing services only; data services are not targeted.
 sh infrastructure/vps/scripts/compose-vps.sh restart-app
 
+# Verify every application container uses this checkout and canonical Compose file.
+sh infrastructure/vps/scripts/compose-vps.sh verify-app
+
 # Check that invalid provider-input HEAD and GET requests return empty 404s.
 sh infrastructure/vps/scripts/compose-vps.sh smoke
 ```
@@ -82,6 +85,30 @@ The wrapper intentionally has no stop or volume-removal action. Do not use
 `docker compose down` or `docker compose down -v` as an operational shortcut:
 the canonical runbook requires retaining PostgreSQL, Redis, MinIO, TaskRun,
 ProviderAttempt, and generated-asset state.
+
+Real-provider Task Workers wait for the Control API's database readiness and
+then probe the configured HTTPS reference-delivery route before queue recovery
+or consumption. The probe must receive the expected invalid-token `404`; it
+does not read an asset or call a Provider. If the bounded readiness wait fails,
+the Worker stays out of queue processing and must not be made to bypass the
+reference preflight. See the C09-C readiness-gate document for release evidence.
+
+`restart-app` applies `--build` and force-recreates the complete application
+set from the current canonical Compose file. Compose builds services that
+declare a `build:` context and recreates all application containers; services
+declared only with an `image:` use that image (the `edge` service uses
+`nginx:1.27-alpine`):
+`control-api`, `task-worker`, `workflow-worker`, `production-worker`,
+`document-worker`, `document-runtime`, `media-runtime`,
+`control-media-runtime`, `studio-web`, and `edge`. It does not target
+`postgres`, `redis`, `minio`, or `migrate`. Run it only after the release
+source has been frozen and `config` passes. `verify-app` is read-only: it
+requires each application service to have a running container whose Docker
+Compose labels point to the same project working directory (the parent
+directory of the first/canonical Compose file) and canonical Compose file.
+It catches containers left over from another release directory; it does not
+prove a Git SHA or certify application behavior. Follow it with `smoke` and
+the separately authorized browser/provider acceptance steps.
 
 ## Runtime boundaries
 

@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -91,6 +92,7 @@ def create_plan_and_verify_final_video(page, studio_origin, project_name, browse
         raise AssertionError(f"C12 Studio project creation did not navigate to a project URL: {page.url}")
     project_id = project_match.group(1)
     post_paths = []
+    music_confirmations = []
 
     def record_request(request):
         if request.method != "POST":
@@ -98,6 +100,8 @@ def create_plan_and_verify_final_video(page, studio_origin, project_name, browse
         parsed = urlparse(request.url)
         if parsed.netloc == urlparse(studio_origin).netloc and parsed.path.startswith("/api/v1/"):
             post_paths.append(parsed.path)
+            if parsed.path.endswith("/confirm-upload"):
+                music_confirmations.append(request.post_data_json)
 
     page.on("request", record_request)
     page.get_by_label("把想法、故事或小说情节写在这里", exact=True).fill(
@@ -124,6 +128,8 @@ def create_plan_and_verify_final_video(page, studio_origin, project_name, browse
             "() => { const input = document.querySelector('input[type=\"radio\"][value=\"MANUAL\"]'); return input && !input.disabled && input.checked; }",
             timeout=60_000,
         )
+    if len(music_confirmations) != 1 or music_confirmations[0].get("duration_ms") != 30_000:
+        raise AssertionError("C12 MUSIC upload did not forward the browser-read 30-second duration through the public confirmation command.")
     page.get_by_role("button", name="开始生成视频", exact=True).click()
     wait_for_final_video(page)
     if not page.locator("#story-resolution-480p").is_checked():
@@ -138,9 +144,14 @@ def create_plan_and_verify_final_video(page, studio_origin, project_name, browse
     video.wait_for(timeout=30_000)
     if video.get_attribute("autoplay") is not None:
         raise AssertionError("C12 final-video player unexpectedly starts playback after a project refresh.")
-    ready_state = video.evaluate("element => element.readyState")
-    if ready_state < 1:
-        raise AssertionError("C12 final-video player did not load metadata.")
+    page.wait_for_function("() => document.querySelector('.project-results-panel video')?.readyState >= 1", timeout=10_000)
+    playback_start = video.evaluate("async element => { element.muted = true; const start = element.currentTime; await element.play(); return start; }")
+    page.wait_for_function(
+        "start => { const video = document.querySelector('.project-results-panel video'); return video && !video.error && video.currentTime > start; }",
+        arg=playback_start,
+        timeout=10_000,
+    )
+    video.evaluate("element => element.pause()")
     page.locator("details.clip-history").evaluate("element => { element.open = true; element.scrollIntoView({ block: 'start' }); }")
     overlap = page.evaluate(
         """() => {
@@ -157,8 +168,15 @@ def create_plan_and_verify_final_video(page, studio_origin, project_name, browse
         raise AssertionError(f"C12 clip history is obscured by the project result player: {overlap}")
     with page.expect_download(timeout=30_000) as download_info:
         page.get_by_role("button", name="下载成片", exact=True).click()
-    if not download_info.value.suggested_filename:
+    download = download_info.value
+    if not download.suggested_filename:
         raise AssertionError("C12 final-video download did not return a filename.")
+    if download.failure() is not None:
+        raise AssertionError("C12 final-video download failed.")
+    download_path = download.path()
+    downloaded_bytes = Path(download_path).read_bytes() if download_path else b""
+    if not downloaded_bytes:
+        raise AssertionError("C12 final-video download returned no bytes.")
 
     required = [
         f"/api/v1/projects/{project_id}/creative-brief-revisions",
@@ -179,18 +197,28 @@ def create_plan_and_verify_final_video(page, studio_origin, project_name, browse
         assert_mobile_layout(mobile_page, page.url, project_name)
     finally:
         mobile_context.close()
-    return {"project_id": project_id, "segment_count": 2, "mobile_viewport": "390x844"}
+    return {
+        "project_id": project_id,
+        "segment_count": 2,
+        "mobile_viewport": "390x844",
+        "download_sha256": hashlib.sha256(downloaded_bytes).hexdigest(),
+        "download_byte_size": len(downloaded_bytes),
+    }
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--studio-origin", required=True)
     parser.add_argument("--project-name", required=True)
+    parser.add_argument(
+        "--browser-executable",
+        help="Explicit local Chromium executable; defaults to Playwright's pinned browser.",
+    )
     args = parser.parse_args()
     result = {"ok": False, "project_name": args.project_name}
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = playwright.chromium.launch(headless=True, executable_path=args.browser_executable)
             try:
                 page = browser.new_page(viewport={"width": 1280, "height": 720})
                 result = {"ok": True, **create_plan_and_verify_final_video(page, args.studio_origin, args.project_name, browser)}

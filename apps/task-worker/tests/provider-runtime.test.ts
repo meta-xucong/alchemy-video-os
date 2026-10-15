@@ -5,7 +5,7 @@ import { VideoProviderFailure, VideoProviderProtocolError } from "@alchemy-video
 import { ReferenceDeliveryTokenCodec } from "@alchemy-video/reference-delivery";
 
 import { createWorkerVideoProviderRuntime } from "../src/provider-runtime.js";
-import { createWorkerReferenceDeliveryPort } from "../src/reference-delivery.js";
+import { createWorkerReferenceDeliveryPort, ReferenceDeliveryReadinessError, ReferenceDeliveryUnavailableError, waitForWorkerReferenceDeliveryReady } from "../src/reference-delivery.js";
 import { createSub2ApiHttpsTransport, type WorkerFetchResponse } from "../src/sub2api-https-transport.js";
 
 const deliveryHeaders = (values: Record<string, string> = {}) => ({
@@ -114,7 +114,8 @@ test("reference delivery preserves one-to-seven image order in opaque HTTPS inpu
   const projectId = "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX";
   const port = createWorkerReferenceDeliveryPort({
     profile: { ...profile, mode: "sub2api", provider: "sub2api", model: "grok-imagine-video-1.5", inputMode: "multi_modal_video" },
-     environment: { REFERENCE_DELIVERY_ORIGIN: "https://video.example.invalid", REFERENCE_DELIVERY_SIGNING_KEY: key, REFERENCE_DELIVERY_PREFLIGHT_ENABLED: "false" },
+    environment: { REFERENCE_DELIVERY_ORIGIN: "https://video.example.invalid", REFERENCE_DELIVERY_SIGNING_KEY: key },
+    fetcher: async () => deliveryResponse(200, { "content-type": "image/png", "content-length": "1024" }),
   });
   const resolved = await port.createVisualInput({
     workspaceId,
@@ -185,7 +186,8 @@ test("reference delivery preserves the frozen canonical order regardless of sema
   const key = "reference-delivery-role-test-secret-with-at-least-32-characters";
   const port = createWorkerReferenceDeliveryPort({
     profile: { ...profile, mode: "sub2api", provider: "sub2api", model: "grok-imagine-video-1.5", inputMode: "multi_modal_video" },
-     environment: { REFERENCE_DELIVERY_ORIGIN: "https://video.example.invalid", REFERENCE_DELIVERY_SIGNING_KEY: key, REFERENCE_DELIVERY_PREFLIGHT_ENABLED: "false" },
+    environment: { REFERENCE_DELIVERY_ORIGIN: "https://video.example.invalid", REFERENCE_DELIVERY_SIGNING_KEY: key },
+    fetcher: async () => deliveryResponse(200, { "content-type": "image/png", "content-length": "1024" }),
   });
   const resolved = await port.createVisualInput({
     workspaceId: "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX",
@@ -207,7 +209,23 @@ test("real reference delivery fails before a Provider request when its HTTPS rel
       projectId: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX",
       visualInput: { mode: "FIRST_FRAME", references: [{ asset_id: "ast_01J4N8QZ8PCW2N2G6D2XJXJXJX", sha256: "a".repeat(64), mime_type: "image/png", position: 0 }] },
     }),
-    VideoProviderFailure,
+    ReferenceDeliveryUnavailableError,
+  );
+});
+
+test("real Worker refuses to start with task-level reference preflight explicitly disabled", async () => {
+  const profile = (await createWorkerVideoProviderRuntime({ environment: {} })).profile;
+  assert.throws(
+    () => createWorkerReferenceDeliveryPort({
+      profile: { ...profile, mode: "sub2api", provider: "sub2api", model: "grok-imagine-video-1.5", inputMode: "multi_modal_video" },
+      environment: {
+        REFERENCE_DELIVERY_ORIGIN: "https://video.example.invalid",
+        REFERENCE_DELIVERY_SIGNING_KEY: "reference-preflight-disabled-test-secret-at-least-32-characters",
+        REFERENCE_DELIVERY_PREFLIGHT_ENABLED: "false",
+      },
+      fetcher: async () => { throw new Error("preflight-disabled must fail before requesting"); },
+    }),
+    (error: unknown) => error instanceof ReferenceDeliveryReadinessError && error.reason === "PREFLIGHT_DISABLED",
   );
 });
 
@@ -286,7 +304,7 @@ test("reference delivery preflight rejects invalid MIME without retrying or expo
   });
   await assert.rejects(
     () => port.createVisualInput({ workspaceId: "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX", projectId: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX", visualInput: referenceInput() }),
-    (error: unknown) => error instanceof VideoProviderFailure && error.code === "PROVIDER_PROTOCOL_INVALID" && !error.retryable && !error.message.includes("video.example.invalid"),
+    (error: unknown) => error instanceof ReferenceDeliveryUnavailableError && error.reason === "INVALID_RESPONSE" && !error.retryable && !error.message.includes("video.example.invalid"),
   );
   assert.equal(urls.length, 1);
 });
@@ -301,6 +319,148 @@ test("reference delivery preflight turns a timeout into a recoverable provider o
   });
   await assert.rejects(
     () => port.createVisualInput({ workspaceId: "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX", projectId: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX", visualInput: referenceInput() }),
-    (error: unknown) => error instanceof VideoProviderFailure && error.code === "PROVIDER_UNAVAILABLE" && error.retryable,
+    (error: unknown) => error instanceof ReferenceDeliveryUnavailableError && error.reason === "PRECHECK_UNAVAILABLE" && error.retryable,
   );
+});
+
+test("real Worker readiness waits for the actual relay route and accepts only the invalid-token 404", async () => {
+  const requests: Array<{ url: string; method: string; redirect: string }> = [];
+  const delays: number[] = [];
+  let now = 10_000;
+  let calls = 0;
+  const ready = await waitForWorkerReferenceDeliveryReady({
+    origin: "https://video.example.invalid/edge",
+    timeoutMs: 500,
+    maxWaitMs: 10_000,
+    now: () => now,
+    sleep: async (milliseconds) => { delays.push(milliseconds); now += milliseconds; },
+    fetcher: async (url, init) => {
+      requests.push({ url, method: init.method, redirect: init.redirect });
+      calls += 1;
+      return calls === 1
+        ? deliveryResponse(503)
+        : deliveryResponse(404, { "content-length": "0", "cache-control": "no-store" });
+    },
+  });
+
+  assert.deepEqual(ready, { attempts: 2, elapsedMs: 1_000 });
+  assert.deepEqual(requests, [
+    { url: "https://video.example.invalid/edge/provider-input/__worker-readiness__", method: "HEAD", redirect: "manual" },
+    { url: "https://video.example.invalid/edge/provider-input/__worker-readiness__", method: "HEAD", redirect: "manual" },
+  ]);
+  assert.deepEqual(delays, [1_000]);
+});
+
+test("real Worker readiness fails closed on a permanent relay response without logging request data", async () => {
+  const originalError = console.error;
+  const logs: string[] = [];
+  console.error = (message?: unknown) => { logs.push(String(message)); };
+  try {
+    await assert.rejects(
+      () => waitForWorkerReferenceDeliveryReady({
+        origin: "https://video.example.invalid",
+        timeoutMs: 500,
+        maxWaitMs: 10_000,
+        fetcher: async () => deliveryResponse(401),
+      }),
+      (error: unknown) => error instanceof ReferenceDeliveryReadinessError && error.reason === "HTTP_STATUS" && error.httpStatus === 401,
+    );
+  } finally {
+    console.error = originalError;
+  }
+  assert.equal(logs.length, 1);
+  assert.match(logs[0]!, /"http_status":401/u);
+  assert.doesNotMatch(logs[0]!, /video\.example\.invalid|token|signing|authorization/iu);
+});
+
+test("real Worker readiness does not mistake a generic application 404 for the relay's empty no-store 404", async () => {
+  const originalError = console.error;
+  console.error = () => undefined;
+  try {
+    await assert.rejects(
+      () => waitForWorkerReferenceDeliveryReady({
+        origin: "https://video.example.invalid",
+        timeoutMs: 500,
+        maxWaitMs: 10_000,
+        fetcher: async () => deliveryResponse(404, { "content-type": "text/html", "content-length": "193" }),
+      }),
+      (error: unknown) => error instanceof ReferenceDeliveryReadinessError && error.reason === "UNEXPECTED_404_RESPONSE",
+    );
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test("real Worker readiness stops retrying at its configured bound", async () => {
+  const originalError = console.error;
+  console.error = () => undefined;
+  const delays: number[] = [];
+  let now = 0;
+  let calls = 0;
+  try {
+    await assert.rejects(
+      () => waitForWorkerReferenceDeliveryReady({
+        origin: "https://video.example.invalid",
+        timeoutMs: 500,
+        maxWaitMs: 2_500,
+        now: () => now,
+        sleep: async (milliseconds) => { delays.push(milliseconds); now += milliseconds; },
+        fetcher: async () => { calls += 1; throw new Error("network unavailable"); },
+      }),
+      (error: unknown) => error instanceof ReferenceDeliveryReadinessError && error.reason === "NETWORK",
+    );
+  } finally {
+    console.error = originalError;
+  }
+  assert.equal(calls, 2);
+  assert.deepEqual(delays, [1_000, 1_500]);
+  assert.equal(now, 2_500);
+});
+
+test("reference preflight classifies DNS failures without exposing the signed image URL", async () => {
+  const profile = (await createWorkerVideoProviderRuntime({ environment: {} })).profile;
+  const key = "reference-delivery-preflight-dns-secret-with-at-least-32-characters";
+  const originalWarn = console.warn;
+  const logs: string[] = [];
+  console.warn = (message?: unknown) => { logs.push(String(message)); };
+  try {
+    const port = createWorkerReferenceDeliveryPort({
+      profile: { ...profile, mode: "sub2api", provider: "sub2api", model: "grok-imagine-video-1.5", inputMode: "multi_modal_video" },
+      environment: { REFERENCE_DELIVERY_ORIGIN: "https://video.example.invalid", REFERENCE_DELIVERY_SIGNING_KEY: key, REFERENCE_DELIVERY_PREFLIGHT_TIMEOUT_MS: "500", REFERENCE_DELIVERY_PREFLIGHT_RETRIES: "0" },
+      fetcher: async () => { throw Object.assign(new Error("sensitive transport detail"), { cause: { code: "EAI_AGAIN" } }); },
+    });
+    await assert.rejects(
+      () => port.createVisualInput({ workspaceId: "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX", projectId: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX", visualInput: referenceInput() }),
+      (error: unknown) => error instanceof ReferenceDeliveryUnavailableError && error.retryable,
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(logs.length, 1);
+  assert.match(logs[0]!, /"reason":"DNS"/u);
+  assert.doesNotMatch(logs[0]!, /video\.example\.invalid|ast_|signing|EAI_AGAIN|sensitive transport detail/iu);
+});
+
+test("reference preflight classifies OpenSSL transport codes as TLS without exposing the signed image URL", async () => {
+  const profile = (await createWorkerVideoProviderRuntime({ environment: {} })).profile;
+  const key = "reference-delivery-preflight-tls-secret-with-at-least-32-characters";
+  const originalWarn = console.warn;
+  const logs: string[] = [];
+  console.warn = (message?: unknown) => { logs.push(String(message)); };
+  try {
+    const port = createWorkerReferenceDeliveryPort({
+      profile: { ...profile, mode: "sub2api", provider: "sub2api", model: "grok-imagine-video-1.5", inputMode: "multi_modal_video" },
+      environment: { REFERENCE_DELIVERY_ORIGIN: "https://video.example.invalid", REFERENCE_DELIVERY_SIGNING_KEY: key, REFERENCE_DELIVERY_PREFLIGHT_RETRIES: "0" },
+      fetcher: async () => { throw Object.assign(new Error("sensitive SSL detail"), { cause: { code: "ERR_SSL_WRONG_VERSION_NUMBER" } }); },
+    });
+    await assert.rejects(
+      () => port.createVisualInput({ workspaceId: "ws_01J4N8QZ8PCW2N2G6D2XJXJXJX", projectId: "prj_01J4N8QZ8PCW2N2G6D2XJXJXJX", visualInput: referenceInput() }),
+      (error: unknown) => error instanceof ReferenceDeliveryUnavailableError && error.retryable,
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(logs.length, 1);
+  assert.match(logs[0]!, /"reason":"TLS"/u);
+  assert.doesNotMatch(logs[0]!, /video\.example\.invalid|ast_|signing|ERR_SSL|sensitive SSL detail/iu);
 });

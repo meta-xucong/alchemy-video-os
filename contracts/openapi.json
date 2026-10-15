@@ -3234,6 +3234,7 @@
               "CREDIT_UNAVAILABLE",
               "CREDIT_REJECTED",
               "PROVIDER_UNAVAILABLE",
+              "PROVIDER_SUBMISSION_UNKNOWN",
               "PROVIDER_REJECTED",
               "PROVIDER_PROTOCOL_INVALID",
               "DOWNLOAD_INVALID",
@@ -3312,6 +3313,7 @@
                   "CREDIT_UNAVAILABLE",
                   "CREDIT_REJECTED",
                   "PROVIDER_UNAVAILABLE",
+                  "PROVIDER_SUBMISSION_UNKNOWN",
                   "PROVIDER_REJECTED",
                   "PROVIDER_PROTOCOL_INVALID",
                   "DOWNLOAD_INVALID",
@@ -10667,7 +10669,8 @@
           },
           "duration_ms": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "maximum": 2147483647
           }
         },
         "required": [

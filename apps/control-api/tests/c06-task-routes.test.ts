@@ -4,13 +4,14 @@ import test from "node:test";
 
 import { InternalTaskRunQueueMessageSchema } from "@alchemy-video/contracts";
 import { createPrefixedId } from "@alchemy-video/domain";
-import { InMemoryStoragePort } from "@alchemy-video/storage-client";
+import { InMemoryStoragePort, StorageUnavailableError } from "@alchemy-video/storage-client";
 import { ReferenceDeliveryTokenCodec } from "@alchemy-video/reference-delivery";
 
 import { createInMemoryAssetWorkspaceStore } from "../src/asset-repository.js";
 import { createApp } from "../src/app.js";
 import { createInMemoryControlPlaneStore } from "../src/repository.js";
 import { createInMemoryTaskRunStore } from "../src/task-run-repository.js";
+import { withTestExecutionFence } from "../../../packages/persistence/tests/execution-fence-test-helper.js";
 
 const readJson = async (response: Response) => response.json() as Promise<Record<string, any>>;
 
@@ -491,10 +492,71 @@ test("C09-C provider-input only streams its encrypted token's scoped image witho
   assert.equal((await app.request(`http://localhost/provider-input/${encodeURIComponent(wrongProjectToken)}`)).status, 404);
 });
 
-test("C06 retries only failed runs and queues the original immutable snapshot", async () => {
+test("provider-input HEAD emits safe storage diagnostics and accepts only a UUID correlation id", async () => {
   const control = createInMemoryControlPlaneStore();
   const assets = createInMemoryAssetWorkspaceStore(control);
   const tasks = createInMemoryTaskRunStore(assets);
+  const storage = new InMemoryStoragePort();
+  const key = "reference-delivery-diagnostic-test-secret-with-at-least-32-characters";
+  const app = createApp({ store: control, assetStore: assets, taskStore: tasks, storage, referenceDeliveryTokenCodec: new ReferenceDeliveryTokenCodec(key) });
+  const { projectId } = await createReadyShot(app, { keySuffix: "provider-input-diagnostic" });
+  const assetId = await createReadyReference({ app, assetStore: assets, storage, projectId, keySuffix: "provider-input-diagnostic" });
+  const asset = await assets.findAsset("ws_dev_default", assetId);
+  assert.ok(asset?.sha256 && asset.mimeType);
+  const token = new ReferenceDeliveryTokenCodec(key).issue({
+    workspaceId: "ws_dev_default",
+    projectId,
+    assetId,
+    sha256: asset!.sha256!,
+    mimeType: asset!.mimeType!,
+    expiresAt: new Date(Date.now() + 60_000),
+  });
+  storage.inspectObjectMetadata = async () => {
+    throw Object.assign(
+      new StorageUnavailableError("private raw message", { name: "UNKNOWN_STORAGE_ERROR", code: "UNKNOWN_STORAGE_ERROR", httpStatusCode: 403 }),
+      { stage: "BUCKET_INIT" },
+    );
+  };
+
+  const captured: string[] = [];
+  const originalInfo = console.info;
+  const originalError = console.error;
+  console.info = (...values: unknown[]) => captured.push(values.join(" "));
+  console.error = (...values: unknown[]) => captured.push(values.join(" "));
+  try {
+    const correlationId = "6f9619ff-8b86-4b20-a9b8-18f6301d7362";
+    const response = await app.request(`http://localhost/provider-input/${encodeURIComponent(token)}`, {
+      method: "HEAD",
+      headers: { "X-Reference-Delivery-Correlation": correlationId },
+    });
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("x-reference-delivery-retryable"), "false");
+    assert.equal(response.headers.get("x-reference-delivery-correlation"), correlationId);
+    const logs = captured.join("\n");
+    assert.match(logs, new RegExp(correlationId));
+    assert.match(logs, /provider_input_metadata_head/);
+    assert.match(logs, /BUCKET_INIT/);
+    assert.match(logs, /UNKNOWN_STORAGE_ERROR/);
+    assert.doesNotMatch(logs, new RegExp(token));
+    assert.doesNotMatch(logs, /private raw message/);
+
+    captured.length = 0;
+    const malformed = await app.request(`http://localhost/provider-input/${encodeURIComponent(token)}`, {
+      method: "HEAD",
+      headers: { "X-Reference-Delivery-Correlation": `not-a-uuid-${"x".repeat(512)}` },
+    });
+    assert.equal(malformed.status, 503);
+    assert.doesNotMatch(captured.join("\n"), /not-a-uuid/);
+  } finally {
+    console.info = originalInfo;
+    console.error = originalError;
+  }
+});
+
+test("C06 retries only failed runs and queues the original immutable snapshot", async () => {
+  const control = createInMemoryControlPlaneStore();
+  const assets = createInMemoryAssetWorkspaceStore(control);
+  const tasks = withTestExecutionFence(createInMemoryTaskRunStore(assets));
   const app = createApp({ store: control, assetStore: assets, taskStore: tasks });
   const { shotId } = await createReadyShot(app);
   const created = await readJson(await app.request(`http://localhost/api/v1/shots/${shotId}/generations`, {

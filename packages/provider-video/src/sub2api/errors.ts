@@ -55,6 +55,7 @@ export const normalizeSub2ApiRejectedStatus = (payload: unknown): FailedProvider
   code: "PROVIDER_REJECTED",
   message: findFailureMessage(payload) || "The SUB2API video request was rejected.",
   retryable: false,
+  providerRequestTerminal: true,
 });
 
 export class Sub2ApiProviderFailure extends VideoProviderFailure {

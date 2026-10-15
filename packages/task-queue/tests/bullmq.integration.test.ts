@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Queue } from "bullmq";
 
 import {
   BullMqCreativePlanningQueue,
@@ -8,6 +9,7 @@ import {
   clearInternalEventQueues,
   createBullMqCreativePlanningWorker,
   createBullMqInternalEventWorker,
+  InternalEventRequiresRecoveryError,
   type DeadLetterQueueJob,
 } from "../src/index.js";
 import {
@@ -77,6 +79,81 @@ test("BullMQ retries a durable internal event and sends the final failure to the
     await queue.close();
     await clearInternalEventQueues({ redisUrl, queueName, deadLetterQueueName });
   }
+});
+
+test("BullMQ deferred terminal failure is finalized even when processor is bypassed, and a busy finalizer retains the durable job", { skip: !process.env.REDIS_URL, timeout: 15_000 }, async () => {
+  const redisUrl = process.env.REDIS_URL!;
+  const parsed = new URL(redisUrl);
+  const queueName = `closure-stalled-${Date.now()}`;
+  const deadLetterQueueName = `${queueName}-dead`;
+  const source = new Queue(queueName, { connection: { host: parsed.hostname, port: Number(parsed.port || 6379) } });
+  const dead = new Queue(deadLetterQueueName, { connection: { host: parsed.hostname, port: Number(parsed.port || 6379) } });
+  const message = InternalTaskRunQueueMessageSchema.parse({ contract_version: "1.0", event_id: `evt_${queueName}`, workspace_id: `ws_${queueName}`, task_run_id: `tsk_${queueName}`, attempt_no: 1, correlation_id: `cor_${queueName}`, input_snapshot: {} });
+  let processors = 0;
+  let finalizers = 0;
+  let complete = false;
+  const worker = createBullMqInternalEventWorker({ redisUrl, queueName, deadLetterQueueName, autoStart: false,
+    processor: async () => { processors += 1; throw new Error("Controlled recoverable execution failure."); },
+    onTerminalFailure: async (failure) => {
+      finalizers += 1;
+      assert.equal(failure.event_id, message.event_id);
+      assert.ok(failure.attempts >= 3);
+      if (finalizers === 1) throw new Error("Controlled competing execution owner.");
+      complete = true;
+    },
+  });
+  try {
+    await worker.waitUntilReady();
+    await source.add("internal-event", message, { jobId: message.event_id, attempts: 3, removeOnFail: false });
+    // Exact persisted BullMQ 6.1.0 shape written by its stalled-job script.
+    // It bypasses processor in Worker.processJob, unlike an ordinary throw.
+    await (await source.getBackend().connection.client).hset(source.toKey(message.event_id), "atm", "2", "defa", "job stalled more than allowable limit");
+    const stalled = await source.getJob(message.event_id);
+    assert.equal(stalled?.attemptsMade, 2);
+    assert.equal(stalled?.deferredFailure, "job stalled more than allowable limit");
+    worker.start();
+    await waitFor(() => complete).catch(async () => {
+      const current = await source.getJob(message.event_id);
+      assert.fail(JSON.stringify({ processors, finalizers, complete, state: await current?.getState(), attempts: current?.attemptsMade, deferred: current?.deferredFailure }));
+    });
+    await worker.close();
+    assert.equal(processors, 1);
+    assert.equal(finalizers, 2);
+    assert.equal(await (await source.getJob(message.event_id))?.getState(), "failed");
+    assert.ok(await dead.getJob(`dead-${message.event_id}`));
+  } finally {
+    await worker.close();
+    await source.close();
+    await dead.close();
+    await clearInternalEventQueues({ redisUrl, queueName, deadLetterQueueName });
+  }
+});
+
+test("ambiguous historical execution generations reach observable dead-letter recovery without an endless delay loop", { skip: !process.env.REDIS_URL, timeout: 15_000 }, async () => {
+  const redisUrl = process.env.REDIS_URL!;
+  const parsed = new URL(redisUrl);
+  const queueName = `closure-generation-${Date.now()}`;
+  const deadLetterQueueName = `${queueName}-dead`;
+  const connection = { host: parsed.hostname, port: Number(parsed.port || 6379) };
+  const source = new Queue(queueName, { connection });
+  const dead = new Queue(deadLetterQueueName, { connection });
+  const message = InternalTaskRunQueueMessageSchema.parse({ contract_version: "1.0", event_id: `evt_${queueName}`, workspace_id: `ws_${queueName}`, task_run_id: `tsk_${queueName}`, attempt_no: 1, correlation_id: `cor_${queueName}`, input_snapshot: {} });
+  let processors = 0;
+  let finalizers = 0;
+  const worker = createBullMqInternalEventWorker({ redisUrl, queueName, deadLetterQueueName,
+    processor: async () => { processors += 1; throw new Error("Controlled pre-submit outage."); },
+    onTerminalFailure: async () => { finalizers += 1; throw new InternalEventRequiresRecoveryError("Historical generations require controlled startup recovery."); },
+  });
+  try {
+    await worker.waitUntilReady();
+    await source.add("internal-event", message, { jobId: message.event_id, attempts: 3, backoff: { type: "fixed", delay: 10 }, removeOnFail: false });
+    await waitFor(() => finalizers === 1);
+    await worker.close();
+    assert.equal(processors, 3);
+    assert.equal(finalizers, 1);
+    assert.equal(await (await source.getJob(message.event_id))?.getState(), "failed");
+    assert.ok(await dead.getJob(`dead-${message.event_id}`));
+  } finally { await worker.close(); await source.close(); await dead.close(); await clearInternalEventQueues({ redisUrl, queueName, deadLetterQueueName }); }
 });
 
 class PlanningQueueFailure extends Error {

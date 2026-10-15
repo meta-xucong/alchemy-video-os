@@ -406,7 +406,11 @@ test("C11 Drizzle planning persists the durable review path without creating exe
     const [consumption] = await database.db
       .select({ completedAt: eventConsumptions.completedAt })
       .from(eventConsumptions)
-      .where(and(eq(eventConsumptions.workspaceId, workspaceId), eq(eventConsumptions.eventId, message.event_id)));
+      .where(and(
+        eq(eventConsumptions.workspaceId, workspaceId),
+        eq(eventConsumptions.eventId, message.event_id),
+        eq(eventConsumptions.consumerName, "c11-pg-consumer"),
+      ));
     assert.ok(consumption?.completedAt);
     const eventTypes = await database.db
       .select({ eventType: outboxEvents.eventType })
@@ -1515,6 +1519,23 @@ test("PostgreSQL freezes approved Doubao narration identity in the ProductionRun
     assert.equal(assetVersionRow?.assetId, narrationAssetId);
     const compositionTimeline = await findApprovedNarrationTimeline(database.db, workspaceId, projectId, deliveryPlanRevisionId, String(frozen.timelinePlanId), true);
     assert.equal(compositionTimeline?.timelinePlanId, timeline.value.id, "composition reread is pinned to the frozen timeline ID");
+    assert.deepEqual(compositionTimeline?.narrationSections, [{
+      sectionId: "main",
+      startMs: 0,
+      endMs: 10_000,
+      visualRole: "PRIMARY",
+    }], "the persisted TimelinePlan window and formal asset version must survive the composition read");
+    assert.deepEqual(compositionTimeline?.narrationAsset && {
+      assetVersionId: compositionTimeline.narrationAsset.assetVersionId,
+      id: compositionTimeline.narrationAsset.id,
+      durationMs: compositionTimeline.narrationAsset.durationMs,
+      sha256: compositionTimeline.narrationAsset.sha256,
+    }, {
+      assetVersionId: narrationAssetVersionId,
+      id: narrationAssetId,
+      durationMs: 10_000,
+      sha256: "b".repeat(64),
+    }, "the persisted formal narration asset must remain the authoritative composition input");
 
     const confirmedEvents = await database.db.select({ id: outboxEvents.id, aggregateId: outboxEvents.aggregateId }).from(outboxEvents).where(and(
       eq(outboxEvents.workspaceId, workspaceId),

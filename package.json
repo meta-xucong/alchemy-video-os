@@ -5,11 +5,27 @@
   "packageManager": "pnpm@10.33.0",
   "pnpm": {
     "overrides": {
-      "fast-xml-parser": "5.7.0",
+      "fast-xml-parser": "5.7.2",
       "brace-expansion@2": "2.1.7",
       "brace-expansion@5": "5.0.12",
       "svgo": "4.1.0",
-      "devalue": "5.9.2"
+      "devalue": "5.9.3",
+      "shell-quote": "1.11.0",
+      "seroval": "1.6.3",
+      "source-map-js": "1.2.2",
+      "postcss-selector-parser": "7.1.6",
+      "nuxt@3.21.11>@nuxt/devtools": "-",
+      "drizzle-kit@0.31.10>@esbuild-kit/esm-loader": "-",
+      "vue": "3.5.42",
+      "@vue/compiler-core": "3.5.42",
+      "@vue/compiler-dom": "3.5.42",
+      "@vue/compiler-sfc": "3.5.42",
+      "@vue/compiler-ssr": "3.5.42",
+      "@vue/reactivity": "3.5.42",
+      "@vue/runtime-core": "3.5.42",
+      "@vue/runtime-dom": "3.5.42",
+      "@vue/server-renderer": "3.5.42",
+      "@vue/shared": "3.5.42"
     }
   },
   "engines": {
@@ -19,7 +35,7 @@
   "scripts": {
     "dev": "pnpm --parallel --filter @alchemy-video/studio-web --filter @alchemy-video/control-api dev",
     "build": "pnpm -r --if-present build",
-    "typecheck": "pnpm -r --if-present typecheck",
+    "typecheck": "pnpm -r --filter \"./packages/**\" --workspace-concurrency=1 --if-present build && pnpm -r --workspace-concurrency=1 --if-present typecheck",
     "test": "pnpm -r --workspace-concurrency=1 --if-present test",
     "contracts:generate": "pnpm --filter @alchemy-video/contracts generate",
     "db:generate": "pnpm --filter @alchemy-video/persistence db:generate",

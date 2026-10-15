@@ -104,20 +104,26 @@
             </div>
             <div class="music-plan-options" role="radiogroup" aria-label="成片音轨来源">
               <label class="music-plan-option" :class="{ selected: audioSelection === 'PRESERVE_PROVIDER_AUDIO' }">
-                <input v-model="audioSelection" type="radio" value="PRESERVE_PROVIDER_AUDIO" />
+                <input v-model="audioSelection" type="radio" value="PRESERVE_PROVIDER_AUDIO" :disabled="audioSelectionLocked" />
                 <span class="music-plan-option-copy"><strong>保留视频原声</strong><small>默认方式，不额外替换音轨</small></span>
               </label>
               <label class="music-plan-option" :class="{ selected: audioSelection === 'DOUBAO_TTS_REPLACE' }">
-                <input v-model="audioSelection" type="radio" value="DOUBAO_TTS_REPLACE" />
+                <input v-model="audioSelection" type="radio" value="DOUBAO_TTS_REPLACE" :disabled="audioSelectionLocked" />
                 <span class="music-plan-option-copy"><strong>使用已批准的豆包旁白替换原声</strong><small>必须已有与本次脚本和时间轴匹配的正式旁白资产，否则本次制作会被阻止</small></span>
               </label>
               <label class="music-plan-option" :class="{ selected: audioSelection === 'MUSIC_REPLACE_PROVIDER_AUDIO' }">
-                <input v-model="audioSelection" type="radio" value="MUSIC_REPLACE_PROVIDER_AUDIO" :disabled="musicPlan.mode !== 'MANUAL' || !selectedMusicAsset" />
+                <input v-model="audioSelection" type="radio" value="MUSIC_REPLACE_PROVIDER_AUDIO" :disabled="audioSelectionLocked" />
                 <span class="music-plan-option-copy"><strong>仅使用指定背景音乐</strong><small>仅接受已选的工作区 MUSIC 曲目；会移除视频 Provider 原声，不保留原声对白或环境音</small></span>
               </label>
             </div>
-            <p v-if="audioSelection === 'MUSIC_REPLACE_PROVIDER_AUDIO'" class="music-plan-note" role="status">
-              本次成片将只保留完整背景音乐，并丢弃所有视频片段内嵌的 Provider 原声。请在“背景音乐”中保持“指定曲目”并选择覆盖全片的曲目。
+            <p v-if="audioSelection === 'MUSIC_REPLACE_PROVIDER_AUDIO' && !musicAssets.length" class="music-plan-note" role="status">
+              已选择仅使用背景音乐。请先上传或导入一首工作区 MUSIC 曲目，再切换到“指定曲目”并选择它；此选择不会自动选曲。
+            </p>
+            <p v-else-if="audioSelection === 'MUSIC_REPLACE_PROVIDER_AUDIO' && (musicPlan.mode !== 'MANUAL' || !selectedMusicAsset)" class="music-plan-note" role="status">
+              已选择仅使用背景音乐。请在“背景音乐”中切换到“指定曲目”并选择具体曲目；自动模式或关闭模式不能用于本次替换。
+            </p>
+            <p v-else-if="audioSelection === 'MUSIC_REPLACE_PROVIDER_AUDIO'" class="music-plan-note" role="status">
+              本次成片将只保留已选的完整背景音乐（{{ selectedMusicAsset?.label }}），并丢弃所有视频片段内嵌的 Provider 原声。
             </p>
           </section>
 
@@ -134,19 +140,19 @@
             </p>
             <div class="music-plan-options">
               <label class="music-plan-option" :class="{ selected: musicPlan.mode === 'AUTO' }">
-                <input v-model="musicPlan.mode" type="radio" value="AUTO" />
+                <input v-model="musicPlan.mode" type="radio" value="AUTO" :disabled="audioSelectionLocked" />
                 <span class="music-plan-option-copy"><strong>自动</strong><small>先选工作区 MUSIC，无候选时尝试 Pixabay</small></span>
               </label>
               <label class="music-plan-option" :class="{ selected: musicPlan.mode === 'MANUAL' }">
-                <input v-model="musicPlan.mode" type="radio" value="MANUAL" :disabled="!musicAssets.length" />
+                <input v-model="musicPlan.mode" type="radio" value="MANUAL" :disabled="!musicAssets.length || audioSelectionLocked" />
                 <span class="music-plan-option-copy"><strong>指定曲目</strong><small>只使用工作区已确认的 MUSIC</small></span>
               </label>
               <label class="music-plan-option" :class="{ selected: musicPlan.mode === 'OFF' }">
-                <input v-model="musicPlan.mode" type="radio" value="OFF" />
+                <input v-model="musicPlan.mode" type="radio" value="OFF" :disabled="audioSelectionLocked" />
                 <span class="music-plan-option-copy"><strong>关闭</strong><small>明确不混入背景音乐</small></span>
               </label>
             </div>
-            <select v-if="musicPlan.mode === 'MANUAL'" v-model="musicPlan.assetId" class="music-plan-select" aria-label="选择工作区音乐">
+            <select v-if="musicPlan.mode === 'MANUAL'" v-model="musicPlan.assetId" class="music-plan-select" aria-label="选择工作区音乐" :disabled="audioSelectionLocked">
               <option value="" disabled>选择一首工作区 MUSIC</option>
               <option v-for="asset in musicAssets" :key="asset.id" :value="asset.id">{{ asset.label }}</option>
             </select>
@@ -165,7 +171,7 @@
               <div class="music-plan-disclosure-body">
                 <label class="music-plan-upload">
                   <span>选择音乐文件</span>
-                  <input type="file" accept="audio/mpeg,audio/wav,audio/ogg" :disabled="productionBusy" @change="selectMusicUpload" />
+                  <input type="file" accept="audio/mpeg,audio/wav,audio/ogg" :disabled="audioSelectionLocked" @change="selectMusicUpload" />
                 </label>
               </div>
             </details>
@@ -178,8 +184,8 @@
                     <span>原仓库逻辑：筛选后取首条</span>
                   </div>
                   <form class="music-plan-catalog-search" @submit.prevent="importPixabayMusicAsset">
-                    <input v-model="pixabayQuery" class="music-plan-hint" maxlength="200" placeholder="例如 ambient 或 upbeat" aria-label="Pixabay 音乐搜索词" :disabled="pixabayImportBusy || productionBusy" />
-                    <button class="music-plan-catalog-search-button" type="submit" :disabled="pixabayImportBusy || productionBusy || !pixabayQuery.trim()">
+                    <input v-model="pixabayQuery" class="music-plan-hint" maxlength="200" placeholder="例如 ambient 或 upbeat" aria-label="Pixabay 音乐搜索词" :disabled="audioSelectionLocked" />
+                    <button class="music-plan-catalog-search-button" type="submit" :disabled="audioSelectionLocked || !pixabayQuery.trim()">
                       {{ pixabayImportBusy ? "导入中" : "导入" }}
                     </button>
                   </form>
@@ -234,8 +240,12 @@
             @retry="retryGeneration"
             @preview="previewResult"
           />
+          <div v-if="retryOutcomeUnknown" class="generation-material-gate" role="status">
+            <p>可以按原请求继续；会使用原幂等键避免重复。如果上次请求未到达服务，继续操作可能首次提交执行。</p>
+            <button class="secondary-button" type="button" :disabled="retrySubmitting || productionBusy || creationBusy" @click="continueRetryRequest">按原请求继续</button>
+          </div>
           <p v-if="documentGenerationGateMessage" class="generation-material-gate" role="status">{{ documentGenerationGateMessage }}</p>
-          <ProductionProgressPanel :progress="currentProductionProgress" :busy="productionBusy" :billing-pending="billingPending" @retry="retryProductionSegment" @retry-composition="retryProductionComposition" />
+          <ProductionProgressPanel :progress="currentProductionProgress" :busy="productionBusy || retrySubmitting || retryOutcomeUnknown || retryProjectionPending" :retrying="retrySubmitting" :retrying-segment-sequence="retryingSegmentSequence" :retry-error="retryCommandError" :retry-unknown="retryOutcomeUnknown" :retry-projection-pending="retryProjectionPending" :billing-pending="billingPending" @retry="retryProductionSegment" @retry-composition="retryProductionComposition" />
         </div>
 
         <aside class="project-results-column" aria-label="项目成果">
@@ -310,9 +320,10 @@ import ProjectResultsPanel, { type ProjectResultItem } from "../../components/st
 import ProductionProgressPanel from "../../components/studio/ProductionProgressPanel.vue";
 import ReferenceShelf from "../../components/studio/ReferenceShelf.vue";
 import StoryPlanningPanel from "../../components/studio/StoryPlanningPanel.vue";
-import { creationProgressFor, isRecoverableWaitingProduction, productionProgressFor } from "../../composables/useCreationProgress";
+import { createAsyncOperationFence, creationProgressFor, isDefinitiveRetryRejection, isRecoverableWaitingProduction, mergeProductionProgressLists, mergeProductionProgressSnapshots, productionProgressFor, retryTargetHasAdvanced, type RetryReconciliationTarget } from "../../composables/useCreationProgress";
 import type { Asset, CreativeBriefRevision, DeliveryPlanRevision, DocumentConversion, DocumentKnowledgeDetail, ProductionRun, ProductionRunProgress, Shot, StoryboardRevision, TaskRun, VideoVersion } from "../../composables/useControlApi";
 import { useRelayConnection } from "../../composables/useRelayConnection";
+import { readMusicDurationMs } from "../../composables/musicUploadMetadata";
 
 const route = useRoute();
 const runtimeConfig = useRuntimeConfig();
@@ -368,6 +379,18 @@ const deleteConfirmationOpen = ref(false);
 const deleteNameConfirmation = ref("");
 const deletingProject = ref(false);
 const creationBusy = ref(false);
+const retrySubmitting = ref(false);
+const retryingSegmentSequence = ref<number>();
+const retryCommandError = ref("");
+const retryOutcomeUnknown = ref(false);
+const retryProjectionPending = ref(false);
+let retryReconciliationTarget: RetryReconciliationTarget | undefined;
+type RetryCommandRequest = { projectId: string; idempotencyKey: string } & (
+  | { kind: "task"; taskRunId: string }
+  | { kind: "segment"; productionRunId: string; sequence: number }
+  | { kind: "composition"; productionRunId: string }
+);
+let retryCommandRequest: RetryCommandRequest | undefined;
 const creationError = ref("");
 const referenceError = ref("");
 const documentFile = ref<File>();
@@ -437,6 +460,12 @@ const resultPreviewError = ref("");
 let hydratedProjectId = "";
 let resultPreviewRequest = 0;
 let projectRefreshInFlight: Promise<void> | undefined;
+let projectRefreshEpoch = 0;
+let productionRefreshRequest = 0;
+let productionReadRevision = 0;
+let projectReadRevision = 0;
+const retryOperationFence = createAsyncOperationFence();
+const planningOperationFence = createAsyncOperationFence();
 
 const projectId = computed(() => typeof route.params.project_id === "string" ? route.params.project_id : "");
 const musicAssets = computed(() => {
@@ -647,6 +676,13 @@ const displayedProjectResults = computed<ProjectResultItem[]>(() => (
 ));
 const hasProjectResult = computed(() => displayedProjectResults.value.length > 0);
 const activeProductionStatuses = new Set<ProductionRun["status"]>(["CONFIRMED", "GENERATING", "REVIEWING", "RENDERING"]);
+const audioSelectionLocked = computed(() => Boolean(
+  creationBusy.value
+  || planningBusy.value
+  || productionBusy.value
+  || pixabayImportBusy.value
+  || (currentProductionRun.value && activeProductionStatuses.has(currentProductionRun.value.status)),
+));
 const newVersionTaskStatuses = new Set<TaskRun["status"]>(["SUCCEEDED", "FAILED"]);
 const blockingDocumentMaterials = computed(() => projectMaterials.value.filter((item) => item.adopted && (
   item.status !== "SUCCEEDED"
@@ -666,6 +702,9 @@ const canStartGeneration = computed(() => Boolean(
   && !creationBusy.value
   && !planningBusy.value
   && !productionBusy.value
+  && !retryOutcomeUnknown.value
+  && !retryProjectionPending.value
+  && !pixabayImportBusy.value
   && blockingDocumentMaterials.value.length === 0
   && (!currentProductionRun.value || !activeProductionStatuses.has(currentProductionRun.value.status)),
 ));
@@ -677,12 +716,19 @@ const billingPending = computed(() => {
   return task.status === "RETRY_SCHEDULED"
     && ["AUTH_FORBIDDEN", "AUTH_UNAVAILABLE", "CREDIT_UNAVAILABLE"].includes(task.error?.code ?? "");
 });
-const canRetry = computed(() => latestTask.value?.status === "FAILED" && Boolean(failedProductionSegment.value || !currentProductionProgress.value));
+const canRetry = computed(() => !retryOutcomeUnknown.value && !retryProjectionPending.value && latestTask.value?.status === "FAILED" && Boolean(failedProductionSegment.value || !currentProductionProgress.value));
 const createsNewVersion = computed(() => hasProjectResult.value || Boolean(latestTask.value && newVersionTaskStatuses.has(latestTask.value.status)));
-const creationProgress = computed(() => currentProductionProgress.value
-  ? productionProgressFor(currentProductionProgress.value, Boolean(planningDraft.sourceText.trim()), creationBusy.value || planningBusy.value || productionBusy.value, billingPending.value)
+const creationProgress = computed(() => currentProductionProgress.value || retrySubmitting.value || retryOutcomeUnknown.value || retryProjectionPending.value
+  ? productionProgressFor(currentProductionProgress.value, Boolean(planningDraft.sourceText.trim()), creationBusy.value || planningBusy.value || productionBusy.value, billingPending.value, retrySubmitting.value, retryOutcomeUnknown.value, retryProjectionPending.value)
   : creationProgressFor(latestTask.value?.status, Boolean(currentCreation.value)));
 const generationFeedback = computed<GenerationFeedback | undefined>(() => {
+  if (retrySubmitting.value) {
+    return { tone: "active", message: "正在提交重试请求；页面中的上一轮失败状态暂不代表本次重试结果。" };
+  }
+  if (retryCommandError.value) {
+    if (retryOutcomeUnknown.value || retryProjectionPending.value) return { tone: "active", message: retryCommandError.value };
+    return { tone: "error", message: `本次重试未提交：${retryCommandError.value} 上一轮失败状态仅供参考。` };
+  }
   const productionRun = currentProductionProgress.value?.production_run;
   if (productionRun?.status === "SUCCEEDED") {
     return { tone: "success", message: "完整成片已保存到当前项目，可以在右侧查看。" };
@@ -773,7 +819,7 @@ async function selectProjectResult(assetId: string) {
     resultPreviewUrl.value = response.data.download_url;
   } catch (error) {
     if (request !== resultPreviewRequest || projectIdAtStart !== selectedProjectId.value) return;
-    resultPreviewError.value = safeErrorMessage(error, "这版成片暂时无法播放，请稍后再试。");
+    resultPreviewError.value = safeResultMediaErrorMessage(error, "这版成片暂时无法播放，请稍后再试。");
   } finally {
     if (request === resultPreviewRequest && projectIdAtStart === selectedProjectId.value) {
       resultPreviewLoading.value = false;
@@ -794,7 +840,7 @@ async function downloadProjectResult(assetId: string) {
     // preserving the server's short-lived signature and Content-Disposition.
     window.location.assign(response.data.download_url);
   } catch (error) {
-    resultPreviewError.value = safeErrorMessage(error, "这版成片暂时无法下载，请稍后再试。");
+    resultPreviewError.value = safeResultMediaErrorMessage(error, "这版成片暂时无法下载，请稍后再试。");
   }
 }
 
@@ -807,6 +853,9 @@ function syncProjectResultPreview() {
 }
 
 function taskFailureMessage(task: TaskRun) {
+  if (task.error?.code === "STORAGE_UNAVAILABLE") {
+    return "参考素材暂时无法交付；本段尚未提交视频生成，请检查素材或存储服务后再试。";
+  }
   if (task.error?.code === "PROVIDER_REJECTED") {
     return "本次创作已进入生成阶段，但没有完成。请调整描述后生成新版本，或重试这次创作。";
   }
@@ -816,12 +865,26 @@ function taskFailureMessage(task: TaskRun) {
   return "本次创作未完成。请调整想法后生成新版本，或重试这次创作。";
 }
 
+function apiErrorCode(error: unknown) {
+  const data = typeof error === "object" && error !== null && "data" in error ? (error as { data?: unknown }).data : undefined;
+  const apiError = typeof data === "object" && data !== null && "error" in data ? (data as { error?: unknown }).error : undefined;
+  return typeof apiError === "object" && apiError !== null && "code" in apiError ? (apiError as { code?: unknown }).code : undefined;
+}
+
+function safeResultMediaErrorMessage(error: unknown, fallback: string) {
+  if (apiErrorCode(error) === "AUTH_FORBIDDEN") {
+    return "登录状态已失效或当前账号无权访问这版成片，请重新登录或检查账号权限；已生成的成片仍保留，无需重新生成。";
+  }
+  return safeErrorMessage(error, fallback);
+}
+
 function safeErrorMessage(error: unknown, fallback: string) {
   const data = typeof error === "object" && error !== null && "data" in error ? (error as { data?: unknown }).data : undefined;
   const apiError = typeof data === "object" && data !== null && "error" in data ? (data as { error?: unknown }).error : undefined;
   const code = typeof apiError === "object" && apiError !== null && "code" in apiError ? (apiError as { code?: unknown }).code : undefined;
   const labels: Record<string, string> = {
     IDEMPOTENCY_CONFLICT: "这次操作已经使用了不同内容提交，请刷新后重新操作。",
+    AUTH_FORBIDDEN: "登录状态已失效或当前账号无权执行此操作，请重新登录或检查账号权限后重试。",
     WORKSPACE_FORBIDDEN: "当前项目不可访问。",
     NOT_FOUND: "当前项目或其中的内容已不存在。",
     INVALID_REFERENCE: "所选参考图不可用，请重新选择。",
@@ -830,6 +893,7 @@ function safeErrorMessage(error: unknown, fallback: string) {
     TASK_RUN_ACTIVE_CONFLICT: "已有创作正在处理中，请稍后查看结果。",
     TASK_STATE_INVALID: "当前内容还不能开始创作，请刷新后再试。",
     PROVIDER_UNAVAILABLE: "视频服务暂时不可用，请稍后重试。",
+    STORAGE_UNAVAILABLE: "参考素材暂时无法交付；本段尚未提交视频生成，请检查素材或存储服务后再试。",
     PROVIDER_REJECTED: "本次创作已进入生成阶段，但没有完成。请调整描述后生成新版本。",
     PROVIDER_PROTOCOL_INVALID: "视频服务返回了无法识别的结果，请稍后重试；如果使用参考素材，请确认素材仍有效。",
     ASSET_IN_USE: "这份素材正在被当前制作使用，完成或停止后才能删除。",
@@ -979,24 +1043,134 @@ async function refreshCurrentProject() {
   const expectedProjectId = selectedProjectId.value;
   if (!expectedProjectId) return;
   if (projectRefreshInFlight) return projectRefreshInFlight;
+  const refreshEpoch = projectRefreshEpoch;
 
-  projectRefreshInFlight = (async () => {
+  const refresh = (async () => {
     try {
       const response = await project(expectedProjectId);
-      if (expectedProjectId !== selectedProjectId.value) return;
+      if (expectedProjectId !== selectedProjectId.value || refreshEpoch !== projectRefreshEpoch) return;
       replaceProjectDetail(response.data);
+      projectReadRevision += 1;
+      reconcileRetryCommand("task");
       syncProjectResultPreview();
-      await Promise.all([refreshDocuments(expectedProjectId), refreshProductionViews(expectedProjectId), refreshAudioCapabilities(expectedProjectId)]);
+      await Promise.all([refreshDocuments(expectedProjectId), refreshProductionViews(expectedProjectId, refreshEpoch), refreshAudioCapabilities(expectedProjectId)]);
     } catch (error) {
-      if (expectedProjectId === selectedProjectId.value) {
+      if (expectedProjectId === selectedProjectId.value && refreshEpoch === projectRefreshEpoch) {
         projectError.value = safeErrorMessage(error, "项目暂时无法刷新，请稍后重试。");
       }
     } finally {
-      projectRefreshInFlight = undefined;
+      if (refreshEpoch === projectRefreshEpoch) projectRefreshInFlight = undefined;
     }
   })();
 
-  return projectRefreshInFlight;
+  projectRefreshInFlight = refresh;
+  try {
+    await refresh;
+  } finally {
+    if (projectRefreshInFlight === refresh) projectRefreshInFlight = undefined;
+  }
+}
+
+function invalidateProjectRefresh() {
+  projectRefreshEpoch += 1;
+  projectRefreshInFlight = undefined;
+}
+
+function clearRetryCommandFeedback() {
+  if (productionError.value === retryCommandError.value) productionError.value = "";
+  if (creationError.value === retryCommandError.value) creationError.value = "";
+  retryCommandError.value = "";
+  retryOutcomeUnknown.value = false;
+  retryProjectionPending.value = false;
+  retryReconciliationTarget = undefined;
+  retryCommandRequest = undefined;
+}
+
+function reconcileRetryCommand(currentAuthoritativeRead?: "task" | "production") {
+  // A same-key continuation still needs its identity when its receipt arrives.
+  if (retrySubmitting.value && retryOutcomeUnknown.value) return;
+  if (!retryCommandError.value || !retryReconciliationTarget
+    || retryReconciliationTarget.projectId !== selectedProjectId.value) return;
+  const allowEqualTimestamp = retryReconciliationTarget.kind === "task"
+    ? currentAuthoritativeRead === "task"
+    : currentAuthoritativeRead === "production";
+  if (retryProjectionPending.value && !allowEqualTimestamp) return;
+  if (retryTargetHasAdvanced(retryReconciliationTarget, detail.value?.task_runs ?? [], productionProgress.value, allowEqualTimestamp, retryProjectionPending.value)) {
+    if (retryReconciliationTarget.kind === "task") lastSubmittedTaskRunId.value = retryReconciliationTarget.taskRunId;
+    clearRetryCommandFeedback();
+  }
+}
+
+function recordRetryCommandError(error: unknown, fallback: string) {
+  retryProjectionPending.value = false;
+  retryOutcomeUnknown.value = !isDefinitiveRetryRejection(error);
+  retryCommandError.value = retryOutcomeUnknown.value
+    ? "重试结果待确认：未收到明确回执，服务可能已接受。请刷新项目核对进度，确认前不要再次提交。"
+    : safeErrorMessage(error, fallback);
+  reconcileRetryCommand();
+  invalidateProjectRefresh();
+  void refreshCurrentProject();
+}
+
+function markRetryReceiptConfirmed() {
+  retryOutcomeUnknown.value = false;
+  retryProjectionPending.value = true;
+  retryCommandError.value = "原请求已受理，正在核对最新状态。请刷新项目，确认前不要再次提交。";
+}
+
+async function performRetryRequest(request: RetryCommandRequest, receiptOnly = false) {
+  const epoch = projectRefreshEpoch;
+  const previousProductionRead = productionReadRevision;
+  const previousProjectRead = projectReadRevision;
+  if (request.kind === "task") {
+    const response = await retryTaskRun(request.taskRunId, request.idempotencyKey);
+    if (selectedProjectId.value !== request.projectId || epoch !== projectRefreshEpoch) return;
+    markRetryReceiptConfirmed();
+    invalidateProjectRefresh();
+    lastSubmittedTaskRunId.value = response.data.id;
+    const current = detail.value?.task_runs.find((item) => item.id === response.data.id);
+    if (!receiptOnly && (!current || current.updated_at < response.data.updated_at
+      || (current.updated_at === response.data.updated_at && previousProjectRead === projectReadRevision))) {
+      applyTaskRun(response.data);
+    }
+  } else {
+    const response = request.kind === "segment"
+      ? await retryProductionSegmentCommand(request.productionRunId, request.sequence, request.idempotencyKey)
+      : await retryProductionCompositionCommand(request.productionRunId, request.idempotencyKey);
+    if (selectedProjectId.value !== request.projectId || epoch !== projectRefreshEpoch) return;
+    markRetryReceiptConfirmed();
+    invalidateProjectRefresh();
+    if (!receiptOnly) {
+      productionProgress.value = productionProgress.value.map((item) => item.production_run.id === response.data.production_run.id
+        ? mergeProductionProgressSnapshots(item, response.data, previousProductionRead === productionReadRevision)
+        : item);
+    }
+  }
+  // An idempotent command receipt is a commit snapshot, not a live projection.
+  void refreshCurrentProject();
+}
+
+async function continueRetryRequest() {
+  const request = retryCommandRequest;
+  if (!retryOutcomeUnknown.value || retryProjectionPending.value || !request || request.projectId !== selectedProjectId.value
+    || retrySubmitting.value || productionBusy.value || creationBusy.value) return;
+  const retryOperationToken = retryOperationFence.begin();
+  productionBusy.value = true;
+  retrySubmitting.value = true;
+  invalidateProjectRefresh();
+  const epoch = projectRefreshEpoch;
+  try {
+    await performRetryRequest(request, true);
+  } catch (error) {
+    if (request.projectId === selectedProjectId.value && epoch === projectRefreshEpoch) {
+      recordRetryCommandError(error, "原重试请求未被接受，请刷新项目查看原因。");
+    }
+  } finally {
+    if (retryOperationFence.isCurrent(retryOperationToken)) {
+      productionBusy.value = false;
+      retrySubmitting.value = false;
+    }
+  }
 }
 
 async function refreshProjectAndRelay() {
@@ -1091,21 +1265,24 @@ async function retryDocumentKnowledge(knowledgeRevisionId: string) {
   }
 }
 
-async function refreshProductionViews(expectedProjectId = selectedProjectId.value) {
+async function refreshProductionViews(expectedProjectId = selectedProjectId.value, expectedEpoch = projectRefreshEpoch) {
   if (!expectedProjectId) return;
+  const request = ++productionRefreshRequest;
   try {
     const [deliveryPlansResponse, progressResponse, versionsResponse] = await Promise.all([
       deliveryPlanRevisions(expectedProjectId),
       productionRuns(expectedProjectId),
       videoVersions(expectedProjectId),
     ]);
-    if (expectedProjectId !== selectedProjectId.value) return;
+    if (expectedProjectId !== selectedProjectId.value || expectedEpoch !== projectRefreshEpoch || request !== productionRefreshRequest) return;
     projectDeliveryPlans.value = deliveryPlansResponse.data;
-    productionProgress.value = progressResponse.data;
+    productionProgress.value = mergeProductionProgressLists(productionProgress.value, progressResponse.data, true);
+    productionReadRevision += 1;
+    reconcileRetryCommand("production");
     projectVideoVersions.value = versionsResponse.data;
     syncProjectResultPreview();
   } catch (error) {
-    if (expectedProjectId === selectedProjectId.value) {
+    if (expectedProjectId === selectedProjectId.value && expectedEpoch === projectRefreshEpoch && request === productionRefreshRequest) {
       resultPreviewError.value = safeErrorMessage(error, "项目制作进度暂时无法读取，请稍后重试。");
     }
   }
@@ -1155,45 +1332,86 @@ function applyProductionRun(productionRun: ProductionRun) {
 
 const delay = (milliseconds: number) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 
-async function waitForAutoStoryboard(projectId: string, startedAt: string) {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+const AUTO_STORYBOARD_MAX_WAIT_MS = 180_000;
+const AUTO_STORYBOARD_POLL_INTERVAL_MS = 1_000;
+
+async function waitForAutoStoryboard(projectId: string, startedAt: string, assertCurrent: () => void) {
+  const deadline = Date.now() + AUTO_STORYBOARD_MAX_WAIT_MS;
+  let nextBriefRefreshAt = 0;
+  while (Date.now() < deadline) {
+    assertCurrent();
     const response = await storyboardRevisions(projectId);
+    assertCurrent();
     const candidate = response.data
       .filter((storyboard) => storyboard.status === "READY_FOR_REVIEW" && storyboard.created_at >= startedAt)
       .sort((left, right) => right.created_at.localeCompare(left.created_at))[0];
     if (candidate) return candidate;
-    await refreshCurrentProject();
-    const failedBrief = currentPlanningBrief.value;
-    if (failedBrief?.status === "FAILED" && failedBrief.created_at >= startedAt) {
-      throw new Error("PLANNING_FAILED");
+    if (Date.now() >= nextBriefRefreshAt) {
+      await refreshCurrentProject();
+      assertCurrent();
+      const failedBrief = currentPlanningBrief.value;
+      if (failedBrief?.status === "FAILED" && failedBrief.created_at >= startedAt) {
+        throw new Error("PLANNING_FAILED");
+      }
+      nextBriefRefreshAt = Date.now() + 5_000;
     }
-    await delay(500);
+    await delay(Math.min(AUTO_STORYBOARD_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
+    assertCurrent();
   }
   throw new Error("PLANNING_TIMEOUT");
 }
 
-async function startAutomatedProduction(projectId: string) {
+async function startAutomatedProduction(projectId: string, operationToken: number, audioConfig: {
+  audioSelection: typeof audioSelection.value;
+  musicPlan: Pick<typeof musicPlan, "mode" | "assetId" | "styleHint">;
+}) {
+  const assertCurrent = () => {
+    if (!planningOperationFence.isCurrent(operationToken) || selectedProjectId.value !== projectId) {
+      throw new Error("PLANNING_CANCELLED");
+    }
+  };
+  assertCurrent();
+  // Freeze this project's command inputs before the first asynchronous step.
+  const briefCommand = {
+    source_text: planningDraft.sourceText.trim(),
+    target_duration_seconds: planningDraft.targetDurationSeconds,
+    target_resolution: planningDraft.targetResolution,
+    style_preferences: planningDraft.stylePreferences.trim(),
+    source_asset_ids: [...eligiblePlanningSourceIds(planningDraft.sourceAssetIds)],
+  };
+  const deliveryCommand = {
+    duration_policy: deliverySettings.durationPolicy,
+    flexible_duration_percent: deliverySettings.durationPolicy === "EXACT" ? 0 : deliverySettings.flexibleDurationPercent,
+    caption_policy: captionPolicy.value,
+    lip_sync_requirement: deliverySettings.lipSyncRequirement,
+    voice_mode: deliverySettings.voiceMode,
+  };
+  const productionCommand = {
+    music_plan: {
+      mode: audioConfig.musicPlan.mode,
+      ...(audioConfig.musicPlan.mode === "MANUAL" ? { asset_id: audioConfig.musicPlan.assetId } : {}),
+      ...(audioConfig.musicPlan.mode === "AUTO" && audioConfig.musicPlan.styleHint.trim() ? { style_hint: audioConfig.musicPlan.styleHint.trim() } : {}),
+    },
+    audio_selection: audioConfig.audioSelection,
+  };
   const startedAt = new Date(Date.now() - 1_000).toISOString();
   // Resolve the source-backed audio owner immediately before creating the
   // delivery plan. Project opening also refreshes this capability, but an
   // in-flight refresh must not make a native Provider run take the
   // non-native narration approval path by accident.
   await refreshAudioCapabilities(projectId);
-  const sourceText = planningDraft.sourceText.trim();
+  assertCurrent();
   planningMessage.value = "AI 正在理解你的描述。";
-  const briefResponse = await createCreativeBriefRevision(projectId, {
-    source_text: sourceText,
-    target_duration_seconds: planningDraft.targetDurationSeconds,
-    target_resolution: planningDraft.targetResolution,
-    style_preferences: planningDraft.stylePreferences.trim(),
-    source_asset_ids: eligiblePlanningSourceIds(planningDraft.sourceAssetIds),
-  }, commandKey("studio-auto-brief"));
+  const briefResponse = await createCreativeBriefRevision(projectId, briefCommand, commandKey("studio-auto-brief"));
+  assertCurrent();
   applyCreativeBriefRevision(briefResponse.data);
 
   planningMessage.value = "AI 正在准备视频内容。";
   const planResponse = await requestCreativePlan(briefResponse.data.id, commandKey("studio-auto-plan"));
+  assertCurrent();
   applyCreativeBriefRevision(planResponse.data);
-  const storyboard = await waitForAutoStoryboard(projectId, startedAt);
+  const storyboard = await waitForAutoStoryboard(projectId, startedAt, assertCurrent);
+  assertCurrent();
   applyStoryboardRevision(storyboard);
 
   // The browser no longer exposes an approval step. Keep the existing
@@ -1204,17 +1422,15 @@ async function startAutomatedProduction(projectId: string) {
   const approvedStoryboard = storyboard.status === "READY_FOR_REVIEW"
     ? (await approveStoryboardRevision(storyboard.id, commandKey("studio-auto-storyboard-approve"))).data
     : storyboard;
+  assertCurrent();
   applyStoryboardRevision(approvedStoryboard);
 
   const plan = (await createDeliveryPlanRevision(projectId, {
     creative_brief_revision_id: brief.id,
     storyboard_revision_id: approvedStoryboard.id,
-    duration_policy: deliverySettings.durationPolicy,
-    flexible_duration_percent: deliverySettings.durationPolicy === "EXACT" ? 0 : deliverySettings.flexibleDurationPercent,
-    caption_policy: captionPolicy.value,
-    lip_sync_requirement: deliverySettings.lipSyncRequirement,
-    voice_mode: deliverySettings.voiceMode,
+    ...deliveryCommand,
   }, commandKey("studio-auto-delivery-create"))).data;
+  assertCurrent();
   applyDeliveryPlan(plan);
   if (plan.status === "PREFLIGHT_BLOCKED") {
     throw new Error(plan.safe_summary);
@@ -1222,42 +1438,50 @@ async function startAutomatedProduction(projectId: string) {
   const approvedPlan = plan.status === "AWAITING_APPROVAL"
     ? (await approveDeliveryPlanRevision(plan.id, commandKey("studio-auto-delivery-approve"))).data
     : plan;
+  assertCurrent();
   applyDeliveryPlan(approvedPlan);
   if (approvedPlan.status !== "APPROVED") throw new Error("DELIVERY_PLAN_STATE_INVALID");
 
   const production = await createProductionRun(projectId, {
     storyboard_revision_id: approvedStoryboard.id,
     delivery_plan_revision_id: approvedPlan.id,
-    music_plan: {
-      mode: musicPlan.mode,
-      ...(musicPlan.mode === "MANUAL" ? { asset_id: musicPlan.assetId } : {}),
-      ...(musicPlan.mode === "AUTO" && musicPlan.styleHint.trim() ? { style_hint: musicPlan.styleHint.trim() } : {}),
-    },
-    audio_selection: audioSelection.value,
+    ...productionCommand,
   }, commandKey("studio-auto-production-start"));
+  assertCurrent();
   applyProductionRun(production.data);
   planningMessage.value = "AI 已开始制作视频。";
   await refreshCurrentProject();
+  assertCurrent();
 }
 
 async function retryProductionSegment(sequence: number) {
   const progress = currentProductionProgress.value;
-  if (!progress || productionBusy.value) return;
+  if (!progress || productionBusy.value || retrySubmitting.value || retryOutcomeUnknown.value || retryProjectionPending.value) return;
   const segment = progress.segments.find((item) => item.sequence === sequence);
   if (!segment || segment.status !== "FAILED" || !segment.retryable) return;
+  const retryOperationToken = retryOperationFence.begin();
   productionBusy.value = true;
+  retrySubmitting.value = true;
+  retryingSegmentSequence.value = sequence;
+  clearRetryCommandFeedback();
+  retryReconciliationTarget = { kind: "segment", projectId: progress.production_run.project_id, productionRunId: progress.production_run.id, segmentId: segment.id, sequence, updatedAt: segment.updated_at };
+  retryCommandRequest = { kind: "segment", projectId: progress.production_run.project_id, productionRunId: progress.production_run.id, sequence, idempotencyKey: commandKey("studio-production-segment-retry") };
   productionError.value = "";
+  creationError.value = "";
+  invalidateProjectRefresh();
+  const retryEpoch = projectRefreshEpoch;
   try {
-    const response = await retryProductionSegmentCommand(progress.production_run.id, sequence, commandKey("studio-production-segment-retry"));
-    if (selectedProjectId.value === progress.production_run.project_id) {
-      productionProgress.value = productionProgress.value.map((item) =>
-        item.production_run.id === response.data.production_run.id ? response.data : item,
-      );
-    }
+    await performRetryRequest(retryCommandRequest);
   } catch (error) {
-    productionError.value = safeErrorMessage(error, "这一段暂时无法重新制作，请稍后重试。");
+    if (selectedProjectId.value === progress.production_run.project_id && retryEpoch === projectRefreshEpoch) {
+      recordRetryCommandError(error, "这一段暂时无法重新制作，请稍后重试。");
+    }
   } finally {
-    productionBusy.value = false;
+    if (retryOperationFence.isCurrent(retryOperationToken)) {
+      productionBusy.value = false;
+      retrySubmitting.value = false;
+      retryingSegmentSequence.value = undefined;
+    }
   }
 }
 
@@ -1304,56 +1528,87 @@ async function toggleArchive() {
   }
 }
 
+function snapshotAudioConfig(audioSelectionValue: typeof audioSelection.value, musicPlanValue: typeof musicPlan) {
+  return {
+    audioSelection: audioSelectionValue,
+    musicPlan: {
+      mode: musicPlanValue.mode,
+      assetId: musicPlanValue.assetId,
+      styleHint: musicPlanValue.styleHint,
+    },
+  };
+}
+
 async function generateVideo() {
   const current = detail.value;
   if (!canStartGeneration.value || creationBusy.value || planningBusy.value || productionBusy.value || !current) return;
-  if (audioSelection.value === "MUSIC_REPLACE_PROVIDER_AUDIO"
-    && (musicPlan.mode !== "MANUAL" || !selectedMusicAsset.value)) {
+  const audioConfig = snapshotAudioConfig(audioSelection.value, musicPlan);
+  const selectedMusicAssetAtStart = musicAssets.value.find((asset) => asset.id === audioConfig.musicPlan.assetId);
+  if (audioConfig.audioSelection === "MUSIC_REPLACE_PROVIDER_AUDIO"
+    && (audioConfig.musicPlan.mode !== "MANUAL" || !selectedMusicAssetAtStart)) {
     const message = "仅使用背景音乐模式要求选择一首工作区 MUSIC 曲目；请切换到“指定曲目”并选择曲目，或改回保留视频原声。";
     creationError.value = message;
     planningError.value = message;
     return;
   }
+  const operationToken = planningOperationFence.begin();
+  clearRetryCommandFeedback();
   creationBusy.value = true;
   planningBusy.value = true;
   creationError.value = "";
   planningError.value = "";
   productionError.value = "";
   try {
-    await startAutomatedProduction(current.project.id);
+    await startAutomatedProduction(current.project.id, operationToken, audioConfig);
   } catch (error) {
+    if (!planningOperationFence.isCurrent(operationToken) || selectedProjectId.value !== current.project.id) return;
     const message = error instanceof Error && error.message === "PLANNING_TIMEOUT"
       ? "AI 正在整理这个故事，但暂时没有完成。请稍后刷新项目，或精简描述后生成新版本。"
       : safeErrorMessage(error, "AI 语义规划暂时无法完成，尚未提交视频生成。请检查想法和参考素材后重试。");
     planningError.value = message;
     creationError.value = message;
   } finally {
-    if (planningError.value) planningMessage.value = "";
-    planningBusy.value = false;
-    creationBusy.value = false;
+    if (planningOperationFence.isCurrent(operationToken)) {
+      if (planningError.value) planningMessage.value = "";
+      planningBusy.value = false;
+      creationBusy.value = false;
+    }
   }
 }
 
 async function retryGeneration() {
-  if (!latestTask.value || !canRetry.value || creationBusy.value) return;
+  const task = latestTask.value;
+  if (!task || !canRetry.value || creationBusy.value || retrySubmitting.value || retryOutcomeUnknown.value || retryProjectionPending.value) return;
+  const projectIdAtStart = selectedProjectId.value;
+  const production = currentProductionProgress.value;
+  const failedSegment = failedProductionSegment.value;
+  const retryOperationToken = retryOperationFence.begin();
   creationBusy.value = true;
+  retrySubmitting.value = true;
+  retryingSegmentSequence.value = failedSegment?.sequence;
+  clearRetryCommandFeedback();
+  retryReconciliationTarget = production && failedSegment
+    ? { kind: "segment", projectId: production.production_run.project_id, productionRunId: production.production_run.id, segmentId: failedSegment.id, sequence: failedSegment.sequence, updatedAt: failedSegment.updated_at }
+    : { kind: "task", projectId: task.project_id, taskRunId: task.id, updatedAt: task.updated_at };
+  retryCommandRequest = production && failedSegment
+    ? { kind: "segment", projectId: production.production_run.project_id, productionRunId: production.production_run.id, sequence: failedSegment.sequence, idempotencyKey: commandKey("studio-production-segment-retry") }
+    : { kind: "task", projectId: task.project_id, taskRunId: task.id, idempotencyKey: commandKey("studio-task-retry") };
   creationError.value = "";
+  productionError.value = "";
+  invalidateProjectRefresh();
+  const retryEpoch = projectRefreshEpoch;
   try {
-    const production = currentProductionProgress.value;
-    const failedSegment = failedProductionSegment.value;
-    if (production && failedSegment) {
-      const response = await retryProductionSegmentCommand(production.production_run.id, failedSegment.sequence, commandKey("studio-production-segment-retry"));
-      productionProgress.value = productionProgress.value.map((item) => item.production_run.id === response.data.production_run.id ? response.data : item);
-    } else {
-      const response = await retryTaskRun(latestTask.value.id, commandKey("studio-task-retry"));
-      lastSubmittedTaskRunId.value = response.data.id;
-      applyTaskRun(response.data);
-    }
-    await refreshCurrentProject();
+    await performRetryRequest(retryCommandRequest);
   } catch (error) {
-    creationError.value = safeErrorMessage(error, "这次生成暂时无法重试，请稍后再试。");
+    if (projectIdAtStart && selectedProjectId.value === projectIdAtStart && retryEpoch === projectRefreshEpoch) {
+      recordRetryCommandError(error, "这次生成暂时无法重试，请稍后再试。");
+    }
   } finally {
-    creationBusy.value = false;
+    if (retryOperationFence.isCurrent(retryOperationToken)) {
+      creationBusy.value = false;
+      retrySubmitting.value = false;
+      retryingSegmentSequence.value = undefined;
+    }
   }
 }
 
@@ -1521,32 +1776,37 @@ async function retryDocument(conversionId: string) {
 
 async function retryProductionComposition() {
   const progress = currentProductionProgress.value;
-  if (!progress || productionBusy.value) return;
+  if (!progress || productionBusy.value || retrySubmitting.value || retryOutcomeUnknown.value || retryProjectionPending.value) return;
   const allSegmentsAccepted = progress.segments.length > 0
     && progress.segments.every((segment) => segment.status === "ACCEPTED");
   if (progress.production_run.status !== "FAILED" || !allSegmentsAccepted) return;
+  const projectIdAtStart = progress.production_run.project_id;
+  const retryOperationToken = retryOperationFence.begin();
   productionBusy.value = true;
+  retrySubmitting.value = true;
+  clearRetryCommandFeedback();
+  retryReconciliationTarget = { kind: "composition", projectId: projectIdAtStart, productionRunId: progress.production_run.id, updatedAt: progress.production_run.updated_at };
+  retryCommandRequest = { kind: "composition", projectId: projectIdAtStart, productionRunId: progress.production_run.id, idempotencyKey: commandKey("studio-production-composition-retry") };
   productionError.value = "";
+  invalidateProjectRefresh();
+  const retryEpoch = projectRefreshEpoch;
   try {
-    const response = await retryProductionCompositionCommand(
-      progress.production_run.id,
-      commandKey("studio-production-composition-retry"),
-    );
-    if (selectedProjectId.value === progress.production_run.project_id) {
-      productionProgress.value = productionProgress.value.map((item) =>
-        item.production_run.id === response.data.production_run.id ? response.data : item,
-      );
-    }
+    await performRetryRequest(retryCommandRequest);
   } catch (error) {
-    productionError.value = safeErrorMessage(error, "成片暂时无法重新合成，请稍后重试。");
+    if (selectedProjectId.value === projectIdAtStart && retryEpoch === projectRefreshEpoch) {
+      recordRetryCommandError(error, "成片暂时无法重新合成，请稍后重试。");
+    }
   } finally {
-    productionBusy.value = false;
+    if (retryOperationFence.isCurrent(retryOperationToken)) {
+      productionBusy.value = false;
+      retrySubmitting.value = false;
+    }
   }
 }
 
 async function uploadMusic(file: File | undefined) {
   const projectIdAtStart = selectedProjectId.value;
-  if (!file || !projectIdAtStart || productionBusy.value) return;
+  if (!file || !projectIdAtStart || audioSelectionLocked.value) return;
   if (!/^audio\/(mpeg|wav|ogg)$/.test(file.type) || file.size > 50 * 1024 * 1024) {
     productionError.value = "请选择不超过 50 MB 的 MP3、WAV 或 OGG 音乐文件。";
     return;
@@ -1554,16 +1814,20 @@ async function uploadMusic(file: File | undefined) {
   productionBusy.value = true;
   productionError.value = "";
   try {
+    const durationMs = await readMusicDurationMs(file);
+    const fileSha256 = await sha256(file);
+    if (projectIdAtStart !== selectedProjectId.value) return;
     const request = await createUploadRequest(projectIdAtStart, { kind: "AUDIO", purpose: "MUSIC", filename: file.name, mime_type: file.type, byte_size: file.size }, commandKey("studio-music-upload"));
     if (!request.data.upload_url) throw new Error("Music upload is unavailable.");
     const uploaded = await fetch(request.data.upload_url, { method: "PUT", headers: request.data.headers, body: file });
     if (!uploaded.ok) throw new Error("Music upload failed.");
-    await confirmAssetUpload(request.data.asset_id, { sha256: await sha256(file), mime_type: file.type, byte_size: file.size }, commandKey("studio-music-confirm"));
+    await confirmAssetUpload(request.data.asset_id, { sha256: fileSha256, mime_type: file.type, byte_size: file.size, duration_ms: durationMs }, commandKey("studio-music-confirm"));
+    if (projectIdAtStart !== selectedProjectId.value) return;
     musicPlan.mode = "MANUAL";
     musicPlan.assetId = request.data.asset_id;
     await refreshCurrentProject();
   } catch (error) {
-    productionError.value = safeErrorMessage(error, "音乐暂时无法添加，请稍后重试。");
+    if (projectIdAtStart === selectedProjectId.value) productionError.value = safeErrorMessage(error, "音乐暂时无法添加，请稍后重试。");
   } finally {
     productionBusy.value = false;
   }
@@ -1572,7 +1836,7 @@ async function uploadMusic(file: File | undefined) {
 async function importPixabayMusicAsset() {
   const projectIdAtStart = selectedProjectId.value;
   const query = pixabayQuery.value.trim();
-  if (!projectIdAtStart || !query || pixabayImportBusy.value || productionBusy.value) return;
+  if (!projectIdAtStart || !query || audioSelectionLocked.value) return;
   pixabayImportBusy.value = true;
   pixabayImportError.value = "";
   try {
@@ -1656,8 +1920,30 @@ async function previewResult() {
   document.getElementById("project-results-title")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-watch(projectId, () => void openProject(), { immediate: true });
+watch(projectId, () => {
+  invalidateProjectRefresh();
+  retryOperationFence.invalidate();
+  planningOperationFence.invalidate();
+  if (planningBusy.value) {
+    planningBusy.value = false;
+    creationBusy.value = false;
+    planningMessage.value = "";
+    planningError.value = "";
+    creationError.value = "";
+  }
+  if (retrySubmitting.value) {
+    productionBusy.value = false;
+    creationBusy.value = false;
+  }
+  clearRetryCommandFeedback();
+  retrySubmitting.value = false;
+  retryingSegmentSequence.value = undefined;
+  void openProject();
+}, { immediate: true });
 onBeforeUnmount(() => {
+  planningOperationFence.invalidate();
+  retryOperationFence.invalidate();
+  invalidateProjectRefresh();
   if (relayCheckTimer !== undefined) window.clearInterval(relayCheckTimer);
   stopProjectEvents();
   releaseProjectResultPreview();

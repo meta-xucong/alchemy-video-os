@@ -124,11 +124,31 @@ const isCanonicalReferenceSubsequence = (
   return true;
 };
 
-const validateG02Timeline = (visualPrompt: string, durationSeconds: number, required: boolean) => {
+type TimelineDiagnosticCode =
+  | "TIMELINE_MARKER_SYNTAX_INVALID"
+  | "TIMELINE_ROW_SYNTAX_INVALID"
+  | "TIMELINE_ROW_WITHOUT_MARKER"
+  | "TIMELINE_RANGE_OR_CONTINUITY_INVALID"
+  | "TIMELINE_ROW_GRANULARITY_INVALID"
+  | "TIMELINE_COVERAGE_OR_GROUP_COUNT_INVALID"
+  | "TIMELINE_GROUP_ORDER_OR_ROW_COUNT_INVALID"
+  | "TIMELINE_GROUP_DURATION_INVALID";
+
+type TimelineValidationResult =
+  | Readonly<{ providerPrompt: string; failureCode?: never }>
+  | Readonly<{ providerPrompt?: never; failureCode: TimelineDiagnosticCode }>;
+
+const validateG02Timeline = (
+  visualPrompt: string,
+  durationSeconds: number,
+  required: boolean,
+): TimelineValidationResult => {
   const lines = visualPrompt.split(/\r\n|\n|\r/u);
   const marker = /^【镜头([1-9]\d*)】(.*)$/u;
   const timelineRow = /^(\d+)-(\d+)秒：(.+)$/u;
-  if (/【镜头[^】]*】/u.test(visualPrompt) && !visualPrompt.match(/【镜头[1-9]\d*】/gu)) return undefined;
+  if (/【镜头[^】]*】/u.test(visualPrompt) && !visualPrompt.match(/【镜头[1-9]\d*】/gu)) {
+    return { failureCode: "TIMELINE_MARKER_SYNTAX_INVALID" };
+  }
   const groups: Array<{ marker: number; rows: Array<{ start: number; end: number }> }> = [];
   let activeGroup: (typeof groups)[number] | undefined;
   let previousEnd = 0;
@@ -138,37 +158,55 @@ const validateG02Timeline = (visualPrompt: string, durationSeconds: number, requ
     const markerMatch = marker.exec(line);
     const rowText = markerMatch?.[2] ?? line;
     if (markerMatch) {
-      if (activeGroup && activeGroup.rows.length === 0) return undefined;
+      if (activeGroup && activeGroup.rows.length === 0) {
+        return { failureCode: "TIMELINE_ROW_SYNTAX_INVALID" };
+      }
       activeGroup = { marker: Number(markerMatch[1]), rows: [] };
       groups.push(activeGroup);
     }
     const rowMatch = timelineRow.exec(rowText);
     if (!rowMatch) {
-      if (markerMatch || required || groups.length > 0) return undefined;
+      if (markerMatch || required || groups.length > 0) {
+        return { failureCode: "TIMELINE_ROW_SYNTAX_INVALID" };
+      }
       continue;
     }
     if (!activeGroup) {
-      if (required || groups.length > 0) return undefined;
+      if (required || groups.length > 0) {
+        return { failureCode: "TIMELINE_ROW_WITHOUT_MARKER" };
+      }
       continue;
     }
     const start = Number(rowMatch[1]);
     const end = Number(rowMatch[2]);
-    if (start !== previousEnd || end <= start || end > durationSeconds) return undefined;
+    if (start !== previousEnd || end <= start || end > durationSeconds) {
+      return { failureCode: "TIMELINE_RANGE_OR_CONTINUITY_INVALID" };
+    }
     const rowDuration = end - start;
-    if (end !== durationSeconds && rowDuration !== 3) return undefined;
-    if (end === durationSeconds && (rowDuration < 1 || rowDuration > 3)) return undefined;
+    if (end !== durationSeconds && rowDuration !== 3) {
+      return { failureCode: "TIMELINE_ROW_GRANULARITY_INVALID" };
+    }
+    if (end === durationSeconds && (rowDuration < 1 || rowDuration > 3)) {
+      return { failureCode: "TIMELINE_ROW_GRANULARITY_INVALID" };
+    }
     activeGroup.rows.push({ start, end });
     previousEnd = end;
     sawTimeline = true;
   }
 
   if (!required && groups.length === 0 && !sawTimeline) return { providerPrompt: visualPrompt };
-  if (!sawTimeline || groups.length < 2 || groups.length > 4 || previousEnd !== durationSeconds) return undefined;
+  if (!sawTimeline || groups.length < 2 || groups.length > 4 || previousEnd !== durationSeconds) {
+    return { failureCode: "TIMELINE_COVERAGE_OR_GROUP_COUNT_INVALID" };
+  }
   for (let index = 0; index < groups.length; index += 1) {
     const group = groups[index]!;
-    if (group.marker !== index + 1 || group.rows.length < 1 || group.rows.length > 2) return undefined;
+    if (group.marker !== index + 1 || group.rows.length < 1 || group.rows.length > 2) {
+      return { failureCode: "TIMELINE_GROUP_ORDER_OR_ROW_COUNT_INVALID" };
+    }
     const groupDuration = group.rows[group.rows.length - 1]!.end - group.rows[0]!.start;
-    if (groupDuration < 2 || groupDuration > 6) return undefined;
+    if (groupDuration < 2 || groupDuration > 6) {
+      return { failureCode: "TIMELINE_GROUP_DURATION_INVALID" };
+    }
   }
   return { providerPrompt: visualPrompt.replace(/^【镜头[1-9]\d*】/gmu, "") };
 };
@@ -235,7 +273,16 @@ type SemanticDirectorDiagnosticIssueCode =
   | "G02_BEAT_ENTITY_BINDING_INCOMPLETE"
   | "G02_CANDIDATE_UNUSED"
   | "SEGMENT_VISUAL_PROMPT_COPIES_SOURCE"
-  | "SEGMENT_VISUAL_PROMPT_COPIES_UNASSIGNED_DIALOGUE";
+  | "SEGMENT_VISUAL_PROMPT_COPIES_UNASSIGNED_DIALOGUE"
+  | "TIMELINE_MARKER_SYNTAX_INVALID"
+  | "TIMELINE_ROW_SYNTAX_INVALID"
+  | "TIMELINE_ROW_WITHOUT_MARKER"
+  | "TIMELINE_RANGE_OR_CONTINUITY_INVALID"
+  | "TIMELINE_ROW_GRANULARITY_INVALID"
+  | "TIMELINE_COVERAGE_OR_GROUP_COUNT_INVALID"
+  | "TIMELINE_GROUP_ORDER_OR_ROW_COUNT_INVALID"
+  | "TIMELINE_GROUP_DURATION_INVALID"
+  | "PROVIDER_INTERNAL_MARKER_REMAINS";
 
 export class SemanticDirectorCanonicalizationError extends Error {
   readonly issues: ReadonlyArray<Readonly<{ code: SemanticDirectorDiagnosticIssueCode }>> | undefined;
@@ -390,6 +437,15 @@ const validateG02NarrativePlan = (raw: RawSemanticPlan, bundle: CanonicalSourceB
       );
     }
     const existing = matchingEntities[0];
+    if (existing && candidate.reference_asset_ids.some((assetId) => {
+      const usage = bundle.references.find((reference) => reference.asset_id === assetId)?.user_declared_usage;
+      return typeof usage !== "string" || !hasExactEntityNameMention(usage, existing.exact_name);
+    })) {
+      throw new SemanticDirectorCanonicalizationError(
+        "CANONICALIZATION_SEGMENT_SOURCE_SCOPE_INVALID",
+        "G02 reference usage for an existing project identity must include the frozen canonical exact_name.",
+      );
+    }
     canonicalNamesByCandidateKey.set(candidate.candidate_key, existing?.exact_name ?? candidate.exact_name);
     for (const assetId of candidate.reference_asset_ids) {
       const reference = bundle.references.find((item) => item.asset_id === assetId)!;
@@ -609,6 +665,7 @@ export const validateSemanticSegmentBoundaries = (
       throw new SemanticDirectorCanonicalizationError(
         "CANONICALIZATION_SEGMENT_SUBSHOT_INVALID",
         "Internal shot markers must be removed before a Provider-facing prompt is accepted.",
+        "PROVIDER_INTERNAL_MARKER_REMAINS",
       );
     }
   }
@@ -624,10 +681,11 @@ export const canonicalizeSemanticPlan = (
   const canonicalNamesByCandidateKey = validateG02NarrativePlan(raw, bundle);
   const providerPrompts = raw.segments.map((segment) => {
     const timeline = validateG02Timeline(segment.visual_prompt, segment.duration_seconds, isG02);
-    if (!timeline) {
+    if ("failureCode" in timeline) {
       throw new SemanticDirectorCanonicalizationError(
         "CANONICALIZATION_SEGMENT_SUBSHOT_INVALID",
         "Timeline rows and internal shot markers must exactly cover the segment and satisfy source ordering, granularity, and marker mapping rules.",
+        timeline.failureCode,
       );
     }
     return isG02

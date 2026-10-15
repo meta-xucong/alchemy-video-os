@@ -495,7 +495,12 @@ $localEnvironment = [ordered]@{
 $referenceDeliverySigningKey = ""
 if ($VideoProvider -eq "sub2api") {
   $referenceDeliverySigningKey = Get-SecretConfigValue -DotEnv $dotenv -Name "REFERENCE_DELIVERY_SIGNING_KEY"
-  if (-not $referenceDeliverySigningKey) { $referenceDeliverySigningKey = New-ReferenceDeliverySigningKey }
+  if (-not $referenceDeliverySigningKey) {
+    if (-not $AllowEphemeralReferenceTunnel) {
+      throw "SUB2API local mode requires REFERENCE_DELIVERY_SIGNING_KEY matching the configured public origin, or -AllowEphemeralReferenceTunnel for a temporary local relay. A generated local key cannot authenticate against a fixed remote origin."
+    }
+    $referenceDeliverySigningKey = New-ReferenceDeliverySigningKey
+  }
 }
 
 if ($VideoProvider -eq "sub2api") {

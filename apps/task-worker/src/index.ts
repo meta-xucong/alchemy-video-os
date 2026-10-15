@@ -6,9 +6,9 @@ import { createS3StoragePort } from "@alchemy-video/storage-client";
 
 import { MockVideoTaskExecutor } from "./execution-service.js";
 import { createWorkerVideoProviderRuntime } from "./provider-runtime.js";
-import { createWorkerReferenceDeliveryPort } from "./reference-delivery.js";
+import { createWorkerReferenceDeliveryPort, ReferenceDeliveryReadinessError, waitForWorkerReferenceDeliveryReady } from "./reference-delivery.js";
 import { VideoBillingExecutor } from "./billing-executor.js";
-import { OutboxRelay, TaskRunEventConsumer, recoverC06TaskRuns } from "./service.js";
+import { createC06RecoveryScheduler, OutboxRelay, TaskRunEventConsumer, recoverC06TaskRuns } from "./service.js";
 import { assertCommercialWorkerConfig } from "./production-config.js";
 
 assertCommercialWorkerConfig();
@@ -111,13 +111,35 @@ const worker = createBullMqInternalEventWorker({
     }
   },
   onTerminalFailure: async ({ event_id, workspace_id, task_run_id, reason }) => {
-    await consumer.finalizeExecutionFailure({ workspace_id, task_run_id, reason });
+    await consumer.finalizeExecutionFailure({ workspace_id, task_run_id, event_id, reason });
     await consumer.deadLetter({ event_id, workspace_id, reason });
   },
 });
 
 await worker.waitUntilReady();
+if (runtime.profile.mode !== "mock") {
+  const referenceDeliveryOrigin = process.env.REFERENCE_DELIVERY_ORIGIN?.trim();
+  if (!referenceDeliveryOrigin || !process.env.REFERENCE_DELIVERY_SIGNING_KEY) {
+    throw new ReferenceDeliveryReadinessError("CONFIGURATION_MISSING");
+  }
+  const readiness = await waitForWorkerReferenceDeliveryReady({ origin: referenceDeliveryOrigin });
+  console.info(JSON.stringify({
+    event: "task_worker.reference_delivery.ready",
+    attempts: readiness.attempts,
+    elapsed_ms: readiness.elapsedMs,
+  }));
+}
 const recovery = await recoverC06TaskRuns(executor, {
+  onDeferred: ({ workspaceId, taskRunId, kind, reason }) => {
+    console.warn(JSON.stringify({
+      event: "task_worker.recovery.deferred",
+      workspace_id: workspaceId,
+      task_run_id: taskRunId,
+      kind,
+      reason,
+      action: kind === "PROVIDER_SUBMISSION_UNKNOWN" ? "operator_reconciliation_required" : "retry_after_owner_release",
+    }));
+  },
   onFailure: ({ workspaceId, taskRunId, reason }) => {
     console.error(JSON.stringify({
       event: "task_worker.recovery.failed",
@@ -131,9 +153,14 @@ const recovery = await recoverC06TaskRuns(executor, {
 });
 console.info(JSON.stringify({
   event: "task_worker.recovery.completed",
-  recovered: recovery.filter((result) => !result.failure).length,
+  recovered: recovery.filter((result) => !result.failure && !result.deferred).length,
+  deferred: recovery.filter((result) => result.deferred).length,
   failed: recovery.filter((result) => result.failure).length,
 }));
+const c06RecoveryIntervalMs = Number(process.env.C06_RECOVERY_INTERVAL_MS?.trim() || "30000");
+if (!Number.isSafeInteger(c06RecoveryIntervalMs) || c06RecoveryIntervalMs < 0 || (c06RecoveryIntervalMs > 0 && c06RecoveryIntervalMs < 5_000)) {
+  throw new Error("C06_RECOVERY_INTERVAL_MS must be 0 (disabled) or an integer of at least 5000 milliseconds.");
+}
 worker.start();
 const relayTimer = setInterval(() => {
   void relay.runOnce().catch((error) => {
@@ -141,6 +168,63 @@ const relayTimer = setInterval(() => {
   });
 }, 250);
 await relay.runOnce();
+const c06RecoveryBatchSize = 25;
+let c06RecoveryInFlight = false;
+const runC06Recovery = async () => {
+  if (c06RecoveryInFlight) return;
+  c06RecoveryInFlight = true;
+  try {
+    const results = await recoverC06TaskRuns(executor, {
+      limit: c06RecoveryBatchSize,
+      maxAttempts: 1,
+      knownProviderRequestOnly: true,
+      deferRetryableErrors: true,
+      onFailure: ({ workspaceId, taskRunId, reason }) => console.error(JSON.stringify({
+        event: "task_worker.c06_recovery.failed",
+        workspace_id: workspaceId,
+        task_run_id: taskRunId,
+        reason,
+      })),
+      onDeferred: ({ workspaceId, taskRunId, kind, reason }) => console.warn(JSON.stringify({
+        event: "task_worker.c06_recovery.deferred",
+        workspace_id: workspaceId,
+        task_run_id: taskRunId,
+        kind,
+        reason,
+      })),
+      finalizeFailure: async ({ workspaceId, taskRunId, reason }) => {
+        try {
+          await consumer.finalizeExecutionFailure({ workspace_id: workspaceId, task_run_id: taskRunId, reason });
+        } catch (error) {
+          console.error(JSON.stringify({
+            event: "task_worker.c06_recovery.finalization_failed",
+            workspace_id: workspaceId,
+            task_run_id: taskRunId,
+            reason: error instanceof Error ? error.message : String(error),
+          }));
+        }
+      },
+    });
+    if (results.length > 0) {
+      console.info(JSON.stringify({
+        event: "task_worker.c06_recovery.completed",
+        scanned: results.length,
+        recovered: results.filter((result) => !result.failure && !result.deferred).length,
+        deferred: results.filter((result) => result.deferred).length,
+        failed: results.filter((result) => result.failure).length,
+      }));
+    }
+  } catch (error) {
+    console.error(JSON.stringify({ event: "task_worker.c06_recovery.failed", reason: error instanceof Error ? error.message : String(error) }));
+  } finally {
+    c06RecoveryInFlight = false;
+  }
+};
+const c06RecoveryScheduler = createC06RecoveryScheduler({
+  intervalMs: c06RecoveryIntervalMs,
+  run: runC06Recovery,
+  onError: (error) => console.error(JSON.stringify({ event: "task_worker.c06_recovery.failed", reason: error instanceof Error ? error.message : String(error) })),
+});
 const billingRecoveryIntervalMs = 30_000;
 const billingRecoveryBatchSize = 25;
 let billingRecoveryInFlight = false;
@@ -180,6 +264,7 @@ const shutdown = async () => {
   if (shuttingDown) return;
   shuttingDown = true;
   clearInterval(relayTimer);
+  await c06RecoveryScheduler.stop();
   if (billingRecoveryTimer) clearInterval(billingRecoveryTimer);
   await worker.close();
   await queue.close();

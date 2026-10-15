@@ -352,14 +352,40 @@ test("reference-vision credentials are never accepted as semantic-planner config
   }), (error) => error instanceof SemanticDirectorClientError
     && error.code === "CONFIGURATION_INVALID");
 });
-test("Markdown, array roots, malformed JSON, and empty content stay fail-closed", async (context) => {
+test("one exact JSON code fence is unwrapped without changing the semantic object", async (context) => {
+  for (const [name, content] of [
+    ["json-labelled", `\`\`\`json\n${JSON.stringify(decision)}\n\`\`\``],
+    ["unlabelled", `\`\`\`\n${JSON.stringify(decision)}\n\`\`\``],
+    ["uppercase-json", `\`\`\`JSON\r\n${JSON.stringify(decision)}\r\n\`\`\``],
+  ] as const) {
+    await context.test(name, async () => {
+      const diagnostics: SemanticDirectorDiagnostic[] = [];
+      const runtime = createSemanticDirectorRuntimeFromEnv({
+        env: envFor(schemaProfile),
+        profiles,
+        diagnosticSink: (diagnostic) => diagnostics.push(diagnostic),
+        fetcher: async () => responseEnvelope(content),
+      });
+      const verified = await runtime.director.requireExecutable(bundle);
+      assert.equal(verified.segments[0]?.visual_decision, visualQuote);
+      assert.equal(diagnostics.at(-1)?.outcome, "RESPONSE_PARSED");
+      assert.equal(diagnostics.at(-1)?.content_normalization, "MARKDOWN_JSON_FENCE");
+      assert.equal(JSON.stringify(diagnostics).includes("test-secret-key"), false);
+    });
+  }
+});
+
+test("unsupported Markdown, array roots, malformed JSON, and empty content stay fail-closed", async (context) => {
   const cases: Array<Readonly<{
     name: string;
     content: unknown;
     code: string;
     errorClass: string;
   }>> = [
-    { name: "markdown", content: "```json\n{}\n```", code: "DIRECTOR_CONTENT_FORMAT_INVALID", errorClass: "MARKDOWN_FENCE" },
+    { name: "markdown with surrounding commentary", content: "Result:\n```json\n{}\n```", code: "DIRECTOR_CONTENT_FORMAT_INVALID", errorClass: "MARKDOWN_FENCE" },
+    { name: "unsupported markdown language", content: "```javascript\n{}\n```", code: "DIRECTOR_CONTENT_FORMAT_INVALID", errorClass: "MARKDOWN_FENCE" },
+    { name: "malformed JSON inside an exact fence", content: "```json\n{\n```", code: "DIRECTOR_CONTENT_FORMAT_INVALID", errorClass: "MALFORMED_JSON_CONTENT" },
+    { name: "array root inside an exact fence", content: `\`\`\`json\n${JSON.stringify([decision])}\n\`\`\``, code: "DIRECTOR_CONTENT_FORMAT_INVALID", errorClass: "ARRAY_ROOT" },
     { name: "array root", content: JSON.stringify([decision]), code: "DIRECTOR_CONTENT_FORMAT_INVALID", errorClass: "ARRAY_ROOT" },
     { name: "malformed", content: "{", code: "DIRECTOR_CONTENT_FORMAT_INVALID", errorClass: "MALFORMED_JSON_CONTENT" },
     { name: "empty", content: "   ", code: "DIRECTOR_CONTENT_EMPTY", errorClass: "CONTENT_EMPTY" },
