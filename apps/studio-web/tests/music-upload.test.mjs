@@ -90,6 +90,7 @@ const handlerFixture = (overrides = {}) => {
   const context = {
     selectedProjectId: { value: "prj_source" },
     productionBusy: { value: false },
+    audioSelectionLocked: { value: false },
     productionError: { value: "" },
     readMusicDurationMs: async () => 30_000,
     sha256: async () => "a".repeat(64),

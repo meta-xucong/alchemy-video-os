@@ -92,7 +92,7 @@ test("M2 composes public planning commands and starts production after automatic
   }
 
   assert.match(workspace, /async function generateVideo\(\)/);
-  assert.match(workspace, /await startAutomatedProduction\(current\.project\.id, operationToken\)/);
+  assert.match(workspace, /await startAutomatedProduction\(current\.project\.id, operationToken, audioConfig\)/);
   assert.match(workspace, /commandKey\("studio-auto-brief"\)/);
   assert.match(workspace, /commandKey\("studio-auto-plan"\)/);
   const autoPlan = workspace.slice(workspace.indexOf("async function startAutomatedProduction"));

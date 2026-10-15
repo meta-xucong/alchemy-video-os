@@ -6,8 +6,9 @@ import { createAsyncOperationFence } from "../app/composables/useCreationProgres
 
 const page = readFileSync(new URL("../app/pages/projects/[project_id].vue", import.meta.url), "utf8");
 const flowSource = page.slice(page.indexOf("const delay ="), page.indexOf("async function retryProductionSegment("));
+const audioSnapshotSource = page.slice(page.indexOf("function snapshotAudioConfig("), page.indexOf("async function generateVideo()"));
 const entrySource = page.slice(page.indexOf("async function generateVideo()"), page.indexOf("async function retryGeneration()"));
-const javascript = ts.transpileModule(`${flowSource}\n${entrySource}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const javascript = ts.transpileModule(`${flowSource}\n${audioSnapshotSource}\n${entrySource}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
 function fixture(pauseAt) {
   const reached = Promise.withResolvers();
@@ -42,6 +43,7 @@ function fixture(pauseAt) {
     captionPolicy: { value: "OFF" },
     musicPlan: { mode: "MANUAL", assetId: "music_a", styleHint: "" },
     audioSelection: { value: "PRESERVE_PROVIDER_AUDIO" },
+    musicAssets: { value: [{ id: "music_a" }] },
     selectedMusicAsset: { value: { id: "music_a" } },
     eligiblePlanningSourceIds: (ids) => ids,
     clearRetryCommandFeedback: () => {},

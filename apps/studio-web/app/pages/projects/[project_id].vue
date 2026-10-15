@@ -104,20 +104,26 @@
             </div>
             <div class="music-plan-options" role="radiogroup" aria-label="成片音轨来源">
               <label class="music-plan-option" :class="{ selected: audioSelection === 'PRESERVE_PROVIDER_AUDIO' }">
-                <input v-model="audioSelection" type="radio" value="PRESERVE_PROVIDER_AUDIO" />
+                <input v-model="audioSelection" type="radio" value="PRESERVE_PROVIDER_AUDIO" :disabled="audioSelectionLocked" />
                 <span class="music-plan-option-copy"><strong>保留视频原声</strong><small>默认方式，不额外替换音轨</small></span>
               </label>
               <label class="music-plan-option" :class="{ selected: audioSelection === 'DOUBAO_TTS_REPLACE' }">
-                <input v-model="audioSelection" type="radio" value="DOUBAO_TTS_REPLACE" />
+                <input v-model="audioSelection" type="radio" value="DOUBAO_TTS_REPLACE" :disabled="audioSelectionLocked" />
                 <span class="music-plan-option-copy"><strong>使用已批准的豆包旁白替换原声</strong><small>必须已有与本次脚本和时间轴匹配的正式旁白资产，否则本次制作会被阻止</small></span>
               </label>
               <label class="music-plan-option" :class="{ selected: audioSelection === 'MUSIC_REPLACE_PROVIDER_AUDIO' }">
-                <input v-model="audioSelection" type="radio" value="MUSIC_REPLACE_PROVIDER_AUDIO" :disabled="musicPlan.mode !== 'MANUAL' || !selectedMusicAsset" />
+                <input v-model="audioSelection" type="radio" value="MUSIC_REPLACE_PROVIDER_AUDIO" :disabled="audioSelectionLocked" />
                 <span class="music-plan-option-copy"><strong>仅使用指定背景音乐</strong><small>仅接受已选的工作区 MUSIC 曲目；会移除视频 Provider 原声，不保留原声对白或环境音</small></span>
               </label>
             </div>
-            <p v-if="audioSelection === 'MUSIC_REPLACE_PROVIDER_AUDIO'" class="music-plan-note" role="status">
-              本次成片将只保留完整背景音乐，并丢弃所有视频片段内嵌的 Provider 原声。请在“背景音乐”中保持“指定曲目”并选择覆盖全片的曲目。
+            <p v-if="audioSelection === 'MUSIC_REPLACE_PROVIDER_AUDIO' && !musicAssets.length" class="music-plan-note" role="status">
+              已选择仅使用背景音乐。请先上传或导入一首工作区 MUSIC 曲目，再切换到“指定曲目”并选择它；此选择不会自动选曲。
+            </p>
+            <p v-else-if="audioSelection === 'MUSIC_REPLACE_PROVIDER_AUDIO' && (musicPlan.mode !== 'MANUAL' || !selectedMusicAsset)" class="music-plan-note" role="status">
+              已选择仅使用背景音乐。请在“背景音乐”中切换到“指定曲目”并选择具体曲目；自动模式或关闭模式不能用于本次替换。
+            </p>
+            <p v-else-if="audioSelection === 'MUSIC_REPLACE_PROVIDER_AUDIO'" class="music-plan-note" role="status">
+              本次成片将只保留已选的完整背景音乐（{{ selectedMusicAsset?.label }}），并丢弃所有视频片段内嵌的 Provider 原声。
             </p>
           </section>
 
@@ -134,19 +140,19 @@
             </p>
             <div class="music-plan-options">
               <label class="music-plan-option" :class="{ selected: musicPlan.mode === 'AUTO' }">
-                <input v-model="musicPlan.mode" type="radio" value="AUTO" />
+                <input v-model="musicPlan.mode" type="radio" value="AUTO" :disabled="audioSelectionLocked" />
                 <span class="music-plan-option-copy"><strong>自动</strong><small>先选工作区 MUSIC，无候选时尝试 Pixabay</small></span>
               </label>
               <label class="music-plan-option" :class="{ selected: musicPlan.mode === 'MANUAL' }">
-                <input v-model="musicPlan.mode" type="radio" value="MANUAL" :disabled="!musicAssets.length" />
+                <input v-model="musicPlan.mode" type="radio" value="MANUAL" :disabled="!musicAssets.length || audioSelectionLocked" />
                 <span class="music-plan-option-copy"><strong>指定曲目</strong><small>只使用工作区已确认的 MUSIC</small></span>
               </label>
               <label class="music-plan-option" :class="{ selected: musicPlan.mode === 'OFF' }">
-                <input v-model="musicPlan.mode" type="radio" value="OFF" />
+                <input v-model="musicPlan.mode" type="radio" value="OFF" :disabled="audioSelectionLocked" />
                 <span class="music-plan-option-copy"><strong>关闭</strong><small>明确不混入背景音乐</small></span>
               </label>
             </div>
-            <select v-if="musicPlan.mode === 'MANUAL'" v-model="musicPlan.assetId" class="music-plan-select" aria-label="选择工作区音乐">
+            <select v-if="musicPlan.mode === 'MANUAL'" v-model="musicPlan.assetId" class="music-plan-select" aria-label="选择工作区音乐" :disabled="audioSelectionLocked">
               <option value="" disabled>选择一首工作区 MUSIC</option>
               <option v-for="asset in musicAssets" :key="asset.id" :value="asset.id">{{ asset.label }}</option>
             </select>
@@ -165,7 +171,7 @@
               <div class="music-plan-disclosure-body">
                 <label class="music-plan-upload">
                   <span>选择音乐文件</span>
-                  <input type="file" accept="audio/mpeg,audio/wav,audio/ogg" :disabled="productionBusy" @change="selectMusicUpload" />
+                  <input type="file" accept="audio/mpeg,audio/wav,audio/ogg" :disabled="audioSelectionLocked" @change="selectMusicUpload" />
                 </label>
               </div>
             </details>
@@ -178,8 +184,8 @@
                     <span>原仓库逻辑：筛选后取首条</span>
                   </div>
                   <form class="music-plan-catalog-search" @submit.prevent="importPixabayMusicAsset">
-                    <input v-model="pixabayQuery" class="music-plan-hint" maxlength="200" placeholder="例如 ambient 或 upbeat" aria-label="Pixabay 音乐搜索词" :disabled="pixabayImportBusy || productionBusy" />
-                    <button class="music-plan-catalog-search-button" type="submit" :disabled="pixabayImportBusy || productionBusy || !pixabayQuery.trim()">
+                    <input v-model="pixabayQuery" class="music-plan-hint" maxlength="200" placeholder="例如 ambient 或 upbeat" aria-label="Pixabay 音乐搜索词" :disabled="audioSelectionLocked" />
+                    <button class="music-plan-catalog-search-button" type="submit" :disabled="audioSelectionLocked || !pixabayQuery.trim()">
                       {{ pixabayImportBusy ? "导入中" : "导入" }}
                     </button>
                   </form>
@@ -670,6 +676,13 @@ const displayedProjectResults = computed<ProjectResultItem[]>(() => (
 ));
 const hasProjectResult = computed(() => displayedProjectResults.value.length > 0);
 const activeProductionStatuses = new Set<ProductionRun["status"]>(["CONFIRMED", "GENERATING", "REVIEWING", "RENDERING"]);
+const audioSelectionLocked = computed(() => Boolean(
+  creationBusy.value
+  || planningBusy.value
+  || productionBusy.value
+  || pixabayImportBusy.value
+  || (currentProductionRun.value && activeProductionStatuses.has(currentProductionRun.value.status)),
+));
 const newVersionTaskStatuses = new Set<TaskRun["status"]>(["SUCCEEDED", "FAILED"]);
 const blockingDocumentMaterials = computed(() => projectMaterials.value.filter((item) => item.adopted && (
   item.status !== "SUCCEEDED"
@@ -691,6 +704,7 @@ const canStartGeneration = computed(() => Boolean(
   && !productionBusy.value
   && !retryOutcomeUnknown.value
   && !retryProjectionPending.value
+  && !pixabayImportBusy.value
   && blockingDocumentMaterials.value.length === 0
   && (!currentProductionRun.value || !activeProductionStatuses.has(currentProductionRun.value.status)),
 ));
@@ -805,7 +819,7 @@ async function selectProjectResult(assetId: string) {
     resultPreviewUrl.value = response.data.download_url;
   } catch (error) {
     if (request !== resultPreviewRequest || projectIdAtStart !== selectedProjectId.value) return;
-    resultPreviewError.value = safeErrorMessage(error, "这版成片暂时无法播放，请稍后再试。");
+    resultPreviewError.value = safeResultMediaErrorMessage(error, "这版成片暂时无法播放，请稍后再试。");
   } finally {
     if (request === resultPreviewRequest && projectIdAtStart === selectedProjectId.value) {
       resultPreviewLoading.value = false;
@@ -826,7 +840,7 @@ async function downloadProjectResult(assetId: string) {
     // preserving the server's short-lived signature and Content-Disposition.
     window.location.assign(response.data.download_url);
   } catch (error) {
-    resultPreviewError.value = safeErrorMessage(error, "这版成片暂时无法下载，请稍后再试。");
+    resultPreviewError.value = safeResultMediaErrorMessage(error, "这版成片暂时无法下载，请稍后再试。");
   }
 }
 
@@ -851,12 +865,26 @@ function taskFailureMessage(task: TaskRun) {
   return "本次创作未完成。请调整想法后生成新版本，或重试这次创作。";
 }
 
+function apiErrorCode(error: unknown) {
+  const data = typeof error === "object" && error !== null && "data" in error ? (error as { data?: unknown }).data : undefined;
+  const apiError = typeof data === "object" && data !== null && "error" in data ? (data as { error?: unknown }).error : undefined;
+  return typeof apiError === "object" && apiError !== null && "code" in apiError ? (apiError as { code?: unknown }).code : undefined;
+}
+
+function safeResultMediaErrorMessage(error: unknown, fallback: string) {
+  if (apiErrorCode(error) === "AUTH_FORBIDDEN") {
+    return "登录状态已失效或当前账号无权访问这版成片，请重新登录或检查账号权限；已生成的成片仍保留，无需重新生成。";
+  }
+  return safeErrorMessage(error, fallback);
+}
+
 function safeErrorMessage(error: unknown, fallback: string) {
   const data = typeof error === "object" && error !== null && "data" in error ? (error as { data?: unknown }).data : undefined;
   const apiError = typeof data === "object" && data !== null && "error" in data ? (data as { error?: unknown }).error : undefined;
   const code = typeof apiError === "object" && apiError !== null && "code" in apiError ? (apiError as { code?: unknown }).code : undefined;
   const labels: Record<string, string> = {
     IDEMPOTENCY_CONFLICT: "这次操作已经使用了不同内容提交，请刷新后重新操作。",
+    AUTH_FORBIDDEN: "登录状态已失效或当前账号无权执行此操作，请重新登录或检查账号权限后重试。",
     WORKSPACE_FORBIDDEN: "当前项目不可访问。",
     NOT_FOUND: "当前项目或其中的内容已不存在。",
     INVALID_REFERENCE: "所选参考图不可用，请重新选择。",
@@ -1030,6 +1058,8 @@ async function refreshCurrentProject() {
       if (expectedProjectId === selectedProjectId.value && refreshEpoch === projectRefreshEpoch) {
         projectError.value = safeErrorMessage(error, "项目暂时无法刷新，请稍后重试。");
       }
+    } finally {
+      if (refreshEpoch === projectRefreshEpoch) projectRefreshInFlight = undefined;
     }
   })();
 
@@ -1331,7 +1361,10 @@ async function waitForAutoStoryboard(projectId: string, startedAt: string, asser
   throw new Error("PLANNING_TIMEOUT");
 }
 
-async function startAutomatedProduction(projectId: string, operationToken: number) {
+async function startAutomatedProduction(projectId: string, operationToken: number, audioConfig: {
+  audioSelection: typeof audioSelection.value;
+  musicPlan: Pick<typeof musicPlan, "mode" | "assetId" | "styleHint">;
+}) {
   const assertCurrent = () => {
     if (!planningOperationFence.isCurrent(operationToken) || selectedProjectId.value !== projectId) {
       throw new Error("PLANNING_CANCELLED");
@@ -1355,11 +1388,11 @@ async function startAutomatedProduction(projectId: string, operationToken: numbe
   };
   const productionCommand = {
     music_plan: {
-      mode: musicPlan.mode,
-      ...(musicPlan.mode === "MANUAL" ? { asset_id: musicPlan.assetId } : {}),
-      ...(musicPlan.mode === "AUTO" && musicPlan.styleHint.trim() ? { style_hint: musicPlan.styleHint.trim() } : {}),
+      mode: audioConfig.musicPlan.mode,
+      ...(audioConfig.musicPlan.mode === "MANUAL" ? { asset_id: audioConfig.musicPlan.assetId } : {}),
+      ...(audioConfig.musicPlan.mode === "AUTO" && audioConfig.musicPlan.styleHint.trim() ? { style_hint: audioConfig.musicPlan.styleHint.trim() } : {}),
     },
-    audio_selection: audioSelection.value,
+    audio_selection: audioConfig.audioSelection,
   };
   const startedAt = new Date(Date.now() - 1_000).toISOString();
   // Resolve the source-backed audio owner immediately before creating the
@@ -1495,11 +1528,24 @@ async function toggleArchive() {
   }
 }
 
+function snapshotAudioConfig(audioSelectionValue: typeof audioSelection.value, musicPlanValue: typeof musicPlan) {
+  return {
+    audioSelection: audioSelectionValue,
+    musicPlan: {
+      mode: musicPlanValue.mode,
+      assetId: musicPlanValue.assetId,
+      styleHint: musicPlanValue.styleHint,
+    },
+  };
+}
+
 async function generateVideo() {
   const current = detail.value;
   if (!canStartGeneration.value || creationBusy.value || planningBusy.value || productionBusy.value || !current) return;
-  if (audioSelection.value === "MUSIC_REPLACE_PROVIDER_AUDIO"
-    && (musicPlan.mode !== "MANUAL" || !selectedMusicAsset.value)) {
+  const audioConfig = snapshotAudioConfig(audioSelection.value, musicPlan);
+  const selectedMusicAssetAtStart = musicAssets.value.find((asset) => asset.id === audioConfig.musicPlan.assetId);
+  if (audioConfig.audioSelection === "MUSIC_REPLACE_PROVIDER_AUDIO"
+    && (audioConfig.musicPlan.mode !== "MANUAL" || !selectedMusicAssetAtStart)) {
     const message = "仅使用背景音乐模式要求选择一首工作区 MUSIC 曲目；请切换到“指定曲目”并选择曲目，或改回保留视频原声。";
     creationError.value = message;
     planningError.value = message;
@@ -1513,7 +1559,7 @@ async function generateVideo() {
   planningError.value = "";
   productionError.value = "";
   try {
-    await startAutomatedProduction(current.project.id, operationToken);
+    await startAutomatedProduction(current.project.id, operationToken, audioConfig);
   } catch (error) {
     if (!planningOperationFence.isCurrent(operationToken) || selectedProjectId.value !== current.project.id) return;
     const message = error instanceof Error && error.message === "PLANNING_TIMEOUT"
@@ -1760,7 +1806,7 @@ async function retryProductionComposition() {
 
 async function uploadMusic(file: File | undefined) {
   const projectIdAtStart = selectedProjectId.value;
-  if (!file || !projectIdAtStart || productionBusy.value) return;
+  if (!file || !projectIdAtStart || audioSelectionLocked.value) return;
   if (!/^audio\/(mpeg|wav|ogg)$/.test(file.type) || file.size > 50 * 1024 * 1024) {
     productionError.value = "请选择不超过 50 MB 的 MP3、WAV 或 OGG 音乐文件。";
     return;
@@ -1790,7 +1836,7 @@ async function uploadMusic(file: File | undefined) {
 async function importPixabayMusicAsset() {
   const projectIdAtStart = selectedProjectId.value;
   const query = pixabayQuery.value.trim();
-  if (!projectIdAtStart || !query || pixabayImportBusy.value || productionBusy.value) return;
+  if (!projectIdAtStart || !query || audioSelectionLocked.value) return;
   pixabayImportBusy.value = true;
   pixabayImportError.value = "";
   try {
